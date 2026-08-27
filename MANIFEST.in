@@ -1,0 +1,34 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+include CODE_OF_CONDUCT.md
+include CONTRIBUTING.md
+include SECURITY.md
+include SUPPORT.md
+include pyproject.toml
+include setup.py
+include sniff4hound/*.py
+recursive-include sniff4hound/data *
+recursive-include docs *
+include frontend/.env.development
+include frontend/.npmrc
+include frontend/eslint.config.js
+include frontend/index.html
+include frontend/jsconfig.json
+include frontend/package-lock.json
+include frontend/package.json
+include frontend/vite.config.js
+recursive-include frontend/public *
+recursive-include frontend/src *
+prune frontend/node_modules
+prune frontend/node_modules_legacy_vuecli
+prune frontend/dist.root-owned-backup
+prune frontend/dist_perm_old_20260611
+prune frontend/dist_root_old
+exclude frontend/Sniff4Hound.db
+prune .venv
+prune sniff4hound/.venv
+prune sniff4hound/__pycache__
+prune build
+prune dist
+global-exclude __pycache__ *.py[cod]

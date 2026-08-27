@@ -1,0 +1,26 @@
+# Default ownership
+* @jorgelsc-dev
+
+# Critical policy and release surfaces
+/.github/ @jorgelsc-dev
+/LICENSE @jorgelsc-dev
+/NOTICE @jorgelsc-dev
+/README.md @jorgelsc-dev
+/CONTRIBUTING.md @jorgelsc-dev
+/SECURITY.md @jorgelsc-dev
+/CHANGELOG.md @jorgelsc-dev
+
+# Documentation and public-facing branding
+/docs/ @jorgelsc-dev
+/docs/assets/ @jorgelsc-dev
+/frontend/public/ @jorgelsc-dev
+/frontend/src/assets/ @jorgelsc-dev
+
+# Application code
+/frontend/ @jorgelsc-dev
+/sniff4hound/ @jorgelsc-dev
+/scripts/ @jorgelsc-dev
+
+# Public site (landing page + published documentation)
+/landing/ @jorgelsc-dev
+/mkdocs.yml @jorgelsc-dev

@@ -1,0 +1,110 @@
+name: docs-pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "landing/**"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
+      - ".github/workflows/docs-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: landing/package-lock.json
+
+      - name: Build landing page
+        working-directory: landing
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install docs dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-docs.txt
+
+      # Runs unconditionally, publishing or not: --strict turns a broken link
+      # or a page missing from the nav into a failure, and that check is worth
+      # keeping on every docs change even while the site is not being served.
+      - name: Build site
+        run: mkdocs build --strict
+
+      # Everything below needs GitHub Pages, which is only free on public
+      # repositories. While this repo is private the Pages API answers 404 and
+      # `configure-pages` fails the run - and enabling Pages through the API
+      # is not possible either, since GITHUB_TOKEN has no administration
+      # rights. So the publish half is skipped until the repo goes public, at
+      # which point it resumes on its own with no edit here.
+      - name: Note that publishing is skipped
+        if: github.event.repository.visibility != 'public'
+        run: |
+          echo "::notice title=Docs published only from a public repo::Site built and validated, but not published: GitHub Pages needs this repository to be public (or a paid plan). Nothing to fix here."
+
+      - name: Configure Pages
+        if: github.event.repository.visibility == 'public'
+        uses: actions/configure-pages@v6
+
+      # The published site is the landing page at the root with the MkDocs
+      # build nested under /docs/, so https://porthound.jorgelsc.dev/ serves
+      # the landing and /docs/ serves the documentation.
+      - name: Assemble the published site
+        if: github.event.repository.visibility == 'public'
+        run: |
+          rm -rf public-site
+          cp -r landing/dist public-site
+          cp -r site public-site/docs
+          # MkDocs copies docs/CNAME into its own output; only the root one
+          # is read, and a second copy just invites confusion.
+          rm -f public-site/docs/CNAME
+          # .nojekyll must sit at the root or GitHub Pages drops every
+          # directory whose name starts with an underscore.
+          cp docs/.nojekyll public-site/.nojekyll
+          cp docs/CNAME public-site/CNAME
+          cp docs/404.html public-site/404.html
+
+      - name: Upload Pages artifact
+        if: github.event.repository.visibility == 'public'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: public-site
+
+  deploy:
+    needs: build
+    if: github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

@@ -1,0 +1,24 @@
+[
+  {
+    "id": "all-interfaces",
+    "name": "All interfaces",
+    "description": "Watch every visible interface and store every observed packet.",
+    "interface": "",
+    "network": "0.0.0.0/0",
+    "proto": "all",
+    "port_mode": "preset",
+    "port_start": 0,
+    "port_end": 0
+  },
+  {
+    "id": "loopback",
+    "name": "Loopback",
+    "description": "Useful local-development preset.",
+    "interface": "lo",
+    "network": "127.0.0.0/8",
+    "proto": "tcp",
+    "port_mode": "preset",
+    "port_start": 0,
+    "port_end": 0
+  }
+]

@@ -1,0 +1,62 @@
+site_name: Sniff4Hound Docs
+site_description: Documentacion oficial de Sniff4Hound
+site_author: JorgelSC Dev
+site_url: https://porthound.jorgelsc.dev/docs/
+repo_url: https://github.com/jorgelsc-dev/Sniff4Hound
+repo_name: Sniff4Hound
+edit_uri: edit/main/docs/
+
+nav:
+  - Inicio: index.md
+  - Empezar: getting-started.md
+  - Arquitectura: architecture.md
+  - Gobernanza: governance.md
+  - Ramas y flujo: BRANCHING.md
+  - Ayuda:
+      - Resumen: help/index.md
+      - Modos: help/modes.md
+      - Consola interactiva: help/console.md
+  - Referencia:
+      - Resumen: reference/index.md
+      - Runtime: reference/runtime.md
+      - Auth: reference/auth.md
+      - Persistencia SQLite: reference/persistence.md
+      - API y WS: reference/api.md
+
+theme:
+  name: material
+  language: es
+  logo: assets/logo.png
+  favicon: assets/favicon.png
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.tabs.link
+  palette:
+    - scheme: slate
+      primary: cyan
+      accent: deep purple
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+extra_css:
+  - assets/stylesheets/extra.css

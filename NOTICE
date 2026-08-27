@@ -1,0 +1,32 @@
+Sniff4Hound Notice
+
+Copyright (c) 2026 JorgelSC Dev
+
+This repository's source code is licensed under the MIT License in LICENSE unless
+a file states otherwise.
+
+Important limits and protections:
+
+1. Trademark and project identity
+   The MIT license does not grant trademark rights. The names "Sniff4Hound",
+   "JorgelSC Dev", the official project logos, and the official domain
+   "porthound.jorgelsc.dev" remain reserved to the project owner except where
+   separate written permission says otherwise.
+
+2. Attribution and notices
+   Existing copyright, attribution, and license notices must be preserved in
+   redistributed or modified copies where the license requires them.
+
+3. Contribution provenance
+   By contributing, submitters represent that they authored the contribution or
+   have the legal right to submit it under this repository's license terms.
+   Human-authored commits are expected to carry a Signed-off-by trailer, and pull
+   requests are expected to disclose AI assistance or third-party material.
+
+4. No endorsement by default
+   Reuse of code permitted by the license must not imply official endorsement,
+   sponsorship, or origin from the maintainer unless the maintainer explicitly
+   says so.
+
+This notice strengthens repository hygiene and attribution clarity. It is not a
+substitute for jurisdiction-specific legal advice.

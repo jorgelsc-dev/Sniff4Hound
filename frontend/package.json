@@ -1,0 +1,42 @@
+{
+  "name": "sniff4hound",
+  "version": "1.0.0",
+  "private": true,
+  "author": "",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "serve": "vite",
+    "build": "vite build --configLoader runner",
+    "preview": "vite preview",
+    "lint": "eslint . --ext .js,.vue --max-warnings=0",
+    "test": "npm run lint"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "@mdi/font": "^7.4.47",
+    "vue": "^3.5.40",
+    "vue-router": "^5.2.0",
+    "vuetify": "^4.1.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "eslint": "^10.8.0",
+    "eslint-plugin-vue": "^10.10.0",
+    "globals": "^17.8.0",
+    "vite": "^8.2.0",
+    "vite-plugin-vuetify": "^2.1.3"
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions",
+    "not dead",
+    "not ie 11"
+  ],
+  "_id": "sniff4hound@1.0.0",
+  "license": "ISC",
+  "readme": "ERROR: No README data found!"
+}

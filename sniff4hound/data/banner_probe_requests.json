@@ -1,0 +1,20 @@
+[
+  {
+    "id": "http-get",
+    "name": "HTTP GET",
+    "description": "Common HTTP request pattern for live payload previews.",
+    "enabled": true,
+    "priority": 10,
+    "match": {"protocols": ["tcp"], "payload_contains": ["GET "]},
+    "action": {"tag": "http-get", "label": "HTTP GET", "severity": "low"}
+  },
+  {
+    "id": "http-post",
+    "name": "HTTP POST",
+    "description": "Common HTTP POST payload pattern.",
+    "enabled": true,
+    "priority": 11,
+    "match": {"protocols": ["tcp"], "payload_contains": ["POST "]},
+    "action": {"tag": "http-post", "label": "HTTP POST", "severity": "low"}
+  }
+]

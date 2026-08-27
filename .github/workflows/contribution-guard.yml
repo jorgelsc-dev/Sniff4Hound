@@ -1,0 +1,123 @@
+name: contribution-guard
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  provenance:
+    name: Authorship and provenance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base ref
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+
+      - name: Validate human commit sign-off
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "This workflow currently validates pull requests only."
+            exit 0
+          fi
+
+          if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::Head commit ${HEAD_SHA} is not available in the local checkout."
+            exit 1
+          fi
+
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "::warning::Base commit ${BASE_SHA} is not available locally, falling back to origin/${BASE_REF}."
+            BASE_SHA="$(git rev-parse "origin/${BASE_REF}")"
+          fi
+
+          merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          range="${merge_base}..${HEAD_SHA}"
+
+          echo "Validating commit sign-off on first-parent non-merge commits in range: ${range}"
+
+          mapfile -t commits < <(git rev-list --first-parent --no-merges "$range")
+
+          if [[ "${#commits[@]}" -eq 0 ]]; then
+            echo "No commits to validate."
+            exit 0
+          fi
+
+          failed=0
+
+          for sha in "${commits[@]}"; do
+            if git merge-base --is-ancestor "$sha" "$BASE_SHA"; then
+              echo "Skipping commit already reachable from base: $sha"
+              continue
+            fi
+
+            author="$(git show -s --format='%an' "$sha")"
+            email="$(git show -s --format='%ae' "$sha")"
+            body="$(git show -s --format='%B' "$sha")"
+
+            if [[ "$author" == *"[bot]"* || "$email" == *"[bot]"* ]]; then
+              echo "Skipping bot commit $sha ($author <$email>)."
+              continue
+            fi
+
+            if ! grep -Eiq '^Signed-off-by:[[:space:]]+.+<.+>$' <<< "$body"; then
+              echo "::error::Commit $sha by $author <$email> is missing a Signed-off-by trailer. Use 'git commit -s' or 'git rebase --signoff'."
+              failed=1
+            fi
+          done
+
+          exit "$failed"
+
+      - name: Validate PR provenance checklist
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import os
+          import re
+          import sys
+
+          body = os.environ.get("PR_BODY", "")
+          author = os.environ.get("PR_AUTHOR", "")
+          checks = [
+              r"- \[[xX]\] I confirm that I authored these changes or that I have the legal right to submit them under this repository's license\.",
+              r"- \[[xX]\] I preserved existing copyright, attribution, and license notices and added new notices where required\.",
+              r"- \[[xX]\] I disclosed any AI assistance or third-party material and verified that no confidential or non-redistributable content was copied in\.",
+          ]
+
+          if author.endswith("[bot]"):
+              print(f"Skipping provenance checklist for bot PR author: {author}")
+              raise SystemExit(0)
+
+          if not body.strip():
+              print("::error::Pull request body is required.")
+              sys.exit(1)
+
+          missing = [pattern for pattern in checks if not re.search(pattern, body, re.IGNORECASE)]
+          if missing:
+              print("::error::Pull request provenance checklist is incomplete.")
+              sys.exit(1)
+
+          print("Pull request provenance checklist is complete.")
+          PY

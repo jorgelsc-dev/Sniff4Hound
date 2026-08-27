@@ -1,0 +1,66 @@
+[
+  {
+    "id": "builtin-arp",
+    "name": "ARP discovery",
+    "description": "Layer 2 ARP packets and address resolution chatter.",
+    "enabled": true,
+    "priority": 10,
+    "source": "builtin",
+    "match": {"eth_types": [2054]},
+    "action": {"tag": "arp", "label": "ARP", "severity": "info"}
+  },
+  {
+    "id": "builtin-ipv6",
+    "name": "IPv6 traffic",
+    "description": "Any IPv6 frame, including neighbor discovery and extension headers.",
+    "enabled": true,
+    "priority": 20,
+    "source": "builtin",
+    "match": {"ip_versions": [6]},
+    "action": {"tag": "ipv6", "label": "IPv6", "severity": "info"}
+  },
+  {
+    "id": "builtin-dns",
+    "name": "DNS telemetry",
+    "description": "DNS queries and responses over UDP/TCP port 53.",
+    "enabled": true,
+    "priority": 30,
+    "source": "builtin",
+    "match": {"protocols": ["udp", "tcp"], "ports": [53]},
+    "action": {"tag": "dns", "label": "DNS", "severity": "low"}
+  },
+  {
+    "id": "builtin-http",
+    "name": "HTTP traffic",
+    "description": "HTTP requests, responses and common web ports.",
+    "enabled": true,
+    "priority": 40,
+    "source": "builtin",
+    "match": {
+      "protocols": ["tcp"],
+      "ports": [80, 8080, 8000, 8888, 5000, 3000],
+      "payload_contains": ["GET ", "POST ", "HEAD ", "HTTP/1.", "PUT ", "DELETE "]
+    },
+    "action": {"tag": "http", "label": "HTTP", "severity": "medium"}
+  },
+  {
+    "id": "builtin-tls",
+    "name": "TLS handshake",
+    "description": "TLS client/server handshakes and common secure web ports.",
+    "enabled": true,
+    "priority": 50,
+    "source": "builtin",
+    "match": {"protocols": ["tcp"], "ports": [443, 8443, 9443], "payload_prefix_hex": ["16"]},
+    "action": {"tag": "tls", "label": "TLS", "severity": "medium"}
+  },
+  {
+    "id": "builtin-icmp",
+    "name": "ICMP telemetry",
+    "description": "Echo, destination unreachable and other ICMP messages.",
+    "enabled": true,
+    "priority": 60,
+    "source": "builtin",
+    "match": {"protocols": ["icmp", "icmpv6"]},
+    "action": {"tag": "icmp", "label": "ICMP", "severity": "info"}
+  }
+]

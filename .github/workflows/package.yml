@@ -1,0 +1,124 @@
+name: Package Debian
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  deb-package:
+    name: Build Debian package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm run build
+
+      - name: Build Debian package
+        run: ./scripts/build_deb.sh
+
+      - name: Show package metadata
+        run: dpkg-deb --info "$(find dist -maxdepth 1 -type f -name '*.deb' ! -name '*_latest.deb' | head -n 1)"
+
+      - name: Resolve artifact metadata
+        id: artifact_meta
+        run: |
+          VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(pyproject["project"]["version"])
+          PY
+          )"
+          # Deliberately skips the unversioned sniff4hound_latest.deb copy:
+          # the release notes and artifact name must name the real version.
+          DEB_FILE="$(basename "$(find dist -maxdepth 1 -type f -name '*.deb' ! -name '*_latest.deb' | head -n 1)")"
+          ARCH="$(dpkg-deb -f "dist/${DEB_FILE}" Architecture)"
+          echo "name=sniff4hound-deb-${VERSION}-${ARCH}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "arch=${ARCH}" >> "${GITHUB_OUTPUT}"
+          echo "deb_file=${DEB_FILE}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=v${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "release_name=Sniff4Hound ${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload Debian artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact_meta.outputs.name }}
+          path: |
+            dist/*.deb
+            dist/*.deb.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish Debian release asset
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/sniff4hound-release-notes.txt <<EOF
+          Debian package release for Sniff4Hound ${{ steps.artifact_meta.outputs.version }} (${{ steps.artifact_meta.outputs.arch }}).
+
+          Download the .deb asset from this release and install or update with:
+
+            sudo apt install ./${{ steps.artifact_meta.outputs.deb_file }}
+
+          Or always fetch the newest release from this permanent URL:
+
+            curl -fL -o sniff4hound_latest.deb \\
+              https://github.com/${{ github.repository }}/releases/latest/download/sniff4hound_latest.deb
+            sudo apt install ./sniff4hound_latest.deb
+          EOF
+
+          if gh release view "${{ steps.artifact_meta.outputs.release_tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "${{ steps.artifact_meta.outputs.release_tag }}" \
+              dist/*.deb \
+              dist/*.deb.sha256 \
+              --repo "${{ github.repository }}" \
+              --clobber
+            # The permanent /releases/latest/download/ URL only resolves to
+            # this release while GitHub marks it "latest" - re-assert it on
+            # the re-upload path too, not just on first creation below.
+            gh release edit "${{ steps.artifact_meta.outputs.release_tag }}" \
+              --repo "${{ github.repository }}" \
+              --latest
+          else
+            gh release create "${{ steps.artifact_meta.outputs.release_tag }}" \
+              dist/*.deb \
+              dist/*.deb.sha256 \
+              --repo "${{ github.repository }}" \
+              --target "${{ github.sha }}" \
+              --title "${{ steps.artifact_meta.outputs.release_name }}" \
+              --notes-file /tmp/sniff4hound-release-notes.txt \
+              --latest
+          fi
