@@ -41,3 +41,17 @@ updates:
       - "dependencies"
       - "frontend"
     open-pull-requests-limit: 10
+
+  - package-ecosystem: "npm"
+    directory: "/landing"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:45"
+      timezone: "UTC"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "landing"
+    open-pull-requests-limit: 10
