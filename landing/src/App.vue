@@ -9,10 +9,7 @@
       class="brand"
       href="/"
     >
-      <span
-        class="brand__mark"
-        aria-hidden="true"
-      >🐕</span>
+      <BrandMark class="brand__mark" />
       <span class="brand__name">Sniff4Hound</span>
     </a>
     <nav
@@ -134,6 +131,8 @@
 </template>
 
 <script setup>
+import BrandMark from "./components/BrandMark.vue";
+
 const repo = "https://github.com/jorgelsc-dev/Sniff4Hound";
 
 const stats = [

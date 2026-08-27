@@ -55,7 +55,7 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospac
 }
 
 .brand { display: flex; align-items: center; gap: 10px; color: var(--text); }
-.brand__mark { font-size: 1.5rem; }
+.brand__mark { --brand-mark-size: 30px; }
 .brand__name { font-weight: 700; letter-spacing: 0.01em; }
 
 .topnav { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
