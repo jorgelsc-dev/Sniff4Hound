@@ -574,7 +574,9 @@ import DataPanel from "../components/ui/DataPanel.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import { formatTimestamp } from "../utils/traffic";
 
-const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
+// Cadence and page size for /ws/soc, matching the previous polling.
+const FEED_REFRESH_MS = 10000;
+const FEED_LIMIT = 2000;
 const SEVERITY_ORDER = new Map([
   ["high", 0],
   ["medium", 1],
@@ -636,8 +638,7 @@ export default {
       activeCycleId: 4,
       analysis: {},
       loadSequence: 0,
-      wsRefreshTimer: null,
-      stopTableRefreshSubscription: null,
+      feedHandle: null,
       cycleOptions: [
         { value: 1, label: "1 pass" },
         { value: 2, label: "2 passes" },
@@ -913,32 +914,22 @@ export default {
     },
   },
   watch: {
-    apiBase() {
-      this.load();
+    liveRefreshEnabled(value) {
+      if (value) this.openFeed();
+      else this.closeFeed();
     },
     cyclesRequested() {
-      this.load();
+      this.openFeed();
     },
-    liveRefreshEnabled(value) {
-      if (!value && this.wsRefreshTimer) {
-        clearTimeout(this.wsRefreshTimer);
-        this.wsRefreshTimer = null;
-      }
+    apiBase() {
+      this.openFeed();
     },
   },
   mounted() {
-    this.load();
-    this.stopTableRefreshSubscription = this.store.subscribeTableRefresh(this.handleWsRefresh);
+    this.openFeed();
   },
   beforeUnmount() {
-    if (this.wsRefreshTimer) {
-      clearTimeout(this.wsRefreshTimer);
-      this.wsRefreshTimer = null;
-    }
-    if (typeof this.stopTableRefreshSubscription === "function") {
-      this.stopTableRefreshSubscription();
-      this.stopTableRefreshSubscription = null;
-    }
+    this.closeFeed();
   },
   methods: {
     formatTimestamp,
@@ -1004,18 +995,50 @@ export default {
     cycleSeverityColor(cycle) {
       return this.severityColor(this.cycleHighestSeverity(cycle));
     },
-    handleWsRefresh(event) {
-      if (!this.liveRefreshEnabled) return;
-      const eventType = String((event && event.type) || "").trim().toLowerCase();
-      if (!REFRESH_EVENT_TYPES.has(eventType)) return;
-      if (this.wsRefreshTimer) return;
-      this.wsRefreshTimer = setTimeout(() => {
-        this.wsRefreshTimer = null;
-        this.load({ silent: true }).catch(() => {
-          // Keep the current SOC view on transient refresh failures.
-        });
-      }, 10000);
+    // /ws/soc carries the same analysis /api/soc/analysis/ returned, pushed at
+    // the interval in its URL.
+    openFeed() {
+      this.closeFeed();
+      this.loading = true;
+      this.feedHandle = this.store.openDataFeed(
+        "soc",
+        {
+          cycles: Number.parseInt(this.cyclesRequested, 10) || 4,
+          limit: FEED_LIMIT,
+          refresh: FEED_REFRESH_MS,
+        },
+        (payload) => this.applyFeed(payload),
+        () => {
+          this.load({ silent: true }).catch(() => null);
+        },
+      );
     },
+    closeFeed() {
+      if (this.feedHandle) {
+        this.feedHandle.close();
+        this.feedHandle = null;
+      }
+    },
+    applyFeed(payload) {
+      if (payload && payload.type === "feed_error") {
+        this.error = payload.message || "The SOC stream stopped updating";
+        this.loading = false;
+        return;
+      }
+      if (!payload || payload.type !== "feed_data") return;
+      this.analysis = payload.data || {};
+      this.lastUpdated = this.analysis.generated_at
+        ? formatTimestamp(this.analysis.generated_at)
+        : new Date().toLocaleTimeString();
+      if (!this.cycles.length) {
+        this.activeCycleId = 1;
+      } else if (!this.cycles.some((cycle) => Number(cycle.id || 0) === Number(this.activeCycleId || 0))) {
+        this.activeCycleId = this.cycles[this.cycles.length - 1].id;
+      }
+      this.error = "";
+      this.loading = false;
+    },
+    // Kept as the single-shot fallback for when the stream cannot serve.
     async load(options = {}) {
       const loadSeq = ++this.loadSequence;
       const requestedCycles = Number.parseInt(this.cyclesRequested, 10) || 4;

@@ -255,7 +255,9 @@ import {
   uniqueSorted,
 } from "../utils/traffic";
 
-const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
+// Cadence for /ws/ports, in milliseconds. Matches what the view used to poll
+// at, so the perceived refresh rate is unchanged; only the transport is.
+const FEED_REFRESH_MS = 10000;
 
 export default {
   name: "SnifferView",
@@ -298,8 +300,7 @@ export default {
         { key: "detail", label: "Signal" },
         { key: "summary", label: "Summary" },
       ],
-      wsRefreshTimer: null,
-      stopTableRefreshSubscription: null,
+      feedHandle: null,
     };
   },
   computed: {
@@ -447,28 +448,27 @@ export default {
   },
   watch: {
     apiBase() {
-      this.load();
+      this.openFeed();
+    },
+    packetLimit() {
+      // Reconfiguring means a new socket: the parameters live in the URL, so
+      // the running one describes the old slice and cannot be re-pointed.
+      this.openFeed();
     },
     liveRefreshEnabled(value) {
-      if (!value && this.wsRefreshTimer) {
-        clearTimeout(this.wsRefreshTimer);
-        this.wsRefreshTimer = null;
-      }
+      // The panel's live toggle now controls the stream itself. Leaving the
+      // socket open while the switch says "off" would keep the server running
+      // its query for a view that is telling the user it stopped.
+      if (value) this.openFeed();
+      else this.closeFeed();
     },
   },
   mounted() {
-    this.load();
-    this.stopTableRefreshSubscription = this.store.subscribeTableRefresh(this.handleWsRefresh);
+    this.store.initRuntime();
+    this.openFeed();
   },
   beforeUnmount() {
-    if (this.wsRefreshTimer) {
-      clearTimeout(this.wsRefreshTimer);
-      this.wsRefreshTimer = null;
-    }
-    if (typeof this.stopTableRefreshSubscription === "function") {
-      this.stopTableRefreshSubscription();
-      this.stopTableRefreshSubscription = null;
-    }
+    this.closeFeed();
   },
   methods: {
     buildPacketDetail,
@@ -490,17 +490,44 @@ export default {
       if (state === "closed") return "error";
       return "secondary";
     },
-    handleWsRefresh(event) {
-      if (!this.liveRefreshEnabled) return;
-      const eventType = String((event && event.type) || "").trim().toLowerCase();
-      if (!REFRESH_EVENT_TYPES.has(eventType)) return;
-      if (this.wsRefreshTimer) return;
-      this.wsRefreshTimer = setTimeout(() => {
-        this.wsRefreshTimer = null;
-        this.load({ silent: true }).catch(() => {
-          // keep the current table on transient refresh errors
-        });
-      }, 10000);
+    // The table is fed by its own websocket now: /ws/ports carries the same
+    // rows /ports/ returned, pushed at the interval in its URL. The view used
+    // to re-issue the whole HTTP read on every websocket "something changed"
+    // event, which is the polling this replaces.
+    openFeed() {
+      this.closeFeed();
+      this.loading = true;
+      this.feedHandle = this.store.openDataFeed(
+        "ports",
+        { mode: "sniffer", limit: this.packetLimit, refresh: FEED_REFRESH_MS },
+        (payload) => this.applyFeed(payload),
+        // Only when the stream cannot serve: no socket, or one that never
+        // delivered a first frame. A single read, not a resumed poll.
+        () => {
+          this.load({ silent: true }).catch(() => null);
+        },
+      );
+    },
+    closeFeed() {
+      if (this.feedHandle) {
+        this.feedHandle.close();
+        this.feedHandle = null;
+      }
+    },
+    applyFeed(payload) {
+      if (payload && payload.type === "feed_error") {
+        this.error = payload.message || "The sniffer stream stopped updating";
+        this.loading = false;
+        return;
+      }
+      if (!payload || payload.type !== "feed_data") return;
+      const { rows, meta } = this.store.feedListResult(payload);
+      this.packets = rows;
+      this.packetsMeta = meta;
+      this.error = "";
+      this.syncFilters();
+      this.lastUpdated = new Date().toLocaleTimeString();
+      this.loading = false;
     },
     loadMorePackets() {
       this.packetLimit = Math.min(this.packetLimit + 1000, 20000);

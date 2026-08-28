@@ -267,6 +267,10 @@ import {
   uniqueSorted,
 } from "../utils/traffic";
 
+// Cadence and page size for /ws/targets.
+const FEED_REFRESH_MS = 10000;
+const FEED_LIMIT = 500;
+
 export default {
   name: "TargetsView",
   components: {
@@ -369,12 +373,20 @@ export default {
     },
   },
   watch: {
+    liveRefreshEnabled(value) {
+      if (value) this.openFeed();
+      else this.closeFeed();
+    },
     apiBase() {
-      this.load();
+      this.openFeed();
     },
   },
   mounted() {
-    this.load();
+    this.loadProtocolsOnce();
+    this.openFeed();
+  },
+  beforeUnmount() {
+    this.closeFeed();
   },
   methods: {
     syncFilters() {
@@ -467,6 +479,56 @@ export default {
       const unique = [...new Set(items.map((item) => String(item).trim().toLowerCase()))];
       return unique.filter(Boolean);
     },
+    // /ws/targets carries the sessions table. The protocol list stays on HTTP
+    // and is read once: it is the set of protocols the sniffer can emit, not
+    // telemetry, so re-sending it every tick would deliver the same list again.
+    openFeed() {
+      this.closeFeed();
+      this.loading = true;
+      this.feedHandle = this.store.openDataFeed(
+        "targets",
+        { limit: FEED_LIMIT, refresh: FEED_REFRESH_MS },
+        (payload) => this.applyFeed(payload),
+        () => {
+          this.load().catch(() => null);
+        },
+      );
+    },
+    closeFeed() {
+      if (this.feedHandle) {
+        this.feedHandle.close();
+        this.feedHandle = null;
+      }
+    },
+    applyFeed(payload) {
+      if (payload && payload.type === "feed_error") {
+        this.error = payload.message || "The sessions stream stopped updating";
+        this.loading = false;
+        return;
+      }
+      if (!payload || payload.type !== "feed_data") return;
+      this.targets = this.store.feedListResult(payload).rows;
+      this.error = "";
+      this.syncFilters();
+      this.lastUpdated = new Date().toLocaleTimeString();
+      this.loading = false;
+    },
+    loadProtocolsOnce() {
+      return this.store
+        .fetchJsonPromise("/protocols/")
+        .then((payload) => {
+          this.protos = this.normalizeProtocols(payload);
+        })
+        .catch(() => {
+          this.protos = [];
+        })
+        .finally(() => {
+          if (!this.protos.length) this.protos = ["tcp", "udp", "icmp", "sctp"];
+          if (!this.protos.includes(this.form.proto)) this.form.proto = this.protos[0];
+          this.syncFilters();
+        });
+    },
+    // Kept as the single-shot fallback for when the stream cannot serve.
     load() {
       this.loading = true;
       this.error = "";

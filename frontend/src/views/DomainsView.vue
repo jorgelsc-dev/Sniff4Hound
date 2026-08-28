@@ -72,7 +72,9 @@ const DOMAIN_SOURCE_LABELS = {
   tls_sni: "TLS SNI",
   http_host: "HTTP Host",
 };
-const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
+// Cadence and page size for the stream, matching the previous polling.
+const FEED_REFRESH_MS = 10000;
+const FEED_LIMIT = 500;
 
 export default {
   name: "DomainsView",
@@ -89,8 +91,7 @@ export default {
       lastUpdated: "",
       domains: [],
       liveRefreshEnabled: true,
-      wsRefreshTimer: null,
-      stopTableRefreshSubscription: null,
+      feedHandle: null,
       columns: [
         { key: "name", label: "Domain" },
         { key: "source", label: "Source" },
@@ -133,18 +134,10 @@ export default {
     },
   },
   mounted() {
-    this.load();
-    this.stopTableRefreshSubscription = this.store.subscribeTableRefresh(this.handleWsRefresh);
+    this.openFeed();
   },
   beforeUnmount() {
-    if (this.wsRefreshTimer) {
-      clearTimeout(this.wsRefreshTimer);
-      this.wsRefreshTimer = null;
-    }
-    if (typeof this.stopTableRefreshSubscription === "function") {
-      this.stopTableRefreshSubscription();
-      this.stopTableRefreshSubscription = null;
-    }
+    this.closeFeed();
   },
   methods: {
     formatTimestamp,
@@ -157,18 +150,40 @@ export default {
       if (value === "http_host") return "primary";
       return "secondary";
     },
-    handleWsRefresh(event) {
-      if (!this.liveRefreshEnabled) return;
-      const eventType = String((event && event.type) || "").trim().toLowerCase();
-      if (!REFRESH_EVENT_TYPES.has(eventType)) return;
-      if (this.wsRefreshTimer) return;
-      this.wsRefreshTimer = setTimeout(() => {
-        this.wsRefreshTimer = null;
-        this.load({ silent: true }).catch(() => {
-          // keep current data on transient refresh errors
-        });
-      }, 10000);
+    // /ws/domains carries the same rows the HTTP listing returned, pushed at
+    // the interval in its URL. This view used to re-issue the whole read on
+    // every websocket "something changed" event.
+    openFeed() {
+      this.closeFeed();
+      this.loading = true;
+      this.feedHandle = this.store.openDataFeed(
+        "domains",
+        { limit: FEED_LIMIT, refresh: FEED_REFRESH_MS },
+        (payload) => this.applyFeed(payload),
+        () => {
+          this.load({ silent: true }).catch(() => null);
+        },
+      );
     },
+    closeFeed() {
+      if (this.feedHandle) {
+        this.feedHandle.close();
+        this.feedHandle = null;
+      }
+    },
+    applyFeed(payload) {
+      if (payload && payload.type === "feed_error") {
+        this.error = payload.message || "The domains stream stopped updating";
+        this.loading = false;
+        return;
+      }
+      if (!payload || payload.type !== "feed_data") return;
+      this.domains = this.store.feedListResult(payload).rows;
+      this.error = "";
+      this.lastUpdated = new Date().toLocaleTimeString();
+      this.loading = false;
+    },
+    // Kept as the single-shot fallback for when the stream cannot serve.
     load(options = {}) {
       if (!options.silent) this.loading = true;
       this.error = "";
