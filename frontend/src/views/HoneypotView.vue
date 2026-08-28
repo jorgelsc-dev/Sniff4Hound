@@ -257,8 +257,8 @@ import {
   uniqueSorted,
 } from "../utils/traffic";
 
-// Cadence for both honeypot streams, matching the previous polling.
-const FEED_REFRESH_MS = 10000;
+// Cadence for the stream, in milliseconds.
+const FEED_REFRESH_MS = 1000;
 
 export default {
   name: "HoneypotView",

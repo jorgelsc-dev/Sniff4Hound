@@ -490,9 +490,17 @@ WS_AUTH_CLOSE_CODE = 4401
 # the whole filtered set, so an unbounded interval lets any authenticated
 # client pin the database by asking for zero. The ceiling keeps a forgotten
 # tab from holding a subscription that never fires.
-WS_SNAPSHOT_MIN_INTERVAL_SECONDS = 2.0
+#
+# Measured at one second, against a 5000-packet database: most feeds answer in
+# under 35 ms, but `soc` takes ~243 ms and `analytics` ~104 ms. Deliveries run
+# on one shared thread, so a client watching SOC occupies roughly a quarter of
+# it continuously - which is fine for the single-operator tool this is, and
+# would not be for a shared deployment with many dashboards open. Payload size
+# matters too: the protocols slice is ~650 KB, so a one-second cadence is
+# ~650 KB/s down that socket.
+WS_SNAPSHOT_MIN_INTERVAL_SECONDS = 1.0
 WS_SNAPSHOT_MAX_INTERVAL_SECONDS = 300.0
-WS_SNAPSHOT_DEFAULT_INTERVAL_SECONDS = 10.0
+WS_SNAPSHOT_DEFAULT_INTERVAL_SECONDS = 1.0
 # How often the pusher wakes to look for due subscriptions. Finer than the
 # minimum interval so the delivery jitter stays below a second.
 WS_SNAPSHOT_TICK_SECONDS = 0.5

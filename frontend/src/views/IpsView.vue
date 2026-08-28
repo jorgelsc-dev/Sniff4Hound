@@ -107,8 +107,8 @@ import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import ChartCard from "../components/ui/ChartCard.vue";
 import { formatTimestamp, topSeriesByValue } from "../utils/traffic";
 
-// Cadence and page size for /ws/ipcatalog, matching the previous polling.
-const FEED_REFRESH_MS = 10000;
+// Cadence for the stream, in milliseconds.
+const FEED_REFRESH_MS = 1000;
 const FEED_LIMIT = 500;
 
 // Mirrors store.IP_SCOPES. "local" is the backend's name for loopback; it is

@@ -255,9 +255,8 @@ import {
   uniqueSorted,
 } from "../utils/traffic";
 
-// Cadence for /ws/ports, in milliseconds. Matches what the view used to poll
-// at, so the perceived refresh rate is unchanged; only the transport is.
-const FEED_REFRESH_MS = 10000;
+// Cadence for the stream, in milliseconds.
+const FEED_REFRESH_MS = 1000;
 
 export default {
   name: "SnifferView",
