@@ -13,7 +13,9 @@ from sniff4hound.protocol_facets import (
     extract_details,
     facet_expression,
     facet_present_predicate,
+    PROTOCOL_ROW_COLUMNS,
     resolve_facets,
+    resolve_row_columns,
 )
 from sniff4hound.utils import KNOWN_PROTOCOLS
 from sniff4hound.store import SniffStore
@@ -92,6 +94,91 @@ class ProtocolCoverageTests(unittest.TestCase):
     def test_no_protocol_resolves_to_an_empty_table_set(self):
         for proto in KNOWN_PROTOCOLS:
             self.assertTrue(resolve_facets(proto), f"{proto} resolves to no facets at all")
+
+
+class RowColumnTests(unittest.TestCase):
+    def test_every_declared_column_survives_resolution(self):
+        # A key that is neither a column nor a detail key is dropped silently,
+        # so a typo would remove a column from the table rather than fail.
+        for proto, columns in PROTOCOL_ROW_COLUMNS.items():
+            resolved = {key for key, _label in resolve_row_columns(proto)}
+            dropped = [key for key, _label in columns if key not in resolved]
+            self.assertEqual(dropped, [], f"{proto} declares unusable columns: {dropped}")
+
+    def test_arp_columns_carry_addresses_instead_of_ports(self):
+        # ARP has no ports and no connection state; showing them spent four of
+        # twelve columns on fields that are constant for the whole protocol.
+        keys = {key for key, _label in resolve_row_columns("arp")}
+        self.assertIn("arp_sender_mac", keys)
+        self.assertIn("arp_target_mac", keys)
+        self.assertIn("arp_mac_mismatch", keys)
+        self.assertNotIn("src_port", keys)
+        self.assertNotIn("dst_port", keys)
+
+    def test_an_unknown_protocol_still_gets_a_usable_table(self):
+        keys = {key for key, _label in resolve_row_columns("'; DROP TABLE packets;--")}
+        self.assertIn("src_ip", keys)
+        self.assertIn("summary", keys)
+
+
+class ArpParsingTests(unittest.TestCase):
+    """The ARP payload carries addresses the Ethernet header does not."""
+
+    @staticmethod
+    def _payload(opcode, sender_mac, sender_ip, target_mac, target_ip):
+        import struct
+        return (
+            struct.pack("!HHBBH", 1, 0x0800, 6, 4, opcode)
+            + bytes.fromhex(sender_mac.replace(":", ""))
+            + bytes(int(part) for part in sender_ip.split("."))
+            + bytes.fromhex(target_mac.replace(":", ""))
+            + bytes(int(part) for part in target_ip.split("."))
+        )
+
+    def _parse(self, eth_src, **kwargs):
+        from sniff4hound.sniffer import Sniffer
+        packet = {"eth_src": eth_src, "eth_dst": "ff:ff:ff:ff:ff:ff", "length": 60}
+        Sniffer._parse_arp(Sniffer.__new__(Sniffer), packet, self._payload(**kwargs))
+        return packet
+
+    def test_the_payload_addresses_are_extracted(self):
+        packet = self._parse(
+            "aa:bb:cc:dd:ee:01",
+            opcode=1, sender_mac="aa:bb:cc:dd:ee:01", sender_ip="192.168.15.10",
+            target_mac="00:00:00:00:00:00", target_ip="192.168.15.1",
+        )
+        self.assertEqual(packet["arp_operation"], "request")
+        self.assertEqual(packet["arp_sender_mac"], "aa:bb:cc:dd:ee:01")
+        self.assertEqual(packet["arp_target_mac"], "00:00:00:00:00:00")
+        self.assertEqual(packet["src_ip"], "192.168.15.10")
+        self.assertEqual(packet["dst_ip"], "192.168.15.1")
+        self.assertEqual(packet["arp_hardware_type"], "Ethernet")
+
+    def test_a_matching_frame_and_payload_raise_no_mismatch(self):
+        packet = self._parse(
+            "aa:bb:cc:dd:ee:01",
+            opcode=1, sender_mac="aa:bb:cc:dd:ee:01", sender_ip="192.168.15.10",
+            target_mac="00:00:00:00:00:00", target_ip="192.168.15.1",
+        )
+        self.assertNotIn("arp_mac_mismatch", packet)
+
+    def test_a_frame_announcing_someone_elses_mac_is_flagged(self):
+        # This is what ARP spoofing looks like on the wire: the frame comes
+        # from one MAC while the payload announces another host's.
+        packet = self._parse(
+            "de:ad:be:ef:00:99",
+            opcode=2, sender_mac="aa:bb:cc:dd:ee:01", sender_ip="192.168.15.1",
+            target_mac="aa:bb:cc:dd:ee:02", target_ip="192.168.15.10",
+        )
+        self.assertIn("arp_mac_mismatch", packet)
+        self.assertIn("de:ad:be:ef:00:99", packet["arp_mac_mismatch"])
+        self.assertIn("aa:bb:cc:dd:ee:01", packet["arp_mac_mismatch"])
+
+    def test_a_truncated_frame_does_not_raise(self):
+        from sniff4hound.sniffer import Sniffer
+        packet = {"eth_src": "aa:bb:cc:dd:ee:01", "length": 20}
+        Sniffer._parse_arp(Sniffer.__new__(Sniffer), packet, b"\x00" * 10)
+        self.assertEqual(packet["proto"], "arp")
 
 
 class PresencePredicateTests(unittest.TestCase):
@@ -244,6 +331,31 @@ class DetailFacetPersistenceTests(unittest.TestCase):
         )
         # The unresolved query is not charted as an answer, but is still counted.
         self.assertEqual(_facet(snapshot, "dns_answer")["missing"], 1)
+
+    def test_row_details_are_lifted_to_top_level_fields(self):
+        # The table reads row[column.key]; making the client parse a nested
+        # JSON blob to render a declared column would be a trap.
+        self.store.register_packet({
+            "proto": "arp", "src_ip": "192.168.15.10", "dst_ip": "192.168.15.1",
+            "eth_src": "de:ad:be:ef:00:99", "length": 60, "arp_opcode": 2,
+            "arp_operation": "reply", "arp_sender_mac": "aa:bb:cc:dd:ee:01",
+            "arp_target_mac": "aa:bb:cc:dd:ee:02",
+            "arp_mac_mismatch": "de:ad:be:ef:00:99 announces aa:bb:cc:dd:ee:01",
+        })
+        snapshot = self.store.protocol_snapshot(proto="arp")
+        row = snapshot["packets"][0]
+        self.assertEqual(row["arp_sender_mac"], "aa:bb:cc:dd:ee:01")
+        self.assertEqual(row["arp_operation"], "reply")
+        # And every column the snapshot declares must be readable off the row.
+        for column in snapshot["columns"]:
+            self.assertIn(column["key"], row, f"column {column['key']} is not on the row")
+
+    def test_the_snapshot_declares_the_protocols_own_columns(self):
+        self.store.register_packet({"proto": "arp", "src_ip": "10.0.0.1",
+                                    "dst_ip": "10.0.0.2", "length": 60})
+        keys = [c["key"] for c in self.store.protocol_snapshot(proto="arp")["columns"]]
+        self.assertIn("arp_sender_mac", keys)
+        self.assertNotIn("src_port", keys)
 
     def test_details_are_scoped_to_the_protocol_being_asked_about(self):
         self._http(http_server="nginx/1.24.0")

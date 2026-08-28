@@ -16,11 +16,13 @@ from . import ip_registry
 from .runtime_paths import ensure_data_dir, resolve_data_file
 from .monitors import builtin_monitor_seed_fields, describe_match, normalize_monitor
 from .protocol_facets import (
+    DETAIL_KEYS,
     extract_details,
     facet_expression,
     facet_present_predicate,
     label_value,
     resolve_facets,
+    resolve_row_columns,
 )
 from .rulesets import load_builtin_rulesets, normalize_ruleset
 from .settings import (
@@ -106,6 +108,26 @@ def _sqlite_text_factory(value):
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).decode("utf-8", errors="replace")
     return str(value)
+
+
+def _flatten_packet_details(row: dict) -> dict:
+    """A packet row with its decoder extras lifted to top-level keys.
+
+    The extras are stored as one JSON column so the schema does not need a
+    column per protocol, but a client should not have to parse a nested blob
+    to read a field the table is asked to display. Only whitelisted keys are
+    lifted, so a malformed or hand-edited blob cannot introduce arbitrary
+    field names. `raw_packet` is dropped here too: it is every captured byte,
+    which the Investigate view fetches per packet and a 250-row listing must
+    never carry.
+    """
+    packet = {key: value for key, value in row.items() if key != "raw_packet"}
+    details = json_loads(packet.get("details_json") or "{}", {}) or {}
+    if isinstance(details, dict):
+        for key, value in details.items():
+            if key in DETAIL_KEYS:
+                packet[key] = value
+    return packet
 
 
 def _coerce_json(value, default):
@@ -1413,8 +1435,14 @@ class SniffStore:
             # The raw frame is a BLOB of every captured byte; it is what the
             # Investigate view fetches on demand for one packet, never what a
             # 250-row listing should carry over the socket.
+            # Which columns this protocol is worth showing. Sent with the slice
+            # because the client cannot know it: it is the same per-protocol
+            # decision that picks the facets, and hardcoding one list in the
+            # view is what made an ARP listing spend four columns on ports and
+            # flags that are always empty.
+            "columns": [{"key": key, "label": label} for key, label in resolve_row_columns(proto_name)],
             "packets": [
-                {key: value for key, value in row.items() if key != "raw_packet"}
+                _flatten_packet_details(row)
                 for row in self.list_packets(
                     proto=proto_name, mode=mode, interface=interface, search=search, since=since, limit=int(limit)
                 )
