@@ -381,6 +381,10 @@ import {
 // wrong slice.
 const FALLBACK_SUPPORTED_PROTOCOLS = ALL_PROTOCOLS;
 
+// Matches what the view used to poll at over HTTP, so the perceived refresh
+// cadence is unchanged; only the transport is.
+const SNAPSHOT_STREAM_INTERVAL_SECONDS = 10;
+
 const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
 
 const PROTOCOL_PROFILES = {
@@ -857,6 +861,8 @@ export default {
       bannersMeta: { totalAvailable: null, returned: null, truncated: null },
       tagsMeta: { totalAvailable: null, returned: null, truncated: null },
       wsRefreshTimer: null,
+      snapshotStreamActive: false,
+      stopSnapshotSubscription: null,
       stopTableRefreshSubscription: null,
     };
   },
@@ -1282,13 +1288,29 @@ export default {
     },
     "$route.params.proto"() {
       this.load();
+      // Re-point the stream, which also replaces the previous subscription
+      // server-side rather than leaving it running.
+      this.startSnapshotStream();
     },
   },
   mounted() {
+    // The first paint still comes over HTTP: the socket may not be open yet,
+    // and a blank table while waiting for the first pushed frame would be a
+    // regression against the previous behaviour.
     this.load();
+    this.stopSnapshotSubscription = this.store.subscribeProtocolSnapshot(this.handleSnapshotMessage);
+    this.startSnapshotStream();
     this.stopTableRefreshSubscription = this.store.subscribeTableRefresh(this.handleWsRefresh);
   },
   beforeUnmount() {
+    // Leaving the view has to stop the server-side work too; a subscription
+    // outliving its view is a query running every interval for nobody.
+    this.store.stopProtocolSnapshotStream();
+    this.snapshotStreamActive = false;
+    if (typeof this.stopSnapshotSubscription === "function") {
+      this.stopSnapshotSubscription();
+      this.stopSnapshotSubscription = null;
+    }
     if (this.wsRefreshTimer) {
       clearTimeout(this.wsRefreshTimer);
       this.wsRefreshTimer = null;
@@ -1404,8 +1426,14 @@ export default {
         background: chart.fill,
       };
     },
+    // The slice now arrives over the socket that is already open. This used
+    // to schedule a full HTTP GET of /api/protocols/snapshot/ every ten
+    // seconds per tab - a new connection, a re-authenticated request and an
+    // access-log line each time - to fetch data the server could push.
+    // Kept only as the fallback for when the stream is not running.
     handleWsRefresh(event) {
       if (!this.liveRefreshEnabled) return;
+      if (this.snapshotStreamActive) return;
       const eventType = String((event && event.type) || "").trim().toLowerCase();
       if (!REFRESH_EVENT_TYPES.has(eventType)) return;
       if (this.wsRefreshTimer) return;
@@ -1415,6 +1443,44 @@ export default {
           // Keep current slice on transient refresh errors.
         });
       }, 10000);
+    },
+    startSnapshotStream() {
+      this.snapshotStreamActive = this.store.startProtocolSnapshotStream({
+        proto: this.selectedProtocol,
+        limit: this.packetLimit,
+        interval: SNAPSHOT_STREAM_INTERVAL_SECONDS,
+      });
+      return this.snapshotStreamActive;
+    },
+    handleSnapshotMessage(payload) {
+      if (!payload) return;
+      if (payload.type === "protocol_snapshot_error") {
+        this.error = payload.message || "The protocol stream stopped updating";
+        return;
+      }
+      // A frame for a protocol the view has since navigated away from would
+      // otherwise repaint the table with the previous slice.
+      const expected = String(this.selectedProtocol || "").trim().toLowerCase();
+      const received = String(payload.protocol || "").trim().toLowerCase();
+      if (expected && received && expected !== received) return;
+      if (!payload.snapshot || typeof payload.snapshot !== "object") return;
+      this.applySnapshot(payload.snapshot);
+    },
+    applySnapshot(snapshot) {
+      this.snapshot = snapshot || {};
+      this.packetRows = snapshot.packets || [];
+      this.packetsMeta = {
+        totalAvailable: (snapshot.totals || {}).frames ?? null,
+        returned: (snapshot.packets || []).length,
+        truncated: null,
+      };
+      this.bannerRows = snapshot.banners || [];
+      this.bannersMeta = { totalAvailable: null, returned: this.bannerRows.length, truncated: null };
+      this.tagRows = snapshot.tags || [];
+      this.tagsMeta = { totalAvailable: null, returned: this.tagRows.length, truncated: null };
+      this.lastUpdated = new Date().toLocaleTimeString();
+      this.error = "";
+      this.loading = false;
     },
     loadMore() {
       this.packetLimit = Math.min(this.packetLimit + 1000, 20000);
@@ -1426,57 +1492,21 @@ export default {
       if (!options.silent) this.loading = true;
       this.error = "";
       try {
-
-        const errors = [];
         const selectedProto = this.selectedProtocol;
         // One request for the whole slice. Packets, banners, tags, the
         // per-protocol facets and the counters all come from
         // /api/protocols/snapshot/, where the counters are aggregated over
         // the entire filtered set instead of over the page of rows the
         // browser happened to receive.
-        const [snapshotRes] = await Promise.allSettled([
-          this.store.fetchProtocolSnapshot({ proto: selectedProto, limit: this.packetLimit }),
-        ]);
-        const packetsRes = snapshotRes.status === "fulfilled"
-          ? { status: "fulfilled", value: { rows: snapshotRes.value.packets || [], meta: { totalAvailable: (snapshotRes.value.totals || {}).frames ?? null, returned: (snapshotRes.value.packets || []).length, truncated: null } } }
-          : snapshotRes;
-        const bannersRes = snapshotRes.status === "fulfilled"
-          ? { status: "fulfilled", value: { rows: snapshotRes.value.banners || [], meta: { totalAvailable: null, returned: (snapshotRes.value.banners || []).length, truncated: null } } }
-          : snapshotRes;
-        const tagsRes = snapshotRes.status === "fulfilled"
-          ? { status: "fulfilled", value: { rows: snapshotRes.value.tags || [], meta: { totalAvailable: null, returned: (snapshotRes.value.tags || []).length, truncated: null } } }
-          : snapshotRes;
-        this.snapshot = snapshotRes.status === "fulfilled" ? snapshotRes.value || {} : {};
-
-        if (packetsRes.status === "fulfilled") {
-          this.packetRows = packetsRes.value.rows;
-          this.packetsMeta = packetsRes.value.meta;
-        } else {
-          this.packetRows = [];
-          this.packetsMeta = { totalAvailable: null, returned: null, truncated: null };
-          errors.push((packetsRes.reason && packetsRes.reason.message) || `Failed to load ${selectedProto} packets`);
-        }
-
-        if (bannersRes.status === "fulfilled") {
-          this.bannerRows = bannersRes.value.rows;
-          this.bannersMeta = bannersRes.value.meta;
-        } else {
-          this.bannerRows = [];
-          this.bannersMeta = { totalAvailable: null, returned: null, truncated: null };
-          errors.push((bannersRes.reason && bannersRes.reason.message) || `Failed to load ${selectedProto} banners`);
-        }
-
-        if (tagsRes.status === "fulfilled") {
-          this.tagRows = tagsRes.value.rows;
-          this.tagsMeta = tagsRes.value.meta;
-        } else {
-          this.tagRows = [];
-          this.tagsMeta = { totalAvailable: null, returned: null, truncated: null };
-          errors.push((tagsRes.reason && tagsRes.reason.message) || `Failed to load ${selectedProto} tags`);
-        }
-
-        this.lastUpdated = new Date().toLocaleTimeString();
-        this.error = errors.join(" | ");
+        //
+        // Applied through applySnapshot() so this path and the pushed frames
+        // cannot drift: they render the same payload, and a change to how a
+        // slice is unpacked has one place to happen.
+        const snapshot = await this.store.fetchProtocolSnapshot({
+          proto: selectedProto,
+          limit: this.packetLimit,
+        });
+        this.applySnapshot(snapshot || {});
       } catch (err) {
         this.protocolCatalog = orderProtocols(FALLBACK_SUPPORTED_PROTOCOLS);
         this.snapshot = {};

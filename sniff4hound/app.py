@@ -273,8 +273,66 @@ class WebSocketHub:
                 "connected_at": utc_now(),
                 "last_seen": utc_now(),
                 "ws": ws,
+                # At most one periodic snapshot per client. Replacing rather
+                # than appending is deliberate: a client that navigates
+                # between protocols would otherwise accumulate subscriptions
+                # and multiply the server-side query cost with every hop.
+                "subscription": None,
             }
         return client_id
+
+    def subscribe_snapshot(self, ws, params: dict, interval: float):
+        """Ask for a periodic snapshot on this connection, replacing any prior one."""
+        with self._lock:
+            client = self._clients.get(id(ws))
+            if client is None:
+                return False
+            client["subscription"] = {
+                "params": dict(params),
+                "interval": float(interval),
+                # Due immediately: the first delivery is what replaces the
+                # HTTP round trip the view would otherwise make on mount.
+                "due_at": 0.0,
+            }
+            return True
+
+    def unsubscribe_snapshot(self, ws):
+        with self._lock:
+            client = self._clients.get(id(ws))
+            if client is not None:
+                client["subscription"] = None
+
+    def due_subscriptions(self, now: float) -> list[tuple]:
+        """(ws, params) for every subscription whose interval has elapsed.
+
+        The due time is advanced here, under the lock, so a slow snapshot
+        cannot cause the same client to be picked up twice.
+        """
+        due = []
+        with self._lock:
+            for client in self._clients.values():
+                subscription = client.get("subscription")
+                ws = client.get("ws")
+                if not subscription or ws is None:
+                    continue
+                if subscription["due_at"] > now:
+                    continue
+                subscription["due_at"] = now + subscription["interval"]
+                due.append((ws, dict(subscription["params"])))
+        return due
+
+    def send_to(self, ws, payload: dict) -> bool:
+        """One message to one client. Drops the client if the socket is gone."""
+        try:
+            ws.send_text(_json_text(payload))
+        except Exception:
+            self.unregister(ws)
+            return False
+        with self._lock:
+            client = self._clients.get(id(ws))
+            if client is not None:
+                client["last_seen"] = utc_now()
+        return True
 
     def unregister(self, ws):
         with self._lock:
@@ -425,6 +483,18 @@ def connect_capture_service() -> bool:
 AUTH_SESSION_PATH = "/api/auth/session"
 DOCS_PATHS = ("/docs", "/docs.json")
 WS_AUTH_CLOSE_CODE = 4401
+# Bounds for the periodic snapshot channel. The floor is not a preference:
+# each delivery runs the same aggregate queries the HTTP endpoint does, over
+# the whole filtered set, so an unbounded interval lets any authenticated
+# client pin the database by asking for zero. The ceiling keeps a forgotten
+# tab from holding a subscription that never fires.
+WS_SNAPSHOT_MIN_INTERVAL_SECONDS = 2.0
+WS_SNAPSHOT_MAX_INTERVAL_SECONDS = 300.0
+WS_SNAPSHOT_DEFAULT_INTERVAL_SECONDS = 10.0
+# How often the pusher wakes to look for due subscriptions. Finer than the
+# minimum interval so the delivery jitter stays below a second.
+WS_SNAPSHOT_TICK_SECONDS = 0.5
+
 WS_KEEPALIVE_INTERVAL_SECONDS = 25.0
 WS_PONG_TIMEOUT_SECONDS = 10.0
 
@@ -2423,6 +2493,82 @@ def _apply_api_auth_guards():
         route.handler = guarded_handler
 
 
+def _protocol_snapshot_payload(params: dict) -> dict:
+    """The same slice the HTTP endpoint returns, for one subscription."""
+    return {
+        "type": "protocol_snapshot",
+        "protocol": params.get("proto") or "all",
+        "snapshot": store.protocol_snapshot(
+            proto=params.get("proto") or "",
+            mode=params.get("mode") or "",
+            interface=params.get("interface") or "",
+            search=params.get("search") or "",
+            since=params.get("since") or "",
+            limit=int(params.get("limit") or 250),
+        ),
+        "generated_at": utc_now(),
+    }
+
+
+def _snapshot_pusher_loop(stop_event: threading.Event):
+    """Deliver every due subscription, one at a time.
+
+    Deliberately a single thread rather than one per connection: each delivery
+    runs aggregate queries over the whole filtered set, and serialising them
+    bounds what a roomful of open dashboards can do to the database. A slow
+    query delays the next client's frame; it cannot multiply the load.
+    """
+    while not stop_event.wait(WS_SNAPSHOT_TICK_SECONDS):
+        try:
+            due = hub.due_subscriptions(time.monotonic())
+        except Exception:
+            continue
+        for ws, params in due:
+            try:
+                payload = _protocol_snapshot_payload(params)
+            except Exception as exc:
+                # A failed query must not kill the pusher for every other
+                # client, and the subscriber has to learn that its slice
+                # stopped updating rather than silently seeing stale data.
+                hub.send_to(ws, {
+                    "type": "protocol_snapshot_error",
+                    "protocol": params.get("proto") or "all",
+                    "message": str(exc)[:200],
+                    "generated_at": utc_now(),
+                })
+                continue
+            hub.send_to(ws, payload)
+
+
+_snapshot_pusher_stop = threading.Event()
+_snapshot_pusher_lock = threading.Lock()
+_snapshot_pusher_thread = None
+
+
+def _ensure_snapshot_pusher():
+    """Start the pusher on first use, and only once.
+
+    Started lazily rather than at import: a module-scope thread is leaked by
+    every reimport of this module, which is exactly what the test suite does
+    when it reloads the auth stack - it left one orphaned thread per reload,
+    each still walking the hub. It also means a process that never serves a
+    subscriber (the CLI, a packaging run) does not carry the thread at all.
+    """
+    global _snapshot_pusher_thread
+    with _snapshot_pusher_lock:
+        if _snapshot_pusher_thread is not None and _snapshot_pusher_thread.is_alive():
+            return _snapshot_pusher_thread
+        _snapshot_pusher_stop.clear()
+        _snapshot_pusher_thread = threading.Thread(
+            target=_snapshot_pusher_loop,
+            args=(_snapshot_pusher_stop,),
+            name="sniff4hound-ws-snapshots",
+            daemon=True,
+        )
+        _snapshot_pusher_thread.start()
+        return _snapshot_pusher_thread
+
+
 @app.ws(
     "/ws/",
     keepalive_interval=WS_KEEPALIVE_INTERVAL_SECONDS,
@@ -2469,8 +2615,22 @@ def websocket_handler(ws, request=None):
     hub.register(ws)
     try:
         ws.send_text(_json_text({"type": "welcome", "message": "Sniff4Hound websocket connected", "generated_at": utc_now()}))
-        ws.send_text(_json_text({"type": "scan_map_snapshot", "data": store.map_snapshot(limit=100), "generated_at": utc_now()}))
-        ws.send_text(_json_text({"type": "runtime_mode", "runtime": runtime.snapshot(), "generated_at": utc_now()}))
+        # Each opening message is guarded on its own. They used to share the
+        # handler's outer `except`, so a transient failure building one of
+        # them - runtime.snapshot() raises IpcDisconnected whenever the
+        # capture service is not attached - tore down the whole connection
+        # before the read loop ever started, instead of just omitting that
+        # one message. The socket itself is fine in that case, and the client
+        # can ask again with an explicit action.
+        for message_type, builder in (
+            ("scan_map_snapshot", lambda: {"data": store.map_snapshot(limit=100)}),
+            ("runtime_mode", lambda: {"runtime": runtime.snapshot()}),
+        ):
+            try:
+                body = builder()
+            except Exception:
+                continue
+            ws.send_text(_json_text({"type": message_type, **body, "generated_at": utc_now()}))
         while True:
             frame = ws.recv_frame()
             opcode = getattr(frame, "opcode", 0)
@@ -2504,6 +2664,39 @@ def websocket_handler(ws, request=None):
                 ws.send_text(_json_text({"type": "runtime_mode", "runtime": runtime.snapshot(), "generated_at": utc_now()}))
             elif action == "runtime_mode":
                 ws.send_text(_json_text({"type": "runtime_mode", "runtime": runtime.snapshot(), "generated_at": utc_now()}))
+            elif action == "subscribe_protocol_snapshot":
+                proto = normalize_protocol_name(data.get("proto") or "")
+                interval = safe_float(data.get("interval"), WS_SNAPSHOT_DEFAULT_INTERVAL_SECONDS)
+                # Clamped, not rejected: a client asking for 0 gets the floor
+                # rather than an error it would have to handle, and cannot
+                # spin the query loop either way.
+                interval = max(
+                    WS_SNAPSHOT_MIN_INTERVAL_SECONDS,
+                    min(WS_SNAPSHOT_MAX_INTERVAL_SECONDS, interval),
+                )
+                params = {
+                    "proto": "" if proto == "all" else proto,
+                    "mode": str(data.get("mode") or "").strip().lower(),
+                    "interface": str(data.get("interface") or "").strip(),
+                    "search": str(data.get("search") or "").strip(),
+                    "since": str(data.get("since") or "").strip(),
+                    "limit": _normalize_limit(data.get("limit"), default=250),
+                }
+                hub.subscribe_snapshot(ws, params, interval)
+                _ensure_snapshot_pusher()
+                ws.send_text(_json_text({
+                    "type": "protocol_snapshot_subscribed",
+                    "protocol": params["proto"] or "all",
+                    "interval": interval,
+                    "limit": params["limit"],
+                    "generated_at": utc_now(),
+                }))
+            elif action == "unsubscribe_protocol_snapshot":
+                hub.unsubscribe_snapshot(ws)
+                ws.send_text(_json_text({
+                    "type": "protocol_snapshot_unsubscribed",
+                    "generated_at": utc_now(),
+                }))
             elif action == "ping":
                 ws.send_text(_json_text({"type": "pong", "generated_at": utc_now()}))
             hub.touch(ws)
@@ -2545,6 +2738,10 @@ def shutdown_capture():
         pass
     try:
         ipc_client.close()
+    except (Exception, KeyboardInterrupt):
+        pass
+    try:
+        _snapshot_pusher_stop.set()
     except (Exception, KeyboardInterrupt):
         pass
     try:
