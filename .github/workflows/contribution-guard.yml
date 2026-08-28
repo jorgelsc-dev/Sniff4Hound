@@ -18,9 +18,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # No --depth here. A shallow fetch grafts the base tip with no history,
+      # so as soon as the branch falls behind there is no reachable common
+      # ancestor and `git merge-base` below cannot resolve one.
       - name: Fetch base ref
         if: github.event_name == 'pull_request'
-        run: git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+        run: git fetch --no-tags origin "${{ github.base_ref }}"
 
       - name: Validate human commit sign-off
         shell: bash
@@ -47,7 +50,14 @@ jobs:
             BASE_SHA="$(git rev-parse "origin/${BASE_REF}")"
           fi
 
-          merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          # `git merge-base` exits 1 and prints NOTHING when it finds no common
+          # ancestor. Assigning it directly let `set -e` kill the job with an
+          # empty log, which reads as "the sign-off check failed" when in fact
+          # nothing was ever checked. Handle the failure and say so out loud.
+          if ! merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"; then
+            echo "::error::No common ancestor between base ${BASE_SHA} and head ${HEAD_SHA}, so no commit range could be built. Rebase this branch onto ${BASE_REF}."
+            exit 1
+          fi
           range="${merge_base}..${HEAD_SHA}"
 
           echo "Validating commit sign-off on first-parent non-merge commits in range: ${range}"
