@@ -1405,9 +1405,12 @@ def protocol_snapshot_api(request):
     set, so ARP reports who-has/is-at rather than the port-scan "open vs
     filtered" counters every slice used to show.
     """
-    proto = normalize_protocol_name(request.query.get("proto") or "")
+    # Same trap as _normalize_feed_params: an absent proto must mean "no
+    # filter", not the protocol literally named "unknown".
+    raw_proto = str(request.query.get("proto") or "").strip().lower()
+    proto = "" if raw_proto in ("", "all") else normalize_protocol_name(raw_proto)
     return store.protocol_snapshot(
-        proto="" if proto == "all" else proto,
+        proto=proto,
         mode=str(request.query.get("mode") or "").strip().lower(),
         interface=str(request.query.get("interface") or "").strip(),
         search=str(request.query.get("search") or "").strip(),
@@ -1648,7 +1651,12 @@ def banner_action(request):
 @app.api("/tags/", methods=("GET",))
 def tags(request):
     search = str(request.query.get("search") or "").strip()
-    proto = normalize_protocol_name(request.query.get("proto"))
+    # Absent proto means "every tag", not the protocol literally named
+    # "unknown" - which is what normalize_protocol_name() answers for an empty
+    # value, and which made a bare /tags/ return only the rows whose protocol
+    # could not be identified. /tags/tcp/ and friends still set it explicitly.
+    raw_proto = str(request.query.get("proto") or "").strip().lower()
+    proto = "" if raw_proto in ("", "all") else normalize_protocol_name(raw_proto)
     limit = _normalize_limit(request.query.get("limit"), default=400)
     offset = _normalize_offset(request.query.get("offset"))
     since = _normalize_since(request)
@@ -2507,26 +2515,48 @@ def _feed_protocols(p: dict):
     )
 
 
+# Each listing endpoint reshapes its rows before answering - adding the derived
+# fields the tables render and dropping raw_packet, which is every captured byte
+# and has no business in a listing. A feed that skipped that step would deliver
+# rows the table cannot render and a blob it never asked for, so the same
+# shaping functions are applied here.
+
 def _feed_ports(p: dict):
-    return store.list_packets(
-        proto=p["proto"], mode=p["mode"], interface=p["interface"],
-        search=p["search"], since=p["since"], limit=p["limit"],
-    )
+    return [
+        _packet_row_to_port(row)
+        for row in store.list_packets(
+            proto=p["proto"], mode=p["mode"], interface=p["interface"],
+            search=p["search"], since=p["since"], limit=p["limit"],
+        )
+    ]
 
 
 def _feed_banners(p: dict):
-    return store.list_payloads(
-        proto=p["proto"], mode=p["mode"], interface=p["interface"],
-        search=p["search"], since=p["since"], limit=p["limit"],
-    )
+    return [
+        _packet_row_to_banner(row)
+        for row in store.list_payloads(
+            proto=p["proto"], mode=p["mode"], interface=p["interface"],
+            search=p["search"], since=p["since"], limit=p["limit"],
+        )
+    ]
 
 
 def _feed_tags(p: dict):
-    return store.list_tags(proto=p["proto"], search=p["search"], since=p["since"], limit=p["limit"])
+    return [
+        _packet_row_to_tag(row)
+        for row in store.list_tags(
+            proto=p["proto"], search=p["search"], since=p["since"], limit=p["limit"]
+        )
+    ]
 
 
 def _feed_targets(p: dict):
-    return store.list_sessions(proto=p["proto"], search=p["search"], since=p["since"], limit=p["limit"])
+    return [
+        _session_row(row)
+        for row in store.list_sessions(
+            proto=p["proto"], search=p["search"], since=p["since"], limit=p["limit"]
+        )
+    ]
 
 
 def _feed_dashboard(_p: dict):
@@ -2774,9 +2804,15 @@ def _ws_get_result(source_request, path: str, params: dict) -> dict:
 
 def _normalize_feed_params(request) -> dict:
     query = getattr(request, "query", None) or {}
-    proto = normalize_protocol_name(query.get("proto") or "")
+    # normalize_protocol_name("") answers "unknown", which is a real protocol
+    # name in this schema - so normalising first turned "no protocol filter"
+    # into "only the packets we could not identify", and every unfiltered feed
+    # answered with an empty list. The raw value decides whether there is a
+    # filter at all; only then is it normalised.
+    raw_proto = str(query.get("proto") or "").strip().lower()
+    proto = "" if raw_proto in ("", "all") else normalize_protocol_name(raw_proto)
     return {
-        "proto": "" if proto in ("", "all") else proto,
+        "proto": proto,
         "mode": str(query.get("mode") or "").strip().lower(),
         "interface": str(query.get("interface") or "").strip(),
         "search": str(query.get("search") or "").strip(),

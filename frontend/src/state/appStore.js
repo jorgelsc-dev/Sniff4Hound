@@ -585,13 +585,48 @@ const WS_GET_DENIED_PREFIXES = ["/api/export/"];
 const pendingWsGets = new Map();
 let wsGetSequence = 0;
 
-function canUseWsGet(path, options) {
+// How long a read waits for a socket that is still connecting. At startup the
+// views mount before the handshake completes, so without this every first
+// paint fell straight through to HTTP - which is exactly the burst of GETs
+// still visible in the access log after the reads were moved to the socket.
+const WS_GET_CONNECT_GRACE_MS = 1500;
+
+function isWsGetEligible(path, options) {
   const method = String((options && options.method) || "GET").toUpperCase();
   if (method !== "GET") return false;
   if (typeof window === "undefined" || typeof window.WebSocket === "undefined") return false;
-  if (!wsClient || wsClient.readyState !== window.WebSocket.OPEN) return false;
   const clean = String(path || "").split("?")[0];
   return !WS_GET_DENIED_PREFIXES.some((prefix) => clean.startsWith(prefix));
+}
+
+function waitForWsOpen(timeoutMs = WS_GET_CONNECT_GRACE_MS) {
+  if (typeof window === "undefined" || typeof window.WebSocket === "undefined") {
+    return Promise.resolve(false);
+  }
+  if (wsClient && wsClient.readyState === window.WebSocket.OPEN) return Promise.resolve(true);
+  // Only worth waiting for a socket that is actually on its way. A closed or
+  // absent one would just delay the HTTP read by the whole grace period.
+  if (!wsClient || wsClient.readyState !== window.WebSocket.CONNECTING) {
+    return Promise.resolve(false);
+  }
+  const socket = wsClient;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onFail);
+      socket.removeEventListener("close", onFail);
+      resolve(value);
+    };
+    const onOpen = () => finish(true);
+    const onFail = () => finish(false);
+    socket.addEventListener("open", onOpen);
+    socket.addEventListener("error", onFail);
+    socket.addEventListener("close", onFail);
+    setTimeout(() => finish(false), timeoutMs);
+  });
 }
 
 function resolveWsGet(payload) {
@@ -673,12 +708,16 @@ function fetchWithMeta(path, options = {}, config = {}) {
   if (opts.body && !opts.headers["Content-Type"] && !opts.headers["content-type"]) {
     opts.headers["Content-Type"] = "application/json";
   }
-  if (canUseWsGet(path, options) && config.preferHttp !== true) {
-    // On any websocket trouble the same request goes out over HTTP, so a read
-    // never fails just because the socket did.
-    return wsGet(path).catch((err) => {
-      if (err && err.status) throw err;
-      return httpFetchWithMeta(path, opts, config);
+  if (isWsGetEligible(path, options) && config.preferHttp !== true) {
+    return waitForWsOpen().then((ready) => {
+      if (!ready) return httpFetchWithMeta(path, opts, config);
+      // On any websocket trouble the same request goes out over HTTP, so a
+      // read never fails just because the socket did. A status carried back
+      // from the server is a real answer, though, and must not be retried.
+      return wsGet(path).catch((err) => {
+        if (err && err.status) throw err;
+        return httpFetchWithMeta(path, opts, config);
+      });
     });
   }
   return httpFetchWithMeta(path, opts, config);
