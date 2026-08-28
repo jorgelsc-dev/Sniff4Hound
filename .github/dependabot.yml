@@ -14,11 +14,14 @@ updates:
       - "github-actions"
     open-pull-requests-limit: 10
 
+  # Daily, not weekly: `wsbuilder` is the runtime dependency this project is
+  # built on and it is pinned exactly (`==`), so the pin is only as current as
+  # Dependabot's cadence. On a weekly schedule a release published on a Tuesday
+  # sits unnoticed until the following Monday.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "daily"
       time: "05:15"
       timezone: "UTC"
     commit-message:
