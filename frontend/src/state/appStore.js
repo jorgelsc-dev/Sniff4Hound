@@ -571,6 +571,98 @@ function handleUnauthorized(message = "Authentication required") {
   destroyRealtime();
 }
 
+// --- GET over the websocket -------------------------------------------------
+// Reads travel on the socket that is already open; HTTP is left for static
+// assets, for the methods that change state, and for downloads. Intercepted
+// here rather than in each view so every existing caller of fetchJsonPromise
+// and fetchListPromise gets it without being rewritten - and so a single
+// place decides when to fall back.
+
+const WS_GET_TIMEOUT_MS = 15000;
+// Downloads: they answer with CSV and Content-Disposition, which is a file
+// transfer, not a data read.
+const WS_GET_DENIED_PREFIXES = ["/api/export/"];
+const pendingWsGets = new Map();
+let wsGetSequence = 0;
+
+function canUseWsGet(path, options) {
+  const method = String((options && options.method) || "GET").toUpperCase();
+  if (method !== "GET") return false;
+  if (typeof window === "undefined" || typeof window.WebSocket === "undefined") return false;
+  if (!wsClient || wsClient.readyState !== window.WebSocket.OPEN) return false;
+  const clean = String(path || "").split("?")[0];
+  return !WS_GET_DENIED_PREFIXES.some((prefix) => clean.startsWith(prefix));
+}
+
+function resolveWsGet(payload) {
+  const pending = pendingWsGets.get(String(payload.id || ""));
+  if (!pending) return;
+  pendingWsGets.delete(String(payload.id || ""));
+  clearTimeout(pending.timer);
+  pending.settle(payload);
+}
+
+function wsGet(path) {
+  const [bare, search = ""] = String(path || "").split("?");
+  const params = {};
+  new URLSearchParams(search).forEach((value, key) => {
+    params[key] = value;
+  });
+  const id = `get-${++wsGetSequence}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingWsGets.delete(id);
+      // Rejecting rather than hanging: the caller falls back to HTTP, which is
+      // the difference between a slow view and a permanently empty one.
+      reject(new Error("websocket read timed out"));
+    }, WS_GET_TIMEOUT_MS);
+    pendingWsGets.set(id, {
+      timer,
+      settle: (payload) => {
+        const status = Number(payload.status || 0);
+        if (status === 401) {
+          handleUnauthorized((payload.data && payload.data.message) || "Session expired.");
+        }
+        if (status < 200 || status >= 300) {
+          const error = new Error(
+            payload.error || (payload.data && payload.data.message) || `Request failed (${status})`
+          );
+          error.status = status;
+          reject(error);
+          return;
+        }
+        resolve({
+          data: payload.data,
+          // Shaped like a fetch Response for readListMeta(), which reads the
+          // X-Total-Available / X-Returned / X-Scope-Counts headers the listing
+          // endpoints answer with. Dropping them would blank the "showing N of
+          // M" line and the IP scope chips.
+          response: {
+            ok: true,
+            status,
+            headers: {
+              get: (name) => {
+                const wanted = String(name || "").toLowerCase();
+                const found = Object.keys(payload.headers || {}).find(
+                  (key) => key.toLowerCase() === wanted
+                );
+                return found ? payload.headers[found] : null;
+              },
+            },
+          },
+        });
+      },
+    });
+    try {
+      wsClient.send(JSON.stringify({ action: "get", id, path: bare, params }));
+    } catch (err) {
+      pendingWsGets.delete(id);
+      clearTimeout(timer);
+      reject(err);
+    }
+  });
+}
+
 function fetchWithMeta(path, options = {}, config = {}) {
   const opts = { ...options };
   const attachAuth = config.attachAuth !== false;
@@ -581,6 +673,18 @@ function fetchWithMeta(path, options = {}, config = {}) {
   if (opts.body && !opts.headers["Content-Type"] && !opts.headers["content-type"]) {
     opts.headers["Content-Type"] = "application/json";
   }
+  if (canUseWsGet(path, options) && config.preferHttp !== true) {
+    // On any websocket trouble the same request goes out over HTTP, so a read
+    // never fails just because the socket did.
+    return wsGet(path).catch((err) => {
+      if (err && err.status) throw err;
+      return httpFetchWithMeta(path, opts, config);
+    });
+  }
+  return httpFetchWithMeta(path, opts, config);
+}
+
+function httpFetchWithMeta(path, opts, config) {
   return fetch(apiUrl(path), opts).then((res) =>
     res.text().then((text) => {
       const data = parseJsonSafe(text);
@@ -1544,6 +1648,10 @@ function connectRealtime() {
     }
     if (type === "runtime_mode") {
       applyRuntimeSnapshot(payload);
+    }
+    if (type === "get_result") {
+      resolveWsGet(payload);
+      return;
     }
     if (type === "protocol_snapshot" || type === "protocol_snapshot_error") {
       notifyProtocolSnapshotSubscribers({

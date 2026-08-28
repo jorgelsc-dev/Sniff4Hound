@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import json
+from urllib.parse import urlencode
 import mimetypes
 import sys
 import time
@@ -16,7 +17,7 @@ import wsbuilder.framework as _wsbuilder_framework
 import wsbuilder.http as _wsbuilder_http
 import wsbuilder.server as _wsbuilder_server
 import wsbuilder.ws as _wsbuilder_ws
-from wsbuilder import App, Response, parse_close_payload
+from wsbuilder import App, Request, Response, parse_close_payload
 
 from . import __version__
 from . import access_log
@@ -2684,6 +2685,85 @@ def _ensure_snapshot_pusher():
         return _snapshot_pusher_thread
 
 
+# --- GET over the websocket -------------------------------------------------
+# Every read-only endpoint answers over the socket too, so the browser only
+# falls back to HTTP for static assets and for the methods that change state.
+# One generic action rather than a route per endpoint: there are 55 GET routes
+# and they all already know how to answer a Request.
+#
+# The request is dispatched through the app's own router, so the handler runs
+# exactly as it does over HTTP - including the auth guard wrapped around it,
+# which is why the websocket's own headers and security code are copied onto
+# the synthetic request instead of being skipped. A websocket client gets what
+# an authenticated HTTP client gets, and nothing more.
+
+# Downloads. They answer with CSV and Content-Disposition, which is a file
+# transfer, not a data read; wrapping that in a JSON frame would help nobody.
+WS_GET_DENIED_PREFIXES = ("/api/export/",)
+
+
+def _ws_get_result(source_request, path: str, params: dict) -> dict:
+    requested = str(path or "").strip()
+    if not requested.startswith("/"):
+        return {"status": 400, "error": "path must be absolute"}
+    if any(requested.startswith(prefix) for prefix in WS_GET_DENIED_PREFIXES):
+        return {"status": 400, "error": "this endpoint is a download; use HTTP"}
+
+    route = app.router.resolve(requested, "GET")
+    if route is None:
+        return {"status": 404, "error": "no such route"}
+    # `kind` keeps this to declared API routes: a static or view route reached
+    # this way would answer with a page, and neither is a data read.
+    if getattr(route, "kind", "") != "api" or "GET" not in (route.methods or ()):
+        return {"status": 405, "error": "route does not answer GET as an API"}
+
+    query = {str(key): str(value) for key, value in (params or {}).items() if value is not None}
+
+    headers = dict(getattr(source_request, "headers", None) or {})
+    # The API routes deliberately refuse a credential in the query string -
+    # only the websocket handshake accepts one there, because a URL ends up in
+    # logs and history. So the credential the handshake proved is translated
+    # into the header form the routes do accept, rather than being replayed as
+    # a query parameter the guard is built to reject. The guard still runs; it
+    # is only being handed the token in the shape it asks for.
+    source_query = getattr(source_request, "query", None) or {}
+    if not any(key.lower() in ("x-security-code", "x-access-token") for key in headers):
+        for key in ("security_code", "access_token", "token"):
+            value = source_query.get(key)
+            if value:
+                headers["X-Security-Code"] = str(value)
+                break
+
+    synthetic = Request(
+        "GET",
+        requested,
+        urlencode(query),
+        headers,
+        b"",
+        getattr(source_request, "client", None) or ("127.0.0.1", 0),
+    )
+    result = route.handler(synthetic)
+    if isinstance(result, (dict, list)):
+        return {"status": 200, "data": result, "headers": {}}
+    body = getattr(result, "body", b"") or b""
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    try:
+        data = json.loads(body.decode("utf-8")) if body else None
+    except Exception:
+        # A non-JSON body means the caller asked for something that is not a
+        # data read; say so rather than shipping bytes it cannot use.
+        return {"status": int(getattr(result, "status", 500) or 500), "error": "response is not JSON"}
+    return {
+        "status": int(getattr(result, "status", 200) or 200),
+        "data": data,
+        # The listing endpoints put their totals and the scope breakdown in
+        # headers, and a client reading over the socket needs them just as
+        # much as one reading over HTTP.
+        "headers": {str(k): str(v) for k, v in (getattr(result, "headers", None) or {}).items()},
+    }
+
+
 # --- one websocket route per data feed --------------------------------------
 # /ws/<feed>?security_code=...&refresh=1000&limit=500&proto=arp
 #
@@ -2792,6 +2872,23 @@ def _make_feed_handler(feed_name: str):
                         ws.send_pong(payload)
                     except Exception:
                         break
+                elif opcode == 0x1:
+                    # A feed socket also answers one-shot reads, so a view does
+                    # not need a second connection just to fetch the small
+                    # lists that go alongside its table.
+                    try:
+                        message = json.loads(payload.decode("utf-8", errors="ignore"))
+                    except Exception:
+                        message = None
+                    if isinstance(message, dict) and str(message.get("action") or "") == "get":
+                        result = _ws_get_result(request, message.get("path"), message.get("params") or {})
+                        hub.send_to(ws, {
+                            "type": "get_result",
+                            "id": str(message.get("id") or ""),
+                            "path": str(message.get("path") or ""),
+                            **result,
+                            "generated_at": utc_now(),
+                        })
                 hub.touch(ws)
         except Exception:
             pass
@@ -2942,6 +3039,18 @@ def websocket_handler(ws, request=None):
                 hub.unsubscribe_snapshot(ws)
                 ws.send_text(_json_text({
                     "type": "protocol_snapshot_unsubscribed",
+                    "generated_at": utc_now(),
+                }))
+            elif action == "get":
+                # One-shot read over the socket. `id` is echoed back so a
+                # client can have several in flight and still match answers to
+                # questions; without it the only safe pattern is one at a time.
+                result = _ws_get_result(request, data.get("path"), data.get("params") or {})
+                ws.send_text(_json_text({
+                    "type": "get_result",
+                    "id": str(data.get("id") or ""),
+                    "path": str(data.get("path") or ""),
+                    **result,
                     "generated_at": utc_now(),
                 }))
             elif action == "ping":
