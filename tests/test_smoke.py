@@ -355,6 +355,36 @@ class SmokeTests(unittest.TestCase):
 
         self.assertEqual(output.getvalue(), "")
 
+    def test_http_send_guard_is_installed_on_every_wsbuilder_export(self):
+        """The guard is what keeps the security code out of the access log.
+
+        `send_http_response` is re-exported by several wsbuilder modules and
+        each call site resolves it from its own globals, so leaving one module
+        unpatched silently routes those responses around the redaction. A
+        wsbuilder upgrade that moves or renames the export would do exactly
+        that without failing anything else, which is why this asserts the
+        installed state rather than the guard's behaviour.
+        """
+        import sniff4hound.app as app_module
+
+        patched = []
+        for module in app_module._WSBUILDER_SEND_MODULES:
+            sender = getattr(module, "send_http_response", None)
+            if sender is None:
+                continue
+            patched.append(module.__name__)
+            self.assertIs(
+                sender,
+                app_module._guarded_send_http_response,
+                f"{module.__name__}.send_http_response bypasses the redaction guard",
+            )
+
+        # If wsbuilder ever stops exporting the name from every module, the
+        # loop above would vacuously pass; require the modules the redaction
+        # actually depends on to still be among the patched ones.
+        for required in ("wsbuilder.http", "wsbuilder.server", "wsbuilder.ws"):
+            self.assertIn(required, patched)
+
     def test_http_send_guard_keeps_non_disconnect_errors_visible(self):
         import sniff4hound.app as app_module
 
