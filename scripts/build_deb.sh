@@ -60,6 +60,12 @@ install -d "$DEBIAN_DIR" "$INSTALL_ROOT" "$VENDOR_DIR" "$BIN_DIR" "$DOC_DIR"
 echo "[build] Installing Python application into staging root..."
 "$PYTHON_BIN" -m pip install --disable-pip-version-check --no-compile --target "$VENDOR_DIR" .
 
+# The wsbuilder requirement is a floor, not an exact pin, so two builds of the
+# same commit can vendor different versions. Record what this one shipped.
+VENDORED_WSBUILDER="$(find "$VENDOR_DIR" -maxdepth 1 -name 'wsbuilder-*.dist-info' -printf '%f\n' 2>/dev/null | head -n 1)"
+VENDORED_WSBUILDER="${VENDORED_WSBUILDER%.dist-info}"
+echo "[build] Vendored ${VENDORED_WSBUILDER:-wsbuilder (version could not be resolved)}"
+
 find "$VENDOR_DIR" -type d -name "__pycache__" -exec rm -rf {} +
 find "$VENDOR_DIR" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 rm -rf "$VENDOR_DIR/bin"
