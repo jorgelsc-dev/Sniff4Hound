@@ -193,12 +193,28 @@ def _guarded_send_http_response(conn, response, *, send_body=True):
         print(f"[http] send error {status_code}: {exc}")
 
 
+# wsbuilder re-exports `send_http_response` from several modules, and the call
+# sites resolve it from their own module globals at call time - so every module
+# that binds the name has to be replaced, not just the one that defines it.
+_WSBUILDER_SEND_MODULES = (
+    _wsbuilder_http,
+    _wsbuilder_server,
+    _wsbuilder_ws,
+    _wsbuilder_framework,
+    _wsbuilder_package,
+)
+
+
 def _install_wsbuilder_http_send_guard():
-    _wsbuilder_http.send_http_response = _guarded_send_http_response
-    _wsbuilder_server.send_http_response = _guarded_send_http_response
-    _wsbuilder_ws.send_http_response = _guarded_send_http_response
-    _wsbuilder_framework.send_http_response = _guarded_send_http_response
-    _wsbuilder_package.send_http_response = _guarded_send_http_response
+    # Only modules that already bind the name are patched. `wsbuilder/__init__`
+    # does not re-export `send_http_response`, so assigning it there created an
+    # attribute nothing ever read; and patching a module that does not bind the
+    # name would hide a future rename behind an attribute no call site reads.
+    # Testing first keeps the guard honest either way, whichever modules a
+    # given wsbuilder release happens to export it from.
+    for module in _WSBUILDER_SEND_MODULES:
+        if hasattr(module, "send_http_response"):
+            module.send_http_response = _guarded_send_http_response
 
 
 _install_wsbuilder_http_send_guard()
