@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import ip_registry
 from .runtime_paths import ensure_data_dir, resolve_data_file
-from .monitors import describe_match, load_builtin_monitors, normalize_monitor
+from .monitors import builtin_monitor_seed_fields, describe_match, normalize_monitor
 from .protocol_facets import (
     extract_details,
     facet_expression,
@@ -750,19 +750,29 @@ class SniffStore:
                 now = utc_now()
                 rows = [
                     (
-                        str(monitor.get("id") or monitor.get("name")),
-                        str(monitor.get("name") or monitor.get("id")),
-                        str(monitor.get("description") or ""),
-                        1 if monitor.get("enabled", True) else 0,
-                        safe_int(monitor.get("priority", 100), 100),
-                        str(monitor.get("source") or "builtin"),
-                        str(monitor.get("mode") or "rule"),
-                        json_dumps(monitor.get("match") or {}),
-                        json_dumps(monitor.get("action") or {}),
+                        monitor_id,
+                        name,
+                        description,
+                        enabled,
+                        priority,
+                        source,
+                        mode,
+                        match_json,
+                        action_json,
                         now,
                         now,
                     )
-                    for monitor in load_builtin_monitors()
+                    for (
+                        monitor_id,
+                        name,
+                        description,
+                        enabled,
+                        priority,
+                        source,
+                        mode,
+                        match_json,
+                        action_json,
+                    ) in builtin_monitor_seed_fields()
                 ]
                 self._conn.executemany(
                     """
@@ -899,23 +909,23 @@ class SniffStore:
         )
         existing_rows = {str(row["id"]): dict(row) for row in cursor.fetchall()}
 
-        catalog = load_builtin_monitors()
-        catalog_ids = {str(monitor.get("id") or "").strip() for monitor in catalog if monitor.get("id")}
+        catalog = builtin_monitor_seed_fields()
+        catalog_ids = {row[0] for row in catalog}
 
         now = utc_now()
         insert_rows = []
         update_rows = []
-        for monitor in catalog:
-            monitor_id = str(monitor.get("id") or "").strip()
-            if not monitor_id:
-                continue
-            name = str(monitor.get("name") or monitor_id)
-            description = str(monitor.get("description") or "")
-            priority = safe_int(monitor.get("priority", 100), 100)
-            mode = str(monitor.get("mode") or "rule")
-            match_json = json_dumps(monitor.get("match") or {})
-            action_json = json_dumps(monitor.get("action") or {})
-
+        for (
+            monitor_id,
+            name,
+            description,
+            enabled,
+            priority,
+            source,
+            mode,
+            match_json,
+            action_json,
+        ) in catalog:
             existing = existing_rows.get(monitor_id)
             if existing is None:
                 insert_rows.append(
@@ -923,9 +933,9 @@ class SniffStore:
                         monitor_id,
                         name,
                         description,
-                        1 if monitor.get("enabled", True) else 0,
+                        enabled,
                         priority,
-                        str(monitor.get("source") or "builtin"),
+                        source,
                         mode,
                         match_json,
                         action_json,
