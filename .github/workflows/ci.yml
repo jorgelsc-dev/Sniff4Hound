@@ -1,8 +1,22 @@
 name: CI
 
 on:
+  # Push only on the long-lived branches. Every auxiliary branch reaches main
+  # through a pull request, and the pull_request trigger below already covers
+  # it - so listing the branch prefixes here ran the whole suite twice for
+  # every push to an open PR, once per event, doubling the machine time each
+  # review costs.
+  #
+  # The usual fix - one concurrency group per branch with cancel-in-progress -
+  # is not safe here. The two events would cancel each other, and whichever
+  # loses the race is the one that reports: if that is the pull_request run,
+  # its check lands as `cancelled`, and those checks are required on main, so
+  # the pull request becomes unmergeable until someone re-runs it by hand.
+  # Not running the duplicate at all has no such failure mode.
+  #
+  # CI before opening a pull request is still available: open it as a draft.
   push:
-    branches: [main, develop, "feat/**", "fix/**", "sec/**", "docs/**", "chore/**", "refactor/**", "test/**"]
+    branches: [main, develop]
   pull_request:
     branches: [main, develop]
 
