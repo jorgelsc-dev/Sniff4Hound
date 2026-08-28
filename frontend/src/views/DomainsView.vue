@@ -72,8 +72,8 @@ const DOMAIN_SOURCE_LABELS = {
   tls_sni: "TLS SNI",
   http_host: "HTTP Host",
 };
-// Cadence and page size for the stream, matching the previous polling.
-const FEED_REFRESH_MS = 10000;
+// Cadence for the stream, in milliseconds.
+const FEED_REFRESH_MS = 1000;
 const FEED_LIMIT = 500;
 
 export default {

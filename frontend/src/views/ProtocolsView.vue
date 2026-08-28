@@ -381,9 +381,10 @@ import {
 // wrong slice.
 const FALLBACK_SUPPORTED_PROTOCOLS = ALL_PROTOCOLS;
 
-// Matches what the view used to poll at over HTTP, so the perceived refresh
-// cadence is unchanged; only the transport is.
-const SNAPSHOT_STREAM_INTERVAL_SECONDS = 10;
+// One second, matching the other streamed views. This slice is the largest of
+// them - roughly 650 KB with a busy capture - so it is also the one where the
+// cadence costs the most bandwidth.
+const SNAPSHOT_STREAM_INTERVAL_SECONDS = 1;
 
 const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
 
