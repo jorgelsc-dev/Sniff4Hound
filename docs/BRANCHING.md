@@ -33,19 +33,40 @@ is two reviews wearing one hat, and the bug fix is the one that gets rushed.
 ## Required checks
 
 These must pass before merge (see
-[`.github/workflows/`](https://github.com/jorgelsc-dev/Sniff4Hound/tree/main/.github/workflows)):
+[`.github/workflows/`](https://github.com/jorgelsc-dev/Sniff4Hound/tree/main/.github/workflows)).
+They are listed below by the job name GitHub reports, which is what branch
+protection matches on — not by workflow name:
 
-- `ci` — backend test suite, `compileall`, package install, frontend build
-- `frontend-checks` — ESLint with `--max-warnings=0`, production build
-- `contribution-guard` — DCO sign-off and the provenance checklist
-- `CodeQL` — static analysis for Python and JavaScript
-- `dependency-review` — blocks pulling in vulnerable dependencies
+- `Backend tests (Python 3.12)` — unit suite, `compileall`, package install,
+  frontend build. The name carries the matrix value, so changing the Python
+  version in `ci.yml` also renames this check and it has to be re-selected in
+  the branch protection settings.
+- `Frontend lint + build` — ESLint with `--max-warnings=0`, production build
+  of `frontend/`
+- `Landing lint + build` — the same for `landing/`. `docs-pages.yml` only runs
+  on push to `main`, so without this check a broken landing page would reach
+  the published site before anything caught it.
+- `Authorship and provenance` — DCO sign-off and the provenance checklist
+- `Analyze (python)` and `Analyze (javascript)` — CodeQL static analysis.
+  Both jobs carry `if: visibility == 'public'`; on a private repo they are
+  skipped rather than run.
+- `dependency-review` — blocks pulling in vulnerable dependencies. It needs
+  the repository dependency graph enabled.
 
 ## Releases
 
-Tag `main` as `vMAJOR.MINOR.PATCH`. Version numbers are derived from
-Conventional Commit subjects by `sniff4hound/versioning.py`, so write commit
-subjects accordingly (`feat:`, `fix:`, `feat!:` / `BREAKING CHANGE:`).
+Releases are automatic: every push to `main` runs `package.yml`, which builds
+the Debian package and creates the `vMAJOR.MINOR.PATCH` tag and its GitHub
+release, marking it `--latest`. Nothing is tagged by hand.
+
+The version is derived by `sniff4hound/versioning.py` from the Conventional
+Commit subjects since the newest `v*` tag, so write commit subjects
+accordingly (`feat:`, `fix:`, `feat!:` / `BREAKING CHANGE:`). Note that `chore`
+counts as a patch bump, so a dependency merge cuts a release too — batch
+dependency updates into one pull request rather than merging them one by one.
+
+The bumped version is only written inside the workflow run; `pyproject.toml`
+and `sniff4hound/__init__.py` stay at their committed value in the repository.
 
 ## Security issues
 

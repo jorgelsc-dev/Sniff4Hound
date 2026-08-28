@@ -9,6 +9,16 @@ on:
 permissions:
   contents: write
 
+# Every push to main publishes a release, and the version is computed from the
+# commits since the newest tag - so two pushes landing close together would
+# otherwise run concurrently, compute the same version off the same anchor tag,
+# and race to reassign --latest. Queue them instead. cancel-in-progress stays
+# false on purpose: cancelling a half-finished run could leave a release
+# created but its .deb never uploaded.
+concurrency:
+  group: package-debian-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   deb-package:
     name: Build Debian package
