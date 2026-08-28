@@ -350,5 +350,67 @@ class FeedSubscriptionTests(unittest.TestCase):
         self.assertIn("snapshot", payload)
 
 
+class WsGetDispatchTests(unittest.TestCase):
+    """Every read-only endpoint answers over the socket, through the real router."""
+
+    def setUp(self):
+        self.app = _app_module()
+        import sniff4hound.auth as auth_module
+
+        self.auth = auth_module
+        self._previous_token = auth_module._SESSION_TOKEN
+        auth_module._SESSION_TOKEN = "Ab12Cd34"
+        self.addCleanup(setattr, auth_module, "_SESSION_TOKEN", self._previous_token)
+
+    def _authed(self):
+        return _FakeRequest(security_code="Ab12Cd34")
+
+    def test_a_read_answers_with_data(self):
+        result = self.app._ws_get_result(self._authed(), "/api/hello", {})
+        self.assertEqual(result["status"], 200)
+        self.assertIsInstance(result["data"], dict)
+
+    def test_listing_headers_survive_the_socket(self):
+        # The listing endpoints put their totals - and the IP scope breakdown -
+        # in headers. A frame has none, so they travel in the payload; dropping
+        # them would blank the "showing N of M" line and the scope chips.
+        result = self.app._ws_get_result(self._authed(), "/api/intel/ips/", {"limit": 5})
+        self.assertEqual(result["status"], 200)
+        self.assertIn("X-Total-Available", result["headers"])
+        self.assertIn("X-Scope-Counts", result["headers"])
+
+    def test_query_parameters_reach_the_handler(self):
+        result = self.app._ws_get_result(self._authed(), "/api/domains/", {"limit": 5})
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["headers"].get("X-Returned"), "0")
+
+    def test_an_unauthenticated_socket_is_refused(self):
+        # The guard runs on this path exactly as it does over HTTP; the socket
+        # having completed a handshake is not by itself authorisation.
+        result = self.app._ws_get_result(_FakeRequest(), "/api/hello", {})
+        self.assertEqual(result["status"], 401)
+
+    def test_a_wrong_credential_is_refused(self):
+        result = self.app._ws_get_result(_FakeRequest(security_code="nope"), "/api/hello", {})
+        self.assertEqual(result["status"], 401)
+
+    def test_a_relative_path_is_refused(self):
+        self.assertEqual(self.app._ws_get_result(self._authed(), "nope", {})["status"], 400)
+
+    def test_an_unknown_route_is_refused(self):
+        self.assertEqual(
+            self.app._ws_get_result(self._authed(), "/api/does-not-exist/", {})["status"], 404
+        )
+
+    def test_a_non_api_route_is_refused(self):
+        # A static or view route reached this way would answer with a page.
+        self.assertEqual(self.app._ws_get_result(self._authed(), "/", {})["status"], 405)
+
+    def test_downloads_stay_on_http(self):
+        result = self.app._ws_get_result(self._authed(), "/api/export/alerts", {})
+        self.assertEqual(result["status"], 400)
+        self.assertIn("download", result["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
