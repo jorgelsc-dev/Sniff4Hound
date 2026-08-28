@@ -43,6 +43,12 @@ jobs:
         run: python -m compileall -q .
       - name: Install project for tests
         run: python -m pip install .
+      # wsbuilder is no longer pinned to an exact version, so every run picks up
+      # whatever is newest on PyPI. Record which one that was: when a wsbuilder
+      # release breaks this suite, the failing run has to say which version it
+      # actually resolved, or the failure is not reproducible after the fact.
+      - name: Report resolved wsbuilder version
+        run: python -c "import importlib.metadata as m; print('wsbuilder', m.version('wsbuilder'))"
       - name: Run unit tests
         run: python -m unittest discover -t . -s tests -q
 
