@@ -12,7 +12,7 @@ from . import settings
 from .ahocorasick import AhoCorasick
 from .runtime_paths import resolve_data_file
 from .rulesets import build_packet_text, normalize_action, normalize_match, rule_matches_packet
-from .utils import normalize_protocol_name, safe_int
+from .utils import json_dumps, normalize_protocol_name, safe_int
 
 
 DEFAULT_MONITORS = [
@@ -2337,7 +2337,66 @@ def _load_builtin_monitors_cached() -> tuple[dict, ...]:
 
 
 def load_builtin_monitors() -> list[dict]:
+    """The bundled catalog, as rows the caller owns and may mutate.
+
+    Deep-copying tens of thousands of entries is not free (see
+    iter_builtin_monitors below), so prefer that when the rows are only read.
+    """
     return [copy.deepcopy(item) for item in _load_builtin_monitors_cached()]
+
+
+def iter_builtin_monitors() -> tuple[dict, ...]:
+    """The bundled catalog itself, shared and **not** to be mutated.
+
+    load_builtin_monitors() hands out a deep copy so a caller can edit its rows
+    without corrupting the process-wide cache, and one test pins that. The cost
+    of that guarantee is not small: the catalog is roughly thirty thousand
+    monitors and twenty-odd megabytes once expanded, and copy.deepcopy walks
+    every nested dict and list, which measured at ~0.6s per call. SniffStore
+    calls it twice on construction, so every store paid over a second to build
+    rows it only ever read fields off - and every test that builds a store paid
+    it again.
+
+    This returns the cached tuple directly for exactly those read-only callers.
+    Mutating anything reached through it corrupts the catalog for the whole
+    process; use load_builtin_monitors() if the rows need to be edited.
+    """
+    return _load_builtin_monitors_cached()
+
+
+@functools.lru_cache(maxsize=1)
+def builtin_monitor_seed_fields() -> tuple[tuple, ...]:
+    """The catalog flattened into the columns the monitors table stores.
+
+    Seeding serialises `match` and `action` to JSON for every builtin monitor,
+    and the result is byte-identical on every call: the catalog is read-only,
+    packaged data. Doing it per SniffStore meant ~1.2 million json.dumps calls
+    across a test run - measured at a third of the wall clock of the slowest
+    test class - to rebuild strings that never differ.
+
+    `_seed_new_builtin_monitors` also compares these strings against the stored
+    row to detect a changed definition, so both callers must serialise the same
+    way; sharing one cached tuple is what guarantees that.
+    """
+    rows = []
+    for monitor in _load_builtin_monitors_cached():
+        monitor_id = str(monitor.get("id") or "").strip()
+        if not monitor_id:
+            continue
+        rows.append(
+            (
+                monitor_id,
+                str(monitor.get("name") or monitor_id),
+                str(monitor.get("description") or ""),
+                1 if monitor.get("enabled", True) else 0,
+                safe_int(monitor.get("priority", 100), 100),
+                str(monitor.get("source") or "builtin"),
+                str(monitor.get("mode") or "rule"),
+                json_dumps(monitor.get("match") or {}),
+                json_dumps(monitor.get("action") or {}),
+            )
+        )
+    return tuple(rows)
 
 
 def _validate_match_not_empty(match: dict):
