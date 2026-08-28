@@ -1159,7 +1159,14 @@ export default {
       const panels = facets.map((facet) => ({
         key: facet.key,
         title: facet.title,
-        subtitle: facet.subtitle,
+        // `missing` counts frames in the slice that carry no value for this
+        // facet. They are kept out of the series so one "none" bar cannot
+        // flatten every real value, but saying so matters: a chart built from
+        // 4 of 900 frames means something very different from one built from
+        // all 900, and the reader cannot tell them apart otherwise.
+        subtitle: facet.missing
+          ? `${facet.subtitle} ${facet.missing} frame${facet.missing === 1 ? "" : "s"} without this field.`
+          : facet.subtitle,
         color: this.selectedProfile.color,
         fill: `linear-gradient(90deg, ${this.selectedProfile.accent || "rgba(74, 136, 255, 0.92)"}, rgba(255, 255, 255, 0.12))`,
         series: (facet.series || []).map((item) => ({ label: item.label, value: item.count })),

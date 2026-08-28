@@ -15,7 +15,13 @@ from pathlib import Path
 from . import ip_registry
 from .runtime_paths import ensure_data_dir, resolve_data_file
 from .monitors import describe_match, load_builtin_monitors, normalize_monitor
-from .protocol_facets import label_value, resolve_facets
+from .protocol_facets import (
+    extract_details,
+    facet_expression,
+    facet_present_predicate,
+    label_value,
+    resolve_facets,
+)
 from .rulesets import load_builtin_rulesets, normalize_ruleset
 from .settings import (
     MONITOR_FILTER_DEFAULT,
@@ -507,6 +513,7 @@ class SniffStore:
                 http_method TEXT NOT NULL DEFAULT '',
                 http_path TEXT NOT NULL DEFAULT '',
                 http_host TEXT NOT NULL DEFAULT '',
+                details_json TEXT NOT NULL DEFAULT '{}',
                 tags_json TEXT NOT NULL DEFAULT '[]',
                 rule_hits_json TEXT NOT NULL DEFAULT '[]',
                 raw_packet BLOB,
@@ -659,6 +666,14 @@ class SniffStore:
             # existed, which is why every read treats "" as "unknown", never
             # as "not TCP".
             "transport": "TEXT NOT NULL DEFAULT ''",
+            # Decoder output that has no column of its own. app_decoders emits
+            # roughly forty fields and the table only ever had columns for five
+            # of them, so the rest - the HTTP Server header, the TLS version,
+            # the SSH software banner, the SIP peers - was extracted on every
+            # packet and then discarded here. Storing it as JSON keeps those
+            # facts queryable without a column per protocol, and without a
+            # migration every time a decoder learns a new field.
+            "details_json": "TEXT NOT NULL DEFAULT '{}'",
         }
         for column, definition in additions.items():
             if column not in existing:
@@ -1317,11 +1332,21 @@ class SniffStore:
 
         facets = []
         for column, title, subtitle in resolve_facets(proto_name):
+            expression = facet_expression(column)
+            present = facet_present_predicate(column)
+            if not expression or not present:
+                continue
+            facet_where = f"{where} AND {present}" if where else f"WHERE {present}"
+            missing_row = self._fetchone(
+                f"SELECT COUNT(*) AS missing FROM packets {where}"
+                f"{' AND' if where else ' WHERE'} NOT ({present})",
+                tuple(params),
+            ) or {}
             rows = self._fetchall(
                 f"""
-                SELECT {column} AS value, COUNT(*) AS count
-                FROM packets {where}
-                GROUP BY {column}
+                SELECT {expression} AS value, COUNT(*) AS count
+                FROM packets {facet_where}
+                GROUP BY {expression}
                 ORDER BY count DESC, value ASC
                 LIMIT 8
                 """,
@@ -1332,6 +1357,10 @@ class SniffStore:
                     "key": column,
                     "title": title,
                     "subtitle": subtitle,
+                    # Frames in the filtered slice that carry no value for this
+                    # facet. Excluded from `series` so they cannot flatten the
+                    # chart, reported here so they are not silently dropped.
+                    "missing": safe_int(missing_row.get("missing"), 0),
                     "series": [
                         {
                             "label": label_value(column, row.get("value")),
@@ -3688,6 +3717,7 @@ class SniffStore:
             str(packet.get("http_method") or "").strip().upper(),
             str(packet.get("http_path") or "").strip(),
             str(packet.get("http_host") or "").strip().lower(),
+            json_dumps(extract_details(packet)),
             json_dumps(tags),
             json_dumps(rule_hits),
             packet.get("raw_packet"),
@@ -3719,9 +3749,9 @@ class SniffStore:
              src_ip, dst_ip, proto, transport, src_port, dst_port, ttl, hop_limit, length, payload_len,
              state, scan_state, tcp_flags, icmp_type, icmp_code, arp_opcode, summary,
              payload_text, payload_hex, banner_text, domain, domain_source, http_method,
-             http_path, http_host, tags_json, rule_hits_json, raw_packet,
+             http_path, http_host, details_json, tags_json, rule_hits_json, raw_packet,
              created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (session_id, *packet_row),
         )

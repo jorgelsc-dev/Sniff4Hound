@@ -2120,9 +2120,34 @@ class Sniffer:
 
     def _apply_dns_result(self, packet: dict, payload: bytes, *, prefix: str, source: str):
         parsed = parse_dns_message(payload)
-        if parsed.get("questions"):
-            packet["domain"] = parsed["questions"][0]["name"]
+        questions = parsed.get("questions") or []
+        answers = parsed.get("answers") or []
+        if questions:
+            packet["domain"] = questions[0]["name"]
             packet["domain_source"] = source
+            packet["dns_qtype"] = DNS_QTYPE_NAMES.get(
+                questions[0].get("qtype"), str(questions[0].get("qtype") or "")
+            )
+        packet["dns_kind"] = "response" if parsed.get("is_response") else "query"
+        packet["dns_rcode"] = DNS_RCODE_NAMES.get(
+            parsed.get("rcode") or 0, str(parsed.get("rcode") or 0)
+        )
+        # The resolved value, and the name->value pair it belongs to. Both were
+        # parsed already and then survived only inside the summary string, so
+        # "which address did this name resolve to" could not be answered
+        # without reading free text. `dns_answer` alone would lose which name
+        # it answered, which is the half that matters for tracking an
+        # infrastructure change or a poisoned reply.
+        if answers:
+            first = answers[0]
+            value = str(first.get("rdata") or "").strip()
+            if value:
+                packet["dns_answer"] = value
+                name = str(first.get("name") or packet.get("domain") or "").strip()
+                packet["dns_mapping"] = f"{name} -> {value}" if name else value
+                packet["dns_answer_type"] = DNS_QTYPE_NAMES.get(
+                    first.get("qtype"), str(first.get("qtype") or "")
+                )
         summary = _dns_message_summary(prefix, parsed)
         if summary:
             packet["summary"] = summary
