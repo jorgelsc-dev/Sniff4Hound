@@ -74,7 +74,7 @@ jobs:
         uses: actions/configure-pages@v6
 
       # The published site is the landing page at the root with the MkDocs
-      # build nested under /docs/, so https://porthound.jorgelsc.dev/ serves
+      # build nested under /docs/, so https://sniff4hound.jorgelsc.dev/ serves
       # the landing and /docs/ serves the documentation.
       - name: Assemble the published site
         if: github.event.repository.visibility == 'public'

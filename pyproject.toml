@@ -21,8 +21,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://porthound.jorgelsc.dev"
-Documentation = "https://porthound.jorgelsc.dev"
+Homepage = "https://sniff4hound.jorgelsc.dev"
+Documentation = "https://sniff4hound.jorgelsc.dev"
 Repository = "https://github.com/jorgelsc-dev/Sniff4Hound"
 Issues = "https://github.com/jorgelsc-dev/Sniff4Hound/issues"
 Changelog = "https://github.com/jorgelsc-dev/Sniff4Hound/blob/main/CHANGELOG.md"
