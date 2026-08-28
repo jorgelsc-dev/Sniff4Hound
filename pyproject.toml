@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "JorgelSC Dev" }]
-dependencies = ["wsbuilder==0.25.8"]
+dependencies = ["wsbuilder>=0.25.8"]
 keywords = ["network", "sniffer", "packet-capture", "sqlite", "websocket", "monitoring"]
 classifiers = [
   "Development Status :: 3 - Alpha",
