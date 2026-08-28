@@ -1272,6 +1272,101 @@ function scheduleTableRefresh(payload) {
   }, WS_REFRESH_THROTTLE_MS);
 }
 
+// --- per-feed websocket streams --------------------------------------------
+// One socket per data feed, with everything the stream needs in its URL:
+//   /ws/<feed>?security_code=...&refresh=1000&limit=500&proto=arp
+//
+// Changing what you are watching closes the socket and opens another. That is
+// the point of putting the parameters in the URL rather than in a subscribe
+// message: a live connection can never end up serving a slice its URL does not
+// describe, so there is no state to get out of step on either side.
+
+function feedUrl(feed, params = {}) {
+  let base = state.apiBase;
+  if (!base && typeof window !== "undefined") {
+    base = window.location.origin;
+  }
+  const query = new URLSearchParams();
+  if (state.authToken) query.set("security_code", state.authToken);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    query.set(key, String(value));
+  });
+  const path = `/ws/${String(feed || "").replace(/^\/+|\/+$/g, "")}`;
+  try {
+    const parsed = new URL(base);
+    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+    parsed.pathname = path;
+    parsed.search = query.toString();
+    return parsed.toString();
+  } catch {
+    const host = typeof window !== "undefined" ? window.location.host : "127.0.0.1:45678";
+    const protocol =
+      typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : "ws";
+    return `${protocol}://${host}${path}?${query.toString()}`;
+  }
+}
+
+function openDataFeed(feed, params, onMessage) {
+  if (typeof window === "undefined" || typeof window.WebSocket === "undefined") {
+    return { update: () => false, close: () => {}, isOpen: () => false };
+  }
+  let socket = null;
+  let closedByCaller = false;
+
+  const connect = (next) => {
+    // Closed before opening the replacement, not after: two sockets for the
+    // same feed would both be pushed to, and the view would render whichever
+    // frame happened to arrive last.
+    if (socket) {
+      try {
+        socket.close(1000, "reconfigured");
+      } catch {
+        // Already closing; the new socket is what matters.
+      }
+      socket = null;
+    }
+    if (closedByCaller) return false;
+    try {
+      socket = new window.WebSocket(feedUrl(feed, next));
+    } catch {
+      socket = null;
+      return false;
+    }
+    socket.addEventListener("message", (event) => {
+      const payload = parseJsonSafe(event.data);
+      if (!payload || typeof payload !== "object") return;
+      if (String(payload.type || "") === "auth_required") {
+        handleUnauthorized(payload.message || "Session expired. Re-enter the security code.");
+        return;
+      }
+      try {
+        onMessage(payload);
+      } catch {
+        // A failing view must not tear down its own stream.
+      }
+    });
+    return true;
+  };
+
+  connect(params || {});
+  return {
+    update: (next) => connect(next || {}),
+    close: () => {
+      closedByCaller = true;
+      if (socket) {
+        try {
+          socket.close(1000, "closed");
+        } catch {
+          // ignore
+        }
+        socket = null;
+      }
+    },
+    isOpen: () => Boolean(socket && socket.readyState === window.WebSocket.OPEN),
+  };
+}
+
 function wsUrl() {
   let base = state.apiBase;
   if (!base && typeof window !== "undefined") {
@@ -1565,6 +1660,7 @@ export default {
   getRealtimeMapSnapshot,
   requestRealtimeMapSnapshot,
   subscribeProtocolSnapshot,
+  openDataFeed,
   startProtocolSnapshotStream,
   stopProtocolSnapshotStream,
   openAuthPrompt,

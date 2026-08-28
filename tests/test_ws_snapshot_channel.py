@@ -107,7 +107,8 @@ class SubscriptionSchedulingTests(unittest.TestCase):
         self.hub.subscribe_snapshot(self.ws, self._params(proto="dns"), 5.0)
         due = self.hub.due_subscriptions(time.monotonic())
         self.assertEqual(len(due), 1)
-        self.assertEqual(due[0][1]["proto"], "dns")
+        _ws, _feed, params = due[0]
+        self.assertEqual(params["proto"], "dns")
 
     def test_unsubscribing_stops_delivery(self):
         self.hub.subscribe_snapshot(self.ws, self._params(), 5.0)
@@ -248,6 +249,105 @@ class SnapshotPayloadTests(unittest.TestCase):
             capture_output=True, text=True, env=environment, timeout=120,
         )
         self.assertEqual(result.stdout.strip().splitlines()[-1], "0", result.stderr[-500:])
+
+
+class _FakeQuery(dict):
+    def get(self, key, default=None):
+        return dict.get(self, key, default)
+
+
+class _FakeRequest:
+    def __init__(self, **query):
+        self.query = _FakeQuery({k: v for k, v in query.items() if v is not None})
+
+
+class FeedRouteTests(unittest.TestCase):
+    """One websocket route per data feed, parameterised entirely by its URL."""
+
+    def setUp(self):
+        self.app = _app_module()
+
+    def test_every_feed_has_a_builder_and_a_route(self):
+        # A route without a builder would accept the connection and then fail
+        # on the first push, which the client sees as a silent dead stream.
+        for name in self.app.WS_FEEDS:
+            self.assertTrue(callable(self.app.WS_FEEDS[name]), f"{name} has no builder")
+
+    def test_every_feed_produces_a_payload(self):
+        params = self.app._normalize_feed_params(_FakeRequest(limit="10"))
+        for name in self.app.WS_FEEDS:
+            payload = self.app._feed_payload(name, params)
+            self.assertEqual(payload["type"], "feed_data")
+            self.assertEqual(payload["feed"], name)
+            self.assertIn("data", payload)
+            self.assertIn("generated_at", payload)
+
+    def test_an_unknown_feed_is_refused(self):
+        with self.assertRaises(KeyError):
+            self.app._feed_payload("../../etc/passwd", {})
+
+    def test_refresh_is_read_as_milliseconds(self):
+        self.assertAlmostEqual(
+            self.app._normalize_refresh(_FakeRequest(refresh="10000")), 10.0
+        )
+
+    def test_a_fast_refresh_is_clamped_to_the_floor(self):
+        # The example in the request was refresh=100. Served literally, that is
+        # ten aggregate queries a second per open socket.
+        for raw in ("100", "1", "0", "-5"):
+            self.assertEqual(
+                self.app._normalize_refresh(_FakeRequest(refresh=raw)),
+                self.app.WS_SNAPSHOT_MIN_INTERVAL_SECONDS,
+                f"refresh={raw} was not clamped",
+            )
+
+    def test_a_huge_refresh_is_capped(self):
+        self.assertEqual(
+            self.app._normalize_refresh(_FakeRequest(refresh="999999999")),
+            self.app.WS_SNAPSHOT_MAX_INTERVAL_SECONDS,
+        )
+
+    def test_a_missing_or_unparseable_refresh_falls_back(self):
+        for request in (_FakeRequest(), _FakeRequest(refresh="abc")):
+            self.assertEqual(
+                self.app._normalize_refresh(request),
+                self.app.WS_SNAPSHOT_DEFAULT_INTERVAL_SECONDS,
+            )
+
+    def test_limit_is_capped_like_the_http_endpoints(self):
+        params = self.app._normalize_feed_params(_FakeRequest(limit="100000"))
+        self.assertLess(params["limit"], 100000)
+
+    def test_all_is_normalised_to_no_protocol_filter(self):
+        self.assertEqual(self.app._normalize_feed_params(_FakeRequest(proto="all"))["proto"], "")
+
+    def test_the_protocol_filter_is_normalised(self):
+        self.assertEqual(self.app._normalize_feed_params(_FakeRequest(proto="  ARP "))["proto"], "arp")
+
+
+class FeedSubscriptionTests(unittest.TestCase):
+    def setUp(self):
+        self.app = _app_module()
+        self.hub = self.app.hub
+        self.ws = _FakeWS()
+        self.hub.register(self.ws)
+        self.addCleanup(self.hub.unregister, self.ws)
+
+    def test_the_subscription_remembers_which_feed_it_serves(self):
+        self.hub.subscribe_snapshot(self.ws, {"proto": "", "limit": 10}, 5.0, feed="tags")
+        due = self.hub.due_subscriptions(time.monotonic())
+        self.assertEqual(len(due), 1)
+        _ws, feed, _params = due[0]
+        self.assertEqual(feed, "tags")
+
+    def test_the_multiplexed_channel_keeps_its_own_message_type(self):
+        # The Protocols view already listens for protocol_snapshot; the feed
+        # routes must not change that envelope out from under it.
+        payload = self.app._protocol_snapshot_payload(
+            {"proto": "arp", "mode": "", "interface": "", "search": "", "since": "", "limit": 10}
+        )
+        self.assertEqual(payload["type"], "protocol_snapshot")
+        self.assertIn("snapshot", payload)
 
 
 if __name__ == "__main__":
