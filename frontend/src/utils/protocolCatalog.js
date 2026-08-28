@@ -14,6 +14,21 @@ export const LAYERS = [
   { key: "other", label: "Residual", description: "Unclassified or undecodable traffic.", color: "error" },
 ];
 
+// How a protocol picks its layer. Written down because the table drifted
+// without it: QUIC sat under Application although it is what HTTP/3 rides on,
+// and the tunnels were split down the middle - GRE, ESP, AH, IP-in-IP and L2TP
+// under Network while PPTP, OpenVPN, WireGuard, VXLAN and Geneve sat under
+// Application, despite doing the same job.
+//
+//   link         frames that never leave the segment, and the protocols that
+//                manage it (ARP, STP, LLDP, EAPOL...)
+//   network      addressing, routing and control - and anything that carries
+//                another network's traffic inside it, which is what every
+//                tunnel and overlay does, whichever port it rides on
+//   transport    what applications open a connection *on*: TCP, UDP, SCTP,
+//                DCCP, UDP-Lite and QUIC
+//   application  the services that ride on a transport
+
 // [layer, icon, label, description]. Anything not listed falls back to the
 // layer default, so adding a port to app_protocols.py yields a usable card
 // without touching this table.
@@ -73,7 +88,7 @@ const CATALOG = {
   http: ["application", "mdi-web", "HTTP", "Cleartext web requests: methods, hosts and paths."],
   "http-proxy": ["application", "mdi-web-box", "HTTP proxy", "Traffic addressed to a forward proxy."],
   tls: ["application", "mdi-lock-check", "TLS", "Encrypted sessions, identified by SNI where visible."],
-  quic: ["application", "mdi-rocket-launch", "QUIC", "HTTP/3 transport over UDP."],
+  quic: ["transport", "mdi-rocket-launch", "QUIC", "HTTP/3 transport over UDP."],
 
   // --- application: mail --------------------------------------------------
   smtp: ["application", "mdi-email-fast", "SMTP", "Mail submission and relay."],
@@ -97,7 +112,7 @@ const CATALOG = {
   rpcbind: ["application", "mdi-cog-transfer", "rpcbind", "ONC RPC portmapper lookups."],
   git: ["application", "mdi-git", "Git", "Git protocol transfers."],
   socks: ["application", "mdi-shuffle-variant", "SOCKS", "Proxied connections."],
-  pptp: ["application", "mdi-tunnel", "PPTP", "Legacy VPN control channel."],
+  pptp: ["network", "mdi-tunnel", "PPTP", "Legacy VPN control channel."],
 
   // --- application: directory, auth & infrastructure ----------------------
   ldap: ["application", "mdi-account-search", "LDAP", "Directory queries in the clear."],
@@ -136,10 +151,10 @@ const CATALOG = {
 
   // --- application: tunnels & overlays ------------------------------------
   isakmp: ["application", "mdi-key-chain", "ISAKMP/IKE", "IPsec key negotiation."],
-  openvpn: ["application", "mdi-vpn", "OpenVPN", "VPN tunnel traffic."],
-  wireguard: ["application", "mdi-vpn", "WireGuard", "VPN tunnel traffic."],
-  vxlan: ["application", "mdi-layers-triple", "VXLAN", "Layer 2 overlay encapsulation."],
-  geneve: ["application", "mdi-layers-triple", "Geneve", "Network virtualisation encapsulation."],
+  openvpn: ["network", "mdi-vpn", "OpenVPN", "VPN tunnel traffic."],
+  wireguard: ["network", "mdi-vpn", "WireGuard", "VPN tunnel traffic."],
+  vxlan: ["network", "mdi-layers-triple", "VXLAN", "Layer 2 overlay encapsulation."],
+  geneve: ["network", "mdi-layers-triple", "Geneve", "Network virtualisation encapsulation."],
 
   // --- application: industrial --------------------------------------------
   modbus: ["application", "mdi-factory", "Modbus", "PLC reads and writes - writes change physical state."],
