@@ -264,6 +264,13 @@ def extract_tls_sni(payload: bytes) -> str:
         return ""
 
 
+ARP_OPERATIONS = {
+    1: "request", 2: "reply",
+    3: "RARP request", 4: "RARP reply",
+    8: "InARP request", 9: "InARP reply",
+}
+ARP_HW_TYPES = {1: "Ethernet", 6: "IEEE 802", 15: "Frame Relay", 16: "ATM", 17: "HDLC"}
+
 DNS_QTYPE_NAMES = {
     1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR", 15: "MX",
     16: "TXT", 28: "AAAA", 33: "SRV", 255: "ANY",
@@ -1474,12 +1481,34 @@ class Sniffer:
             packet["banner_text"] = packet["payload_text"]
             return
         packet["proto"] = "arp"
-        packet["arp_opcode"] = int.from_bytes(payload[6:8], "big")
+        opcode = int.from_bytes(payload[6:8], "big")
+        packet["arp_opcode"] = opcode
+        # The ARP payload carries its own sender/target hardware addresses,
+        # which are NOT the Ethernet header's. Only reading the frame header
+        # loses the pair that matters: a host claiming an address it does not
+        # own announces the victim's IP with its own MAC inside the payload,
+        # and the mismatch below is the whole tell.
+        sender_mac = format_mac(payload[8:14])
+        target_mac = format_mac(payload[18:24])
         packet["src_ip"] = str(ipaddress.IPv4Address(payload[14:18]))
         packet["dst_ip"] = str(ipaddress.IPv4Address(payload[24:28]))
         packet["src_port"] = 0
         packet["dst_port"] = 0
-        packet["summary"] = f"ARP {packet['src_ip']} → {packet['dst_ip']}"
+        packet["arp_operation"] = ARP_OPERATIONS.get(opcode, f"opcode {opcode}")
+        packet["arp_sender_mac"] = sender_mac
+        packet["arp_target_mac"] = target_mac
+        packet["arp_hardware_type"] = ARP_HW_TYPES.get(
+            int.from_bytes(payload[0:2], "big"), str(int.from_bytes(payload[0:2], "big"))
+        )
+        eth_src = str(packet.get("eth_src") or "").lower()
+        if eth_src and sender_mac and sender_mac.lower() != eth_src:
+            # Legitimate stacks put the same address in both places. A
+            # disagreement is either a spoofing attempt or a proxy-ARP device,
+            # and both are worth surfacing rather than leaving in the bytes.
+            packet["arp_mac_mismatch"] = f"{eth_src} announces {sender_mac}"
+        packet["summary"] = (
+            f"ARP {packet['arp_operation']} {packet['src_ip']} ({sender_mac}) -> {packet['dst_ip']}"
+        )
         packet["payload_text"] = self._interpret_payload(packet, payload)
         packet["banner_text"] = packet["payload_text"] or packet["summary"]
 
@@ -1684,6 +1713,7 @@ class Sniffer:
             group = ""
         summary = f"IGMP {type_name}"
         if group and group != "0.0.0.0":
+            packet["igmp_group"] = group
             summary += f" group={group}"
         packet["summary"] = summary
         packet["banner_text"] = summary
@@ -1792,9 +1822,20 @@ class Sniffer:
                     hostname = value.decode("ascii", errors="replace")
                 elif code == 60:
                     vendor_class = value.decode("ascii", errors="replace")
-            if msg_type is not None:
-                packet["dhcp_msg_type"] = msg_type
             type_name = DHCP_MSG_TYPES.get(msg_type, f"type {msg_type}" if msg_type is not None else "message")
+            if msg_type is not None:
+                # The readable name, not the raw number: "DISCOVER" is what a
+                # reader needs, and the number is recoverable from it.
+                packet["dhcp_msg_type"] = type_name
+            # These three are the DHCP lease conversation's whole value for an
+            # asset inventory - who asked, calling itself what, for which
+            # address - and they only ever reached the summary string.
+            if hostname:
+                packet["dhcp_hostname"] = hostname
+            if requested_ip:
+                packet["dhcp_requested_ip"] = requested_ip
+            if vendor_class:
+                packet["dhcp_vendor_class"] = vendor_class
             parts = [f"DHCP {type_name}"]
             if hostname:
                 parts.append(f"host={hostname}")
@@ -2012,6 +2053,8 @@ class Sniffer:
                 mode = parts[1].decode("ascii", errors="replace") if len(parts) > 1 and parts[1] else ""
                 if filename:
                     packet["tftp_filename"] = filename
+                if mode:
+                    packet["tftp_mode"] = mode
                     summary += f" file='{filename}'"
                 if mode:
                     summary += f" mode={mode}"
@@ -2046,6 +2089,8 @@ class Sniffer:
                 offset += attr_len
             if username:
                 packet["radius_username"] = username
+            if nas_ip:
+                packet["radius_nas_ip"] = nas_ip
             summary = f"RADIUS {code_name}"
             if username:
                 summary += f" user='{username}'"

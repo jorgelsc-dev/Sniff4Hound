@@ -921,6 +921,21 @@ export default {
         .filter((layer) => layer.protocols.length > 0);
     },
     packetColumns() {
+      // Driven by the snapshot: which columns carry signal is a per-protocol
+      // decision, made once in sniff4hound/protocol_facets.py alongside the
+      // facets, rather than a single list rendered for all 108 protocols -
+      // which is why an ARP listing used to show four always-empty columns
+      // (ports, state) and none of the addresses the ARP payload carries.
+      // The fallback keeps the previous shape for a snapshot that predates
+      // the field, so the table never renders headerless.
+      const declared = Array.isArray(this.snapshot.columns) ? this.snapshot.columns : [];
+      if (declared.length) {
+        return declared.map((column) => ({
+          key: column.key,
+          label: column.label,
+          sortable: column.key !== "summary",
+        }));
+      }
       return [
         { key: "updated_at", label: "Seen" },
         { key: "interface", label: "Interface" },

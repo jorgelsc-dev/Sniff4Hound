@@ -162,6 +162,25 @@ DETAIL_KEYS = frozenset(
         "eapol_type",
         "dns_kind", "dns_qtype", "dns_rcode", "dns_answer", "dns_answer_type",
         "dns_mapping",
+        "arp_operation", "arp_sender_mac", "arp_target_mac", "arp_hardware_type",
+        "arp_mac_mismatch",
+        # Already assigned by the sniffer's own parsers and dropped until now.
+        # snmp_community and the usernames are credentials, but they were
+        # already being written verbatim into `summary` by the same parsers, so
+        # whitelisting them here changes what can be queried, not what is
+        # stored. Passwords are deliberately absent: the MQTT parser records
+        # only whether one was present.
+        "dhcp_msg_type", "dhcp_hostname", "dhcp_requested_ip", "dhcp_vendor_class",
+        "snmp_community", "snmp_version",
+        "radius_username", "radius_nas_ip",
+        "tftp_filename", "tftp_mode",
+        "mqtt_username", "mqtt_client_id",
+        "modbus_function_code", "modbus_unit_id", "modbus_is_write",
+        "dnp3_function_code", "dnp3_src", "dnp3_dest",
+        "syslog_facility", "syslog_severity",
+        "llc_dsap", "llc_ssap", "llc_control", "llc_length",
+        "llc_snap_oui", "llc_snap_ethertype",
+        "igmp_group",
     }
 )
 
@@ -312,12 +331,17 @@ PROTOCOL_FACETS: dict[str, tuple] = {
     ),
     "igmp": (
         ("icmp_type", "IGMP types", "Queries, reports and leaves."),
-        ("dst_ip", "Multicast groups", "Groups being joined or queried."),
+        ("igmp_group", "Groups", "The group carried in the message, not the frame destination."),
+        ("dst_ip", "Destinations", "Where the message was addressed."),
     ),
     "arp": (
-        ("arp_opcode", "Operation", "Who-has requests versus is-at replies."),
-        ("eth_src", "Sender MACs", "A MAC answering for many IPs is spoofing."),
+        ("arp_operation", "Operation", "Who-has requests versus is-at replies."),
+        ("arp_mac_mismatch", "Ethernet/ARP mismatches", "The frame's MAC disagreeing with the one announced inside is how spoofing looks."),
+        ("arp_sender_mac", "Announced sender MACs", "The MAC claimed inside the payload, which is what peers cache."),
+        ("src_ip", "Announced sender IPs", "One MAC claiming several is a takeover attempt."),
         ("dst_ip", "Targets asked about", "Sequential targets mean a sweep."),
+        ("arp_target_mac", "Target MACs", "All-zero in a request, filled in a reply."),
+        ("eth_src", "Frame source MACs", "The Ethernet header, to compare against the announced one."),
     ),
     "rarp": (
         ("arp_opcode", "Operation", "Reverse address resolution exchanges."),
@@ -337,8 +361,16 @@ PROTOCOL_FACETS: dict[str, tuple] = {
         ("eth_src", "Bridge MACs", "A new root bridge is a topology change."),
         ("interface", "Interfaces", "Where BPDUs are arriving."),
     ),
-    "llc": (("eth_src", "Source MACs", "Stations using bare LLC."),),
-    "llc-snap": (("eth_src", "Source MACs", "Stations using LLC/SNAP."),),
+    "llc": (
+        ("llc_dsap", "Destination SAPs", "Which upper-layer service the frame targets."),
+        ("llc_ssap", "Source SAPs", "Which service emitted it."),
+        ("eth_src", "Source MACs", "Stations using bare LLC."),
+    ),
+    "llc-snap": (
+        ("llc_snap_oui", "Vendor OUIs", "A non-zero OUI means a vendor-private protocol."),
+        ("llc_snap_ethertype", "Encapsulated types", "What rides inside the SNAP header."),
+        ("eth_src", "Source MACs", "Stations using LLC/SNAP."),
+    ),
     "lldp": (
         ("eth_src", "Advertising MACs", "Devices announcing themselves."),
         ("lldp_port_id", "Port IDs", "Which switch port each neighbour sits on."),
@@ -394,7 +426,10 @@ PROTOCOL_FACETS: dict[str, tuple] = {
     ),
     # --- application: infrastructure ---------------------------------------
     "dhcp": (
-        ("summary", "Message types", "DISCOVER/OFFER/REQUEST/ACK balance."),
+        ("dhcp_msg_type", "Message types", "DISCOVER/OFFER/REQUEST/ACK balance."),
+        ("dhcp_hostname", "Client hostnames", "What each device calls itself - the cheapest asset inventory on the wire."),
+        ("dhcp_vendor_class", "Vendor classes", "Identifies the OS or appliance family behind the lease."),
+        ("dhcp_requested_ip", "Requested addresses", "A client insisting on an address it does not hold is worth a look."),
         ("eth_src", "Client MACs", "Which hardware is asking for a lease."),
     ),
     "ntp": (
@@ -403,10 +438,27 @@ PROTOCOL_FACETS: dict[str, tuple] = {
         ("ntp_stratum", "Stratum", "Stratum 0 or 16 means an unsynchronised source."),
         ("src_ip", "Time sources", "Servers being polled."),
     ),
-    "snmp": (("src_ip", "Agents and managers", "Who is polling whom."), ("dst_port", "Ports", "161 polling versus 162 traps.")),
-    "syslog": (("src_ip", "Log sources", "Hosts shipping their logs."),),
-    "tftp": (("src_ip", "Peers", "Hosts moving files without auth."),),
-    "radius": (("src_ip", "NAS clients", "Devices authenticating users."),),
+    "snmp": (
+        ("snmp_community", "Community strings", "'public' and 'private' are unchanged defaults, and they are credentials."),
+        ("snmp_version", "Versions", "v1 and v2c send the community in clear text."),
+        ("src_ip", "Agents and managers", "Who is polling whom."),
+        ("dst_port", "Ports", "161 polling versus 162 traps."),
+    ),
+    "syslog": (
+        ("syslog_severity", "Severity", "A burst of emerg/alert is the first sign of something breaking."),
+        ("syslog_facility", "Facility", "Which subsystem is talking - auth is the one to watch."),
+        ("src_ip", "Log sources", "Hosts shipping their logs."),
+    ),
+    "tftp": (
+        ("tftp_filename", "Filenames", "TFTP has no authentication, so the name is the whole access control."),
+        ("tftp_mode", "Transfer modes", "netascii versus octet."),
+        ("src_ip", "Peers", "Hosts moving files without auth."),
+    ),
+    "radius": (
+        ("radius_username", "Usernames", "Repeated failures for one name are a spray."),
+        ("radius_nas_ip", "NAS addresses", "Which access device forwarded the request."),
+        ("src_ip", "NAS clients", "Devices authenticating users."),
+    ),
     "kerberos": (
         ("kerberos_message", "Message types", "AS-REQ bursts are roasting attempts."),
         ("src_ip", "Principals", "Hosts requesting tickets."),
@@ -445,9 +497,23 @@ PROTOCOL_FACETS: dict[str, tuple] = {
         ("bgp_message", "Message types", "Repeated OPEN means a session that will not settle."),
         ("src_ip", "Peers", "Routers in the BGP session."),
     ),
-    "mqtt": (("dst_ip", "Brokers", "Where clients publish."),),
-    "modbus": (("dst_ip", "PLC endpoints", "Devices being commanded."), ("summary", "Function codes", "Writes are more sensitive than reads.")),
-    "dnp3": (("dst_ip", "Outstations", "Devices being polled."), ("summary", "Function codes", "Control requests versus reads.")),
+    "mqtt": (
+        ("mqtt_client_id", "Client IDs", "How each publisher identifies itself."),
+        ("mqtt_username", "Usernames", "Present only when the client authenticates at all."),
+        ("dst_ip", "Brokers", "Where clients publish."),
+    ),
+    "modbus": (
+        ("modbus_function_code", "Function codes", "Writes are more sensitive than reads."),
+        ("modbus_is_write", "Reads versus writes", "A write to a PLC changes physical state."),
+        ("modbus_unit_id", "Unit IDs", "Which slave device behind the gateway."),
+        ("dst_ip", "PLC endpoints", "Devices being commanded."),
+    ),
+    "dnp3": (
+        ("dnp3_function_code", "Function codes", "Control requests versus reads."),
+        ("dnp3_src", "Source addresses", "The DNP3 link address, not the IP."),
+        ("dnp3_dest", "Destination addresses", "Which outstation is being addressed."),
+        ("dst_ip", "Outstations", "Devices being polled."),
+    ),
     "vxlan": (
         ("vxlan_vni", "Segment IDs", "Which overlay segments cross this link."),
         ("src_ip", "Tunnel endpoints", "VTEPs carrying overlay traffic."),
@@ -569,6 +635,177 @@ PROTOCOL_FACETS: dict[str, tuple] = {
         ("eth_src", "Source MACs", "Who is emitting frames the parser rejects."),
     ),
 }
+
+
+# --- packet table columns --------------------------------------------------
+# The rows table used to render the same twelve columns for all 108 protocols,
+# so an ARP listing spent four of them on src_port, dst_port, tcp_flags and
+# state - all constant - and showed none of the fields the ARP payload
+# actually carries. These declare what each protocol is worth showing.
+
+_BASE_COLUMNS = (
+    ("updated_at", "Seen"),
+    ("interface", "Interface"),
+    ("direction", "Direction"),
+)
+_ENDPOINT_COLUMNS = (
+    ("src_ip", "Src IP"),
+    ("src_port", "Src Port"),
+    ("dst_ip", "Dst IP"),
+    ("dst_port", "Dst Port"),
+)
+_TAIL_COLUMNS = (("length", "Size"), ("summary", "Summary"))
+
+DEFAULT_ROW_COLUMNS = _BASE_COLUMNS + (("state", "State"),) + _ENDPOINT_COLUMNS + _TAIL_COLUMNS
+
+PROTOCOL_ROW_COLUMNS: dict[str, tuple] = {
+    # ARP has no ports and no connection state; what it does have is two
+    # hardware addresses and two protocol addresses per frame.
+    "arp": _BASE_COLUMNS + (
+        ("arp_operation", "Operation"),
+        ("eth_src", "Frame MAC"),
+        ("arp_sender_mac", "Announced MAC"),
+        ("src_ip", "Sender IP"),
+        ("arp_target_mac", "Target MAC"),
+        ("dst_ip", "Target IP"),
+        ("arp_mac_mismatch", "Mismatch"),
+    ),
+    "rarp": _BASE_COLUMNS + (
+        ("arp_operation", "Operation"),
+        ("eth_src", "Frame MAC"),
+        ("arp_sender_mac", "Announced MAC"),
+        ("src_ip", "Sender IP"),
+        ("dst_ip", "Target IP"),
+    ),
+    "http": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("http_method", "Method"),
+        ("http_status", "Status"),
+        ("http_host", "Host"),
+        ("http_path", "Path"),
+        ("http_server", "Server"),
+        ("http_user_agent", "User agent"),
+    ),
+    "dns": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("dns_kind", "Kind"),
+        ("dns_qtype", "Type"),
+        ("domain", "Name"),
+        ("dns_answer", "Answer"),
+        ("dns_rcode", "Code"),
+    ),
+    "tls": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("domain", "SNI"),
+        ("tls_version", "Version"),
+        ("tls_handshake", "Handshake"),
+    ),
+    "quic": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("domain", "SNI"),
+        ("quic_version", "Version"),
+        ("quic_packet", "Packet"),
+    ),
+    "ssh": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("ssh_version", "Version"),
+        ("ssh_software", "Software"),
+    ),
+    "sip": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("sip_method", "Method"),
+        ("sip_from", "From"),
+        ("sip_to", "To"),
+    ),
+    "smb": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("smb_command", "Command"),
+        ("smb_version", "Dialect"),
+    ),
+    "ntp": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("ntp_mode", "Mode"),
+        ("ntp_stratum", "Stratum"),
+        ("ntp_amplification_candidate", "Amplifier"),
+    ),
+    "icmp": _BASE_COLUMNS + (
+        ("src_ip", "Src IP"),
+        ("dst_ip", "Dst IP"),
+        ("icmp_type", "Type"),
+        ("icmp_code", "Code"),
+        ("ttl", "TTL"),
+    ) + _TAIL_COLUMNS,
+    "icmpv6": _BASE_COLUMNS + (
+        ("src_ip", "Src IP"),
+        ("dst_ip", "Dst IP"),
+        ("icmp_type", "Type"),
+        ("icmp_code", "Code"),
+        ("hop_limit", "Hop limit"),
+    ) + _TAIL_COLUMNS,
+    "tcp": _BASE_COLUMNS + (("state", "State"),) + _ENDPOINT_COLUMNS + (
+        ("tcp_flags", "Flags"),
+        ("ttl", "TTL"),
+    ) + _TAIL_COLUMNS,
+    # Link-layer protocols have no IP addressing at all.
+    "stp": _BASE_COLUMNS + (("eth_src", "Bridge MAC"), ("eth_dst", "Dst MAC")) + _TAIL_COLUMNS,
+    "lldp": _BASE_COLUMNS + (("eth_src", "Neighbour MAC"), ("lldp_port_id", "Port ID")) + _TAIL_COLUMNS,
+    "cdp": _BASE_COLUMNS + (
+        ("eth_src", "Neighbour MAC"),
+        ("cdp_device_id", "Device"),
+        ("cdp_port_id", "Port"),
+        ("cdp_software", "Software"),
+    ),
+    "eapol": _BASE_COLUMNS + (("eth_src", "Supplicant MAC"), ("eapol_type", "Type")) + _TAIL_COLUMNS,
+    "dhcp": _BASE_COLUMNS + (
+        ("dhcp_msg_type", "Message"),
+        ("eth_src", "Client MAC"),
+        ("dhcp_hostname", "Hostname"),
+        ("dhcp_vendor_class", "Vendor"),
+        ("dhcp_requested_ip", "Requested IP"),
+    ),
+    "snmp": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("snmp_version", "Version"),
+        ("snmp_community", "Community"),
+    ),
+    "radius": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("radius_username", "Username"),
+        ("radius_nas_ip", "NAS IP"),
+    ),
+    "tftp": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("tftp_filename", "Filename"),
+        ("tftp_mode", "Mode"),
+    ),
+    "mqtt": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("mqtt_client_id", "Client ID"),
+        ("mqtt_username", "Username"),
+    ),
+    "modbus": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("modbus_function_code", "Function"),
+        ("modbus_is_write", "Write"),
+        ("modbus_unit_id", "Unit"),
+    ),
+    "dnp3": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("dnp3_function_code", "Function"),
+        ("dnp3_src", "Link src"),
+        ("dnp3_dest", "Link dst"),
+    ),
+    "syslog": _BASE_COLUMNS + _ENDPOINT_COLUMNS + (
+        ("syslog_severity", "Severity"),
+        ("syslog_facility", "Facility"),
+    ) + _TAIL_COLUMNS,
+    "igmp": _BASE_COLUMNS + (
+        ("src_ip", "Src IP"),
+        ("icmp_type", "Type"),
+        ("igmp_group", "Group"),
+        ("dst_ip", "Dst IP"),
+    ) + _TAIL_COLUMNS,
+}
+
+
+def resolve_row_columns(proto: str) -> tuple:
+    """Columns for the packet table of one protocol.
+
+    Same whitelist discipline as resolve_facets: every key must be a real
+    column or a declared detail key, so a typo drops the column instead of
+    reaching the client as an unreadable field name.
+    """
+    columns = PROTOCOL_ROW_COLUMNS.get(str(proto or "").strip().lower(), DEFAULT_ROW_COLUMNS)
+    return tuple(
+        (key, label) for key, label in columns
+        if key in PACKET_COLUMNS or key in DETAIL_KEYS or key == "updated_at"
+    )
 
 
 def resolve_facets(proto: str) -> tuple:
