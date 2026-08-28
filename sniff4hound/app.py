@@ -281,13 +281,14 @@ class WebSocketHub:
             }
         return client_id
 
-    def subscribe_snapshot(self, ws, params: dict, interval: float):
-        """Ask for a periodic snapshot on this connection, replacing any prior one."""
+    def subscribe_snapshot(self, ws, params: dict, interval: float, feed: str = "protocols"):
+        """Ask for a periodic feed on this connection, replacing any prior one."""
         with self._lock:
             client = self._clients.get(id(ws))
             if client is None:
                 return False
             client["subscription"] = {
+                "feed": str(feed or "protocols"),
                 "params": dict(params),
                 "interval": float(interval),
                 # Due immediately: the first delivery is what replaces the
@@ -318,7 +319,7 @@ class WebSocketHub:
                 if subscription["due_at"] > now:
                     continue
                 subscription["due_at"] = now + subscription["interval"]
-                due.append((ws, dict(subscription["params"])))
+                due.append((ws, subscription.get("feed", "protocols"), dict(subscription["params"])))
         return due
 
     def send_to(self, ws, payload: dict) -> bool:
@@ -2493,19 +2494,95 @@ def _apply_api_auth_guards():
         route.handler = guarded_handler
 
 
+# --- data feeds -------------------------------------------------------------
+# One entry per /ws/<name> route. Each builder receives the already-normalised
+# query parameters and returns the same payload its HTTP counterpart does, so a
+# view can move from polling to streaming without reshaping anything it renders.
+
+def _feed_protocols(p: dict):
+    return store.protocol_snapshot(
+        proto=p["proto"], mode=p["mode"], interface=p["interface"],
+        search=p["search"], since=p["since"], limit=p["limit"],
+    )
+
+
+def _feed_ports(p: dict):
+    return store.list_packets(
+        proto=p["proto"], mode=p["mode"], interface=p["interface"],
+        search=p["search"], since=p["since"], limit=p["limit"],
+    )
+
+
+def _feed_banners(p: dict):
+    return store.list_payloads(
+        proto=p["proto"], mode=p["mode"], interface=p["interface"],
+        search=p["search"], since=p["since"], limit=p["limit"],
+    )
+
+
+def _feed_tags(p: dict):
+    return store.list_tags(proto=p["proto"], search=p["search"], since=p["since"], limit=p["limit"])
+
+
+def _feed_targets(p: dict):
+    return store.list_sessions(proto=p["proto"], search=p["search"], since=p["since"], limit=p["limit"])
+
+
+def _feed_dashboard(_p: dict):
+    return store.dashboard_snapshot(ws_clients=hub.list_clients())
+
+
+def _feed_analytics(_p: dict):
+    return store.analytics_snapshot()
+
+
+def _feed_endpoints(_p: dict):
+    return store.endpoint_catalog(ENDPOINTS)
+
+
+def _feed_map(p: dict):
+    return store.map_snapshot(limit=p["limit"])
+
+
+WS_FEEDS = {
+    "protocols": _feed_protocols,
+    "ips": _feed_ports,
+    "ports": _feed_ports,
+    "banners": _feed_banners,
+    "tags": _feed_tags,
+    "targets": _feed_targets,
+    "dashboard": _feed_dashboard,
+    "analytics": _feed_analytics,
+    "endpoints": _feed_endpoints,
+    "map": _feed_map,
+}
+
+
+def _feed_payload(feed: str, params: dict) -> dict:
+    builder = WS_FEEDS.get(feed)
+    if builder is None:
+        raise KeyError(feed)
+    return {
+        "type": "feed_data",
+        "feed": feed,
+        "protocol": params.get("proto") or "all",
+        "params": dict(params),
+        "data": builder(params),
+        "generated_at": utc_now(),
+    }
+
+
 def _protocol_snapshot_payload(params: dict) -> dict:
-    """The same slice the HTTP endpoint returns, for one subscription."""
+    """The protocol slice in the shape the multiplexed /ws/ channel emits.
+
+    Kept distinct from _feed_payload: the /ws/ subscribe action predates the
+    per-feed routes and its message type is what the Protocols view already
+    listens for, so changing it here would break that view for no gain.
+    """
     return {
         "type": "protocol_snapshot",
         "protocol": params.get("proto") or "all",
-        "snapshot": store.protocol_snapshot(
-            proto=params.get("proto") or "",
-            mode=params.get("mode") or "",
-            interface=params.get("interface") or "",
-            search=params.get("search") or "",
-            since=params.get("since") or "",
-            limit=int(params.get("limit") or 250),
-        ),
+        "snapshot": _feed_protocols(params),
         "generated_at": utc_now(),
     }
 
@@ -2523,15 +2600,20 @@ def _snapshot_pusher_loop(stop_event: threading.Event):
             due = hub.due_subscriptions(time.monotonic())
         except Exception:
             continue
-        for ws, params in due:
+        for ws, feed, params in due:
             try:
-                payload = _protocol_snapshot_payload(params)
+                payload = (
+                    _protocol_snapshot_payload(params)
+                    if feed == "protocols" and params.get("_legacy_channel")
+                    else _feed_payload(feed, params)
+                )
             except Exception as exc:
                 # A failed query must not kill the pusher for every other
                 # client, and the subscriber has to learn that its slice
                 # stopped updating rather than silently seeing stale data.
                 hub.send_to(ws, {
-                    "type": "protocol_snapshot_error",
+                    "type": "protocol_snapshot_error" if params.get("_legacy_channel") else "feed_error",
+                    "feed": feed,
                     "protocol": params.get("proto") or "all",
                     "message": str(exc)[:200],
                     "generated_at": utc_now(),
@@ -2567,6 +2649,129 @@ def _ensure_snapshot_pusher():
         )
         _snapshot_pusher_thread.start()
         return _snapshot_pusher_thread
+
+
+# --- one websocket route per data feed --------------------------------------
+# /ws/<feed>?security_code=...&refresh=1000&limit=500&proto=arp
+#
+# Everything the stream needs is in the URL, so changing what you are watching
+# means closing the socket and opening another - there is no subscribe message
+# and no way for a connection to end up serving a slice its URL does not
+# describe. The multiplexed /ws/ channel stays for the clients already using it.
+
+def _normalize_feed_params(request) -> dict:
+    query = getattr(request, "query", None) or {}
+    proto = normalize_protocol_name(query.get("proto") or "")
+    return {
+        "proto": "" if proto in ("", "all") else proto,
+        "mode": str(query.get("mode") or "").strip().lower(),
+        "interface": str(query.get("interface") or "").strip(),
+        "search": str(query.get("search") or "").strip(),
+        "since": str(query.get("since") or "").strip(),
+        "limit": _normalize_limit(query.get("limit"), default=250),
+    }
+
+
+def _normalize_refresh(request) -> float:
+    """`refresh` is milliseconds, clamped to the same bounds as the channel.
+
+    Milliseconds because that is what a caller writing `refresh=1000` means,
+    and clamped because the value decides how often aggregate queries run
+    against the whole filtered set: unbounded, `refresh=1` would pin the
+    database for as long as the socket stays open.
+    """
+    query = getattr(request, "query", None) or {}
+    raw = query.get("refresh")
+    if raw in (None, ""):
+        return WS_SNAPSHOT_DEFAULT_INTERVAL_SECONDS
+    seconds = safe_float(raw, WS_SNAPSHOT_DEFAULT_INTERVAL_SECONDS * 1000.0) / 1000.0
+    return max(WS_SNAPSHOT_MIN_INTERVAL_SECONDS, min(WS_SNAPSHOT_MAX_INTERVAL_SECONDS, seconds))
+
+
+def _make_feed_handler(feed_name: str):
+    def feed_handler(ws, request=None):
+        started_at = time.perf_counter()
+        if REQUIRE_AUTH:
+            denied = _guard_request_auth(request, allow_query=True)
+            if denied is not None:
+                status = int(getattr(denied, "status", 401) or 401)
+                try:
+                    ws.send_text(_json_text({
+                        "type": "auth_required",
+                        "status": status,
+                        "message": (
+                            "Too many failed authentication attempts"
+                            if status == 429
+                            else "Invalid or missing security code"
+                        ),
+                        "generated_at": utc_now(),
+                    }))
+                except Exception:
+                    pass
+                try:
+                    ws.close(WS_AUTH_CLOSE_CODE, "Unauthorized")
+                except Exception:
+                    pass
+                access_log.log_websocket_open(request)
+                access_log.log_websocket_close(request, WS_AUTH_CLOSE_CODE, started_at)
+                return
+
+        access_log.log_websocket_open(request)
+        close_code = 1000
+        hub.register(ws)
+        try:
+            params = _normalize_feed_params(request)
+            interval = _normalize_refresh(request)
+            hub.subscribe_snapshot(ws, params, interval, feed=feed_name)
+            _ensure_snapshot_pusher()
+            # Echoes what the server actually accepted, since refresh and limit
+            # are both clamped: a client asking for refresh=1 has to be able to
+            # see that it will be served at the floor instead.
+            ws.send_text(_json_text({
+                "type": "feed_subscribed",
+                "feed": feed_name,
+                "params": params,
+                "refresh_ms": int(interval * 1000),
+                "generated_at": utc_now(),
+            }))
+            # The push happens on the shared pusher thread; this loop exists to
+            # notice the client going away. Without it the connection would
+            # keep its subscription until the next failed send.
+            while True:
+                frame = ws.recv_frame()
+                opcode = getattr(frame, "opcode", 0)
+                payload = getattr(frame, "payload", b"")
+                if opcode == 0x8:
+                    code, reason = parse_close_payload(payload)
+                    close_code = code or 1000
+                    try:
+                        ws.close(close_code, reason or "")
+                    except Exception:
+                        pass
+                    break
+                if opcode == 0x9:
+                    try:
+                        ws.send_pong(payload)
+                    except Exception:
+                        break
+                hub.touch(ws)
+        except Exception:
+            pass
+        finally:
+            hub.unregister(ws)
+            access_log.log_websocket_close(request, close_code, started_at)
+
+    feed_handler.__name__ = f"ws_feed_{feed_name}"
+    return feed_handler
+
+
+for _feed_name in WS_FEEDS:
+    app.ws(
+        f"/ws/{_feed_name}",
+        keepalive_interval=WS_KEEPALIVE_INTERVAL_SECONDS,
+        pong_timeout=WS_PONG_TIMEOUT_SECONDS,
+        ping_payload=b"sniff4hound",
+    )(_make_feed_handler(_feed_name))
 
 
 @app.ws(
@@ -2682,7 +2887,11 @@ def websocket_handler(ws, request=None):
                     "since": str(data.get("since") or "").strip(),
                     "limit": _normalize_limit(data.get("limit"), default=250),
                 }
-                hub.subscribe_snapshot(ws, params, interval)
+                # Marked so the pusher keeps emitting the protocol_snapshot
+                # message this channel has always sent, rather than the
+                # feed_data envelope the /ws/<feed> routes use.
+                params["_legacy_channel"] = True
+                hub.subscribe_snapshot(ws, params, interval, feed="protocols")
                 _ensure_snapshot_pusher()
                 ws.send_text(_json_text({
                     "type": "protocol_snapshot_subscribed",
