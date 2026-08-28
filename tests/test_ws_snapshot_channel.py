@@ -442,5 +442,109 @@ class WsGetDispatchTests(unittest.TestCase):
         self.assertIn("download", result["error"])
 
 
+class FeedHttpParityTests(unittest.TestCase):
+    """A feed must answer exactly what its HTTP endpoint answers.
+
+    This is the property three separate bugs broke at once, and none of them
+    was visible from either side alone: the feeds filtered by the protocol
+    literally named "unknown" and returned nothing, they skipped the row
+    shaping the endpoints apply, and /tags/ had the same protocol bug on the
+    HTTP side. Comparing the two paths is what catches that class of drift.
+    """
+
+    FEEDS = (
+        ("ports", "/ports/"),
+        ("ips", "/ports/"),
+        ("banners", "/banners/"),
+        ("tags", "/tags/"),
+        ("targets", "/targets/"),
+        ("domains", "/api/domains/"),
+        ("paths", "/api/paths/"),
+        ("ipcatalog", "/api/intel/ips/"),
+    )
+
+    def setUp(self):
+        self.app = _app_module()
+        import sniff4hound.auth as auth_module
+
+        previous = auth_module._SESSION_TOKEN
+        auth_module._SESSION_TOKEN = "Ab12Cd34"
+        self.addCleanup(setattr, auth_module, "_SESSION_TOKEN", previous)
+        for index in range(3):
+            self.app.store.register_packet({
+                "proto": "tcp", "src_ip": f"10.9.9.{index}", "dst_ip": "10.9.9.250",
+                "src_port": 4000 + index, "dst_port": 80, "length": 120,
+                "interface": "parity0", "payload_len": 40,
+                "banner_text": "HTTP/1.1 200 OK", "raw_packet": b"\x00\xff",
+                "tags": [{"key": "parity", "label": "Parity", "severity": "low"}],
+            })
+
+    def _both(self, feed, path):
+        params = self.app._normalize_feed_params(_FakeRequest(limit="50"))
+        streamed = self.app._feed_payload(feed, params)["data"]
+        if isinstance(streamed, dict):
+            streamed = streamed.get("rows", streamed)
+        answered = self.app._ws_get_result(
+            _FakeRequest(security_code="Ab12Cd34"), path, {"limit": 50}
+        )
+        return streamed, answered
+
+    def test_each_feed_returns_what_its_endpoint_returns(self):
+        for feed, path in self.FEEDS:
+            with self.subTest(feed=feed):
+                streamed, answered = self._both(feed, path)
+                self.assertEqual(answered["status"], 200, f"{path} did not answer")
+                self.assertEqual(
+                    len(streamed), len(answered["data"]),
+                    f"{feed} and {path} disagree on how many rows exist",
+                )
+                if streamed and answered["data"]:
+                    self.assertEqual(
+                        sorted(streamed[0]), sorted(answered["data"][0]),
+                        f"{feed} rows are shaped differently from {path}",
+                    )
+
+    def test_an_unfiltered_feed_is_not_filtered_by_protocol(self):
+        # normalize_protocol_name("") answers "unknown", a real protocol name
+        # here - so normalising before deciding whether a filter was asked for
+        # turned every unfiltered feed into an empty list.
+        params = self.app._normalize_feed_params(_FakeRequest())
+        self.assertEqual(params["proto"], "")
+        self.assertTrue(self.app._feed_payload("ports", params)["data"])
+
+    def test_all_is_also_no_filter(self):
+        self.assertEqual(self.app._normalize_feed_params(_FakeRequest(proto="all"))["proto"], "")
+
+    def test_an_explicit_protocol_still_filters(self):
+        params = self.app._normalize_feed_params(_FakeRequest(proto="tcp"))
+        self.assertEqual(params["proto"], "tcp")
+        self.assertTrue(self.app._feed_payload("ports", params)["data"])
+        empty = self.app._normalize_feed_params(_FakeRequest(proto="sctp"))
+        self.assertEqual(self.app._feed_payload("ports", empty)["data"], [])
+
+    def test_the_raw_capture_never_rides_in_a_listing(self):
+        # raw_packet is every captured byte. The endpoints drop it; a feed that
+        # skipped their shaping would push it to every client on every tick.
+        for feed, _path in self.FEEDS:
+            with self.subTest(feed=feed):
+                rows = self.app._feed_payload(
+                    feed, self.app._normalize_feed_params(_FakeRequest(limit="50"))
+                )["data"]
+                if isinstance(rows, dict):
+                    rows = rows.get("rows", rows)
+                for row in rows or []:
+                    self.assertNotIn("raw_packet", row, f"{feed} leaks the raw capture")
+
+    def test_a_bare_tags_listing_is_not_filtered_to_unidentified_traffic(self):
+        # /tags/ normalised the protocol before checking whether one was asked
+        # for, so opening the listing with no filter answered with only the
+        # rows whose protocol could not be identified - in practice, nothing.
+        answered = self.app._ws_get_result(
+            _FakeRequest(security_code="Ab12Cd34"), "/tags/", {"limit": 50}
+        )
+        self.assertEqual(answered["status"], 200)
+        self.assertTrue(answered["data"], "a bare /tags/ answered with no rows")
+
+
 if __name__ == "__main__":
     unittest.main()
