@@ -3439,6 +3439,58 @@ class SniffStore:
                     "value": max(1, safe_int(row.get("length", 0), 0)),
                 }
             )
+        # Per-country rollup of the same window the points are drawn from.
+        # Built here rather than in SQL because the country of an address comes
+        # from the bundled IP registry, which SQLite knows nothing about - and
+        # built from the packets rather than from the hosts so that a country
+        # with one very busy address does not read the same as one with a dozen
+        # idle ones.
+        countries: dict[str, dict] = {}
+        for row in packets:
+            length = safe_int(row.get("length", 0), 0)
+            proto = normalize_protocol_name(row.get("proto"))
+            for ip_key in ("src_ip", "dst_ip"):
+                node = hosts.get(str(row.get(ip_key) or "").strip())
+                # Private addresses have no country of their own; counting them
+                # under the declared site would inflate it with local chatter.
+                if node is None or node.get("private") or not node.get("country_code"):
+                    continue
+                code = node["country_code"]
+                entry = countries.get(code)
+                if entry is None:
+                    entry = countries[code] = {
+                        "country_code": code,
+                        "country": node.get("country") or code,
+                        "registry": node.get("registry") or "",
+                        "lat": node.get("lat"),
+                        "lon": node.get("lon"),
+                        "hosts": set(),
+                        "protocols": {},
+                        "packets": 0,
+                        "bytes": 0,
+                    }
+                entry["hosts"].add(node["ip"])
+                entry["packets"] += 1
+                entry["bytes"] += length
+                entry["protocols"][proto] = entry["protocols"].get(proto, 0) + 1
+        country_stats = sorted(
+            (
+                {
+                    **{key: value for key, value in entry.items() if key not in ("hosts", "protocols")},
+                    "hosts": len(entry["hosts"]),
+                    "addresses": sorted(entry["hosts"])[:25],
+                    "protocols": [
+                        {"proto": name, "packets": count}
+                        for name, count in sorted(
+                            entry["protocols"].items(), key=lambda item: (-item[1], item[0])
+                        )[:8]
+                    ],
+                }
+                for entry in countries.values()
+            ),
+            key=lambda item: (-item["packets"], item["country_code"]),
+        )
+
         summary = {
             "total_hosts": len(hosts),
             "public_hosts": len([item for item in hosts.values() if not item["private"]]),
@@ -3473,6 +3525,10 @@ class SniffStore:
                 "declared": bool(declared_location.get("configured")),
             },
             "declared_location": declared_location,
+            # What each country accounts for in this window, so the map can
+            # answer "who is this and what have they been doing" on selection
+            # instead of only plotting a dot.
+            "countries": country_stats,
             "summary": summary,
             "public_points": public_points,
             "private_hosts": private_hosts,
