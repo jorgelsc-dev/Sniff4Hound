@@ -16,7 +16,7 @@
 </div>
 
 <div class="meta-grid">
-<div class="meta"><span>Sitio publico</span><strong>porthound.jorgelsc.dev</strong></div>
+<div class="meta"><span>Sitio publico</span><strong>sniff4hound.jorgelsc.dev</strong></div>
 <div class="meta"><span>Docs runtime</span><strong>/docs</strong></div>
 <div class="meta"><span>Base de datos</span><strong>Sniff4Hound.db</strong></div>
 <div class="meta"><span>Modo por defecto</span><strong>sniffer</strong></div>
@@ -28,7 +28,7 @@
 <div class="card"><strong>Captura nativa</strong><br>Socket raw, parseo local y control de interfaces.</div>
 <div class="card"><strong>Persistencia</strong><br>SQLite con snapshots de sesiones, flows y runtime.</div>
 <div class="card"><strong>API y WebSocket</strong><br>Dashboard, metricas y broadcast en tiempo real.</div>
-<div class="card"><strong>Documentacion MkDocs</strong><br>Sitio publico en <a href="https://porthound.jorgelsc.dev/"><code>porthound.jorgelsc.dev</code></a>.</div>
+<div class="card"><strong>Documentacion MkDocs</strong><br>Sitio publico en <a href="https://sniff4hound.jorgelsc.dev/"><code>sniff4hound.jorgelsc.dev</code></a>.</div>
 </div>
 
 ## Mapa de plataforma

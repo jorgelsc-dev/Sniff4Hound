@@ -2,7 +2,7 @@
 
 `Sniff4Hound` es un capturador y analizador de trafico en Python nativo. Usa `socket`, `threading`, `sqlite3` y `wsbuilder` para servir una UI/API local. El `sniffer` y el `honeypot` son motores independientes: puedes ejecutar ninguno, uno o los dos a la vez.
 
-Sitio oficial: [https://porthound.jorgelsc.dev](https://porthound.jorgelsc.dev)<br>
+Sitio oficial: [https://sniff4hound.jorgelsc.dev](https://sniff4hound.jorgelsc.dev)<br>
 Repositorio: [https://github.com/jorgelsc-dev/Sniff4Hound](https://github.com/jorgelsc-dev/Sniff4Hound)<br>
 Artefacto oficial: paquete Debian `.deb` en GitHub Releases<br>
 Comando: `sniff4hound`
@@ -355,7 +355,7 @@ npm run build
 
 ## Documentacion
 
-- Sitio publico MkDocs: `https://porthound.jorgelsc.dev/` (pendiente: se publica cuando el repositorio pase a publico; GitHub Pages no esta disponible en un repo privado de cuenta personal)
+- Sitio publico MkDocs: `https://sniff4hound.jorgelsc.dev/` (publicado por `docs-pages.yml` en cada push a `main` que toque `docs/`, `landing/`, `mkdocs.yml` o `requirements-docs.txt`)
 - Fuente del sitio: `docs/` + `mkdocs.yml`
 - Dominio custom: `docs/CNAME`
 - Redirecciones legacy: `docs/404.html`

@@ -6,7 +6,7 @@ Esta pagina resume como se protege la autoria, la trazabilidad y la identidad pu
 
 - Autor y mantenedor principal: `JorgelSC Dev`
 - Repositorio canonico: `https://github.com/jorgelsc-dev/Sniff4Hound`
-- Sitio oficial: `https://porthound.jorgelsc.dev`
+- Sitio oficial: `https://sniff4hound.jorgelsc.dev`
 - Comando oficial: `sniff4hound`
 
 ## Licencia y autoria
