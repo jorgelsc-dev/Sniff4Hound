@@ -865,6 +865,75 @@ function applyRealtimeMapSnapshot(snapshot, meta = {}) {
   notifyMapSnapshotSubscribers(normalized, meta);
 }
 
+// --- protocol snapshot stream ---------------------------------------------
+// The Protocols view used to refresh itself with a full HTTP GET of
+// /api/protocols/snapshot/ every few seconds, per open tab: a fresh
+// connection, a re-authenticated request and an access-log line, all to
+// redeliver a slice the server could have pushed down the socket that was
+// already open. These carry the same payload over the existing connection.
+
+const protocolSnapshotSubscribers = new Set();
+// Remembered so the stream can be re-established after a reconnect. Without
+// this the view would sit on a stale slice with no visible error: the socket
+// comes back, but the server has no record of what this client was watching.
+let protocolSnapshotRequest = null;
+
+function subscribeProtocolSnapshot(handler) {
+  if (typeof handler !== "function") return () => {};
+  protocolSnapshotSubscribers.add(handler);
+  return () => protocolSnapshotSubscribers.delete(handler);
+}
+
+function notifyProtocolSnapshotSubscribers(payload) {
+  protocolSnapshotSubscribers.forEach((handler) => {
+    try {
+      handler(payload);
+    } catch {
+      // A failing view must not stop the others from updating.
+    }
+  });
+}
+
+function sendWsAction(message) {
+  if (typeof window === "undefined" || typeof window.WebSocket === "undefined") {
+    return false;
+  }
+  if (!wsClient || wsClient.readyState !== window.WebSocket.OPEN) {
+    return false;
+  }
+  try {
+    wsClient.send(JSON.stringify(message));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startProtocolSnapshotStream(params = {}) {
+  const request = {
+    action: "subscribe_protocol_snapshot",
+    proto: String(params.proto || "").trim().toLowerCase(),
+    mode: String(params.mode || "").trim().toLowerCase(),
+    interface: String(params.interface || "").trim(),
+    search: String(params.search || "").trim(),
+    since: String(params.since || "").trim(),
+    limit: Number(params.limit) || 250,
+    interval: Number(params.interval) || 10,
+  };
+  protocolSnapshotRequest = request;
+  return sendWsAction(request);
+}
+
+function stopProtocolSnapshotStream() {
+  protocolSnapshotRequest = null;
+  return sendWsAction({ action: "unsubscribe_protocol_snapshot" });
+}
+
+function resumeProtocolSnapshotStream() {
+  if (!protocolSnapshotRequest) return false;
+  return sendWsAction(protocolSnapshotRequest);
+}
+
 function requestRealtimeMapSnapshot(limit = 300) {
   if (typeof window === "undefined" || typeof window.WebSocket === "undefined") {
     return false;
@@ -1299,6 +1368,10 @@ function connectRealtime() {
     clearReconnectTimer();
     const isReconnect = hasEverConnectedRealtime;
     state.wsStatus = "online";
+    // The server keeps subscriptions per connection, so a reconnect starts
+    // with none. Re-sending is what keeps a view that was streaming from
+    // quietly freezing on the slice it had when the socket dropped.
+    resumeProtocolSnapshotStream();
     if (!requestRealtimeMapSnapshot(300)) {
       state.wsStatus = "error";
     }
@@ -1325,6 +1398,17 @@ function connectRealtime() {
     }
     if (type === "runtime_mode") {
       applyRuntimeSnapshot(payload);
+    }
+    if (type === "protocol_snapshot" || type === "protocol_snapshot_error") {
+      notifyProtocolSnapshotSubscribers({
+        type,
+        protocol: String(payload.protocol || "").trim().toLowerCase(),
+        snapshot: payload.snapshot || null,
+        message: payload.message || "",
+        generatedAt: payload.generated_at || "",
+        receivedAt: Date.now(),
+      });
+      return;
     }
     if (type === "scan_map_snapshot" || type === "scan_map_update") {
       applyRealtimeMapSnapshot(payload.data, {
@@ -1480,6 +1564,9 @@ export default {
   subscribeMapSnapshot,
   getRealtimeMapSnapshot,
   requestRealtimeMapSnapshot,
+  subscribeProtocolSnapshot,
+  startProtocolSnapshotStream,
+  stopProtocolSnapshotStream,
   openAuthPrompt,
   authenticateSessionToken,
   signOut,
