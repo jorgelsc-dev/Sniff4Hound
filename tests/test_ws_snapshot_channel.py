@@ -59,7 +59,11 @@ class _DeadWS(_FakeWS):
 
 
 def _app_module():
-    os.environ.setdefault("SNIFF4HOUND_DATA_DIR", tempfile.mkdtemp(prefix="s4h-wschan-"))
+    # No mkdtemp() here. tests/__init__.py already points SNIFF4HOUND_DATA_DIR
+    # at a throwaway directory before any test module is imported, and
+    # setdefault() evaluates its default eagerly - so calling mkdtemp() inline
+    # created and immediately orphaned a directory on every single call,
+    # whether or not the variable was already set.
     import sniff4hound.app as app_module
 
     return app_module
@@ -229,7 +233,13 @@ class SnapshotPayloadTests(unittest.TestCase):
         # inherited from this process, so setdefault() would silently point the
         # child at the suite's own database and put a second writer on it.
         environment = dict(os.environ)
-        environment["SNIFF4HOUND_DATA_DIR"] = tempfile.mkdtemp(prefix="s4h-wsproc-")
+        # The child needs a directory of its own - inheriting this process's
+        # would put a second writer on the suite's database - and it has to be
+        # removed afterwards, which is what TemporaryDirectory guarantees even
+        # if the assertion below fails.
+        child_data_dir = tempfile.TemporaryDirectory(prefix="s4h-wsproc-")
+        self.addCleanup(child_data_dir.cleanup)
+        environment["SNIFF4HOUND_DATA_DIR"] = child_data_dir.name
         result = subprocess.run(
             [sys.executable, "-c",
              "import threading, sniff4hound.app;"
