@@ -1307,12 +1307,37 @@ function feedUrl(feed, params = {}) {
   }
 }
 
-function openDataFeed(feed, params, onMessage) {
+// `onUnavailable` is what lets a view drop its HTTP polling entirely and still
+// render: it fires when the socket cannot be opened, or when it opens but the
+// first frame does not arrive in time (a server that accepted the connection
+// and then went quiet looks exactly like a working one from here). The view
+// answers it with a single HTTP read, not by resuming a poll.
+const FEED_FIRST_FRAME_TIMEOUT_MS = 4000;
+
+function openDataFeed(feed, params, onMessage, onUnavailable) {
+  const giveUp = () => {
+    if (typeof onUnavailable === "function") {
+      try {
+        onUnavailable();
+      } catch {
+        // The caller's fallback failing must not break the stream handle.
+      }
+    }
+  };
   if (typeof window === "undefined" || typeof window.WebSocket === "undefined") {
-    return { update: () => false, close: () => {}, isOpen: () => false };
+    giveUp();
+    return { ok: false, update: () => false, close: () => {}, isOpen: () => false };
   }
   let socket = null;
   let closedByCaller = false;
+  let firstFrameTimer = null;
+
+  const clearFirstFrameTimer = () => {
+    if (firstFrameTimer) {
+      clearTimeout(firstFrameTimer);
+      firstFrameTimer = null;
+    }
+  };
 
   const connect = (next) => {
     // Closed before opening the replacement, not after: two sockets for the
@@ -1331,15 +1356,27 @@ function openDataFeed(feed, params, onMessage) {
       socket = new window.WebSocket(feedUrl(feed, next));
     } catch {
       socket = null;
+      giveUp();
       return false;
     }
+    clearFirstFrameTimer();
+    firstFrameTimer = setTimeout(() => {
+      firstFrameTimer = null;
+      if (!closedByCaller) giveUp();
+    }, FEED_FIRST_FRAME_TIMEOUT_MS);
+    socket.addEventListener("error", () => {
+      clearFirstFrameTimer();
+      if (!closedByCaller) giveUp();
+    });
     socket.addEventListener("message", (event) => {
       const payload = parseJsonSafe(event.data);
       if (!payload || typeof payload !== "object") return;
       if (String(payload.type || "") === "auth_required") {
+        clearFirstFrameTimer();
         handleUnauthorized(payload.message || "Session expired. Re-enter the security code.");
         return;
       }
+      if (String(payload.type || "") === "feed_data") clearFirstFrameTimer();
       try {
         onMessage(payload);
       } catch {
@@ -1349,11 +1386,13 @@ function openDataFeed(feed, params, onMessage) {
     return true;
   };
 
-  connect(params || {});
+  const ok = connect(params || {});
   return {
+    ok,
     update: (next) => connect(next || {}),
     close: () => {
       closedByCaller = true;
+      clearFirstFrameTimer();
       if (socket) {
         try {
           socket.close(1000, "closed");
@@ -1364,6 +1403,18 @@ function openDataFeed(feed, params, onMessage) {
       }
     },
     isOpen: () => Boolean(socket && socket.readyState === window.WebSocket.OPEN),
+  };
+}
+
+// Feeds emit the raw payload their HTTP counterpart returns. The list views
+// render a {rows, meta} envelope, so this rebuilds it - `totalAvailable` stays
+// null because a stream carries no total, and claiming one would make the
+// "showing N of M" line lie.
+function feedListResult(payload) {
+  const rows = Array.isArray(payload && payload.data) ? payload.data : [];
+  return {
+    rows,
+    meta: { totalAvailable: null, returned: rows.length, truncated: null },
   };
 }
 
@@ -1661,6 +1712,7 @@ export default {
   requestRealtimeMapSnapshot,
   subscribeProtocolSnapshot,
   openDataFeed,
+  feedListResult,
   startProtocolSnapshotStream,
   stopProtocolSnapshotStream,
   openAuthPrompt,

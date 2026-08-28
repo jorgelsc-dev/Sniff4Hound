@@ -173,7 +173,9 @@ import {
   uniqueSorted,
 } from "../utils/traffic";
 
-const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
+// Cadence and page size for /ws/banners, matching what the view polled at.
+const FEED_REFRESH_MS = 10000;
+const FEED_LIMIT = 500;
 
 export default {
   name: "BannersView",
@@ -222,8 +224,7 @@ export default {
         id: null,
         action: "",
       },
-      wsRefreshTimer: null,
-      stopTableRefreshSubscription: null,
+      feedHandle: null,
     };
   },
   computed: {
@@ -280,33 +281,28 @@ export default {
   },
   watch: {
     apiBase() {
-      this.load();
+      this.loadFavicons();
+      this.openFeed();
+    },
+    liveRefreshEnabled(value) {
+      if (value) this.openFeed();
+      else this.closeFeed();
     },
     tab() {
       this.tableFilters.proto = "";
       this.tableFilters.mime = "";
       this.syncFilters();
     },
-    liveRefreshEnabled(value) {
-      if (!value && this.wsRefreshTimer) {
-        clearTimeout(this.wsRefreshTimer);
-        this.wsRefreshTimer = null;
-      }
-    },
   },
   mounted() {
-    this.load();
-    this.stopTableRefreshSubscription = this.store.subscribeTableRefresh(this.handleWsRefresh);
+    // Favicons are read once: they are decoded artefacts of past captures, not
+    // a live counter, so re-sending them on every tick would be bytes spent to
+    // deliver the same list again.
+    this.loadFavicons();
+    this.openFeed();
   },
   beforeUnmount() {
-    if (this.wsRefreshTimer) {
-      clearTimeout(this.wsRefreshTimer);
-      this.wsRefreshTimer = null;
-    }
-    if (typeof this.stopTableRefreshSubscription === "function") {
-      this.stopTableRefreshSubscription();
-      this.stopTableRefreshSubscription = null;
-    }
+    this.closeFeed();
   },
   methods: {
     buildResponseSummary,
@@ -349,98 +345,57 @@ export default {
       if (typeof window === "undefined") return;
       window.open(this.faviconSrc(item), "_blank", "noopener,noreferrer");
     },
-    handleWsRefresh(event) {
-      if (!this.liveRefreshEnabled) return;
-      const eventType = String((event && event.type) || "").trim().toLowerCase();
-      if (!REFRESH_EVENT_TYPES.has(eventType)) return;
-      if (this.wsRefreshTimer) return;
-      this.wsRefreshTimer = setTimeout(() => {
-        this.wsRefreshTimer = null;
-        this.load({ silent: true }).catch(() => {
-          // keep current response intelligence view on transient realtime failures
-        });
-      }, 10000);
+    // /ws/banners carries the same rows /banners/ returned, pushed at the
+    // interval in its URL, replacing the HTTP re-read this view used to issue
+    // on every websocket change event.
+    openFeed() {
+      this.closeFeed();
+      this.loading = true;
+      this.feedHandle = this.store.openDataFeed(
+        "banners",
+        { limit: FEED_LIMIT, refresh: FEED_REFRESH_MS },
+        (payload) => this.applyFeed(payload),
+        () => {
+          this.loadBannersOnce().catch(() => null);
+        },
+      );
     },
-    formatSize(value) {
-      const bytes = Number(value || 0);
-      if (!Number.isFinite(bytes) || bytes <= 0) return "-";
-      if (bytes < 1024) return `${bytes} B`;
-      return `${(bytes / 1024).toFixed(1)} KB`;
+    closeFeed() {
+      if (this.feedHandle) {
+        this.feedHandle.close();
+        this.feedHandle = null;
+      }
     },
-    runBannerAction(item, action) {
-      const endpointId = Number(item && item.port_id);
-      if (!Number.isFinite(endpointId) || endpointId <= 0) {
-        this.error = "Response endpoint is not linked to a session row";
-        return Promise.resolve();
+    applyFeed(payload) {
+      if (payload && payload.type === "feed_error") {
+        this.error = payload.message || "The responses stream stopped updating";
+        this.loading = false;
+        return;
       }
-      const proto = String(item && item.proto || "").trim().toUpperCase() || "endpoint";
-      const ip = String(item && item.ip || "").trim() || "n/a";
-      const port = String(item && item.port != null ? item.port : "").trim() || "n/a";
-      if (action === "stop") {
-        const ok = typeof window !== "undefined"
-          ? window.confirm(`Stop response collection for ${proto} ${ip}:${port}?`)
-          : true;
-        if (!ok) return Promise.resolve();
-      }
-      if (action === "restart") {
-        const ok = typeof window !== "undefined"
-          ? window.confirm(`Restart response collection for ${proto} ${ip}:${port} and clear previous response artifacts?`)
-          : true;
-        if (!ok) return Promise.resolve();
-      }
+      if (!payload || payload.type !== "feed_data") return;
+      this.banners = this.store.feedListResult(payload).rows;
       this.error = "";
-      this.bannerActionLoading = { id: endpointId, action };
+      this.lastUpdated = new Date().toLocaleTimeString();
+      this.syncFilters();
+      this.loading = false;
+    },
+    loadFavicons() {
       return this.store
-        .fetchJsonPromise("/banner/action/", {
-          method: "POST",
-          body: JSON.stringify({
-            id: endpointId,
-            action,
-            clean_results: action === "restart",
-          }),
+        .fetchJsonPromise("/favicons/")
+        .then((data) => {
+          this.favicons = this.store.extractArray(data);
         })
-        .then(() => this.load())
-        .catch((err) => {
-          this.error = err.message || `Failed to ${action} response collection`;
-        })
-        .finally(() => {
-          this.bannerActionLoading = { id: null, action: "" };
+        .catch(() => {
+          this.favicons = [];
         });
     },
-    load(options = {}) {
-      if (!options.silent) this.loading = true;
-      this.error = "";
-      return Promise.allSettled([
-        this.store.fetchJsonPromise("/banners/"),
-        this.store.fetchJsonPromise("/favicons/"),
-      ])
-        .then(([bannersRes, faviconsRes]) => {
-          const errors = [];
-          if (bannersRes.status === "fulfilled") {
-            this.banners = this.store.extractArray(bannersRes.value);
-          } else {
-            this.banners = [];
-            errors.push(
-              (bannersRes.reason && bannersRes.reason.message) ||
-                "Failed to load responses"
-            );
-          }
-          if (faviconsRes.status === "fulfilled") {
-            this.favicons = this.store.extractArray(faviconsRes.value);
-          } else {
-            this.favicons = [];
-            errors.push(
-              (faviconsRes.reason && faviconsRes.reason.message) ||
-                "Failed to load favicons"
-            );
-          }
-          this.lastUpdated = new Date().toLocaleTimeString();
-          this.error = errors.join(" | ");
-          this.syncFilters();
-        })
-        .finally(() => {
-          this.loading = false;
-        });
+    loadBannersOnce() {
+      return this.store.fetchJsonPromise("/banners/").then((data) => {
+        this.banners = this.store.extractArray(data);
+        this.lastUpdated = new Date().toLocaleTimeString();
+        this.syncFilters();
+        this.loading = false;
+      });
     },
   },
 };

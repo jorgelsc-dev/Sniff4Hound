@@ -257,7 +257,8 @@ import {
   uniqueSorted,
 } from "../utils/traffic";
 
-const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
+// Cadence for both honeypot streams, matching the previous polling.
+const FEED_REFRESH_MS = 10000;
 
 export default {
   name: "HoneypotView",
@@ -314,8 +315,8 @@ export default {
         { key: "flow_key", label: "Flow" },
         { key: "response_plain", label: "Response" },
       ],
-      wsRefreshTimer: null,
-      stopTableRefreshSubscription: null,
+      packetFeed: null,
+      bannerFeed: null,
     };
   },
   computed: {
@@ -439,29 +440,26 @@ export default {
     },
   },
   watch: {
-    apiBase() {
-      this.load();
-    },
     liveRefreshEnabled(value) {
-      if (!value && this.wsRefreshTimer) {
-        clearTimeout(this.wsRefreshTimer);
-        this.wsRefreshTimer = null;
-      }
+      if (value) this.openFeeds();
+      else this.closeFeeds();
+    },
+    packetLimit() {
+      this.openFeeds();
+    },
+    bannerLimit() {
+      this.openFeeds();
+    },
+    apiBase() {
+      this.openFeeds();
     },
   },
   mounted() {
-    this.load();
-    this.stopTableRefreshSubscription = this.store.subscribeTableRefresh(this.handleWsRefresh);
+    this.store.initRuntime();
+    this.openFeeds();
   },
   beforeUnmount() {
-    if (this.wsRefreshTimer) {
-      clearTimeout(this.wsRefreshTimer);
-      this.wsRefreshTimer = null;
-    }
-    if (typeof this.stopTableRefreshSubscription === "function") {
-      this.stopTableRefreshSubscription();
-      this.stopTableRefreshSubscription = null;
-    }
+    this.closeFeeds();
   },
   methods: {
     buildPacketSizeSummary,
@@ -499,23 +497,69 @@ export default {
       if (state === "closed") return "error";
       return "secondary";
     },
-    handleWsRefresh(event) {
-      if (!this.liveRefreshEnabled) return;
-      const eventType = String((event && event.type) || "").trim().toLowerCase();
-      if (!REFRESH_EVENT_TYPES.has(eventType)) return;
-      if (this.wsRefreshTimer) return;
-      this.wsRefreshTimer = setTimeout(() => {
-        this.wsRefreshTimer = null;
-        this.load({ silent: true }).catch(() => {
-          // keep current listener view on transient realtime failures
-        });
-      }, 10000);
-    },
     loadMore() {
       this.packetLimit = Math.min(this.packetLimit + 1000, 20000);
       this.bannerLimit = Math.min(this.bannerLimit + 500, 20000);
       this.load({ silent: true }).catch(() => null);
     },
+    // Two streams, one per table: /ws/ports and /ws/banners, both scoped to
+    // mode=honeypot. Separate sockets rather than one multiplexed feed because
+    // the two tables page independently - changing the packet limit must not
+    // re-send the responses table as well.
+    openFeeds() {
+      this.closeFeeds();
+      this.loading = true;
+      this.packetFeed = this.store.openDataFeed(
+        "ports",
+        { mode: "honeypot", limit: this.packetLimit, refresh: FEED_REFRESH_MS },
+        (payload) => this.applyPacketFeed(payload),
+        () => {
+          this.load({ silent: true }).catch(() => null);
+        },
+      );
+      this.bannerFeed = this.store.openDataFeed(
+        "banners",
+        { mode: "honeypot", limit: this.bannerLimit, refresh: FEED_REFRESH_MS },
+        (payload) => this.applyBannerFeed(payload),
+        () => {
+          this.load({ silent: true }).catch(() => null);
+        },
+      );
+    },
+    closeFeeds() {
+      [this.packetFeed, this.bannerFeed].forEach((handle) => {
+        if (handle) handle.close();
+      });
+      this.packetFeed = null;
+      this.bannerFeed = null;
+    },
+    applyPacketFeed(payload) {
+      if (payload && payload.type === "feed_error") {
+        this.error = payload.message || "The service traffic stream stopped updating";
+        this.loading = false;
+        return;
+      }
+      if (!payload || payload.type !== "feed_data") return;
+      const { rows, meta } = this.store.feedListResult(payload);
+      this.packets = rows;
+      this.packetsMeta = meta;
+      this.error = "";
+      this.syncFilters();
+      this.lastUpdated = new Date().toLocaleTimeString();
+      this.loading = false;
+    },
+    applyBannerFeed(payload) {
+      if (payload && payload.type === "feed_error") {
+        this.error = payload.message || "The service responses stream stopped updating";
+        return;
+      }
+      if (!payload || payload.type !== "feed_data") return;
+      const { rows, meta } = this.store.feedListResult(payload);
+      this.banners = rows;
+      this.bannersMeta = meta;
+      this.syncFilters();
+    },
+    // Kept as the single-shot fallback for when a stream cannot serve.
     load(options = {}) {
       if (!options.silent) this.loading = true;
       this.error = "";

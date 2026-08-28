@@ -107,7 +107,9 @@ import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import ChartCard from "../components/ui/ChartCard.vue";
 import { formatTimestamp, topSeriesByValue } from "../utils/traffic";
 
-const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
+// Cadence and page size for /ws/ipcatalog, matching the previous polling.
+const FEED_REFRESH_MS = 10000;
+const FEED_LIMIT = 500;
 
 // Mirrors store.IP_SCOPES. "local" is the backend's name for loopback; it is
 // shown as "Loopback" because that is what an operator calls 127.0.0.1.
@@ -137,8 +139,7 @@ export default {
       lastUpdated: "",
       ips: [],
       liveRefreshEnabled: true,
-      wsRefreshTimer: null,
-      stopTableRefreshSubscription: null,
+      feedHandle: null,
       selectedScopes: [],
       // null = no breakdown available (yet, or the header was stripped);
       // {} would wrongly read as "every scope is empty".
@@ -197,18 +198,10 @@ export default {
     },
   },
   mounted() {
-    this.load();
-    this.stopTableRefreshSubscription = this.store.subscribeTableRefresh(this.handleWsRefresh);
+    this.openFeed();
   },
   beforeUnmount() {
-    if (this.wsRefreshTimer) {
-      clearTimeout(this.wsRefreshTimer);
-      this.wsRefreshTimer = null;
-    }
-    if (typeof this.stopTableRefreshSubscription === "function") {
-      this.stopTableRefreshSubscription();
-      this.stopTableRefreshSubscription = null;
-    }
+    this.closeFeed();
   },
   methods: {
     formatTimestamp,
@@ -228,25 +221,55 @@ export default {
       this.selectedScopes = this.isScopeSelected(value)
         ? this.selectedScopes.filter((scope) => scope !== value)
         : [...this.selectedScopes, value];
-      this.load();
+      this.openFeed();
     },
     clearScopes() {
       if (!this.selectedScopes.length) return;
       this.selectedScopes = [];
-      this.load();
+      this.openFeed();
     },
-    handleWsRefresh(event) {
-      if (!this.liveRefreshEnabled) return;
-      const eventType = String((event && event.type) || "").trim().toLowerCase();
-      if (!REFRESH_EVENT_TYPES.has(eventType)) return;
-      if (this.wsRefreshTimer) return;
-      this.wsRefreshTimer = setTimeout(() => {
-        this.wsRefreshTimer = null;
-        this.load({ silent: true }).catch(() => {
-          // keep current data on transient refresh errors
-        });
-      }, 10000);
+    // /ws/ipcatalog carries the rows plus the scope breakdown that the HTTP
+    // endpoint could only ship in a header, so the chips and chart keep their
+    // data once this view stops polling.
+    openFeed() {
+      this.closeFeed();
+      this.loading = true;
+      this.feedHandle = this.store.openDataFeed(
+        "ipcatalog",
+        {
+          limit: FEED_LIMIT,
+          refresh: FEED_REFRESH_MS,
+          scope: (this.selectedScopes || []).join(","),
+        },
+        (payload) => this.applyFeed(payload),
+        () => {
+          this.load({ silent: true }).catch(() => null);
+        },
+      );
     },
+    closeFeed() {
+      if (this.feedHandle) {
+        this.feedHandle.close();
+        this.feedHandle = null;
+      }
+    },
+    applyFeed(payload) {
+      if (payload && payload.type === "feed_error") {
+        this.error = payload.message || "The IP stream stopped updating";
+        this.loading = false;
+        return;
+      }
+      if (!payload || payload.type !== "feed_data") return;
+      const data = payload.data && typeof payload.data === "object" ? payload.data : {};
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      this.ips = rows;
+      this.scopeCounts = data.scope_counts || null;
+      this.meta = { totalAvailable: null, returned: rows.length, truncated: null };
+      this.error = "";
+      this.lastUpdated = new Date().toLocaleTimeString();
+      this.loading = false;
+    },
+    // Kept as the single-shot fallback for when the stream cannot serve.
     load(options = {}) {
       if (!options.silent) this.loading = true;
       this.error = "";

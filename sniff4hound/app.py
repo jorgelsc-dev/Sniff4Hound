@@ -2536,14 +2536,44 @@ def _feed_analytics(_p: dict):
     return store.analytics_snapshot()
 
 
-def _feed_endpoints(_p: dict):
-    return store.endpoint_catalog(ENDPOINTS)
-
-
 def _feed_map(p: dict):
     return store.map_snapshot(limit=p["limit"])
 
 
+def _feed_domains(p: dict):
+    return store.list_domains(search=p["search"], since=p["since"], limit=p["limit"], offset=0)
+
+
+def _feed_paths(p: dict):
+    return store.list_paths(search=p["search"], since=p["since"], limit=p["limit"], offset=0)
+
+
+def _feed_ip_catalog(p: dict):
+    # The HTTP endpoint answers with a bare array and ships the scope breakdown
+    # in an X-Scope-Counts header, because adding a key there would break every
+    # caller that indexes into the response. A websocket frame has no such
+    # contract, so the breakdown travels inside it - otherwise the view's
+    # filter chips and chart would go blank the moment it stopped polling.
+    # Counts are deliberately unfiltered: the chips must keep showing what the
+    # other scopes hold while one of them is selected.
+    return {
+        "rows": store.list_ip_catalog(
+            search=p["search"], since=p["since"], limit=p["limit"], offset=0, scope=p["scope"]
+        ),
+        "scope_counts": store.ip_catalog_scope_counts(search=p["search"], since=p["since"]),
+    }
+
+
+def _feed_soc(p: dict):
+    return store.soc_analysis_snapshot(cycles=p["cycles"], limit=p["limit"])
+
+
+# Only telemetry gets a stream. Two candidates were deliberately left out:
+# `/api/endpoints/` is the API's own route catalog and never changes, and
+# `/api/monitors/` is configuration that changes only when someone edits it -
+# and carries the whole bundled catalog, thirty thousand rows, which re-pushing
+# every few seconds would be megabytes per client for data that is identical
+# each time. Both stay on HTTP, where they are read once.
 WS_FEEDS = {
     "protocols": _feed_protocols,
     "ips": _feed_ports,
@@ -2553,8 +2583,11 @@ WS_FEEDS = {
     "targets": _feed_targets,
     "dashboard": _feed_dashboard,
     "analytics": _feed_analytics,
-    "endpoints": _feed_endpoints,
     "map": _feed_map,
+    "domains": _feed_domains,
+    "paths": _feed_paths,
+    "ipcatalog": _feed_ip_catalog,
+    "soc": _feed_soc,
 }
 
 
@@ -2669,6 +2702,11 @@ def _normalize_feed_params(request) -> dict:
         "search": str(query.get("search") or "").strip(),
         "since": str(query.get("since") or "").strip(),
         "limit": _normalize_limit(query.get("limit"), default=250),
+        # Feed-specific, harmless where unused: keeping one parameter shape
+        # means a feed can start honouring a filter without the routes, the
+        # client helper and the tests all having to learn a new field.
+        "scope": str(query.get("scope") or "").strip().lower(),
+        "cycles": max(1, min(20, safe_int(query.get("cycles"), 4))),
     }
 
 
