@@ -3,6 +3,12 @@ name: contribution-guard
 on:
   pull_request:
     branches: [main, develop]
+    # `edited` matters here. This workflow validates the provenance checklist
+    # out of the pull request body, but the default activity types are only
+    # opened/reopened/synchronize - so editing the body to add the missing
+    # checklist never re-ran the check, and the contributor was left with a
+    # permanently red job and no way to clear it short of pushing a commit.
+    types: [opened, reopened, synchronize, edited]
 
 permissions:
   contents: read
@@ -110,10 +116,22 @@ jobs:
 
           body = os.environ.get("PR_BODY", "")
           author = os.environ.get("PR_AUTHOR", "")
+          # Paired with a short label so a failure can name the box that is
+          # missing. "The checklist is incomplete" on its own sends the author
+          # back to eyeball three near-identical lines against the template.
           checks = [
-              r"- \[[xX]\] I confirm that I authored these changes or that I have the legal right to submit them under this repository's license\.",
-              r"- \[[xX]\] I preserved existing copyright, attribution, and license notices and added new notices where required\.",
-              r"- \[[xX]\] I disclosed any AI assistance or third-party material and verified that no confidential or non-redistributable content was copied in\.",
+              (
+                  "authorship / legal right to submit",
+                  r"- \[[xX]\] I confirm that I authored these changes or that I have the legal right to submit them under this repository's license\.",
+              ),
+              (
+                  "copyright, attribution and license notices",
+                  r"- \[[xX]\] I preserved existing copyright, attribution, and license notices and added new notices where required\.",
+              ),
+              (
+                  "AI assistance / third-party material disclosure",
+                  r"- \[[xX]\] I disclosed any AI assistance or third-party material and verified that no confidential or non-redistributable content was copied in\.",
+              ),
           ]
 
           if author.endswith("[bot]"):
@@ -124,9 +142,15 @@ jobs:
               print("::error::Pull request body is required.")
               sys.exit(1)
 
-          missing = [pattern for pattern in checks if not re.search(pattern, body, re.IGNORECASE)]
+          missing = [label for label, pattern in checks if not re.search(pattern, body, re.IGNORECASE)]
           if missing:
-              print("::error::Pull request provenance checklist is incomplete.")
+              for label in missing:
+                  print(f"::error::Provenance checklist item not ticked: {label}.")
+              print(
+                  "::error::Pull request provenance checklist is incomplete. "
+                  "Copy the unchecked lines verbatim from .github/pull_request_template.md "
+                  "and tick them with [x]; the wording is matched exactly."
+              )
               sys.exit(1)
 
           print("Pull request provenance checklist is complete.")
