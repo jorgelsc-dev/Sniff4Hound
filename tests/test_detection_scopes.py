@@ -118,7 +118,21 @@ class ExcludedTrafficPipelineTests(unittest.TestCase):
         store.set_detection_exclude_scopes(scopes)
         store.set_monitor_filter_enabled(store_only_detected)
         sniffer = Sniffer(store, MagicMock(), interfaces=[])
-        sniffer._get_monitor_context()  # prime the cache off the store
+        sniffer._monitor_cache = [
+            {
+                "id": "test-login-monitor",
+                "name": "Test login monitor",
+                "enabled": True,
+                "mode": "rule",
+                "match": {"payload_contains": ["password=hunter2"]},
+                "action": {"tag": "cleartext-credentials", "label": "Cleartext credentials", "severity": "critical"},
+            }
+        ]
+        sniffer._monitor_filter_enabled = store_only_detected
+        sniffer._detection_exclude_scopes = frozenset(store.get_detection_exclude_scopes())
+        sniffer._monitor_cache_at = 999999999.0
+        sniffer._ruleset_cache = []
+        sniffer._ruleset_cache_at = 999999999.0
         return sniffer, store
 
     def _packet(self, src, dst):

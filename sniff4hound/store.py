@@ -837,7 +837,8 @@ class SniffStore:
         cursor = self._conn.execute("SELECT id, label FROM honeypot_listeners")
         existing_rows = {str(row["id"]): dict(row) for row in cursor.fetchall()}
         now = utc_now()
-        changed = False
+        update_rows = []
+        insert_rows = []
         for proto in ("tcp", "udp"):
             default_enabled = set(DEFAULT_ENABLED_PORTS.get(proto, ()))
             for port in COMMON_PORTS.get(proto, ()):
@@ -845,22 +846,23 @@ class SniffStore:
                 label = service_label(proto, int(port))
                 if listener_id in existing_rows:
                     if not str(existing_rows[listener_id].get("label") or "").strip():
-                        self._conn.execute(
-                            "UPDATE honeypot_listeners SET label = ? WHERE id = ?",
-                            (label, listener_id),
-                        )
-                        changed = True
+                        update_rows.append((label, listener_id))
                     continue
-                self._conn.execute(
-                    """
-                    INSERT OR IGNORE INTO honeypot_listeners
-                    (id, proto, port, label, enabled, source, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 'builtin', ?, ?)
-                    """,
-                    (listener_id, proto, int(port), label, 1 if int(port) in default_enabled else 0, now, now),
+                insert_rows.append(
+                    (listener_id, proto, int(port), label, 1 if int(port) in default_enabled else 0, now, now)
                 )
-                changed = True
-        if changed:
+        if update_rows:
+            self._conn.executemany("UPDATE honeypot_listeners SET label = ? WHERE id = ?", update_rows)
+        if insert_rows:
+            self._conn.executemany(
+                """
+                INSERT OR IGNORE INTO honeypot_listeners
+                (id, proto, port, label, enabled, source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'builtin', ?, ?)
+                """,
+                insert_rows,
+            )
+        if update_rows or insert_rows:
             self._conn.commit()
 
     def list_honeypot_listeners(self):
