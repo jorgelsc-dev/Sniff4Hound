@@ -158,10 +158,14 @@
             v-for="shape in worldPaths"
             :key="shape.id"
             :d="shape.d"
-            :fill="`url(#${landGradientId})`"
-            stroke="rgba(143, 231, 202, 0.24)"
-            stroke-width="0.9"
-          />
+            :fill="shape.iso === selectedCountryIso ? 'rgba(122, 210, 255, 0.42)' : `url(#${landGradientId})`"
+            :stroke="shape.iso === selectedCountryIso ? 'rgba(122, 210, 255, 0.95)' : 'rgba(143, 231, 202, 0.24)'"
+            :stroke-width="shape.iso === selectedCountryIso ? 1.6 : 0.9"
+            :class="['map-country', { 'map-country--active': shape.active }]"
+            @click="selectCountry(shape.iso)"
+          >
+            <title v-if="shape.name">{{ shape.name }}</title>
+          </path>
         </g>
 
         <g v-if="isGlobeMode" :clip-path="`url(#${globeClipId})`" class="map-land map-land--globe">
@@ -169,11 +173,15 @@
             v-for="shape in worldPaths"
             :key="shape.id"
             :d="shape.d"
-            :fill="`url(#${landGradientId})`"
-            stroke="rgba(143, 231, 202, 0.22)"
-            stroke-width="0.8"
+            :fill="shape.iso === selectedCountryIso ? 'rgba(122, 210, 255, 0.42)' : `url(#${landGradientId})`"
+            :stroke="shape.iso === selectedCountryIso ? 'rgba(122, 210, 255, 0.95)' : 'rgba(143, 231, 202, 0.22)'"
+            :stroke-width="shape.iso === selectedCountryIso ? 1.5 : 0.8"
             opacity="0.96"
-          />
+            :class="['map-country', { 'map-country--active': shape.active }]"
+            @click="selectCountry(shape.iso)"
+          >
+            <title v-if="shape.name">{{ shape.name }}</title>
+          </path>
         </g>
 
         <g class="map-arcs">
@@ -294,6 +302,59 @@
       <div class="map-legend">
         <span class="legend-item public">Public IP</span>
       </div>
+
+      <!-- Selected country. Anchored over the map rather than below it so the
+           shape stays visible while its numbers are read. -->
+      <div v-if="selectedCountry" class="map-country-popup">
+        <div class="map-country-popup__head">
+          <div>
+            <div class="map-country-popup__name">{{ selectedCountry.country }}</div>
+            <div class="map-country-popup__meta">
+              {{ selectedCountry.country_code }}
+              <template v-if="selectedCountry.registry"> · {{ selectedCountry.registry.toUpperCase() }}</template>
+            </div>
+          </div>
+          <v-btn icon="mdi-close" size="x-small" variant="text" @click="clearCountry" />
+        </div>
+        <div class="map-country-popup__stats">
+          <div><span>Hosts</span><strong>{{ selectedCountry.hosts }}</strong></div>
+          <div><span>Packets</span><strong>{{ selectedCountry.packets }}</strong></div>
+          <div><span>Volume</span><strong>{{ formatBytes(selectedCountry.bytes) }}</strong></div>
+        </div>
+        <div v-if="selectedCountry.protocols && selectedCountry.protocols.length" class="map-country-popup__protos">
+          <v-chip
+            v-for="item in selectedCountry.protocols"
+            :key="item.proto"
+            size="x-small"
+            variant="tonal"
+            color="info"
+          >{{ item.proto }} · {{ item.packets }}</v-chip>
+        </div>
+        <div v-if="selectedCountry.addresses && selectedCountry.addresses.length" class="map-country-popup__ips">
+          <span v-for="ip in selectedCountry.addresses.slice(0, 6)" :key="ip" class="mono">{{ ip }}</span>
+          <span v-if="selectedCountry.hosts > 6" class="map-country-popup__more">
+            +{{ selectedCountry.hosts - 6 }} more
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- The same selection, reachable without hunting for a country on the
+         map: a small country with heavy traffic is easier to find in a list
+         than to click on a projection. -->
+    <div v-if="!mapOnly && countryRanking.length" class="map-country-rail">
+      <button
+        v-for="entry in countryRanking"
+        :key="entry.country_code"
+        type="button"
+        class="map-country-rail__item"
+        :class="{ 'map-country-rail__item--on': entry.country_code === selectedCountryIso }"
+        @click="selectCountry(entry.country_code)"
+      >
+        <span class="map-country-rail__code">{{ entry.country_code }}</span>
+        <span class="map-country-rail__name">{{ entry.country }}</span>
+        <span class="map-country-rail__count">{{ entry.packets }}</span>
+      </button>
     </div>
 
     <v-row v-if="!mapOnly" class="mt-4" dense>
@@ -427,6 +488,8 @@ export default {
       worldGeoJsonDetailed: null,
       worldGeoJsonGlobe: null,
       publicPoints: [],
+      countryStats: [],
+      selectedCountryIso: "",
       originPoint: null,
       localHostCount: 0,
       geoipStatus: {
@@ -591,6 +654,22 @@ export default {
       }
       return points;
     },
+    countryByIso() {
+      const index = {};
+      (this.countryStats || []).forEach((entry) => {
+        const iso = String(entry.country_code || "").toUpperCase();
+        if (iso) index[iso] = entry;
+      });
+      return index;
+    },
+    selectedCountry() {
+      return this.selectedCountryIso ? this.countryByIso[this.selectedCountryIso] || null : null;
+    },
+    countryRanking() {
+      // Already ordered by packets on the server; capped here so the panel
+      // stays a summary rather than turning into a second table.
+      return (this.countryStats || []).slice(0, 12);
+    },
     worldPaths() {
       const collection = this.isGlobeMode ? this.worldGeoJsonGlobe : this.worldGeoJsonDetailed;
       const features = Array.isArray(collection && collection.features) ? collection.features : [];
@@ -600,11 +679,22 @@ export default {
         const featurePaths = this.isGlobeMode
           ? this.geometryToPathsGlobe(geometry)
           : this.geometryToPathsFlat(geometry);
+        // The identity travels with every path of a country, not just the
+        // first: a country drawn as several polygons has to answer to a click
+        // on any of its islands.
+        const properties = (feature && feature.properties) || {};
+        const iso = String(properties.iso_a2 || "").toUpperCase();
+        const name = String(properties.name || "").trim();
         featurePaths.forEach((d, pathIndex) => {
           if (!d) return;
           paths.push({
             id: `land-${featureIndex}-${pathIndex}`,
             d,
+            iso,
+            name,
+            // Only countries this capture has actually seen are selectable;
+            // the rest stay inert so a click never opens an empty panel.
+            active: Boolean(iso && this.countryByIso[iso]),
           });
         });
       });
@@ -1016,10 +1106,32 @@ export default {
         tilt: Math.max(-28, Math.min(32, avgLat * 0.58)),
       };
     },
+    selectCountry(iso) {
+      const code = String(iso || "").toUpperCase();
+      if (!code || !this.countryByIso[code]) return;
+      // Clicking the open country closes it, so the map can be cleared without
+      // hunting for a dismiss control.
+      this.selectedCountryIso = this.selectedCountryIso === code ? "" : code;
+    },
+    clearCountry() {
+      this.selectedCountryIso = "";
+    },
+    formatBytes(value) {
+      const bytes = Number(value) || 0;
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    },
     applySnapshot(snapshot) {
       const data = snapshot && snapshot.data ? snapshot.data : snapshot;
       const summary = (data && data.summary) || {};
       this.publicPoints = Array.isArray(data && data.public_points) ? data.public_points : [];
+      this.countryStats = Array.isArray(data && data.countries) ? data.countries : [];
+      // A country that dropped out of the window must not keep its panel open
+      // describing traffic that is no longer in the slice.
+      if (this.selectedCountryIso && !this.countryStats.some((c) => c.country_code === this.selectedCountryIso)) {
+        this.selectedCountryIso = "";
+      }
       this.originPoint = (data && data.origin) || null;
       this.localHostCount = Number((data && data.summary && data.summary.private_hosts) || 0);
       this.geoipStatus = (data && data.geoip) || {
@@ -1275,6 +1387,136 @@ export default {
 
 .map-land {
   opacity: 0.94;
+}
+
+/* Only countries present in the current window react; the rest keep the
+   default cursor so a click that would do nothing does not look clickable. */
+.map-country--active {
+  cursor: pointer;
+  transition: fill 0.16s ease, stroke 0.16s ease;
+}
+
+.map-country--active:hover {
+  fill: rgba(122, 210, 255, 0.26);
+}
+
+.map-country-popup {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 3;
+  width: min(300px, calc(100% - 28px));
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(9, 18, 32, 0.94);
+  border: 1px solid rgba(122, 210, 255, 0.34);
+  backdrop-filter: blur(6px);
+}
+
+.map-country-popup__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.map-country-popup__name {
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.map-country-popup__meta {
+  font-size: 0.72rem;
+  opacity: 0.72;
+}
+
+.map-country-popup__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.map-country-popup__stats div {
+  display: flex;
+  flex-direction: column;
+}
+
+.map-country-popup__stats span {
+  font-size: 0.68rem;
+  opacity: 0.7;
+}
+
+.map-country-popup__stats strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.map-country-popup__protos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.map-country-popup__ips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 0.72rem;
+  opacity: 0.82;
+}
+
+.map-country-popup__more {
+  opacity: 0.6;
+}
+
+.map-country-rail {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.map-country-rail__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(143, 231, 202, 0.18);
+  background: rgba(255, 255, 255, 0.03);
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.map-country-rail__item--on {
+  border-color: rgba(122, 210, 255, 0.8);
+  background: rgba(122, 210, 255, 0.14);
+}
+
+.map-country-rail__code {
+  font-weight: 700;
+  font-size: 0.74rem;
+  flex: 0 0 auto;
+}
+
+.map-country-rail__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  opacity: 0.86;
+}
+
+.map-country-rail__count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.74rem;
+  opacity: 0.75;
 }
 
 .map-land--globe {
