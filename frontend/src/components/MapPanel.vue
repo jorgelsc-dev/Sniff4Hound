@@ -400,16 +400,15 @@ import store from "../state/appStore";
 import { appBaseUrl } from "../utils/runtimeEnv";
 import DataPanel from "./ui/DataPanel.vue";
 
-const GLOBE_ROTATION_SPEED = 3.2;
-// ~25 fps: the ceiling on how often the globe re-projects, not how often
+const GLOBE_ROTATION_SPEED = 4.5;
+// ~30 fps: the ceiling on how often the globe re-projects, not how often
 // the browser paints.
-const GLOBE_FRAME_INTERVAL_MS = 40;
+const GLOBE_FRAME_INTERVAL_MS = 33;
 // Minimum separation between consecutive outline points on the globe, in
-// degrees. The globe uses the low-detail geography too, so this keeps DOM
-// churn low without making coastlines look broken at dashboard size.
-const GLOBE_MIN_POINT_SEPARATION_DEG = 1.2;
-const GLOBE_FOCUS_OSCILLATION_DEG = 18;
-const GLOBE_FOCUS_OSCILLATION_SPEED = 0.38;
+// degrees. At this radius 0.5 deg is under two pixels.
+const GLOBE_MIN_POINT_SEPARATION_DEG = 0.5;
+const GLOBE_FOCUS_OSCILLATION_DEG = 28;
+const GLOBE_FOCUS_OSCILLATION_SPEED = 0.6;
 
 export default {
   name: "MapPanel",
@@ -512,6 +511,9 @@ export default {
     },
     isGlobeMode() {
       return this.projectionMode === "globe";
+    },
+    projectionLabel() {
+      return this.isGlobeMode ? "Projection: Globe" : "Projection: Flat";
     },
     globeClipId() {
       return `map-globe-clip-${this.mapUid}`;
