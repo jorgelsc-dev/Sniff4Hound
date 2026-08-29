@@ -21,8 +21,8 @@
         Detection
       </v-tab>
       <v-tab value="blacklist">
-        <v-icon icon="mdi-cancel" start />
-        Blacklist
+        <v-icon icon="mdi-format-list-checks" start />
+        Lists
       </v-tab>
       <v-tab value="notifications">
         <v-icon icon="mdi-bell-outline" start />
@@ -85,7 +85,7 @@
 
         <DataPanel
           title="Detection scope"
-          subtitle="Ignore traffic that stays entirely inside the selected scopes. Excluded packets are not classified, not tagged, not run through monitors or anomaly detectors, and never stored - not even with store-all-traffic on. They still count toward the packets-seen totals."
+          subtitle="Mute detections for traffic that stays entirely inside the selected scopes. Excluded packets remain visible in capture, but they are not classified, tagged by rules, run through monitors, or sent to anomaly detectors."
           variant="tonal"
           class="mb-4 scope-card"
         >
@@ -193,7 +193,7 @@
 
         <DataPanel
           title="Stored data"
-          subtitle="Delete what capture and the honeypot have written to the database. Monitor definitions, listeners, blacklists and settings are never touched."
+          subtitle="Delete what capture and the honeypot have written to the database. Monitor definitions, listeners, allow/block lists and settings are never touched."
           variant="tonal"
           class="mb-4 purge-card"
         >
@@ -244,7 +244,7 @@
               <template v-if="purgeScope === 'everything'">
                 Deletes every packet, tag, payload, flow, domain, path and session written by
                 capture and the honeypot, then compacts the database file. Monitor and listener
-                definitions, blacklists and settings survive. This cannot be undone.
+                definitions, allow/block lists and settings survive. This cannot be undone.
               </template>
               <template v-else>
                 Deletes stored packets, tags and payloads. Flows, domains, paths and sessions are

@@ -90,12 +90,10 @@ curl -X POST -H "X-Security-Code: $CODE" -H "Content-Type: application/json" \
 
 Dos precisiones importantes:
 
-- **El trafico excluido sale del pipeline por completo.** No se clasifica con
-  los rulesets, no se etiqueta, no pasa por monitores ni por los detectores de
-  anomalias, y no se guarda — tampoco con la opcion de "guardar todo el
-  trafico" activada. Los contadores de paquetes vistos si lo cuentan: la trama
-  cruzo el cable de verdad, y ocultarla haria que las estadisticas de captura
-  mintieran sobre el volumen del enlace.
+- **El trafico excluido queda visible pero mudo.** Se guarda como captura y
+  cuenta en las estadisticas, pero no se clasifica con rulesets, no recibe
+  tags de deteccion, no pasa por monitores ni por detectores de anomalias.
+  Asi el volumen real del enlace sigue visible sin generar alertas.
 - **Tienen que coincidir los dos extremos.** Excluir `private` calla el
   trafico LAN-a-LAN, pero un host privado hablando con una direccion publica
   se sigue capturando y analizando: es justo lo que un analista quiere ver.

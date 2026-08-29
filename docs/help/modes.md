@@ -5,7 +5,7 @@ Sniff4Hound trabaja con dos modos principales. Ambos comparten la misma base SQL
 | Modo | Uso | Que hace |
 | --- | --- | --- |
 | `sniffer` | Captura pasiva | Abre sockets raw, parsea paquetes y registra flows, tags y contadores. |
-| `honeypot` | Respuesta activa | Escucha puertos comunes, emite banners y guarda actividad emulada. |
+| `honeypot` | Respuesta activa | Escucha el set curado de puertos habilitados, ofrece 10k+ listeners activables, emite banners y guarda actividad emulada. |
 
 ## Cambiar de modo
 

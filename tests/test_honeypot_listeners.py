@@ -19,6 +19,7 @@ from sniff4hound.honeypot import (
     _build_sip_response,
     _build_smb2_negotiate_response,
 )
+from sniff4hound.honeypot_ports import DEFAULT_ENABLED_PORTS
 from sniff4hound.store import SniffStore
 
 
@@ -87,8 +88,7 @@ class TestSeedingDoesNotImportHeavyHoneypotModule(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         tcp_count, udp_count = (int(item) for item in result.stdout.strip().split())
-        self.assertGreaterEqual(tcp_count, 200)
-        self.assertGreaterEqual(udp_count, 50)
+        self.assertGreaterEqual(tcp_count + udp_count, 10000)
 
 
 class TestHoneypotListenerStore(unittest.TestCase):
@@ -106,17 +106,25 @@ class TestHoneypotListenerStore(unittest.TestCase):
 
     def test_builtin_listeners_are_seeded_on_init(self):
         listeners = self.store.list_honeypot_listeners()
-        self.assertGreater(len(listeners), 0)
+        self.assertGreaterEqual(len(listeners), 10000)
         self.assertTrue(all(item["source"] == "builtin" for item in listeners))
-        self.assertTrue(all(item["enabled"] for item in listeners))
         ids = {item["id"] for item in listeners}
-        self.assertGreaterEqual(len(ids), 280)
+        enabled_ids = {item["id"] for item in listeners if item["enabled"]}
+        expected_enabled = {
+            f"{proto}/{port}"
+            for proto, ports in DEFAULT_ENABLED_PORTS.items()
+            for port in ports
+        }
+        self.assertEqual(enabled_ids, expected_enabled)
+        self.assertTrue(all(str(item.get("label") or "").strip() for item in listeners))
         self.assertIn("tcp/22", ids)  # SSH is always in COMMON_PORTS
         self.assertIn("tcp/502", ids)  # Modbus/OT
         self.assertIn("tcp/6443", ids)  # Kubernetes API
         self.assertIn("tcp/27018", ids)  # MongoDB alternate
         self.assertIn("udp/623", ids)  # IPMI
         self.assertIn("udp/47808", ids)  # BACnet/IP
+        self.assertFalse(self.store.get_honeypot_listener("tcp/4999")["enabled"])
+        self.assertFalse(self.store.get_honeypot_listener("udp/4999")["enabled"])
 
     def test_create_custom_listener(self):
         listener = self.store.create_honeypot_listener("tcp", 65000, label="Fake SSH #2")
@@ -167,8 +175,9 @@ class TestHoneypotEnginePerListenerControl(unittest.TestCase):
         # Disable every seeded builtin listener so start() only spins up
         # what each test explicitly creates - keeps this fast and avoids
         # needing root for the low builtin ports.
-        for listener in self.store.list_honeypot_listeners():
-            self.store.set_honeypot_listener_enabled(listener["id"], False)
+        with self.store._lock:
+            self.store._conn.execute("UPDATE honeypot_listeners SET enabled = 0")
+            self.store._conn.commit()
         self.engine = HoneypotEngine(self.store, MagicMock())
 
     def tearDown(self):

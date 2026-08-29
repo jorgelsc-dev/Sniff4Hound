@@ -2,11 +2,19 @@
   <div>
     <ViewHeader
       overline="Investigation"
-      :title="mode === 'monitor' ? 'Monitor Investigator' : 'Host Investigator'"
+      :title="
+        mode === 'monitor'
+          ? 'Monitor Investigator'
+          : targetKind === 'domain'
+            ? 'Domain Investigator'
+            : 'Host Investigator'
+      "
       :description="
         mode === 'monitor'
           ? 'A static snapshot of everything this monitor has matched - packets, charts, and the source/target IPs, each one click away from its own investigation.'
-          : 'Search an IP and get a compact, evidence-first view of transport, payloads, tags, and flows.'
+          : targetKind === 'domain'
+            ? 'Search a domain and pivot through packets, payloads, tags, and list controls.'
+            : 'Search an IP and get a compact, evidence-first view of transport, payloads, tags, and flows.'
       "
       :refresh-loading="loading"
       @refresh="refresh"
@@ -49,12 +57,25 @@
 
     <div v-else>
     <v-row dense class="mb-3">
-      <v-col cols="12" md="7">
+      <v-col cols="12" md="2">
+        <v-btn-toggle
+          v-model="targetKind"
+          mandatory
+          density="comfortable"
+          color="primary"
+          variant="outlined"
+          class="investigate-toggle"
+        >
+          <v-btn value="ip" size="small">IP</v-btn>
+          <v-btn value="domain" size="small">Domain</v-btn>
+        </v-btn-toggle>
+      </v-col>
+      <v-col cols="12" md="5">
         <v-text-field
-          v-model.trim="queryIp"
-          label="Investigate IP"
-          name="investigate_ip"
-          placeholder="127.0.0.1"
+          v-model.trim="targetInput"
+          :label="targetKind === 'domain' ? 'Investigate domain' : 'Investigate IP'"
+          name="investigate_target"
+          :placeholder="targetKind === 'domain' ? 'example.com' : '127.0.0.1'"
           prepend-inner-icon="mdi-magnify"
           clearable
           variant="outlined"
@@ -62,12 +83,32 @@
           @keyup.enter="load"
         />
       </v-col>
-      <v-col cols="12" md="3" class="d-flex align-center">
-        <v-btn color="primary" variant="flat" class="mr-2" :disabled="loading || !queryIp" @click="load">
+      <v-col cols="12" md="5" class="d-flex align-center flex-wrap ga-2">
+        <v-btn color="primary" variant="flat" :disabled="loading || !targetValue" @click="load">
           Investigate
         </v-btn>
-        <v-btn variant="outlined" :disabled="loading || !queryIp" @click="setTopSuggestion">
+        <v-btn variant="outlined" :disabled="loading || targetKind !== 'ip'" @click="setTopSuggestion">
           Top host
+        </v-btn>
+        <v-btn
+          variant="tonal"
+          color="success"
+          prepend-icon="mdi-shield-check-outline"
+          :loading="listActionSubmitting === 'whitelist'"
+          :disabled="loading || !targetValue"
+          @click="addListEntry('whitelist')"
+        >
+          Whitelist
+        </v-btn>
+        <v-btn
+          variant="tonal"
+          color="error"
+          prepend-icon="mdi-shield-alert-outline"
+          :loading="listActionSubmitting === 'blacklist'"
+          :disabled="loading || !targetValue"
+          @click="addListEntry('blacklist')"
+        >
+          Blacklist
         </v-btn>
       </v-col>
     </v-row>
@@ -88,6 +129,9 @@
 
     <v-alert v-if="error" type="error" variant="tonal" class="mb-6">
       {{ error }}
+    </v-alert>
+    <v-alert v-if="listActionMessage" type="success" variant="tonal" density="comfortable" class="mb-6">
+      {{ listActionMessage }}
     </v-alert>
 
     <v-row dense>
@@ -290,10 +334,14 @@ export default {
       error: "",
       lastUpdated: "",
       queryIp: "",
+      queryDomain: "",
+      targetKind: "ip",
       queryMonitor: "",
       monitors: [],
       analytics: {},
       intel: {},
+      listActionSubmitting: "",
+      listActionMessage: "",
       serviceColumns: [
         { key: "ip", label: "IP" },
         { key: "port", label: "Port" },
@@ -333,8 +381,29 @@ export default {
     // Scopes the IOC export to whatever host is under investigation, so the
     // downloaded file matches what is on screen instead of the whole store.
     exportParams() {
-      const ip = String(this.queryIp || "").trim();
-      return ip ? { search: ip } : {};
+      const target = this.targetValue;
+      return target ? { search: target } : {};
+    },
+    targetInput: {
+      get() {
+        return this.targetKind === "domain" ? this.queryDomain : this.queryIp;
+      },
+      set(value) {
+        if (this.targetKind === "domain") {
+          this.queryDomain = String(value || "").trim();
+        } else {
+          this.queryIp = String(value || "").trim();
+        }
+      },
+    },
+    targetValue() {
+      return String(this.targetInput || "").trim();
+    },
+    targetCategory() {
+      return this.targetKind === "domain" ? "domain" : "ip";
+    },
+    targetLabel() {
+      return this.targetKind === "domain" ? "domain" : "IP";
     },
     summary() {
       return this.intel.summary || {};
@@ -492,7 +561,7 @@ export default {
       return this.store.state.apiBase;
     },
     mode() {
-      return this.queryMonitor ? "monitor" : "ip";
+      return this.queryMonitor ? "monitor" : this.targetKind;
     },
     activeMonitor() {
       if (!this.queryMonitor) return {};
@@ -514,6 +583,7 @@ export default {
         const query = (route && route.query) || {};
         const monitor = String(query.monitor || "").trim();
         const ip = String(query.ip || "").trim();
+        const domain = String(query.domain || "").trim();
         // The two modes are mutually exclusive by URL shape (a monitor link
         // never carries ?ip= and vice versa) - clearing the one not present
         // in the current query is what lets clicking an IP inside monitor
@@ -524,10 +594,16 @@ export default {
           this.loadMonitors();
         }
         if (ip && ip !== this.queryIp) {
+          this.targetKind = "ip";
           this.queryIp = ip;
+          this.load();
+        } else if (domain && domain !== this.queryDomain) {
+          this.targetKind = "domain";
+          this.queryDomain = domain;
           this.load();
         } else if (!ip) {
           this.queryIp = "";
+          if (!domain) this.queryDomain = "";
         }
       },
     },
@@ -579,10 +655,15 @@ export default {
     setTopSuggestion() {
       const top = this.suggestedHosts[0];
       if (!top || !top.ip) return;
+      this.targetKind = "ip";
       this.queryIp = top.ip;
       this.load();
     },
     load() {
+      this.listActionMessage = "";
+      if (this.targetKind === "domain") {
+        return this.loadDomain();
+      }
       const ip = String(this.queryIp || "").trim();
       if (!ip) {
         this.error = "Enter an IP to investigate.";
@@ -611,11 +692,100 @@ export default {
           this.loading = false;
         });
     },
+    loadDomain() {
+      const domain = String(this.queryDomain || "").trim().toLowerCase();
+      if (!domain) {
+        this.error = "Enter a domain to investigate.";
+        this.intel = {};
+        return Promise.resolve();
+      }
+      this.loading = true;
+      this.error = "";
+      const search = encodeURIComponent(domain);
+      return Promise.allSettled([
+        this.store.fetchJsonPromise("/api/charts/analytics"),
+        this.store.listDomains({ search: domain, limit: 250 }),
+        this.store.fetchJsonPromise(`/ports/?search=${search}&limit=250`),
+        this.store.fetchJsonPromise(`/banners/?search=${search}&limit=250`),
+        this.store.fetchJsonPromise(`/tags/?search=${search}&limit=400`),
+      ])
+        .then(([analyticsRes, domainsRes, packetsRes, bannersRes, tagsRes]) => {
+          if (analyticsRes.status === "fulfilled") {
+            this.analytics = analyticsRes.value || {};
+          }
+          const domains = domainsRes.status === "fulfilled" ? this.store.extractArray(domainsRes.value) : [];
+          const packets = packetsRes.status === "fulfilled" ? this.store.extractArray(packetsRes.value) : [];
+          const banners = bannersRes.status === "fulfilled" ? this.store.extractArray(bannersRes.value) : [];
+          const tags = tagsRes.status === "fulfilled" ? this.store.extractArray(tagsRes.value) : [];
+          this.intel = {
+            cached: false,
+            summary: {
+              packets: packets.length,
+              flows: 0,
+              payloads: banners.length,
+              tags: tags.length,
+            },
+            host: {
+              transport: {
+                services: packets,
+                banners,
+                flows: [],
+                tags,
+              },
+            },
+            host_profile: {
+              target: { scope: "domain" },
+              notes: [`Evidence connected to ${domain}`],
+              application: {},
+            },
+            domains: { domains },
+            ttl_path: { hops: [] },
+          };
+          const failed = [domainsRes, packetsRes, bannersRes, tagsRes].find((res) => res.status === "rejected");
+          if (failed) {
+            this.error = (failed.reason && failed.reason.message) || `Failed to investigate ${domain}`;
+          }
+          this.lastUpdated = new Date().toLocaleTimeString();
+        })
+        .finally(() => {
+          this.loading = false;
+        });
+    },
+    addListEntry(kind) {
+      const value = this.targetValue;
+      if (!value) return;
+      this.listActionSubmitting = kind;
+      this.listActionMessage = "";
+      this.error = "";
+      const payload = {
+        category: this.targetCategory,
+        matchType: "exact",
+        value,
+        label: `${kind === "whitelist" ? "Trusted" : "Blocked"} ${this.targetLabel}: ${value}`,
+      };
+      const action = kind === "whitelist"
+        ? this.store.createWhitelistEntry(payload)
+        : this.store.createBlacklistEntry(payload);
+      action
+        .then(() => {
+          this.listActionMessage = `${value} added to ${kind}.`;
+        })
+        .catch((err) => {
+          this.error = (err && err.message) || `Failed to add ${value} to ${kind}`;
+        })
+        .finally(() => {
+          this.listActionSubmitting = "";
+        });
+    },
   },
 };
 </script>
 
 <style scoped>
+.investigate-toggle {
+  min-height: 44px;
+}
+
 .metric-card {
   border-radius: 16px;
 }

@@ -6,9 +6,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from sniff4hound.sniffer import Sniffer
-from unittest.mock import MagicMock
-
-from sniff4hound.sniffer import Sniffer
 from sniff4hound.store import SniffStore
 from sniff4hound.utils import DETECTION_IP_SCOPES, detection_ip_scope, utc_now
 
@@ -111,7 +108,7 @@ class DetectionMuteTests(unittest.TestCase):
 
 
 class ExcludedTrafficPipelineTests(unittest.TestCase):
-    """End-to-end: an excluded scope must leave the pipeline entirely."""
+    """End-to-end: an excluded scope must mute detection without hiding capture."""
 
     def _sniffer(self, scopes, *, store_only_detected=True):
         tmp = tempfile.TemporaryDirectory()
@@ -140,26 +137,30 @@ class ExcludedTrafficPipelineTests(unittest.TestCase):
 
     def test_excluded_traffic_is_not_tagged_by_rulesets(self):
         # Regression: classify_packet() ran before the scope check, so muted
-        # traffic still came out tagged and kept appearing in the views.
+        # traffic still came out with rule or monitor detections.
         sniffer, _store = self._sniffer(["loopback", "private"])
         packet = self._packet("10.0.0.5", "192.168.1.9")
         sniffer._store_packet(packet)
-        self.assertEqual(packet.get("tags") or [], [])
+        tag_keys = {tag.get("key") for tag in packet.get("tags", []) if isinstance(tag, dict)}
+        self.assertNotIn("rule", tag_keys)
+        self.assertNotIn("monitor", tag_keys)
         self.assertEqual(packet.get("monitor_hits") or [], [])
 
-    def test_excluded_traffic_is_never_stored(self):
+    def test_excluded_traffic_is_stored_without_detection_tags(self):
         sniffer, store = self._sniffer(["loopback", "private"])
         for src, dst in (("127.0.0.1", "127.0.0.1"), ("10.0.0.5", "192.168.1.9")):
             sniffer._store_packet(self._packet(src, dst))
-        self.assertEqual(self._stored(store), set())
+        self.assertEqual(self._stored(store), {"127.0.0.1->127.0.0.1", "10.0.0.5->192.168.1.9"})
+        for row in store.list_packets(limit=200):
+            tag_keys = {tag.get("key") for tag in row.get("tags", []) if isinstance(tag, dict)}
+            self.assertNotIn("rule", tag_keys)
+            self.assertNotIn("monitor", tag_keys)
 
-    def test_excluded_traffic_is_not_stored_even_when_storing_everything(self):
-        # The nastier half of the bug: `detected = hits or not filter_enabled`
-        # meant "store everything" persisted excluded traffic regardless.
+    def test_excluded_traffic_is_stored_without_detection_even_when_storing_everything(self):
         sniffer, store = self._sniffer(["loopback", "private"], store_only_detected=False)
         for src, dst in (("127.0.0.1", "127.0.0.1"), ("10.0.0.5", "192.168.1.9")):
             sniffer._store_packet(self._packet(src, dst))
-        self.assertEqual(self._stored(store), set())
+        self.assertEqual(self._stored(store), {"127.0.0.1->127.0.0.1", "10.0.0.5->192.168.1.9"})
 
     def test_traffic_leaving_the_lan_is_still_analysed_and_stored(self):
         sniffer, store = self._sniffer(["loopback", "private"])
@@ -180,9 +181,10 @@ class ExcludedTrafficPipelineTests(unittest.TestCase):
         # the capture stats misreport link volume.
         sniffer, _store = self._sniffer(["loopback"])
         before = sniffer.state.packets_seen
+        stored_before = sniffer.state.packets_stored
         sniffer._store_packet(self._packet("127.0.0.1", "127.0.0.1"))
         self.assertEqual(sniffer.state.packets_seen, before + 1)
-        self.assertEqual(sniffer.state.packets_stored, 0)
+        self.assertEqual(sniffer.state.packets_stored, stored_before + 1)
 
 
 if __name__ == "__main__":

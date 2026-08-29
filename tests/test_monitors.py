@@ -192,6 +192,16 @@ class TestNormalizeMonitor(unittest.TestCase):
             normalized = normalize_monitor(raw, allow_source=True)
             self.assertEqual(normalized["source"], "builtin")
 
+    def test_noisy_generated_signal_monitors_are_pruned(self):
+        from sniff4hound.monitors import load_builtin_monitors
+
+        monitor_ids = {item["id"] for item in load_builtin_monitors()}
+        self.assertNotIn("builtin-signal-attempted-admin-158cffea283a", monitor_ids)
+        self.assertNotIn("builtin-signal-attempted-dos-da42390b909c", monitor_ids)
+        self.assertNotIn("builtin-signal-trojan-activity-d9ef2a92901f", monitor_ids)
+        self.assertNotIn("builtin-signal-command-and-control-d218fa2d0688", monitor_ids)
+        self.assertIn("builtin-signal-network-scan-3fbcc245b8ce", monitor_ids)
+
     def test_stateful_mode_is_preserved(self):
         # Regression test: normalize_monitor used to only whitelist
         # {"rule", "regex"} and would silently coerce any other mode value to
@@ -240,6 +250,14 @@ class TestEvaluatePacket(unittest.TestCase):
         hits = evaluate_packet(packet, self.monitors)
         tags = {hit["tag"] for hit in hits}
         self.assertIn("plaintext", tags)
+
+    def test_discovery_payload_text_does_not_match_plaintext_monitor(self):
+        for proto in ("mdns", "igmp", "ssdp", "ntp"):
+            with self.subTest(proto=proto):
+                packet = _packet(proto=proto, payload_text="normal multicast discovery payload with readable labels")
+                hits = evaluate_packet(packet, self.monitors)
+                tags = {hit["tag"] for hit in hits}
+                self.assertNotIn("plaintext", tags)
 
     def test_short_payload_text_does_not_match_plaintext_monitor(self):
         packet = _packet(payload_text="hi")

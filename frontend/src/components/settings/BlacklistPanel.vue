@@ -1,59 +1,38 @@
 <template>
   <div>
     <v-alert type="info" variant="tonal" density="comfortable" class="mb-4">
-      Each entry here becomes its own monitor automatically - a match fires the same way any other
-      monitor does (persistence, notifications, the Monitors view). Disabling or deleting an entry
-      here disables/removes that monitor too.
+      Blacklist entries create monitor hits and alerts automatically. Whitelist entries keep matching
+      packets visible in capture, but skip rules, monitor hits and anomaly alerts.
     </v-alert>
 
     <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
 
-    <BlacklistCategoryCard
-      category="ip"
-      title="IP Blacklist"
-      subtitle="Flag traffic to or from a specific IP address."
-      value-label="IP address"
-      value-placeholder="203.0.113.5"
-      icon="mdi-ip-network-outline"
-      :entries="entriesFor('ip')"
-      :submitting="submittingCategory === 'ip'"
-      :error="formErrorFor('ip')"
-      @create="createEntry"
-      @toggle="toggleEntry"
-      @delete="deleteEntry"
-    />
+    <section v-for="group in listGroups" :key="group.kind" class="list-section">
+      <div class="list-section-heading">
+        <v-chip size="small" :color="group.color" variant="tonal" :prepend-icon="group.icon">
+          {{ group.title }}
+        </v-chip>
+        <span>{{ group.description }}</span>
+      </div>
 
-    <BlacklistCategoryCard
-      category="domain"
-      title="Domain Blacklist"
-      subtitle="Flag DNS lookups or HTTP/TLS traffic referencing a specific domain."
-      value-label="Domain"
-      value-placeholder="evil.example.com"
-      icon="mdi-web"
-      :entries="entriesFor('domain')"
-      :submitting="submittingCategory === 'domain'"
-      :error="formErrorFor('domain')"
-      class="mt-4"
-      @create="createEntry"
-      @toggle="toggleEntry"
-      @delete="deleteEntry"
-    />
-
-    <BlacklistCategoryCard
-      category="path"
-      title="Path Blacklist"
-      subtitle="Flag HTTP requests to a specific request path."
-      value-label="Path"
-      value-placeholder="/wp-admin/setup-config.php"
-      icon="mdi-routes"
-      :entries="entriesFor('path')"
-      :submitting="submittingCategory === 'path'"
-      :error="formErrorFor('path')"
-      class="mt-4"
-      @create="createEntry"
-      @toggle="toggleEntry"
-      @delete="deleteEntry"
-    />
+      <BlacklistCategoryCard
+        v-for="(card, index) in categoryCards(group.kind)"
+        :key="`${group.kind}-${card.category}`"
+        :category="card.category"
+        :title="card.title"
+        :subtitle="card.subtitle"
+        :value-label="card.valueLabel"
+        :value-placeholder="card.valuePlaceholder"
+        :icon="card.icon"
+        :entries="entriesFor(group.kind, card.category)"
+        :submitting="submittingKey === `${group.kind}:${card.category}`"
+        :error="formErrorFor(group.kind, card.category)"
+        :class="{ 'mt-4': index > 0 }"
+        @create="(payload) => createEntry(group.kind, payload)"
+        @toggle="(entry, value) => toggleEntry(group.kind, entry, value)"
+        @delete="(entry) => deleteEntry(group.kind, entry)"
+      />
+    </section>
   </div>
 </template>
 
@@ -69,51 +48,112 @@ export default {
   data() {
     return {
       store,
-      entries: [],
+      entries: { blacklist: [], whitelist: [] },
       error: "",
-      submittingCategory: "",
-      formErrors: { ip: "", domain: "", path: "" },
+      submittingKey: "",
+      formErrors: {},
       togglePending: "",
     };
   },
   mounted() {
     this.load();
   },
-  methods: {
-    entriesFor(category) {
-      return this.entries.filter((entry) => entry.category === category);
+  computed: {
+    listGroups() {
+      return [
+        {
+          kind: "blacklist",
+          title: "Blacklist",
+          description: "Matches are promoted as detections and alerts.",
+          icon: "mdi-cancel",
+          color: "error",
+        },
+        {
+          kind: "whitelist",
+          title: "Whitelist",
+          description: "Matches stay in capture, but do not fire detections.",
+          icon: "mdi-shield-check-outline",
+          color: "success",
+        },
+      ];
     },
-    formErrorFor(category) {
-      return this.formErrors[category] || "";
+  },
+  methods: {
+    categoryCards(kind) {
+      const blacklist = kind === "blacklist";
+      return [
+        {
+          category: "ip",
+          title: `IP ${blacklist ? "Blacklist" : "Whitelist"}`,
+          subtitle: blacklist
+            ? "Flag traffic to or from a specific IP address."
+            : "Trust traffic to or from a specific IP address.",
+          valueLabel: "IP address",
+          valuePlaceholder: "203.0.113.5",
+          icon: "mdi-ip-network-outline",
+        },
+        {
+          category: "domain",
+          title: `Domain ${blacklist ? "Blacklist" : "Whitelist"}`,
+          subtitle: blacklist
+            ? "Flag DNS lookups or HTTP/TLS traffic referencing a specific domain."
+            : "Trust DNS lookups or HTTP/TLS traffic referencing a specific domain.",
+          valueLabel: "Domain",
+          valuePlaceholder: blacklist ? "evil.example.com" : "trusted.example.com",
+          icon: "mdi-web",
+        },
+        {
+          category: "path",
+          title: `Path ${blacklist ? "Blacklist" : "Whitelist"}`,
+          subtitle: blacklist
+            ? "Flag HTTP requests to a specific request path."
+            : "Trust HTTP requests to a specific request path.",
+          valueLabel: "Path",
+          valuePlaceholder: blacklist ? "/wp-admin/setup-config.php" : "/health",
+          icon: "mdi-routes",
+        },
+      ];
+    },
+    formKey(kind, category) {
+      return `${kind}:${category}`;
+    },
+    entriesFor(kind, category) {
+      return (this.entries[kind] || []).filter((entry) => entry.category === category);
+    },
+    formErrorFor(kind, category) {
+      return this.formErrors[this.formKey(kind, category)] || "";
     },
     load() {
       this.error = "";
-      return this.store
-        .listBlacklistEntries()
-        .then((payload) => {
-          this.entries = this.store.extractArray(payload);
+      return Promise.all([this.store.listBlacklistEntries(), this.store.listWhitelistEntries()])
+        .then(([blacklistPayload, whitelistPayload]) => {
+          this.entries = {
+            blacklist: this.store.extractArray(blacklistPayload),
+            whitelist: this.store.extractArray(whitelistPayload),
+          };
         })
         .catch((err) => {
-          this.error = (err && err.message) || "Failed to load blacklist entries";
+          this.error = (err && err.message) || "Failed to load list entries";
         });
     },
-    createEntry({ category, matchType, value, label }) {
-      this.formErrors[category] = "";
-      this.submittingCategory = category;
-      this.store
-        .createBlacklistEntry({ category, matchType, value, label })
+    createEntry(kind, { category, matchType, value, label }) {
+      const key = this.formKey(kind, category);
+      this.formErrors[key] = "";
+      this.submittingKey = key;
+      const create = kind === "whitelist" ? this.store.createWhitelistEntry : this.store.createBlacklistEntry;
+      create({ category, matchType, value, label })
         .then(() => this.load())
         .catch((err) => {
-          this.formErrors[category] = (err && err.message) || "Failed to add entry";
+          this.formErrors[key] = (err && err.message) || "Failed to add entry";
         })
         .finally(() => {
-          this.submittingCategory = "";
+          this.submittingKey = "";
         });
     },
-    toggleEntry(entry, value) {
+    toggleEntry(kind, entry, value) {
       this.togglePending = entry.id;
-      this.store
-        .toggleBlacklistEntry(entry.id, value)
+      const toggle = kind === "whitelist" ? this.store.toggleWhitelistEntry : this.store.toggleBlacklistEntry;
+      toggle(entry.id, value)
         .then(() => this.load())
         .catch((err) => {
           this.error = (err && err.message) || "Failed to update entry";
@@ -122,9 +162,9 @@ export default {
           this.togglePending = "";
         });
     },
-    deleteEntry(entry) {
-      this.store
-        .deleteBlacklistEntry(entry.id)
+    deleteEntry(kind, entry) {
+      const remove = kind === "whitelist" ? this.store.deleteWhitelistEntry : this.store.deleteBlacklistEntry;
+      remove(entry.id)
         .then(() => this.load())
         .catch((err) => {
           this.error = (err && err.message) || "Failed to delete entry";
@@ -133,3 +173,19 @@ export default {
   },
 };
 </script>
+
+<style scoped>
+.list-section + .list-section {
+  margin-top: 28px;
+}
+
+.list-section-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.86rem;
+}
+</style>

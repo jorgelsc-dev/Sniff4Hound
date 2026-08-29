@@ -1,7 +1,7 @@
 """The dashboard's "Clear data" button purges everything capture and the
 honeypot produced. The one guarantee an operator relies on when pressing it
 is that the catalogs they configured by hand - monitors, listeners,
-rulesets, blacklists and the selected NICs - are NOT part of that purge.
+rulesets, allow/block lists and the selected NICs - are NOT part of that purge.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from sniff4hound.store import SniffStore
 # operator configuration and must survive.
 PURGEABLE_TABLES = {"tags", "payloads", "packets", "flows", "domains", "paths", "sessions"}
 
-CONFIG_TABLES = ("monitors", "honeypot_listeners", "rulesets", "blacklist_entries")
+CONFIG_TABLES = ("monitors", "honeypot_listeners", "rulesets", "blacklist_entries", "whitelist_entries")
 
 
 class PurgePreservesConfigTests(unittest.TestCase):

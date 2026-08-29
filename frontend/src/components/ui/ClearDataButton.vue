@@ -81,7 +81,7 @@ const REMOVED_ITEMS = [
 const KEPT_ITEMS = [
   "Monitor definitions and rulesets",
   "Honeypot listener configuration",
-  "Blacklist entries",
+  "Whitelist and blacklist entries",
   "Interface selection and settings",
 ];
 

@@ -74,6 +74,7 @@ from .honeypot_ports import (  # noqa: F401 - re-exported, used throughout this 
     TFTP_UDP_PORTS,
     TLS_TCP_PORTS,
     VNC_PORTS,
+    service_label,
 )
 
 from .settings import DATA_DIR, PAYLOAD_TEXT_MAX_CHARS
@@ -276,6 +277,11 @@ def _recv_line(sock, max_len: int = MAX_PACKET_SIZE) -> bytes:
 
 def _decode_line(data: bytes) -> str:
     return data.decode("utf-8", errors="replace").strip()
+
+
+def _generic_tcp_banner(port: int) -> str:
+    label = service_label("tcp", int(port)).replace("\r", " ").replace("\n", " ").strip()
+    return f"220 {label} ready\r\n"
 
 
 def _read_http_request(sock) -> bytes:
@@ -1813,7 +1819,7 @@ class HoneypotEngine:
         self._emit_packet(packet)
 
     def _handle_generic_tcp(self, client_sock, addr, port, *, use_tls=False, meta=None):
-        banner = TCP_BANNERS.get(port, "220 Service Ready\r\n")
+        banner = TCP_BANNERS.get(port, _generic_tcp_banner(port))
         _safe_send(client_sock, banner)
         client_sock.settimeout(READ_TIMEOUT_SECONDS)
         data = b""

@@ -8,6 +8,8 @@ trying to bind the full 1-65535 range by default.
 
 from __future__ import annotations
 
+import socket
+
 HTTP_TCP_PORTS = {
     80,
     81,
@@ -187,7 +189,7 @@ COAP_UDP_PORTS = {5683, 5684}
 ICS_OT_UDP_PORTS = {102, 502, 2222, 44818, 47808}
 OVERLAY_UDP_PORTS = {4789, 6081}
 
-COMMON_PORTS = {
+DEFAULT_ENABLED_PORTS = {
     "tcp": sorted(
         HTTP_TCP_PORTS
         | HTTPS_TCP_PORTS
@@ -247,3 +249,56 @@ COMMON_PORTS = {
         | OVERLAY_UDP_PORTS
     ),
 }
+
+EXPANDED_LISTENER_PORT_MAX = 5000
+
+COMMON_PORTS = {
+    proto: sorted(set(DEFAULT_ENABLED_PORTS.get(proto, ())) | set(range(1, EXPANDED_LISTENER_PORT_MAX + 1)))
+    for proto in ("tcp", "udp")
+}
+
+
+def service_label(proto: str, port: int) -> str:
+    proto = str(proto or "").strip().lower()
+    port = int(port)
+    if proto == "tcp":
+        if port in HTTP_TCP_PORTS:
+            return "HTTP web service"
+        if port in HTTPS_TCP_PORTS:
+            return "HTTPS web service"
+        if port in SSH_PORTS:
+            return "SSH remote shell"
+        if port in FTP_PORTS or port in FTPS_PORTS:
+            return "FTP file transfer"
+        if port in SMTP_PORTS or port in SMTPS_PORTS:
+            return "SMTP mail service"
+        if port in MYSQL_PORTS:
+            return "MySQL database"
+        if port in POSTGRES_PORTS:
+            return "PostgreSQL database"
+        if port in SMB_PORTS:
+            return "SMB file sharing"
+        if port in RDP_PORTS:
+            return "RDP remote desktop"
+        if port in ICS_OT_TCP_PORTS:
+            return "Industrial/OT service"
+    elif proto == "udp":
+        if port in DNS_UDP_PORTS:
+            return "DNS service"
+        if port in DHCP_UDP_PORTS:
+            return "DHCP service"
+        if port in NTP_UDP_PORTS:
+            return "NTP time service"
+        if port in SNMP_UDP_PORTS:
+            return "SNMP management"
+        if port in SSDP_UDP_PORTS or port in MDNS_UDP_PORTS or port in NETBIOS_UDP_PORTS:
+            return "Discovery service"
+        if port in ICS_OT_UDP_PORTS:
+            return "Industrial/OT service"
+    try:
+        name = socket.getservbyport(port, proto)
+    except OSError:
+        name = ""
+    if name:
+        return f"{name.upper()} service"
+    return f"{proto.upper()} service {port}"

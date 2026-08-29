@@ -176,25 +176,30 @@ def _print_startup_banner(host: str, port: int):
 
     token = get_security_code()
     base_url = f"http://{host}:{port}"
+    frontend_url = f"{base_url}/?code={token}" if REQUIRE_AUTH else f"{base_url}/"
     lines = [
         _banner_rule("╔", "═", "╗"),
         _banner_line(f"🐕 SNIFF4HOUND v{__version__}", align="center"),
         _banner_rule("╠", "═", "╣"),
         _banner_line(),
         _banner_line("  Starting server"),
-        _banner_line(f"  Link: {base_url}/"),
+        _banner_line(f"  Link: {frontend_url}"),
         _banner_line(f"  Auth Required: {'YES' if REQUIRE_AUTH else 'NO'}"),
-        _banner_line(),
-        _banner_line("  SECURITY CODE (required to unlock the frontend):"),
-        _banner_line(),
-        _banner_line(f"    {token}"),
-        _banner_line(),
-        _banner_line("  Copy the code above and paste it in the auth prompt"),
+    ]
+    if REQUIRE_AUTH:
+        lines.extend(
+            [
+                _banner_line(),
+                _banner_line(f"  SECURITY CODE: {token}"),
+                _banner_line("  Open the link above to unlock the frontend automatically"),
+            ]
+        )
+    lines.extend([
         _banner_line(),
         _banner_rule("╠", "═", "╣"),
         _banner_line("  Press Ctrl+C to stop"),
         _banner_rule("╚", "═", "╝"),
-    ]
+    ])
     # `sudo`'s PAM prompt for the capture child ("Place your right index
     # finger on the fingerprint reader") is written straight to /dev/tty and
     # leaves its last, unterminated line on screen - a stray "\" ended up
