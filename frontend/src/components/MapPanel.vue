@@ -71,11 +71,6 @@
         aria-label="Sniff4Hound geolocated telemetry map"
       >
         <defs>
-          <radialGradient :id="oceanGradientId" cx="50%" cy="48%" r="72%">
-            <stop offset="0%" stop-color="rgba(24, 92, 143, 0.96)" />
-            <stop offset="48%" stop-color="rgba(10, 41, 73, 0.98)" />
-            <stop offset="100%" stop-color="rgba(3, 16, 30, 1)" />
-          </radialGradient>
           <radialGradient :id="globeOceanGradientId" cx="34%" cy="28%" r="82%">
             <stop offset="0%" stop-color="rgba(43, 167, 255, 0.96)" />
             <stop offset="42%" stop-color="rgba(12, 61, 117, 0.98)" />
@@ -119,16 +114,9 @@
         />
 
         <template v-if="!isGlobeMode">
-          <rect
-            :x="mapPadding"
-            :y="mapPadding"
-            :width="mapWidth - (mapPadding * 2)"
-            :height="mapHeight - (mapPadding * 2)"
-            :fill="`url(#${oceanGradientId})`"
-            stroke="rgba(73, 165, 210, 0.24)"
-            stroke-width="0.9"
-            rx="14"
-          />
+          <!-- No ocean plate on the flat projection: the panel's own backdrop
+               shows through instead. The inner frame below stays, since it is
+               what still bounds the drawing area. -->
           <rect
             :x="mapPadding + 6"
             :y="mapPadding + 6"
@@ -525,9 +513,6 @@ export default {
     },
     projectionLabel() {
       return this.isGlobeMode ? "Projection: Globe" : "Projection: Flat";
-    },
-    oceanGradientId() {
-      return `map-ocean-${this.mapUid}`;
     },
     globeOceanGradientId() {
       return `map-globe-ocean-${this.mapUid}`;
