@@ -166,6 +166,14 @@ class TestHoneypotListenerStore(unittest.TestCase):
         self.assertFalse(hasattr(self.store, "update_honeypot_listener"))
         self.assertFalse(hasattr(self.store, "edit_honeypot_listener"))
 
+    def test_compact_snapshot_omits_the_full_listener_catalog(self):
+        engine = HoneypotEngine(self.store, MagicMock())
+        snapshot = engine.snapshot(include_listeners=False)
+        expected_enabled = sum(len(ports) for ports in DEFAULT_ENABLED_PORTS.values())
+        self.assertEqual(snapshot["listeners"], [])
+        self.assertGreaterEqual(snapshot["listener_count"], 10000)
+        self.assertEqual(snapshot["enabled_listener_count"], expected_enabled)
+
 
 class TestHoneypotEnginePerListenerControl(unittest.TestCase):
     def setUp(self):

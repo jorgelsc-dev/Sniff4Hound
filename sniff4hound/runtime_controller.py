@@ -88,15 +88,25 @@ class RuntimeController:
     def _engine(self, name: str):
         return self._honeypot if normalize_runtime_mode(name) == "honeypot" else self._sniffer
 
+    def _engine_snapshot(self, name: str) -> dict:
+        normalized = normalize_runtime_mode(name)
+        engine = self._engine(normalized)
+        if normalized == "honeypot":
+            try:
+                return engine.snapshot(include_listeners=False)
+            except TypeError:
+                return engine.snapshot()
+        return engine.snapshot()
+
     def _is_running(self, name: str) -> bool:
         try:
-            return bool(self._engine(name).snapshot().get("running"))
+            return bool(self._engine_snapshot(name).get("running"))
         except Exception:
             return False
 
     def snapshot(self):
-        sniffer = self._sniffer.snapshot()
-        honeypot = self._honeypot.snapshot()
+        sniffer = self._engine_snapshot("sniffer")
+        honeypot = self._engine_snapshot("honeypot")
         running = [name for name in ENGINE_NAMES if (sniffer if name == "sniffer" else honeypot).get("running")]
         return {
             # `mode` is which engine the single-engine controls act on when no
@@ -187,7 +197,7 @@ class RuntimeController:
         normalized = normalize_runtime_mode(mode)
         with self._lock:
             if normalized == self.mode:
-                if self._capture_auto_start and not self.current_engine().snapshot().get("running"):
+                if self._capture_auto_start and not self._engine_snapshot(self.mode).get("running"):
                     self.current_engine().start()
                 self._store.set_runtime_config("runtime_mode", self.mode)
                 snapshot = self.snapshot()

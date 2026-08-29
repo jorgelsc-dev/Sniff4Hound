@@ -450,3 +450,7 @@ def resolve_ipc_owner_uid() -> int | None:
 
 def resolve_ipc_connect_timeout() -> float:
     return max(1.0, _as_float(_env("SNIFF4HOUND_IPC_CONNECT_TIMEOUT", "20"), 20.0))
+
+
+def resolve_ipc_call_timeout() -> float:
+    return max(1.0, _as_float(_env("SNIFF4HOUND_IPC_CALL_TIMEOUT", "45"), 45.0))

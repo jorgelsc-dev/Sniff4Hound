@@ -535,6 +535,11 @@ export default {
       return this.honeypotRuntime.running ? "mdi-play-circle-outline" : "mdi-stop-circle-outline";
     },
     honeypotListenersLabel() {
+      const listenerCount = Number(this.honeypotRuntime.listener_count);
+      if (Number.isFinite(listenerCount) && listenerCount > 0) {
+        if (listenerCount === 1) return "1 listener";
+        return `${listenerCount} listeners`;
+      }
       const listeners = Array.isArray(this.honeypotRuntime.listeners) ? this.honeypotRuntime.listeners : [];
       if (listeners.length === 1) return "1 listener";
       return `${listeners.length} listeners`;

@@ -844,35 +844,51 @@ class HoneypotEngine:
             }
         )
 
-    def snapshot(self) -> dict:
-        listener_rows = self.store.list_honeypot_listeners()
+    def _listener_view(self, row: dict) -> dict:
+        listener_id = str(row.get("id") or "")
+        thread = self._listener_threads.get(listener_id)
+        return {
+            "id": listener_id,
+            "proto": row.get("proto"),
+            "port": row.get("port"),
+            "label": row.get("label") or "",
+            "enabled": bool(row.get("enabled")),
+            "source": row.get("source") or "builtin",
+            "running": bool(thread is not None and thread.is_alive()),
+        }
+
+    def snapshot(self, *, include_listeners: bool = True) -> dict:
+        listener_rows = self.store.list_honeypot_listeners() if include_listeners else []
         listeners = []
         for row in listener_rows:
-            listener_id = str(row.get("id") or "")
-            thread = self._listener_threads.get(listener_id)
-            listeners.append(
-                {
-                    "id": listener_id,
-                    "proto": row.get("proto"),
-                    "port": row.get("port"),
-                    "label": row.get("label") or "",
-                    "enabled": bool(row.get("enabled")),
-                    "source": row.get("source") or "builtin",
-                    "running": bool(thread is not None and thread.is_alive()),
-                }
-            )
+            listeners.append(self._listener_view(row))
+        listener_counts = {}
+        count_honeypot_listeners = getattr(self.store, "count_honeypot_listeners", None)
+        if callable(count_honeypot_listeners):
+            listener_counts = count_honeypot_listeners()
+        else:
+            listener_counts = {
+                "total": len(listeners),
+                "enabled": sum(1 for item in listeners if item.get("enabled")),
+                "custom": sum(1 for item in listeners if item.get("source") == "custom"),
+            }
+        running_listener_count = sum(1 for thread in self._listener_threads.values() if thread.is_alive())
         with self._state_lock:
             return {
                 "running": bool(self._state.running),
                 "mode": "honeypot",
                 "errors": dict(self._state.errors),
                 "listeners": listeners,
+                "listener_count": safe_int(listener_counts.get("total"), len(listeners)),
+                "enabled_listener_count": safe_int(listener_counts.get("enabled"), 0),
+                "custom_listener_count": safe_int(listener_counts.get("custom"), 0),
+                "running_listener_count": running_listener_count,
                 "packets_seen": int(self._state.packets_seen),
                 "packets_total_bytes": int(self._state.packets_total_bytes),
                 "started_at": self._state.started_at,
                 "last_event_at": self._state.last_event_at,
                 "session_id": int(self._state.session_id),
-                "active_threads": sum(1 for thread in self._listener_threads.values() if thread.is_alive()) + (1 if self._writer_thread and self._writer_thread.is_alive() else 0),
+                "active_threads": running_listener_count + (1 if self._writer_thread and self._writer_thread.is_alive() else 0),
                 "log_file": str(LOG_FILE),
                 "event_db": str(EVENT_DB_FILE),
                 "tls_ready": self._tls_context is not None,
