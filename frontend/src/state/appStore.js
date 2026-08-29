@@ -6,6 +6,7 @@ const AUTH_SESSION_PATH = "/api/auth/session";
 const STORAGE_KEY_API = "sniff4hound.apiBase";
 const STORAGE_KEY_AUTH = "sniff4hound.securityCode";
 const LEGACY_STORAGE_KEY_AUTH = "sniff4hound.sessionToken";
+const QUERY_AUTH_KEYS = ["code", "security_code", "access_token", "token", "auth"];
 const STORAGE_KEY_NOTIFY_SOUND = "sniff4hound.notifySoundEnabled";
 const STORAGE_KEY_TIME_RANGE = "sniff4hound.timeRange";
 // Relative windows understood by the API's `since` query parameter. The empty
@@ -110,37 +111,84 @@ function setApiBase(value) {
   reconnectRealtime();
 }
 
-// The security code deliberately never reaches persistent browser storage: on
-// a shared SOC workstation a token left in localStorage outlives the analyst
-// who typed it. It lives in this module-level variable for the lifetime of the
-// tab only, which means a reload re-prompts for the code - that is the
-// documented, intended behaviour (see CHANGELOG / CLAUDE.md).
+function readStartupAuthTokenFromUrl() {
+  if (typeof window === "undefined" || !window.location) {
+    return "";
+  }
+  let parsed = null;
+  try {
+    parsed = new URL(window.location.href);
+  } catch {
+    return "";
+  }
+  let token = "";
+  QUERY_AUTH_KEYS.some((key) => {
+    const value = parsed.searchParams.get(key);
+    if (!value) return false;
+    token = String(value).trim();
+    return Boolean(token);
+  });
+  if (QUERY_AUTH_KEYS.some((key) => parsed.searchParams.has(key))) {
+    QUERY_AUTH_KEYS.forEach((key) => parsed.searchParams.delete(key));
+    const cleanUrl = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    try {
+      window.history.replaceState(window.history.state, "", cleanUrl);
+    } catch {
+      // keeping a tidy address bar is helpful, not required
+    }
+  }
+  return token;
+}
+
+function readLocalAuthToken() {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return "";
+  }
+  try {
+    return String(window.localStorage.getItem(STORAGE_KEY_AUTH) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function clearLegacySessionAuthToken() {
+  if (typeof window === "undefined" || !window.sessionStorage) {
+    return;
+  }
+  try {
+    window.sessionStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
+    window.sessionStorage.removeItem(STORAGE_KEY_AUTH);
+  } catch {
+    // private-mode / disabled storage: nothing to clean up
+  }
+}
+
 function readStoredAuthToken() {
-  clearStoredAuthTokenArtifacts();
-  return String(inMemoryAuthToken || "").trim();
+  clearLegacySessionAuthToken();
+  const urlToken = readStartupAuthTokenFromUrl();
+  if (urlToken) {
+    persistAuthToken(urlToken);
+    return urlToken;
+  }
+  return String(inMemoryAuthToken || readLocalAuthToken()).trim();
 }
 
 function persistAuthToken(token) {
-  inMemoryAuthToken = String(token || "").trim();
-}
-
-// Scrubs both the current and the legacy key from every persistent store, so a
-// token written by an older build (which did persist it) does not linger.
-function clearStoredAuthTokenArtifacts() {
-  if (typeof window === "undefined") {
+  const cleaned = String(token || "").trim();
+  inMemoryAuthToken = cleaned;
+  if (typeof window === "undefined" || !window.localStorage) {
     return;
   }
-  const keys = [STORAGE_KEY_AUTH, LEGACY_STORAGE_KEY_AUTH];
-  [window.sessionStorage, window.localStorage].forEach((storage) => {
-    if (!storage) return;
-    keys.forEach((key) => {
-      try {
-        storage.removeItem(key);
-      } catch {
-        // private-mode / disabled storage: nothing to clean up
-      }
-    });
-  });
+  try {
+    if (cleaned) {
+      window.localStorage.setItem(STORAGE_KEY_AUTH, cleaned);
+    } else {
+      window.localStorage.removeItem(STORAGE_KEY_AUTH);
+    }
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
+  } catch {
+    // localStorage may be unavailable; the in-memory copy still covers this tab
+  }
 }
 
 function signOut() {
@@ -385,6 +433,32 @@ function deleteBlacklistEntry(id) {
 
 function toggleBlacklistEntry(id, enabled) {
   return fetchJsonPromise("/api/blacklist/toggle", {
+    method: "POST",
+    body: JSON.stringify({ id, enabled: Boolean(enabled) }),
+  });
+}
+
+function listWhitelistEntries(category = "") {
+  const query = category ? `?category=${encodeURIComponent(category)}` : "";
+  return fetchJsonPromise(`/api/whitelist/${query}`);
+}
+
+function createWhitelistEntry({ category, matchType, value, label = "" }) {
+  return fetchJsonPromise("/api/whitelist/", {
+    method: "POST",
+    body: JSON.stringify({ category, match_type: matchType, value, label }),
+  });
+}
+
+function deleteWhitelistEntry(id) {
+  return fetchJsonPromise("/api/whitelist/", {
+    method: "DELETE",
+    body: JSON.stringify({ id }),
+  });
+}
+
+function toggleWhitelistEntry(id, enabled) {
+  return fetchJsonPromise("/api/whitelist/toggle", {
     method: "POST",
     body: JSON.stringify({ id, enabled: Boolean(enabled) }),
   });
@@ -1841,6 +1915,10 @@ export default {
   createBlacklistEntry,
   deleteBlacklistEntry,
   toggleBlacklistEntry,
+  listWhitelistEntries,
+  createWhitelistEntry,
+  deleteWhitelistEntry,
+  toggleWhitelistEntry,
   listHoneypotListeners,
   createHoneypotListener,
   toggleHoneypotListenerEnabled,

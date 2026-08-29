@@ -31,6 +31,17 @@ def _compiled_regex(pattern: str):
     return compiled
 
 
+def literal_packet_text_pattern(value: str) -> str:
+    """Regex for an exact IOC inside build_packet_text().
+
+    Word boundaries work for plain words and most domains, but not for paths
+    that begin with "/" or other punctuation. Bound instead on characters that
+    can be part of host/path tokens, so "evil.com" does not match
+    "notevil.com" and "/admin" still matches a request path.
+    """
+    return r"(?<![A-Za-z0-9_.-])" + re.escape(str(value or "").strip()) + r"(?![A-Za-z0-9_.-])"
+
+
 # TCP flag names as sniffer.py writes them into packet["tcp_flags"] (a
 # comma-joined string, "" when the segment carries no flags at all). Single
 # letters are accepted too so a rule can be written the way tcpdump prints
@@ -213,7 +224,7 @@ def normalize_match(match: dict) -> dict:
                 continue
             if isinstance(item, str) and not item.strip():
                 continue
-            cleaned.append(normalize_protocol_name(item) if key == "protocols" else item)
+            cleaned.append(normalize_protocol_name(item) if key in {"protocols", "exclude_protocols"} else item)
         return unique_ordered(cleaned)
 
     def _int_list(key):
@@ -230,6 +241,7 @@ def normalize_match(match: dict) -> dict:
 
     normalized = {
         "protocols": _list("protocols"),
+        "exclude_protocols": _list("exclude_protocols"),
         "ip_versions": _int_list("ip_versions"),
         "eth_types": _int_list("eth_types"),
         "ports": _int_list("ports"),
@@ -308,6 +320,12 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
     packet_length = safe_int(packet.get("length", 0), 0)
 
     protocols = [normalize_protocol_name(item) for item in match.get("protocols", []) if str(item).strip()]
+    excluded_protocols = [normalize_protocol_name(item) for item in match.get("exclude_protocols", []) if str(item).strip()]
+    if excluded_protocols:
+        transport = str(packet.get("transport") or "").strip().lower()
+        if proto in excluded_protocols or (transport and transport in excluded_protocols):
+            return False
+
     if protocols:
         # A rule naming a transport ("tcp"/"udp") must keep matching after the
         # capture path has identified the application protocol on top of it,

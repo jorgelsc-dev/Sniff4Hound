@@ -14,6 +14,27 @@ from .runtime_paths import resolve_data_file
 from .rulesets import build_packet_text, normalize_action, normalize_match, rule_matches_packet
 from .utils import json_dumps, normalize_protocol_name, safe_int
 
+NOISY_GENERATED_SIGNAL_LITERALS = frozenset(
+    {
+        "m-search",
+        "m-search * http/1.1",
+        "mozilla/",
+        "mozilla/4.0",
+        "mozilla/5.0",
+        "user-agent: mozilla",
+        "http/1.1 200 ok",
+        "keep-alive",
+        "text/html",
+        "text/html; charset=utf-8",
+        "text/html; charset=utf-8\r\n",
+        "image/webp",
+        "gzip, deflate",
+        "gzip, deflate, br",
+        "content-encoding: gzip",
+        "charset=utf-8",
+    }
+)
+
 
 DEFAULT_MONITORS = [
     {
@@ -173,12 +194,19 @@ DEFAULT_MONITORS = [
     {
         "id": "builtin-plaintext-payload",
         "name": "Readable plaintext payload",
-        "description": "Payload decodes to a substantial run of human-readable text - data traveling unencrypted, regardless of protocol/port. Fires on top of any more specific monitor that also matched (e.g. Telnet, FTP, credentials).",
+        "description": "Payload decodes to a substantial run of human-readable application text. Discovery/control protocols are excluded so normal multicast chatter does not double-fire as plaintext.",
         "enabled": True,
         "priority": 125,
         "source": "builtin",
         "mode": "rule",
-        "match": {"min_payload_text_length": 20},
+        "match": {
+            "min_payload_text_length": 32,
+            "exclude_protocols": [
+                "arp", "rarp", "stp", "llc", "llc-snap", "cdp", "lldp", "eapol",
+                "igmp", "icmp", "icmpv6", "mdns", "llmnr", "nbns", "ssdp", "dhcp",
+                "ntp", "snmp", "gre", "esp", "ah", "tls", "quic",
+            ],
+        },
         "action": {"tag": "plaintext", "label": "Readable plaintext", "severity": "low"},
     },
     {
@@ -2295,6 +2323,19 @@ def _default_monitor_path() -> Path:
     return resolve_data_file("default_monitors.json")
 
 
+def _is_noisy_generated_signal_monitor(monitor: dict) -> bool:
+    monitor_id = str(monitor.get("id") or "")
+    if not monitor_id.startswith("builtin-signal-"):
+        return False
+    match = monitor.get("match") if isinstance(monitor.get("match"), dict) else {}
+    contains = [str(item).strip().lower() for item in match.get("payload_contains", []) if str(item).strip()]
+    if not contains:
+        return False
+    if match.get("payload_regex") or match.get("payload_prefix_hex") or match.get("ips") or match.get("ip_regex"):
+        return False
+    return any(value in NOISY_GENERATED_SIGNAL_LITERALS for value in contains)
+
+
 @functools.lru_cache(maxsize=1)
 def _load_builtin_monitors_cached() -> tuple[dict, ...]:
     # The packaged default_monitors.json is read-only, installed data
@@ -2315,6 +2356,7 @@ def _load_builtin_monitors_cached() -> tuple[dict, ...]:
                     for item in payload
                     if isinstance(item, dict)
                 ]
+                catalog = [item for item in catalog if not _is_noisy_generated_signal_monitor(item)]
         except Exception:
             catalog = []
     if not catalog:

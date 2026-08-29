@@ -192,7 +192,9 @@
             class="cell-filter-wrap"
             :class="{
               'cell-filter-wrap--filterable':
-                isFilterableColumn(column, slotProps.item) || isCopyableColumn(column, slotProps.item),
+                isFilterableColumn(column, slotProps.item) ||
+                isCopyableColumn(column, slotProps.item) ||
+                isInvestigableColumn(column, slotProps.item),
             }"
           >
             <span class="cell-filter-wrap__content">
@@ -205,9 +207,22 @@
               </slot>
             </span>
             <span
-              v-if="isFilterableColumn(column, slotProps.item) || isCopyableColumn(column, slotProps.item)"
+              v-if="
+                isFilterableColumn(column, slotProps.item) ||
+                isCopyableColumn(column, slotProps.item) ||
+                isInvestigableColumn(column, slotProps.item)
+              "
               class="cell-filter-wrap__actions"
             >
+              <button
+                v-if="isInvestigableColumn(column, slotProps.item)"
+                type="button"
+                class="cell-filter-btn cell-filter-btn--investigate"
+                :aria-label="`Investigate ${column.label || column.key}`"
+                @click.stop="investigateCell(column, slotProps.item)"
+              >
+                <v-icon icon="mdi-magnify-scan" size="12" />
+              </button>
               <template v-if="isFilterableColumn(column, slotProps.item)">
                 <button
                   type="button"
@@ -337,6 +352,21 @@ function getByPath(item, path) {
   return String(path)
     .split(".")
     .reduce((acc, key) => (acc && acc[key] !== undefined ? acc[key] : undefined), item);
+}
+
+const IP_COLUMN_KEYS = new Set(["ip", "src_ip", "dst_ip"]);
+const DOMAIN_COLUMN_KEYS = new Set(["domain", "http_host", "host", "hostname"]);
+
+function looksLikeIp(value) {
+  const text = String(value || "").trim();
+  return /^(\d{1,3}\.){3}\d{1,3}$/.test(text) || (text.includes(":") && /^[0-9a-f:]+$/i.test(text));
+}
+
+function looksLikeDomain(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text || text.length > 253 || text.includes("/") || text.includes(" ")) return false;
+  if (looksLikeIp(text)) return false;
+  return /^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(text);
 }
 
 export default {
@@ -784,6 +814,32 @@ export default {
       const value = this.resolveValue(item, column);
       return value !== null && value !== undefined && value !== "";
     },
+    investigateTarget(column, item) {
+      if (!column || column.noInvestigate) return null;
+      const value = String(this.resolveValue(item, column) ?? "").trim();
+      if (!value) return null;
+      const key = String(column.key || "").trim().toLowerCase();
+      if (IP_COLUMN_KEYS.has(key) && looksLikeIp(value)) {
+        return { path: "/investigate", query: { ip: value } };
+      }
+      const nameLooksLikeDomainRow =
+        key === "name" &&
+        item &&
+        (Object.prototype.hasOwnProperty.call(item, "hit_count") ||
+          Object.prototype.hasOwnProperty.call(item, "source"));
+      if ((DOMAIN_COLUMN_KEYS.has(key) || nameLooksLikeDomainRow) && looksLikeDomain(value)) {
+        return { path: "/investigate", query: { domain: value } };
+      }
+      return null;
+    },
+    isInvestigableColumn(column, item) {
+      return Boolean(this.investigateTarget(column, item));
+    },
+    investigateCell(column, item) {
+      const target = this.investigateTarget(column, item);
+      if (!target || !this.$router) return;
+      this.$router.push(target);
+    },
     copyCell(column, item) {
       this.copyValue(this.resolveValue(item, column), column.label || column.key);
     },
@@ -1075,6 +1131,14 @@ export default {
 
 .cell-filter-btn--copy:hover {
   background: rgba(96, 176, 255, 0.48);
+}
+
+.cell-filter-btn--investigate {
+  background: rgba(255, 191, 73, 0.26);
+}
+
+.cell-filter-btn--investigate:hover {
+  background: rgba(255, 191, 73, 0.5);
 }
 
 .truncation-notice {

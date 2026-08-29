@@ -48,9 +48,10 @@ from .settings import ACCESS_LOG_COLOR, ACCESS_LOG_ENABLED
 from .utils import utc_now
 
 # Query parameters carrying an authentication credential (see
-# app._extract_request_query_token). Their values are replaced before the
-# request target - or a Referer - is ever written out.
-REDACTED_QUERY_KEYS = frozenset({"security_code", "access_token", "token", "auth"})
+# app._extract_request_query_token, plus the frontend bootstrap `code` link).
+# Their values are replaced before the request target - or a Referer - is ever
+# written out.
+REDACTED_QUERY_KEYS = frozenset({"code", "security_code", "access_token", "token", "auth"})
 REDACTED_VALUE = "REDACTED"
 
 

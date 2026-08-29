@@ -589,6 +589,10 @@ ENDPOINTS = [
     {"method": "POST", "path": "/api/blacklist/", "desc": "Create a blacklist entry (category, match_type, value, label)."},
     {"method": "DELETE", "path": "/api/blacklist/", "desc": "Delete a blacklist entry."},
     {"method": "POST", "path": "/api/blacklist/toggle", "desc": "Enable/disable a blacklist entry without deleting it."},
+    {"method": "GET", "path": "/api/whitelist/", "desc": "List whitelist entries (optionally filtered by ?category=ip|domain|path)."},
+    {"method": "POST", "path": "/api/whitelist/", "desc": "Create a whitelist entry (category, match_type, value, label)."},
+    {"method": "DELETE", "path": "/api/whitelist/", "desc": "Delete a whitelist entry."},
+    {"method": "POST", "path": "/api/whitelist/toggle", "desc": "Enable/disable a whitelist entry without deleting it."},
     {"method": "GET", "path": "/api/domains/", "desc": "Searchable catalog of domains seen in DNS/HTTP/TLS traffic."},
     {"method": "GET", "path": "/api/paths/", "desc": "Searchable catalog of HTTP request paths."},
     {"method": "GET", "path": "/api/intel/ips/", "desc": "Searchable catalog of IPs seen in stored traffic. ?scope=public|private|local|multicast|reserved|unknown (comma separated) filters by address scope; the full vocabulary and per-scope counts come back in the X-Scope-Counts header."},
@@ -2270,6 +2274,54 @@ def blacklist_toggle(request):
         raise ValueError("enabled is required")
     enabled = bool(payload.get("enabled"))
     return _blacklist_row(store.set_blacklist_entry_enabled(entry_id, enabled))
+
+
+def _whitelist_row(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "category": row.get("category"),
+        "match_type": row.get("match_type"),
+        "value": row.get("value"),
+        "label": row.get("label"),
+        "enabled": bool(row.get("enabled")),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+@app.api("/api/whitelist/", methods=("GET", "POST", "DELETE"))
+def whitelist_collection(request):
+    if request.method.upper() == "GET":
+        category = str(request.query.get("category") or "").strip()
+        return [_whitelist_row(row) for row in store.list_whitelist_entries(category)]
+    payload = _read_json_body(request)
+    if request.method.upper() == "POST":
+        entry = store.create_whitelist_entry(
+            category=str(payload.get("category") or ""),
+            match_type=str(payload.get("match_type") or "exact"),
+            value=str(payload.get("value") or ""),
+            label=str(payload.get("label") or ""),
+        )
+        return _whitelist_row(entry)
+    if request.method.upper() == "DELETE":
+        entry_id = str(payload.get("id") or "").strip()
+        if not entry_id:
+            raise ValueError("id is required")
+        store.delete_whitelist_entry(entry_id)
+        return {"status": "ok"}
+    raise ValueError("Unsupported method")
+
+
+@app.api("/api/whitelist/toggle", methods=("POST",))
+def whitelist_toggle(request):
+    payload = _read_json_body(request)
+    entry_id = str(payload.get("id") or "").strip()
+    if not entry_id:
+        raise ValueError("id is required")
+    if "enabled" not in payload:
+        raise ValueError("enabled is required")
+    enabled = bool(payload.get("enabled"))
+    return _whitelist_row(store.set_whitelist_entry_enabled(entry_id, enabled))
 
 
 @app.api("/api/domains/", methods=("GET",))

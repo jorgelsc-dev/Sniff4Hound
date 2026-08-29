@@ -30,7 +30,7 @@ Punto importante:
 
 - Captura raw para IPv4, IPv6, ARP, TCP, UDP, ICMP y STP.
 - Persistencia SQLite para sesiones, flows, packets, payloads, tags y runtime config.
-- Modo `honeypot` con listeners TCP/UDP sobre puertos comunes.
+- Modo `honeypot` con un catalogo de 10k+ listeners TCP/UDP; el set curado se habilita por defecto y el resto queda disponible para activar bajo demanda.
 - Dashboard Vue 3 + Vuetify servido por el mismo proceso.
 - Autenticacion por token de sesion y JWT HS256.
 - WebSocket en vivo para eventos `packet`, `stats_update`, `runtime_mode` y chat.
@@ -190,7 +190,7 @@ curl -H "Authorization: Bearer TOKEN" http://127.0.0.1:45678/api/dashboard/
 
 ### `honeypot`
 
-- levanta listeners TCP/UDP sobre puertos conocidos;
+- levanta listeners TCP/UDP sobre el set curado de puertos conocidos y mantiene un catalogo expandido para activar otros servicios bajo demanda;
 - responde con banners y payloads predefinidos;
 - guarda el trafico como sesiones `honeypot:*` en la misma base;
 - escribe actividad operativa en `honeypot.log`.
@@ -230,6 +230,8 @@ curl -X POST http://127.0.0.1:45678/api/runtime/ \
 ## Auth y acceso
 
 - `SNIFF4HOUND_REQUIRE_AUTH=1` por defecto.
+- El banner imprime un enlace de arranque como `http://127.0.0.1:45678/?code=<token>`;
+  la SPA lee ese `code`, lo guarda en `localStorage` y limpia la URL visible.
 - Se aceptan:
   - `Authorization: Bearer <token>`
   - `X-Security-Code: <token>`

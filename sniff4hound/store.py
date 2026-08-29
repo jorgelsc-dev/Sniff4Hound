@@ -24,7 +24,7 @@ from .protocol_facets import (
     resolve_facets,
     resolve_row_columns,
 )
-from .rulesets import load_builtin_rulesets, normalize_ruleset
+from .rulesets import literal_packet_text_pattern, load_builtin_rulesets, normalize_ruleset
 from .settings import (
     MONITOR_FILTER_DEFAULT,
     PAYLOAD_TEXT_MAX_CHARS,
@@ -666,6 +666,18 @@ class SniffStore:
                 updated_at TEXT NOT NULL
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS whitelist_entries (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                match_type TEXT NOT NULL DEFAULT 'exact',
+                value TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
         ]
         with self._lock:
             for statement in schema:
@@ -734,6 +746,8 @@ class SniffStore:
             "CREATE INDEX IF NOT EXISTS idx_payloads_packet ON payloads(packet_id)",
             "CREATE INDEX IF NOT EXISTS idx_flows_last_seen ON flows(last_seen)",
             "CREATE INDEX IF NOT EXISTS idx_domains_ip ON domains(ip)",
+            "CREATE INDEX IF NOT EXISTS idx_blacklist_category ON blacklist_entries(category, enabled)",
+            "CREATE INDEX IF NOT EXISTS idx_whitelist_category ON whitelist_entries(category, enabled)",
         ):
             self._conn.execute(statement)
         self._conn.commit()
@@ -818,27 +832,37 @@ class SniffStore:
         row - so a listener the user has since disabled stays disabled
         across restarts, and a new port added to COMMON_PORTS in a later
         release still reaches already-populated databases."""
-        from .honeypot_ports import COMMON_PORTS
+        from .honeypot_ports import COMMON_PORTS, DEFAULT_ENABLED_PORTS, service_label
 
-        cursor = self._conn.execute("SELECT id FROM honeypot_listeners")
-        existing_ids = {str(row["id"]) for row in cursor.fetchall()}
+        cursor = self._conn.execute("SELECT id, label FROM honeypot_listeners")
+        existing_rows = {str(row["id"]): dict(row) for row in cursor.fetchall()}
         now = utc_now()
-        inserted = False
+        update_rows = []
+        insert_rows = []
         for proto in ("tcp", "udp"):
+            default_enabled = set(DEFAULT_ENABLED_PORTS.get(proto, ()))
             for port in COMMON_PORTS.get(proto, ()):
                 listener_id = f"{proto}/{port}"
-                if listener_id in existing_ids:
+                label = service_label(proto, int(port))
+                if listener_id in existing_rows:
+                    if not str(existing_rows[listener_id].get("label") or "").strip():
+                        update_rows.append((label, listener_id))
                     continue
-                self._conn.execute(
-                    """
-                    INSERT OR IGNORE INTO honeypot_listeners
-                    (id, proto, port, label, enabled, source, created_at, updated_at)
-                    VALUES (?, ?, ?, '', 1, 'builtin', ?, ?)
-                    """,
-                    (listener_id, proto, int(port), now, now),
+                insert_rows.append(
+                    (listener_id, proto, int(port), label, 1 if int(port) in default_enabled else 0, now, now)
                 )
-                inserted = True
-        if inserted:
+        if update_rows:
+            self._conn.executemany("UPDATE honeypot_listeners SET label = ? WHERE id = ?", update_rows)
+        if insert_rows:
+            self._conn.executemany(
+                """
+                INSERT OR IGNORE INTO honeypot_listeners
+                (id, proto, port, label, enabled, source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'builtin', ?, ?)
+                """,
+                insert_rows,
+            )
+        if update_rows or insert_rows:
             self._conn.commit()
 
     def list_honeypot_listeners(self):
@@ -2302,7 +2326,7 @@ class SniffStore:
             # a bare substring match on "evil.com" would also fire on
             # "notevil.com" or an unrelated domain that merely contains
             # that run of characters.
-            pattern = value if is_regex else r"\b" + re.escape(value) + r"\b"
+            pattern = value if is_regex else literal_packet_text_pattern(value)
             match = {"payload_regex": [pattern]}
         label = str(entry.get("label") or "").strip() or f"Blacklisted {category}: {value}"
         now = utc_now()
@@ -2408,6 +2432,82 @@ class SniffStore:
                 (self._blacklist_monitor_id(entry_id),),
             )
             self._conn.commit()
+        return True
+
+    # --- Whitelist -----------------------------------------------------
+    #
+    # Whitelist entries are deliberately not mirrored into `monitors`: their
+    # job is the inverse of a blacklist entry. A matching packet is still
+    # counted and stored, but it skips ruleset classification, monitor
+    # evaluation and anomaly detection, which removes noisy known-good
+    # hosts/domains/paths without making capture look dead.
+
+    WHITELIST_CATEGORIES = BLACKLIST_CATEGORIES
+
+    def list_whitelist_entries(self, category: str = "") -> list[dict]:
+        category = str(category or "").strip().lower()
+        if category:
+            rows = self._fetchall(
+                "SELECT * FROM whitelist_entries WHERE category = ? ORDER BY created_at DESC",
+                (category,),
+            )
+        else:
+            rows = self._fetchall("SELECT * FROM whitelist_entries ORDER BY created_at DESC")
+        for row in rows:
+            row["enabled"] = bool(row.get("enabled"))
+        return rows
+
+    def get_whitelist_entry(self, entry_id: str):
+        row = self._fetchone("SELECT * FROM whitelist_entries WHERE id = ?", (str(entry_id),))
+        if not row:
+            return None
+        row["enabled"] = bool(row.get("enabled"))
+        return row
+
+    def create_whitelist_entry(self, category: str, match_type: str, value: str, label: str = "") -> dict:
+        category = str(category or "").strip().lower()
+        if category not in self.WHITELIST_CATEGORIES:
+            raise ValueError(f"category must be one of {self.WHITELIST_CATEGORIES}")
+        match_type = str(match_type or "exact").strip().lower()
+        if match_type not in ("exact", "regex"):
+            raise ValueError("match_type must be 'exact' or 'regex'")
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("value is required")
+        if match_type == "regex":
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise ValueError(f"Invalid regex pattern: {exc}") from exc
+        entry_id = f"whitelist-{category}-{uuid.uuid4().hex[:12]}"
+        now = utc_now()
+        self._execute(
+            """
+            INSERT INTO whitelist_entries (id, category, match_type, value, label, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (entry_id, category, match_type, value, str(label or "").strip(), now, now),
+            commit=True,
+        )
+        return self.get_whitelist_entry(entry_id)
+
+    def set_whitelist_entry_enabled(self, entry_id: str, enabled: bool) -> dict:
+        existing = self.get_whitelist_entry(entry_id)
+        if not existing:
+            raise ValueError(f"Unknown whitelist entry id: {entry_id}")
+        now = utc_now()
+        self._execute(
+            "UPDATE whitelist_entries SET enabled = ?, updated_at = ? WHERE id = ?",
+            (1 if enabled else 0, now, str(entry_id)),
+            commit=True,
+        )
+        return self.get_whitelist_entry(entry_id)
+
+    def delete_whitelist_entry(self, entry_id: str) -> bool:
+        existing = self.get_whitelist_entry(entry_id)
+        if not existing:
+            raise ValueError(f"Unknown whitelist entry id: {entry_id}")
+        self._execute("DELETE FROM whitelist_entries WHERE id = ?", (str(entry_id),), commit=True)
         return True
 
     def get_monitor_filter_enabled(self) -> bool:
@@ -4075,7 +4175,7 @@ class SniffStore:
 
     # Tables that only ever hold data produced by a capture/honeypot run.
     # Deliberately excludes `monitors`, `rulesets`, `honeypot_listeners`,
-    # `blacklist_entries` and `runtime_config`: those are definitions and
+    # `blacklist_entries`, `whitelist_entries` and `runtime_config`: those are definitions and
     # configuration the operator authored, not captured traffic, and wiping
     # them would silently undo tuning work.
     CAPTURE_DATA_TABLES = ("tags", "payloads", "packets", "flows", "domains", "paths", "sessions")

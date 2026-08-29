@@ -191,7 +191,7 @@ class AccessLogRedactionTests(unittest.TestCase):
 
     def test_security_code_never_reaches_the_line(self):
         secret = "Ab3xZ9qP"
-        for key in ("security_code", "access_token", "token", "auth"):
+        for key in ("code", "security_code", "access_token", "token", "auth"):
             with self.subTest(key=key):
                 line = _capture(
                     access_log.log_websocket_open,
@@ -212,14 +212,16 @@ class AccessLogRedactionTests(unittest.TestCase):
         self.assertNotIn("SEKRIT", line)
 
     def test_a_token_in_the_referer_is_redacted_too(self):
-        line = _capture(
-            access_log.log_response,
-            _FakeRequest(headers={"referer": "http://host/dashboard?security_code=Ab3xZ9qP"}),
-            _FakeResponse(200, b""),
-            0.0,
-        )
-        self.assertNotIn("Ab3xZ9qP", line)
-        self.assertIn("security_code=REDACTED", line)
+        for key in ("code", "security_code"):
+            with self.subTest(key=key):
+                line = _capture(
+                    access_log.log_response,
+                    _FakeRequest(headers={"referer": f"http://host/dashboard?{key}=Ab3xZ9qP"}),
+                    _FakeResponse(200, b""),
+                    0.0,
+                )
+                self.assertNotIn("Ab3xZ9qP", line)
+                self.assertIn(f"{key}=REDACTED", line)
 
 
 class AccessLogAuthFailureTests(unittest.TestCase):

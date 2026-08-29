@@ -92,7 +92,7 @@ Modelo:
 
 Responsabilidades:
 
-- abrir listeners TCP/UDP en puertos comunes;
+- abrir listeners TCP/UDP del set curado y exponer un catalogo expandido de 10k+ puertos activables;
 - responder con banners y payloads predefinidos;
 - registrar sesiones como trafico `honeypot`;
 - escribir actividad operativa en `honeypot.log`.
@@ -146,6 +146,10 @@ Entradas aceptadas:
 - `X-Access-Token`
 - `security_code`, `access_token`, `token` o `auth` en query string
   (**solo** en el handshake de `WS /ws/`, no en HTTP plano)
+
+El banner de arranque tambien imprime `/?code=<token>` para la SPA. Ese
+parametro lo consume el frontend, lo persiste en `localStorage` y lo retira de
+la barra de direcciones; no autentica rutas HTTP directamente.
 
 Firma de los JWT:
 
