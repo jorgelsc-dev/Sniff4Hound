@@ -1147,7 +1147,8 @@ class SmokeTests(unittest.TestCase):
 
         banner = output.getvalue()
         self.assertIn(f"🐕 SNIFF4HOUND v{sniff4hound.__version__}", banner)
-        self.assertIn("Link: http://127.0.0.1:45678/", banner)
+        self.assertIn("Link: http://127.0.0.1:45678/?code=Ab12Cd34", banner)
+        self.assertIn("SECURITY CODE: Ab12Cd34", banner)
         self.assertNotIn("Dashboard:", banner)
         self.assertNotIn("URL:", banner)
 

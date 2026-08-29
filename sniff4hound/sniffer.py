@@ -4,6 +4,7 @@ import ipaddress
 import math
 import re
 import socket
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
@@ -11,7 +12,7 @@ from dataclasses import dataclass, field
 from .anomaly import AnomalyEngine
 from .logger import get_capture_logger
 from .monitors import RuleAlertThrottle, ensure_monitor_index, evaluate_packet, indexed_monitors_by_id
-from .rulesets import classify_packet
+from .rulesets import build_packet_text, classify_packet, literal_packet_text_pattern
 from .settings import (
     CAPTURE_BUFFER_BYTES,
     CAPTURE_POLL_TIMEOUT,
@@ -591,6 +592,7 @@ class Sniffer:
         self.state = CaptureState()
         self._local_ips = local_ip_candidates()
         self._monitor_cache: list[dict] = []
+        self._whitelist_cache: list[dict] = []
         self._monitor_filter_enabled = True
         self._detection_exclude_scopes: frozenset[str] = frozenset()
         self._monitor_cache_at = 0.0
@@ -870,9 +872,57 @@ class Sniffer:
             return False
         return src in scopes and dst in scopes
 
+    def _whitelist_entry_matches_packet(self, entry: dict, packet: dict, *, packet_text: str | None = None) -> bool:
+        if not entry or not entry.get("enabled", True):
+            return False
+        category = str(entry.get("category") or "").strip().lower()
+        value = str(entry.get("value") or "").strip()
+        if not category or not value:
+            return False
+        is_regex = str(entry.get("match_type") or "exact").strip().lower() == "regex"
+        if category == "ip":
+            src_ip = str(packet.get("src_ip") or "").strip().lower()
+            dst_ip = str(packet.get("dst_ip") or "").strip().lower()
+            if is_regex:
+                try:
+                    pattern = re.compile(value)
+                except re.error:
+                    return False
+                return bool(pattern.search(src_ip) or pattern.search(dst_ip))
+            wanted = value.lower()
+            return src_ip == wanted or dst_ip == wanted
+        if category not in ("domain", "path"):
+            return False
+        if packet_text is None:
+            packet_text = build_packet_text(packet)
+        if is_regex:
+            try:
+                return bool(re.search(value, packet_text, flags=re.IGNORECASE))
+            except re.error:
+                return False
+        pattern = literal_packet_text_pattern(value.lower())
+        return bool(re.search(pattern, packet_text))
+
+    def _whitelisted(self, packet: dict) -> bool:
+        entries = self._whitelist_cache
+        if not entries:
+            return False
+        packet_text = None
+        for entry in entries:
+            if self._whitelist_entry_matches_packet(entry, packet, packet_text=packet_text):
+                return True
+            category = str(entry.get("category") or "").strip().lower()
+            if category in ("domain", "path"):
+                packet_text = packet_text if packet_text is not None else build_packet_text(packet)
+        return False
+
     def _refresh_monitor_cache(self):
         try:
             monitors = self.store.list_monitors()
+            list_whitelist = getattr(self.store, "list_whitelist_entries", None)
+            whitelist = list_whitelist() if callable(list_whitelist) else []
+            if not isinstance(whitelist, list):
+                whitelist = []
             filter_enabled = self.store.get_monitor_filter_enabled()
             exclude_scopes = frozenset(self.store.get_detection_exclude_scopes())
             # Builds/refreshes monitors.evaluate_packet()'s content index
@@ -881,8 +931,14 @@ class Sniffer:
             # background thread - see that module.
             ensure_monitor_index(monitors)
             self._monitor_cache = monitors
+            self._whitelist_cache = whitelist
             self._monitor_filter_enabled = filter_enabled
             self._detection_exclude_scopes = exclude_scopes
+        except sqlite3.ProgrammingError as exc:
+            if "closed database" in str(exc).lower():
+                LOGGER.debug("Skipped monitor refresh after store close")
+            else:
+                LOGGER.exception("Failed to refresh monitors")
         except Exception:
             LOGGER.exception("Failed to refresh monitors")
         finally:
@@ -993,44 +1049,33 @@ class Sniffer:
 
     def _store_packet(self, packet: dict):
         monitors, filter_enabled = self._get_monitor_context()
-        if self._detection_muted(packet):
-            # An excluded scope drops out of the pipeline entirely: no
-            # ruleset classification, no monitors, no anomaly detectors, and
-            # never stored or broadcast - not even with "store everything"
-            # on, which would otherwise persist it regardless of the fact
-            # that nothing analysed it. Running the rulesets anyway used to
-            # tag this traffic, so it kept showing up in the capture views
-            # after the operator had explicitly excluded it.
-            #
-            # The seen/bytes counters still move: the frame really did cross
-            # the wire, and reporting otherwise would make the capture stats
-            # lie about link volume.
-            self._touch_packet(packet, stored=False)
-            self._broadcast_stats_throttled()
-            return
-
-        rulesets = self._get_rulesets()
-        matches = classify_packet(packet, rulesets)
-        monitor_hits = evaluate_packet(packet, monitors) if filter_enabled else []
-        if monitor_hits:
-            monitor_hits = self._rule_throttle.filter(monitor_hits, packet.get("src_ip"))
-        # Anomaly detectors run unconditionally, regardless of filter_enabled —
-        # a rate/state-based detector that only ever saw already-matched
-        # traffic could never build a useful baseline.
-        try:
-            anomaly_hits = self._anomaly.evaluate(packet, monitors, monitors_by_id=indexed_monitors_by_id(monitors))
-        except Exception:
-            LOGGER.exception("Anomaly detection failed")
-            anomaly_hits = []
-        if anomaly_hits:
-            monitor_hits = list(monitor_hits) + list(anomaly_hits)
+        detection_muted = self._detection_muted(packet) or self._whitelisted(packet)
+        if detection_muted:
+            matches = []
+            monitor_hits = []
+        else:
+            rulesets = self._get_rulesets()
+            matches = classify_packet(packet, rulesets)
+            monitor_hits = evaluate_packet(packet, monitors) if filter_enabled else []
+            if monitor_hits:
+                monitor_hits = self._rule_throttle.filter(monitor_hits, packet.get("src_ip"))
+            # Anomaly detectors run unconditionally, regardless of filter_enabled —
+            # a rate/state-based detector that only ever saw already-matched
+            # traffic could never build a useful baseline.
+            try:
+                anomaly_hits = self._anomaly.evaluate(packet, monitors, monitors_by_id=indexed_monitors_by_id(monitors))
+            except Exception:
+                LOGGER.exception("Anomaly detection failed")
+                anomaly_hits = []
+            if anomaly_hits:
+                monitor_hits = list(monitor_hits) + list(anomaly_hits)
         tags = self._build_packet_tags(packet, matches, monitor_hits)
         packet["rule_hits"] = matches
         packet["monitor_hits"] = monitor_hits
         packet["tags"] = tags
         packet["banner_text"] = packet.get("banner_text") or packet.get("payload_text") or ""
 
-        detected = bool(monitor_hits) or not filter_enabled
+        detected = detection_muted or bool(monitor_hits) or not filter_enabled
         if detected:
             saved = self.store.register_packet(packet)
             self._touch_packet(saved or packet, stored=True)

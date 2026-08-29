@@ -301,12 +301,6 @@
           </div>
         </div>
 
-        <div class="host-radar-legend">
-          <span class="legend-chip legend-chip--live">Live attack</span>
-          <span class="legend-chip legend-chip--history">Historical host</span>
-          <span class="legend-chip legend-chip--pc">Node icon</span>
-          <span class="legend-chip legend-chip--alert">Alert count</span>
-        </div>
       </div>
 
       <div class="host-radar-summary">
@@ -1603,46 +1597,6 @@ export default {
   line-height: 1.55;
 }
 
-.host-radar-legend {
-  position: absolute;
-  right: 18px;
-  bottom: 18px;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  max-width: min(420px, calc(100% - 36px));
-}
-
-.legend-chip {
-  padding: 6px 11px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  background: rgba(6, 13, 25, 0.8);
-  color: rgba(224, 237, 250, 0.94);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  backdrop-filter: blur(10px);
-}
-
-.legend-chip--live {
-  border-color: rgba(255, 187, 98, 0.9);
-}
-
-.legend-chip--history {
-  border-color: rgba(164, 182, 205, 0.56);
-}
-
-.legend-chip--pc {
-  border-color: rgba(93, 204, 255, 0.84);
-}
-
-.legend-chip--alert {
-  border-color: rgba(255, 100, 122, 0.9);
-}
-
 .host-radar-alert-badge {
   pointer-events: none;
 }
@@ -1748,16 +1702,10 @@ export default {
     height: clamp(340px, 78vw, 520px);
   }
 
-  .host-radar-overlay,
-  .host-radar-legend {
+  .host-radar-overlay {
     left: 12px;
     right: 12px;
     max-width: none;
-  }
-
-  .host-radar-legend {
-    left: auto;
-    justify-content: flex-start;
   }
 
   .host-radar-summary,

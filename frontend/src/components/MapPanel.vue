@@ -56,13 +56,6 @@
           </v-btn-toggle>
         </div>
 
-        <div class="map-overlay__meta">
-          <span class="map-status-pill">{{ projectionLabel }}</span>
-          <span class="map-status-pill">{{ wsLabel }}</span>
-          <span v-if="geoipSourceLabel" class="map-status-pill map-status-pill--accent">
-            {{ geoipSourceLabel }}
-          </span>
-        </div>
       </div>
 
       <svg
@@ -141,9 +134,9 @@
             v-for="shape in worldPaths"
             :key="shape.id"
             :d="shape.d"
-            :fill="shape.iso === selectedCountryIso ? 'rgba(122, 210, 255, 0.42)' : `url(#${landGradientId})`"
-            :stroke="shape.iso === selectedCountryIso ? 'rgba(122, 210, 255, 0.95)' : 'rgba(143, 231, 202, 0.24)'"
-            :stroke-width="shape.iso === selectedCountryIso ? 1.6 : 0.9"
+            :fill="`url(#${landGradientId})`"
+            stroke="rgba(143, 231, 202, 0.24)"
+            stroke-width="0.9"
             :class="['map-country', { 'map-country--active': shape.active }]"
             @click="selectCountry(shape.iso)"
           >
@@ -156,9 +149,9 @@
             v-for="shape in worldPaths"
             :key="shape.id"
             :d="shape.d"
-            :fill="shape.iso === selectedCountryIso ? 'rgba(122, 210, 255, 0.42)' : `url(#${landGradientId})`"
-            :stroke="shape.iso === selectedCountryIso ? 'rgba(122, 210, 255, 0.95)' : 'rgba(143, 231, 202, 0.22)'"
-            :stroke-width="shape.iso === selectedCountryIso ? 1.5 : 0.8"
+            :fill="`url(#${landGradientId})`"
+            stroke="rgba(143, 231, 202, 0.22)"
+            stroke-width="0.8"
             opacity="0.96"
             :class="['map-country', { 'map-country--active': shape.active }]"
             @click="selectCountry(shape.iso)"
@@ -282,10 +275,6 @@
 
       </svg>
 
-      <div class="map-legend">
-        <span class="legend-item public">Public IP</span>
-      </div>
-
       <!-- Selected country. Anchored over the map rather than below it so the
            shape stays visible while its numbers are read. -->
       <div v-if="selectedCountry" class="map-country-popup">
@@ -314,7 +303,14 @@
           >{{ item.proto }} · {{ item.packets }}</v-chip>
         </div>
         <div v-if="selectedCountry.addresses && selectedCountry.addresses.length" class="map-country-popup__ips">
-          <span v-for="ip in selectedCountry.addresses.slice(0, 6)" :key="ip" class="mono">{{ ip }}</span>
+          <router-link
+            v-for="ip in selectedCountry.addresses.slice(0, 6)"
+            :key="ip"
+            class="mono map-ip-link"
+            :to="{ path: '/investigate', query: { ip } }"
+          >
+            {{ ip }}
+          </router-link>
           <span v-if="selectedCountry.hosts > 6" class="map-country-popup__more">
             +{{ selectedCountry.hosts - 6 }} more
           </span>
@@ -379,7 +375,11 @@
       </thead>
       <tbody>
         <tr v-for="item in latestHosts" :key="item.id">
-          <td>{{ item.ip }}</td>
+          <td>
+            <router-link class="mono map-ip-link" :to="{ path: '/investigate', query: { ip: item.ip } }">
+              {{ item.ip }}
+            </router-link>
+          </td>
           <td>{{ item.scope }}</td>
           <td>{{ item.region }}</td>
           <td>{{ item.open_port_count }}</td>
@@ -400,15 +400,16 @@ import store from "../state/appStore";
 import { appBaseUrl } from "../utils/runtimeEnv";
 import DataPanel from "./ui/DataPanel.vue";
 
-const GLOBE_ROTATION_SPEED = 4.5;
-// ~30 fps: the ceiling on how often the globe re-projects, not how often
+const GLOBE_ROTATION_SPEED = 3.2;
+// ~25 fps: the ceiling on how often the globe re-projects, not how often
 // the browser paints.
-const GLOBE_FRAME_INTERVAL_MS = 33;
+const GLOBE_FRAME_INTERVAL_MS = 40;
 // Minimum separation between consecutive outline points on the globe, in
-// degrees. At this radius 0.5 deg is under two pixels.
-const GLOBE_MIN_POINT_SEPARATION_DEG = 0.5;
-const GLOBE_FOCUS_OSCILLATION_DEG = 28;
-const GLOBE_FOCUS_OSCILLATION_SPEED = 0.6;
+// degrees. The globe uses the low-detail geography too, so this keeps DOM
+// churn low without making coastlines look broken at dashboard size.
+const GLOBE_MIN_POINT_SEPARATION_DEG = 1.2;
+const GLOBE_FOCUS_OSCILLATION_DEG = 18;
+const GLOBE_FOCUS_OSCILLATION_SPEED = 0.38;
 
 export default {
   name: "MapPanel",
@@ -511,9 +512,6 @@ export default {
     },
     isGlobeMode() {
       return this.projectionMode === "globe";
-    },
-    projectionLabel() {
-      return this.isGlobeMode ? "Projection: Globe" : "Projection: Flat";
     },
     globeClipId() {
       return `map-globe-clip-${this.mapUid}`;
@@ -884,7 +882,7 @@ export default {
     worldGeoJsonUrlCandidates(kind) {
       const base = this.assetBaseUrl();
       if (kind === "globe") {
-        return [`${base}geo/world-detailed.geojson`, `${base}geo/world.geojson`];
+        return [`${base}geo/world.geojson`, `${base}geo/world-detailed.geojson`];
       }
       return [`${base}geo/world-detailed.geojson`, `${base}geo/world.geojson`];
     },
@@ -1404,33 +1402,8 @@ export default {
   backdrop-filter: blur(10px);
 }
 
-.map-overlay__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.map-status-pill {
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(98, 185, 230, 0.18);
-  background: linear-gradient(180deg, rgba(6, 15, 31, 0.84), rgba(5, 10, 18, 0.76));
-  color: rgba(220, 239, 255, 0.94);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  backdrop-filter: blur(10px);
-  box-shadow: 0 14px 30px rgba(2, 8, 14, 0.26);
-}
-
 .map-refresh-btn {
   min-height: 34px;
-}
-
-.map-status-pill--accent {
-  color: rgba(144, 244, 208, 0.96);
 }
 
 .map-wrapper svg {
@@ -1567,6 +1540,15 @@ export default {
   opacity: 0.6;
 }
 
+.map-ip-link {
+  color: rgba(122, 210, 255, 0.96);
+  text-decoration: none;
+}
+
+.map-ip-link:hover {
+  text-decoration: underline;
+}
+
 .map-country-rail {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -1628,43 +1610,6 @@ export default {
   opacity: 0.96;
 }
 
-.map-legend {
-  position: absolute;
-  right: 18px;
-  bottom: 18px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  max-width: 320px;
-  padding: 10px 12px;
-  border: 1px solid rgba(106, 192, 231, 0.16);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(6, 14, 28, 0.82), rgba(5, 10, 20, 0.7));
-  backdrop-filter: blur(10px);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.02),
-    0 14px 30px rgba(4, 9, 18, 0.38);
-  z-index: 2;
-}
-
-.legend-item {
-  border-radius: 999px;
-  border: 1px solid transparent;
-  padding: 4px 10px;
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  background: rgba(5, 12, 24, 0.82);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.02);
-}
-
-.legend-item.public {
-  border-color: rgba(53, 230, 177, 0.82);
-  color: rgba(132, 248, 213, 0.95);
-}
-
 @keyframes arc-flow {
   from {
     stroke-dashoffset: 48;
@@ -1696,19 +1641,5 @@ export default {
     gap: 10px;
   }
 
-  .map-overlay__meta {
-    justify-content: flex-start;
-  }
-
-  .map-legend {
-    right: 12px;
-    bottom: 12px;
-    max-width: calc(100% - 24px);
-  }
-
-  .legend-item,
-  .map-status-pill {
-    font-size: 0.65rem;
-  }
 }
 </style>

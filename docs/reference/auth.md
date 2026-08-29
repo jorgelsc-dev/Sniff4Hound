@@ -6,7 +6,9 @@ Sniff4Hound usa un token de sesion corto para la UI y JWT HS256 para integracion
 
 - se genera al arrancar;
 - tiene 8 caracteres alfanumericos;
-- se imprime en la terminal cuando inicia `sniff4hound`.
+- se imprime en la terminal cuando inicia `sniff4hound`;
+- el enlace de arranque usa `/?code=<token>` para que la UI lo guarde
+  automaticamente.
 
 Cabeceras aceptadas:
 
@@ -15,7 +17,9 @@ Cabeceras aceptadas:
 - `X-Access-Token: <token>`
 - `?security_code=<token>`, `?access_token=<token>`, `?token=<token>` o `?auth=<token>` solo para el handshake WebSocket
 
-La UI conserva el codigo solo en memoria del tab actual. Si recargas la pagina o abres una pestaña nueva, tendras que volver a pegarlo.
+La UI conserva el codigo en `localStorage` como `sniff4hound.securityCode`.
+Cuando el banner del siguiente arranque trae un codigo nuevo, abrir ese enlace
+lo reemplaza.
 
 Si `SNIFF4HOUND_REQUIRE_AUTH=0`, la app permite acceso anonimo cuando no se envia token.
 
@@ -84,8 +88,8 @@ Variables:
 - `SNIFF4HOUND_AUTH_LOCKOUT_MAX_SECONDS` (300)
 
 Las credenciales nunca llegan al log: `access_log.redact_query()` sustituye por
-`REDACTED` el valor de `security_code`, `access_token`, `token` y `auth` en la
-query string (y en el `Referer`) antes de imprimir la linea.
+`REDACTED` el valor de `code`, `security_code`, `access_token`, `token` y
+`auth` en la query string (y en el `Referer`) antes de imprimir la linea.
 
 ## Flujo de validacion
 

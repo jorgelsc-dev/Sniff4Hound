@@ -62,8 +62,8 @@
         <v-card-title class="text-h5 pt-6">Security Code</v-card-title>
         <v-card-text class="pt-4">
           <p class="auth-dialog-copy">
-            Copy the 8-character code from the `sniff4hound` terminal. It is sent as
-            `Authorization: Bearer` to the API and attached to the WebSocket handshake.
+            Open the startup link from the `sniff4hound` terminal or enter the
+            8-character code here. The dashboard uses it for API and WebSocket access.
           </p>
           <v-alert
             type="info"
@@ -72,9 +72,8 @@
             class="mb-4"
             icon="mdi-shield-lock-outline"
           >
-            The code is kept in this tab's memory only - it is never written to browser
-            storage, so a shared workstation never inherits your session. Reloading the
-            page asks for it again; that is expected, not a fault.
+            The startup link saves the code in this browser until the next run gives you
+            a new one. Sign out or enter a fresh code to replace it.
           </v-alert>
           <v-text-field
             ref="authInput"

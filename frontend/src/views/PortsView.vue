@@ -127,7 +127,14 @@
                 </template>
 
                 <template v-slot:[portSlotNames.ip]="{ item }">
-                  <span class="mono">{{ item.ip || "-" }}</span>
+                  <router-link
+                    v-if="item.ip"
+                    class="mono ip-link"
+                    :to="{ path: '/investigate', query: { ip: item.ip } }"
+                  >
+                    {{ item.ip }}
+                  </router-link>
+                  <span v-else>-</span>
                 </template>
 
                 <template v-slot:[portSlotNames.state]="{ item }">
@@ -790,6 +797,15 @@ export default {
 
 .mono {
   font-family: var(--font-mono);
+}
+
+.ip-link {
+  color: rgba(108, 186, 228, 0.98);
+  text-decoration: none;
+}
+
+.ip-link:hover {
+  text-decoration: underline;
 }
 
 .summary-cell {
