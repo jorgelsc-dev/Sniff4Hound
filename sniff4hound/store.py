@@ -871,6 +871,22 @@ class SniffStore:
             row["enabled"] = bool(row.get("enabled"))
         return rows
 
+    def count_honeypot_listeners(self) -> dict:
+        row = self._fetchone(
+            """
+            SELECT
+              COUNT(*) AS total,
+              COALESCE(SUM(CASE WHEN enabled THEN 1 ELSE 0 END), 0) AS enabled,
+              COALESCE(SUM(CASE WHEN source = 'custom' THEN 1 ELSE 0 END), 0) AS custom
+            FROM honeypot_listeners
+            """
+        )
+        return {
+            "total": safe_int((row or {}).get("total"), 0),
+            "enabled": safe_int((row or {}).get("enabled"), 0),
+            "custom": safe_int((row or {}).get("custom"), 0),
+        }
+
     def get_honeypot_listener(self, listener_id: str):
         row = self._fetchone("SELECT * FROM honeypot_listeners WHERE id = ?", (str(listener_id),))
         if not row:

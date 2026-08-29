@@ -40,6 +40,7 @@ from .settings import (
     DEFAULT_DOCS_TITLE,
     HOST,
     PORT,
+    resolve_ipc_call_timeout,
     resolve_ipc_connect_timeout,
     resolve_ipc_socket,
     resolve_ipc_token,
@@ -463,6 +464,7 @@ ipc_client = IpcClient(
     resolve_ipc_token(),
     on_event=_on_capture_event,
     connect_timeout=resolve_ipc_connect_timeout(),
+    call_timeout=resolve_ipc_call_timeout(),
 )
 runtime = RuntimeControllerClient(ipc_client)
 

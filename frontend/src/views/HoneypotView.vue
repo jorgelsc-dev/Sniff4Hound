@@ -337,6 +337,10 @@ export default {
       return runtime.honeypot && typeof runtime.honeypot === "object" ? runtime.honeypot : {};
     },
     listenerCount() {
+      const listenerCount = Number(this.runtime.listener_count);
+      if (Number.isFinite(listenerCount) && listenerCount > 0) {
+        return listenerCount;
+      }
       const listeners = Array.isArray(this.runtime.listeners) ? this.runtime.listeners : [];
       return listeners.length;
     },
