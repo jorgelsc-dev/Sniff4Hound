@@ -71,11 +71,6 @@
         aria-label="Sniff4Hound geolocated telemetry map"
       >
         <defs>
-          <radialGradient :id="globeOceanGradientId" cx="34%" cy="28%" r="82%">
-            <stop offset="0%" stop-color="rgba(43, 167, 255, 0.96)" />
-            <stop offset="42%" stop-color="rgba(12, 61, 117, 0.98)" />
-            <stop offset="100%" stop-color="rgba(2, 16, 32, 1)" />
-          </radialGradient>
           <linearGradient :id="landGradientId" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stop-color="rgba(102, 255, 210, 0.28)" />
             <stop offset="55%" stop-color="rgba(76, 175, 228, 0.18)" />
@@ -135,7 +130,7 @@
             :cx="globeCenterX"
             :cy="globeCenterY"
             :r="globeRadius"
-            :fill="`url(#${globeOceanGradientId})`"
+            fill="rgba(9, 34, 60, 0.96)"
             stroke="rgba(111, 216, 255, 0.34)"
             stroke-width="1.1"
           />
@@ -406,6 +401,12 @@ import { appBaseUrl } from "../utils/runtimeEnv";
 import DataPanel from "./ui/DataPanel.vue";
 
 const GLOBE_ROTATION_SPEED = 4.5;
+// ~30 fps: the ceiling on how often the globe re-projects, not how often
+// the browser paints.
+const GLOBE_FRAME_INTERVAL_MS = 33;
+// Minimum separation between consecutive outline points on the globe, in
+// degrees. At this radius 0.5 deg is under two pixels.
+const GLOBE_MIN_POINT_SEPARATION_DEG = 0.5;
 const GLOBE_FOCUS_OSCILLATION_DEG = 28;
 const GLOBE_FOCUS_OSCILLATION_SPEED = 0.6;
 
@@ -513,9 +514,6 @@ export default {
     },
     projectionLabel() {
       return this.isGlobeMode ? "Projection: Globe" : "Projection: Flat";
-    },
-    globeOceanGradientId() {
-      return `map-globe-ocean-${this.mapUid}`;
     },
     globeClipId() {
       return `map-globe-clip-${this.mapUid}`;
@@ -655,32 +653,135 @@ export default {
       // stays a summary rather than turning into a second table.
       return (this.countryStats || []).slice(0, 12);
     },
-    worldPaths() {
-      const collection = this.isGlobeMode ? this.worldGeoJsonGlobe : this.worldGeoJsonDetailed;
+    // Latitude never changes as the globe turns, so its trigonometry is done
+    // once here instead of on every point of every frame. What is left per
+    // frame is the longitude pair, which is the only part rotation touches:
+    // six trig calls per point become two.
+    globeRings() {
+      const collection = this.worldGeoJsonGlobe;
       const features = Array.isArray(collection && collection.features) ? collection.features : [];
+      const ringsOf = (geometry) => {
+        const geom = geometry && typeof geometry === "object" ? geometry : null;
+        if (!geom || !Array.isArray(geom.coordinates)) return [];
+        if (geom.type === "Polygon") return geom.coordinates;
+        if (geom.type === "MultiPolygon") return geom.coordinates.flat();
+        return [];
+      };
+      return features.map((feature) => {
+        const properties = (feature && feature.properties) || {};
+        return {
+          iso: String(properties.iso_a2 || "").toUpperCase(),
+          name: String(properties.name || "").trim(),
+          rings: ringsOf(feature && feature.geometry)
+            .map((ring) => {
+              // Thinned to the resolution the globe can actually show. The
+              // source outlines carry detail for a full-width flat map; on a
+              // sphere a few hundred pixels across, consecutive points land
+              // under two pixels apart and cost a path segment each. Dropping
+              // them removes about a quarter of the geometry with no visible
+              // change, and it is the geometry - not the arithmetic - that
+              // decides how much DOM this animation rewrites per frame.
+              const points = [];
+              let lastLon = null;
+              let lastLat = null;
+              (Array.isArray(ring) ? ring : []).forEach((pair) => {
+                if (!Array.isArray(pair) || pair.length < 2) return;
+                const lon = Number(pair[0]) || 0;
+                const lat = Math.max(-89.5, Math.min(89.5, Number(pair[1]) || 0));
+                if (
+                  lastLon !== null
+                  && Math.abs(lon - lastLon) < GLOBE_MIN_POINT_SEPARATION_DEG
+                  && Math.abs(lat - lastLat) < GLOBE_MIN_POINT_SEPARATION_DEG
+                ) {
+                  return;
+                }
+                lastLon = lon;
+                lastLat = lat;
+                const phi = this.degToRad(lat);
+                points.push({ lon, cosPhi: Math.cos(phi), sinPhi: Math.sin(phi) });
+              });
+              return points;
+            })
+            // A ring left with fewer than three points is no longer a shape.
+            .filter((ring) => ring.length >= 3),
+        };
+      });
+    },
+    worldPaths() {
+      // The identity travels with every path of a country, not just the first:
+      // a country drawn as several polygons has to answer to a click on any of
+      // its islands. `active` keeps countries absent from this capture inert,
+      // so a click never opens an empty panel.
       const paths = [];
+      const push = (featureIndex, pathIndex, d, iso, name) => {
+        if (!d) return;
+        paths.push({
+          id: `land-${featureIndex}-${pathIndex}`,
+          d,
+          iso,
+          name,
+          active: Boolean(iso && this.countryByIso[iso]),
+        });
+      };
+
+      if (this.isGlobeMode) {
+        // Rotation invalidates this on every animation frame, so the loop is
+        // written for that: the tilt terms are hoisted out of it, the latitude
+        // terms come precomputed from globeRings, and coordinates are rounded
+        // with arithmetic rather than toFixed, which allocates a string per
+        // point. Only cos/sin of the rotated longitude are left per point.
+        const phi0 = this.degToRad(this.globeTilt);
+        const cosPhi0 = Math.cos(phi0);
+        const sinPhi0 = Math.sin(phi0);
+        const rotation = this.globeRotation;
+        const cx = this.globeCenterX;
+        const cy = this.globeCenterY;
+        const radius = this.globeRadius;
+        const toRad = Math.PI / 180;
+
+        this.globeRings.forEach((feature, featureIndex) => {
+          let pathIndex = 0;
+          feature.rings.forEach((ring) => {
+            let commands = "";
+            let count = 0;
+            const flush = () => {
+              if (count >= 2) push(featureIndex, pathIndex++, `${commands} Z`, feature.iso, feature.name);
+              commands = "";
+              count = 0;
+            };
+            for (let i = 0; i < ring.length; i += 1) {
+              const point = ring[i];
+              let delta = point.lon - rotation;
+              // Manual wrap instead of normalizeLongitude(): a function call
+              // and a modulo per point is measurable at ten thousand points a
+              // frame, and the value is always within one turn already.
+              if (delta > 180) delta -= 360;
+              else if (delta < -180) delta += 360;
+              const lambda = delta * toRad;
+              const cosLambda = Math.cos(lambda);
+              if ((sinPhi0 * point.sinPhi) + (cosPhi0 * point.cosPhi * cosLambda) <= 0) {
+                flush();
+                continue;
+              }
+              const x = cx + (radius * point.cosPhi * Math.sin(lambda));
+              const y = cy - (radius * ((cosPhi0 * point.sinPhi) - (sinPhi0 * point.cosPhi * cosLambda)));
+              commands += `${count === 0 ? "M" : "L"}${Math.round(x * 100) / 100},${Math.round(y * 100) / 100}`;
+              count += 1;
+            }
+            flush();
+          });
+        });
+        return paths;
+      }
+
+      const collection = this.worldGeoJsonDetailed;
+      const features = Array.isArray(collection && collection.features) ? collection.features : [];
       features.forEach((feature, featureIndex) => {
-        const geometry = feature && feature.geometry ? feature.geometry : null;
-        const featurePaths = this.isGlobeMode
-          ? this.geometryToPathsGlobe(geometry)
-          : this.geometryToPathsFlat(geometry);
-        // The identity travels with every path of a country, not just the
-        // first: a country drawn as several polygons has to answer to a click
-        // on any of its islands.
         const properties = (feature && feature.properties) || {};
         const iso = String(properties.iso_a2 || "").toUpperCase();
         const name = String(properties.name || "").trim();
-        featurePaths.forEach((d, pathIndex) => {
-          if (!d) return;
-          paths.push({
-            id: `land-${featureIndex}-${pathIndex}`,
-            d,
-            iso,
-            name,
-            // Only countries this capture has actually seen are selectable;
-            // the rest stay inert so a click never opens an empty panel.
-            active: Boolean(iso && this.countryByIso[iso]),
-          });
+        this.geometryToPathsFlat(feature && feature.geometry).forEach((d, pathIndex) => {
+          push(featureIndex, pathIndex, d, iso, name);
         });
       });
       return paths;
@@ -841,7 +942,17 @@ export default {
         if (!this.globeLastFrameTs) {
           this.globeLastFrameTs = timestamp;
         }
-        const delta = Math.min(64, timestamp - this.globeLastFrameTs);
+        const elapsed = timestamp - this.globeLastFrameTs;
+        // Capped at ~30 fps. Every rotation step re-projects the whole world
+        // and re-renders every country path, so asking for 60 was asking for
+        // twice that work to produce a difference of a third of a degree - and
+        // when a frame overran its budget the next one was already due, which
+        // is what made the globe stutter instead of just running slower.
+        if (elapsed < GLOBE_FRAME_INTERVAL_MS) {
+          this.globeFrameId = window.requestAnimationFrame(tick);
+          return;
+        }
+        const delta = Math.min(64, elapsed);
         this.globeLastFrameTs = timestamp;
         const hasPublicFocus = Array.isArray(this.publicPoints) && this.publicPoints.length > 0;
         if (hasPublicFocus) {
