@@ -55,6 +55,11 @@ const state = reactive({
   // Incremented on every inbound chat frame; OperatorChat watches it.
   chatRevision: 0,
   timeRange: "",
+  // Latest "data_clear_progress" WS frame (see clear_detections_api /
+  // purge_capture_data in the backend) while a "Clear data" purge is
+  // in flight; null once no purge is running. ClearDataButton renders a
+  // real progress bar off this instead of a bare spinner.
+  dataClearProgress: null,
 });
 
 const tableRefreshSubscribers = new Set();
@@ -1806,6 +1811,9 @@ function connectRealtime() {
     }
     if (type === "runtime_mode") {
       applyRuntimeSnapshot(payload);
+    }
+    if (type === "data_clear_progress") {
+      state.dataClearProgress = payload;
     }
     if (type === "get_result") {
       resolveWsGet(payload);

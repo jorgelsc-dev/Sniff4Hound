@@ -50,6 +50,20 @@
           Stop it first for a clean slate.
         </v-alert>
 
+        <div v-if="busy" class="mb-3">
+          <div class="d-flex justify-space-between text-caption text-medium-emphasis mb-1">
+            <span>{{ progressLabel }}</span>
+            <span v-if="progressPercent !== null">{{ progressPercent }}%</span>
+          </div>
+          <v-progress-linear
+            :model-value="progressPercent ?? undefined"
+            :indeterminate="progressPercent === null"
+            color="error"
+            height="6"
+            rounded
+          />
+        </div>
+
         <v-alert v-if="error" type="error" variant="tonal" density="compact" class="mb-3">
           {{ error }}
         </v-alert>
@@ -128,10 +142,50 @@ export default {
     keptItems() {
       return KEPT_ITEMS;
     },
+    // Rides the "data_clear_progress" WS frames the backend broadcasts
+    // while purge_capture_data() works through the capture tables and then
+    // compacts the freed pages - see clear_detections_api. Null (and so an
+    // indeterminate bar) until the first frame arrives or once a phase
+    // this component doesn't recognize shows up.
+    progress() {
+      return this.store.state.dataClearProgress;
+    },
+    progressPercent() {
+      const progress = this.progress;
+      if (!progress) return null;
+      if (progress.phase === "deleting") {
+        const total = Number(progress.rows_total) || 0;
+        if (total <= 0) return null;
+        const done = Number(progress.rows_done) || 0;
+        return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+      }
+      if (progress.phase === "compacting") {
+        const total = Number(progress.pages_total) || 0;
+        if (total <= 0) return null;
+        const done = Number(progress.pages_done) || 0;
+        return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+      }
+      if (progress.phase === "done") return 100;
+      return null;
+    },
+    progressLabel() {
+      const progress = this.progress;
+      if (!progress) return "Deleting...";
+      if (progress.phase === "deleting") {
+        const done = Number(progress.rows_done) || 0;
+        const total = Number(progress.rows_total) || 0;
+        return total ? `Deleting rows... (${done.toLocaleString()} / ${total.toLocaleString()})` : "Deleting rows...";
+      }
+      if (progress.phase === "compacting") {
+        return "Compacting database file...";
+      }
+      return "Finishing up...";
+    },
   },
   methods: {
     open() {
       this.error = "";
+      this.store.state.dataClearProgress = null;
       this.dialog = true;
     },
     // The endpoint answers with {table: count}, except honeypot_events which
@@ -171,6 +225,7 @@ export default {
         })
         .finally(() => {
           this.busy = false;
+          this.store.state.dataClearProgress = null;
         });
     },
   },

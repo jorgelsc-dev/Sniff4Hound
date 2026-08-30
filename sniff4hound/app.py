@@ -2501,8 +2501,14 @@ def clear_detections_api(request):
     # SniffStore.clear_detections uses "sniffer" for that same half.
     if scope == "everything":
         # Wipes the capture-produced tables outright (flows, domains, paths and
-        # sessions included), not just per-packet detection history.
-        result = store.purge_capture_data()
+        # sessions included), not just per-packet detection history. On a
+        # database that's grown large this can take a real stretch of time
+        # (large DELETEs plus reclaiming the freed pages), so the dashboard's
+        # progress bar rides on these broadcasts rather than a bare spinner.
+        def _broadcast_progress(status: dict):
+            hub.broadcast({"type": "data_clear_progress", **status, "generated_at": utc_now()})
+
+        result = store.purge_capture_data(progress=_broadcast_progress)
         from .honeypot import clear_honeypot_events
 
         result["honeypot_events"] = clear_honeypot_events()
