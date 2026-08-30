@@ -131,7 +131,7 @@ export default {
   methods: {
     load() {
       return this.store
-        .fetchJsonPromise("/api/dashboard/")
+        .fetchJsonPromise("/api/dashboard/?compact=1")
         .then((data) => {
           this.counts = (data && data.counts) || {};
           this.wsClientCount = Array.isArray(data && data.ws_clients) ? data.ws_clients.length : 0;

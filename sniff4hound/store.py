@@ -164,6 +164,49 @@ IP_SCOPES = ("local", "private", "public", "multicast", "reserved", "unknown")
 # listing request into an unbounded materialisation.
 IP_CATALOG_SCAN_LIMIT = 50000
 
+PACKET_LIST_COLUMNS = (
+    "id",
+    "session_id",
+    "flow_key",
+    "interface",
+    "direction",
+    "eth_src",
+    "eth_dst",
+    "eth_type",
+    "ip_version",
+    "src_ip",
+    "dst_ip",
+    "proto",
+    "transport",
+    "src_port",
+    "dst_port",
+    "ttl",
+    "hop_limit",
+    "length",
+    "payload_len",
+    "state",
+    "scan_state",
+    "tcp_flags",
+    "icmp_type",
+    "icmp_code",
+    "arp_opcode",
+    "summary",
+    "payload_text",
+    "payload_hex",
+    "banner_text",
+    "domain",
+    "domain_source",
+    "http_method",
+    "http_path",
+    "http_host",
+    "details_json",
+    "tags_json",
+    "rule_hits_json",
+    "created_at",
+    "updated_at",
+)
+PACKET_LIST_SELECT = ", ".join(PACKET_LIST_COLUMNS)
+
 
 def normalize_ip_scope_filter(value) -> tuple:
     """Parse a scope filter ("public", "private,local", ...) into known scopes.
@@ -1598,14 +1641,15 @@ class SniffStore:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return where, params
 
-    def list_packets(self, *, proto="", session_id=0, search="", interface="", mode="", limit=250, offset=0, since=""):
+    def list_packets(self, *, proto="", session_id=0, search="", interface="", mode="", limit=250, offset=0, since="", include_raw=False):
         where, params = self._packet_filter(
             proto=proto, session_id=session_id, search=search, interface=interface, mode=mode, since=since
         )
         params = list(params)
         params.extend([int(limit), int(offset)])
+        columns = "*" if include_raw else PACKET_LIST_SELECT
         return self._fetchall(
-            f"SELECT * FROM packets {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            f"SELECT {columns} FROM packets {where} ORDER BY id DESC LIMIT ? OFFSET ?",
             tuple(params),
         )
 
@@ -2591,81 +2635,111 @@ class SniffStore:
             (int(limit),),
         )
 
-    def top_ports(self, *, limit=10):
+    def top_ports(self, *, limit=10, since=""):
+        where = "WHERE COALESCE(NULLIF(dst_port, 0), src_port) > 0"
+        params = []
+        if since:
+            where += " AND created_at >= ?"
+            params.append(str(since))
+        params.append(int(limit))
         return self._fetchall(
-            """
+            f"""
             SELECT
               COALESCE(NULLIF(dst_port, 0), src_port) AS port,
               COUNT(*) AS value
             FROM packets
-            WHERE COALESCE(NULLIF(dst_port, 0), src_port) > 0
+            {where}
             GROUP BY port
             ORDER BY value DESC, port ASC
             LIMIT ?
             """,
-            (int(limit),),
+            tuple(params),
         )
 
-    def top_ips(self, *, limit=10):
+    def top_ips(self, *, limit=10, since=""):
+        created_filter = "AND created_at >= ?" if since else ""
+        params = [str(since), str(since)] if since else []
+        params.append(int(limit))
         return self._fetchall(
-            """
+            f"""
             SELECT ip, COUNT(*) AS value
             FROM (
-              SELECT src_ip AS ip FROM packets WHERE src_ip != ''
+              SELECT src_ip AS ip FROM packets WHERE src_ip != '' {created_filter}
               UNION ALL
-              SELECT dst_ip AS ip FROM packets WHERE dst_ip != ''
+              SELECT dst_ip AS ip FROM packets WHERE dst_ip != '' {created_filter}
             )
             GROUP BY ip
             ORDER BY value DESC, ip ASC
             LIMIT ?
             """,
-            (int(limit),),
+            tuple(params),
         )
 
-    def top_tag_keys(self, *, limit=10):
+    def top_tag_keys(self, *, limit=10, since=""):
+        where, params = self._tag_filter(since=since)
+        params = list(params)
+        params.append(int(limit))
         return self._fetchall(
-            """
+            f"""
             SELECT key AS label, COUNT(*) AS value
             FROM tags
+            {where}
             GROUP BY key
             ORDER BY value DESC, label ASC
             LIMIT ?
             """,
-            (int(limit),),
+            tuple(params),
         )
 
-    def top_service_signatures(self, *, limit=10):
+    def top_service_signatures(self, *, limit=10, since=""):
+        clauses = ["COALESCE(NULLIF(banner_text, ''), summary, payload_text, '') != ''"]
+        params = []
+        if since:
+            clauses.append("created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        params.append(int(limit))
         return self._fetchall(
-            """
+            f"""
             SELECT
               COALESCE(NULLIF(banner_text, ''), summary, payload_text, 'payload') AS label,
               COUNT(*) AS value
             FROM packets
-            WHERE COALESCE(NULLIF(banner_text, ''), summary, payload_text, '') != ''
+            {where}
             GROUP BY label
             ORDER BY value DESC, label ASC
             LIMIT ?
             """,
-            (int(limit),),
+            tuple(params),
         )
 
-    def summary_counts(self) -> dict:
-        sessions = self.list_count("sessions")
-        packets = self.list_count("packets")
-        payloads = self.list_count("payloads")
-        tags = self.list_count("tags")
+    def summary_counts(self, *, since="") -> dict:
+        sessions = self.count_sessions(since=since) if since else self.list_count("sessions")
+        packets = self.count_packets(since=since) if since else self.list_count("packets")
+        payloads = self.count_payloads(since=since) if since else self.list_count("payloads")
+        tags = self.count_tags(since=since) if since else self.list_count("tags")
         flows = self.list_count("flows")
         rules = self.list_count("rulesets")
+        created_filter = "AND created_at >= ?" if since else ""
+        unique_params = (str(since), str(since)) if since else ()
         unique_hosts_row = self._fetchone(
-            """
+            f"""
             SELECT COUNT(DISTINCT ip) AS count
             FROM (
-                SELECT src_ip AS ip FROM packets WHERE src_ip != ''
+                SELECT src_ip AS ip FROM packets WHERE src_ip != '' {created_filter}
                 UNION ALL
-                SELECT dst_ip AS ip FROM packets WHERE dst_ip != ''
+                SELECT dst_ip AS ip FROM packets WHERE dst_ip != '' {created_filter}
             )
-            """
+            """,
+            unique_params,
         )
+        packet_where, packet_params = self._packet_filter(since=since)
+
+        def count_state(state: str) -> int:
+            where = f"{packet_where} AND state = ?" if packet_where else "WHERE state = ?"
+            row = self._fetchone(f"SELECT COUNT(*) AS count FROM packets {where}", tuple(list(packet_params) + [state]))
+            return int((row or {}).get("count") or 0)
+
         return {
             "sessions": sessions,
             "packets": packets,
@@ -2673,8 +2747,8 @@ class SniffStore:
             "tags": tags,
             "flows": flows,
             "rulesets": rules,
-            "open_packets": self._count_where("packets", "state = 'open'"),
-            "filtered_packets": self._count_where("packets", "state = 'filtered'"),
+            "open_packets": count_state("open"),
+            "filtered_packets": count_state("filtered"),
             "unique_hosts": int(unique_hosts_row["count"] or 0) if unique_hosts_row else 0,
         }
 
@@ -2686,25 +2760,40 @@ class SniffStore:
         row = self._fetchone(sql)
         return int(row["count"] or 0) if row else 0
 
-    def dashboard_snapshot(self, *, ws_clients=None) -> dict:
+    def dashboard_snapshot(self, *, ws_clients=None, compact=False, since="") -> dict:
         ws_clients = list(ws_clients or [])
-        sessions = self.list_sessions(limit=20)
-        packets = self.list_packets(limit=20)
-        payloads = self.list_payloads(limit=20)
-        protocols = self.list_protocols()
-        ports_by_proto = {}
-        for proto in protocols:
-            ports_by_proto[proto] = self.list_packets(proto=proto, limit=12)
+        if since:
+            protocols = [
+                row["protocol"]
+                for row in self.protocol_catalog(since=since)
+                if safe_int(row.get("count"), 0) > 0
+            ]
+        else:
+            protocols = self.list_protocols()
         counts = {
-            "count_targets": self.list_count("sessions"),
-            "count_ports": self.list_count("packets"),
-            "count_banners": self.list_count("payloads"),
-            "count_tags": self.list_count("tags"),
+            "count_targets": self.count_sessions(since=since) if since else self.list_count("sessions"),
+            "count_ports": self.count_packets(since=since) if since else self.list_count("packets"),
+            "count_banners": self.count_payloads(since=since) if since else self.list_count("payloads"),
+            "count_tags": self.count_tags(since=since) if since else self.list_count("tags"),
             "count_rulesets": self.list_count("rulesets"),
             "count_monitors": self.list_count("monitors"),
-            "count_domains": self.list_count("domains"),
-            "count_paths": self.list_count("paths"),
+            "count_domains": self.count_domains(since=since) if since else self.list_count("domains"),
+            "count_paths": self.count_paths(since=since) if since else self.list_count("paths"),
         }
+        if compact:
+            sessions = []
+            packets = []
+            payloads = []
+            tags = []
+            ports_by_proto = {}
+        else:
+            sessions = self.list_sessions(limit=20, since=since)
+            packets = self.list_packets(limit=20, since=since)
+            payloads = self.list_payloads(limit=20, since=since)
+            tags = self.list_tags(limit=20, since=since)
+            ports_by_proto = {}
+            for proto in protocols:
+                ports_by_proto[proto] = self.list_packets(proto=proto, limit=12, since=since)
         return {
             "generated_at": utc_now(),
             "counts": counts,
@@ -2713,45 +2802,93 @@ class SniffStore:
             "packets": packets,
             "ports": ports_by_proto,
             "banners": payloads,
-            "tags": self.list_tags(limit=20),
+            "tags": tags,
             "ws_clients": ws_clients,
             "protocols": protocols,
         }
 
-    def analytics_snapshot(self) -> dict:
-        summary = self.summary_counts()
-        packets = self.list_packets(limit=1000)
-        sessions = self.list_sessions(limit=1000)
-        flows = self.list_flows(limit=1000)
-        packets_by_proto = Counter(normalize_protocol_name(row.get("proto")) for row in packets)
-        states_by_proto = defaultdict(Counter)
-        for row in packets:
-            proto = normalize_protocol_name(row.get("proto"))
-            state = str(row.get("state") or "open").strip().lower()
-            states_by_proto[proto][state] += 1
+    def analytics_snapshot(self, *, since="") -> dict:
+        summary = self.summary_counts(since=since)
+        packet_where, packet_params = self._packet_filter(since=since)
+        proto_rows = self._fetchall(
+            f"""
+            SELECT proto, COUNT(*) AS value
+            FROM packets
+            {packet_where + ' AND' if packet_where else 'WHERE'} proto != ''
+            GROUP BY proto
+            ORDER BY value DESC, proto ASC
+            """,
+            tuple(packet_params),
+        )
+        state_rows = self._fetchall(
+            f"""
+            SELECT proto, state, COUNT(*) AS value
+            FROM packets
+            {packet_where + ' AND' if packet_where else 'WHERE'} proto != ''
+            GROUP BY proto, state
+            ORDER BY proto ASC, value DESC, state ASC
+            """,
+            tuple(packet_params),
+        )
         ports_by_proto = [
-            {"label": proto, "value": count}
-            for proto, count in packets_by_proto.most_common()
-            if proto
+            {"label": normalize_protocol_name(row.get("proto")), "value": safe_int(row.get("value"), 0)}
+            for row in proto_rows
+            if row.get("proto")
         ]
-        ports_state_by_proto = []
-        for proto, counter in states_by_proto.items():
-            rows = [{"label": state, "value": value} for state, value in counter.most_common()]
-            ports_state_by_proto.append({"label": proto, "series": rows})
-        top_open_ports = self.top_ports(limit=12)
-        top_ips_by_open_ports = self.top_ips(limit=12)
+        states_by_proto = defaultdict(list)
+        for row in state_rows:
+            proto = normalize_protocol_name(row.get("proto"))
+            if not proto:
+                continue
+            state = str(row.get("state") or "open").strip().lower() or "open"
+            states_by_proto[proto].append({"label": state, "value": safe_int(row.get("value"), 0)})
+        ports_state_by_proto = [
+            {"label": proto, "series": rows}
+            for proto, rows in states_by_proto.items()
+        ]
+        top_open_ports = self.top_ports(limit=12, since=since)
+        top_ips_by_open_ports = self.top_ips(limit=12, since=since)
         risk_ports = [
             item for item in top_open_ports if safe_int(item.get("port"), 0) in {21, 22, 23, 25, 53, 110, 135, 139, 143, 445, 3389}
         ]
         targets_by_status = [
-            {"label": label, "value": value}
-            for label, value in Counter(str(row.get("status") or "stopped").strip().lower() for row in sessions).most_common()
+            {
+                "label": str(row.get("status") or "stopped").strip().lower() or "stopped",
+                "value": safe_int(row.get("value"), 0),
+            }
+            for row in self._fetchall(
+                """
+                SELECT status, COUNT(*) AS value
+                FROM sessions
+                GROUP BY status
+                ORDER BY value DESC, status ASC
+                """
+            )
         ]
-        target_progress_buckets = self._bucket_rows([safe_float(row.get("progress", 0.0), 0.0) for row in sessions])
-        banner_length_buckets = self._bucket_rows([safe_int(row.get("response_size", 0), 0) for row in self.list_payloads(limit=1000)], size_mode=True)
-        top_tag_keys = self.top_tag_keys(limit=12)
-        top_service_signatures = self.top_service_signatures(limit=12)
-        timeline = self._timeline_snapshot(packets, sessions, flows)
+        session_where, session_params = self._session_filter(since=since)
+        target_progress_buckets = self._bucket_rows(
+            [
+                safe_float(row.get("progress", 0.0), 0.0)
+                for row in self._fetchall(
+                    f"SELECT progress FROM sessions {session_where} LIMIT 1000",
+                    tuple(session_params),
+                )
+            ]
+        )
+        payload_where, payload_params = self._payload_filter(since=since)
+        banner_length_buckets = self._bucket_rows(
+            [
+                safe_int(row.get("response_size", 0), 0)
+                for row in self._fetchall(
+                    f"SELECT response_size FROM payloads {payload_where} LIMIT 1000",
+                    tuple(payload_params),
+                )
+            ],
+            size_mode=True,
+        )
+        top_tag_keys = self.top_tag_keys(limit=12, since=since)
+        top_service_signatures = self.top_service_signatures(limit=12, since=since)
+        timeline = self._timeline_snapshot_from_sql(since=since)
         return {
             "generated_at": utc_now(),
             "summary": {
@@ -2776,6 +2913,32 @@ class SniffStore:
             "top_service_signatures": top_service_signatures,
             "timeline": timeline,
         }
+
+    def _timeline_snapshot_from_sql(self, *, since=""):
+        for table in ("packets", "sessions", "flows"):
+            clauses = ["created_at != ''"]
+            params = []
+            if since:
+                clauses.append("created_at >= ?")
+                params.append(str(since))
+            where = f"WHERE {' AND '.join(clauses)}"
+            rows = self._fetchall(
+                f"""
+                SELECT substr(created_at, 1, 10) AS label, COUNT(*) AS value
+                FROM {table}
+                {where}
+                GROUP BY label
+                ORDER BY label DESC
+                LIMIT 30
+                """,
+                tuple(params),
+            )
+            if rows:
+                return [
+                    {"label": str(row.get("label") or ""), "value": safe_int(row.get("value"), 0)}
+                    for row in reversed(rows)
+                ]
+        return []
 
     def soc_analysis_snapshot(self, *, cycles=4, limit=PACKET_TABLE_LIMIT) -> dict:
         cycle_count = clamp_int(cycles, 1, 4)
