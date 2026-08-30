@@ -80,6 +80,15 @@ class ClassificationTests(unittest.TestCase):
 class TransportScopedRuleTests(unittest.TestCase):
     def setUp(self):
         self.monitors = load_builtin_monitors()
+        # builtin-insecure-snmp and builtin-unknown-protocol default to
+        # opt-in (protocol-visibility monitors, not threat signatures) -
+        # these tests are about whether the transport-scoping match logic
+        # is correct, not about default-enabled policy, so force them on
+        # rather than letting `enabled: False` short-circuit the match
+        # before the transport logic under test ever runs.
+        for monitor in self.monitors:
+            if monitor["id"] in ("builtin-insecure-snmp", "builtin-unknown-protocol"):
+                monitor["enabled"] = True
 
     def _monitor(self, monitor_id):
         return next(m for m in self.monitors if m["id"] == monitor_id)

@@ -24,9 +24,15 @@ NOISY_GENERATED_SIGNAL_LITERALS = frozenset(
         "user-agent: mozilla",
         "http/1.1 200 ok",
         "keep-alive",
+        "application/json",
+        "application/x-www-form-urlencoded",
+        "multipart/form-data",
+        "content-disposition: form-data; name=",
         "text/html",
         "text/html; charset=utf-8",
         "text/html; charset=utf-8\r\n",
+        "text/xml",
+        "application/xml",
         "image/webp",
         "gzip, deflate",
         "gzip, deflate, br",
@@ -34,6 +40,20 @@ NOISY_GENERATED_SIGNAL_LITERALS = frozenset(
         "charset=utf-8",
     }
 )
+
+BUILTIN_MONITOR_QUALITY_OVERRIDES = {
+    # These are parser-coverage breadcrumbs, not attack findings. Keeping
+    # them enabled at low severity lets an operator investigate weird traffic
+    # without allowing a noisy segment to dominate monitor results.
+    "builtin-unknown-protocol": {"severity": "low"},
+    "builtin-unparseable-packet": {"severity": "medium"},
+    # Discovery protocols are normal on many LANs. They stay visible, but
+    # should not look like high-confidence security alerts by default.
+    "builtin-llmnr": {"severity": "low"},
+    "builtin-nbns": {"severity": "low"},
+    "builtin-ssdp": {"severity": "low"},
+    "builtin-wsd": {"severity": "low"},
+}
 
 
 DEFAULT_MONITORS = [
@@ -2347,6 +2367,20 @@ def _is_noisy_generated_signal_monitor(monitor: dict) -> bool:
     return any(value in NOISY_GENERATED_SIGNAL_LITERALS for value in contains)
 
 
+def _apply_builtin_monitor_quality_overrides(monitor: dict) -> dict:
+    monitor_id = str(monitor.get("id") or "").strip()
+    overrides = BUILTIN_MONITOR_QUALITY_OVERRIDES.get(monitor_id)
+    if not overrides:
+        return monitor
+    action = monitor.get("action") if isinstance(monitor.get("action"), dict) else {}
+    action = dict(action)
+    if "severity" in overrides:
+        action["severity"] = str(overrides["severity"]).strip().lower()
+    monitor = dict(monitor)
+    monitor["action"] = action
+    return monitor
+
+
 @functools.lru_cache(maxsize=1)
 def _load_builtin_monitors_cached() -> tuple[dict, ...]:
     # The packaged default_monitors.json is read-only, installed data
@@ -2363,7 +2397,9 @@ def _load_builtin_monitors_cached() -> tuple[dict, ...]:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(payload, list):
                 catalog = [
-                    normalize_monitor(item, allow_source=True, validate_regex=False)
+                    _apply_builtin_monitor_quality_overrides(
+                        normalize_monitor(item, allow_source=True, validate_regex=False)
+                    )
                     for item in payload
                     if isinstance(item, dict)
                 ]
@@ -2371,7 +2407,10 @@ def _load_builtin_monitors_cached() -> tuple[dict, ...]:
         except Exception:
             catalog = []
     if not catalog:
-        return tuple(normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS)
+        return tuple(
+            _apply_builtin_monitor_quality_overrides(normalize_monitor(item, allow_source=True))
+            for item in DEFAULT_MONITORS
+        )
 
     # The packaged catalog is generated and huge; DEFAULT_MONITORS is the
     # hand-written set in this file. Merging (rather than letting the file
@@ -2384,7 +2423,7 @@ def _load_builtin_monitors_cached() -> tuple[dict, ...]:
         monitor_id = str(item.get("id") or "").strip()
         if not monitor_id or monitor_id in known:
             continue
-        catalog.append(normalize_monitor(item, allow_source=True))
+        catalog.append(_apply_builtin_monitor_quality_overrides(normalize_monitor(item, allow_source=True)))
         known.add(monitor_id)
     return tuple(catalog)
 

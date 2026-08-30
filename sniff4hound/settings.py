@@ -347,6 +347,22 @@ MONITOR_MAX_REGEX_LENGTH = max(128, _as_int(_env("SNIFF4HOUND_MONITOR_MAX_REGEX_
 
 DEFAULT_RULESET_FILE = str(_env("SNIFF4HOUND_RULESET_FILE", "default_rulesets.json")).strip()
 MONITOR_FILTER_DEFAULT = _as_bool(_env("SNIFF4HOUND_MONITOR_FILTER_DEFAULT", "1"), default=True)
+MONITOR_SEVERITIES = ("info", "low", "medium", "high", "critical")
+
+
+def _as_monitor_severity(value, default: str = "info") -> str:
+    severity = str(value or "").strip().lower()
+    return severity if severity in MONITOR_SEVERITIES else default
+
+
+MONITOR_MIN_SEVERITY_DEFAULT = _as_monitor_severity(
+    _env("SNIFF4HOUND_MONITOR_MIN_SEVERITY", "info"),
+    "info",
+)
+MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT = _as_bool(
+    _env("SNIFF4HOUND_MONITOR_SUPPRESS_GENERATED_INFO", "1"),
+    default=True,
+)
 DEFAULT_DOCS_TITLE = str(_env("SNIFF4HOUND_DOCS_TITLE", "Sniff4Hound")).strip() or "Sniff4Hound"
 DEFAULT_DOCS_DESCRIPTION = str(
     _env(

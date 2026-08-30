@@ -566,6 +566,22 @@ class TestStoreMonitors(unittest.TestCase):
         self.store.set_monitor_filter_enabled(False)
         self.assertFalse(self.store.get_monitor_filter_enabled())
 
+    def test_monitor_quality_config_defaults_and_persists(self):
+        config = self.store.get_monitor_config()
+        self.assertEqual(config["min_severity"], "info")
+        self.assertTrue(config["suppress_generated_info"])
+        self.assertIn("critical", config["severity_options"])
+
+        self.assertEqual(self.store.set_monitor_min_severity("medium"), "medium")
+        self.assertFalse(self.store.set_monitor_suppress_generated_info(False))
+        config = self.store.get_monitor_config()
+        self.assertEqual(config["min_severity"], "medium")
+        self.assertFalse(config["suppress_generated_info"])
+
+    def test_monitor_min_severity_rejects_unknown_values(self):
+        with self.assertRaises(ValueError):
+            self.store.set_monitor_min_severity("urgent")
+
 
 class TestSnifferGatedPersistence(unittest.TestCase):
     def setUp(self):
@@ -626,6 +642,56 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.sniffer._store_packet(self._base_packet())
         self.assertEqual(self.store.list_count("packets"), 1)
         self.assertEqual(self.sniffer.state.packets_stored, 1)
+
+    def test_minimum_monitor_severity_filters_stored_hits(self):
+        self.store.set_monitor_min_severity("high")
+        self.sniffer._store_packet(self._base_packet(dst_port=3389))
+        self.assertEqual(self.store.list_count("packets"), 0)
+
+        self.sniffer._store_packet(
+            self._base_packet(
+                dst_port=80,
+                payload_len=56,
+                payload_text="POST /login HTTP/1.1\r\nusername=admin&password=hunter2",
+            )
+        )
+        self.assertEqual(self.store.list_count("packets"), 1)
+
+    def test_generated_info_signals_are_suppressed_by_default(self):
+        self.sniffer._monitor_cache = [
+            normalize_monitor(
+                {
+                    "id": "builtin-signal-noisy",
+                    "name": "Generated noisy signal",
+                    "match": {"payload_contains": ["application/json"]},
+                    "action": {"tag": "generated-noisy", "label": "Generated noisy", "severity": "low"},
+                }
+            )
+        ]
+        self.sniffer._monitor_cache_at = 999999999.0
+        self.sniffer._ruleset_cache = []
+        self.sniffer._ruleset_cache_at = 999999999.0
+        self.sniffer._store_packet(self._base_packet(payload_text="HTTP/1.1 200 OK\r\nContent-Type: application/json"))
+        self.assertEqual(self.store.list_count("packets"), 0)
+
+    def test_generated_info_signals_can_be_reenabled(self):
+        self.store.set_monitor_suppress_generated_info(False)
+        self.sniffer._monitor_cache = [
+            normalize_monitor(
+                {
+                    "id": "builtin-signal-noisy",
+                    "name": "Generated noisy signal",
+                    "match": {"payload_contains": ["application/json"]},
+                    "action": {"tag": "generated-noisy", "label": "Generated noisy", "severity": "low"},
+                }
+            )
+        ]
+        self.sniffer._monitor_suppress_generated_info = False
+        self.sniffer._monitor_cache_at = 999999999.0
+        self.sniffer._ruleset_cache = []
+        self.sniffer._ruleset_cache_at = 999999999.0
+        self.sniffer._store_packet(self._base_packet(payload_text="HTTP/1.1 200 OK\r\nContent-Type: application/json"))
+        self.assertEqual(self.store.list_count("packets"), 1)
 
     def test_undetected_packets_are_time_throttled_on_the_websocket(self):
         # Warm the content index (see _await_monitor_index_ready) first so
