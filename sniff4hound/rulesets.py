@@ -269,8 +269,23 @@ def normalize_match(match: dict) -> dict:
         "min_length": safe_int(data.get("min_length", 0), 0),
         "max_length": safe_int(data.get("max_length", 0), 0),
         "min_payload_text_length": safe_int(data.get("min_payload_text_length", 0), 0),
+        # Declarative "N matches within T seconds" condition for
+        # `mode: "stateful"` monitors - see anomaly.GenericThresholdDetector.
+        # Zero/empty means "not a counting rule"; the other match criteria
+        # above still decide what counts as one event.
+        "count_threshold": max(0, safe_int(data.get("count_threshold", 0), 0)),
+        "window_seconds": max(0, safe_int(data.get("window_seconds", 0), 0)),
+        "group_by": _group_by_spec(data.get("group_by")),
     }
     return normalized
+
+
+_GROUP_BY_CHOICES = frozenset({"src_ip", "dst_ip", "src_ip+dst_port", "dst_ip+dst_port", "src_ip+dst_ip"})
+
+
+def _group_by_spec(value) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in _GROUP_BY_CHOICES else "src_ip"
 
 
 def normalize_action(action: dict) -> dict:
@@ -450,7 +465,14 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
         )
     ):
         if not (min_length or max_length or min_payload_text_length):
-            return False
+            # A pure count condition (count_threshold + window_seconds, no
+            # other filter) is a deliberately valid, "any packet counts as
+            # an event" monitor for GenericThresholdDetector - falling
+            # through to the ordinary "no criteria at all" rejection below
+            # would make such a monitor normalize successfully but never
+            # actually match a single packet.
+            if not (match.get("count_threshold") and match.get("window_seconds")):
+                return False
 
     if needles or regexes:
         if packet_text is None:

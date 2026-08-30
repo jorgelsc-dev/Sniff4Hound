@@ -10,8 +10,10 @@ from sniff4hound.anomaly import (
     ArpSpoofDetector,
     BruteForceLoginDetector,
     DnsQueryFloodDetector,
+    GenericThresholdDetector,
     IcmpFloodDetector,
     SynFloodDetector,
+    _group_key,
 )
 from sniff4hound.monitors import DEFAULT_MONITORS, normalize_monitor
 from sniff4hound.sniffer import Sniffer, build_base_packet
@@ -140,6 +142,70 @@ class TestDnsQueryFloodDetector(unittest.TestCase):
         self.assertIsNone(detector.evaluate({"proto": "udp", "dst_port": 123, "src_ip": "10.0.0.5"}))
 
 
+class TestGroupKey(unittest.TestCase):
+    def test_src_ip_default(self):
+        self.assertEqual(_group_key({"src_ip": "1.2.3.4", "dst_ip": "5.6.7.8"}, "src_ip"), "1.2.3.4")
+
+    def test_dst_ip(self):
+        self.assertEqual(_group_key({"src_ip": "1.2.3.4", "dst_ip": "5.6.7.8"}, "dst_ip"), "5.6.7.8")
+
+    def test_src_ip_plus_dst_port(self):
+        key = _group_key({"src_ip": "1.2.3.4", "dst_port": 22}, "src_ip+dst_port")
+        self.assertEqual(key, "1.2.3.4:22")
+
+    def test_missing_fields_produce_empty_key(self):
+        self.assertEqual(_group_key({"src_ip": "", "dst_port": 22}, "src_ip+dst_port"), "")
+        self.assertEqual(_group_key({}, "src_ip"), "")
+
+    def test_unknown_spec_falls_back_to_src_ip(self):
+        self.assertEqual(_group_key({"src_ip": "9.9.9.9"}, "not-a-real-spec"), "9.9.9.9")
+
+
+class TestGenericThresholdDetector(unittest.TestCase):
+    def _monitor(self, **match_overrides):
+        match = {
+            "protocols": ["tcp"],
+            "tcp_flags": ["RST,ACK"],
+            "count_threshold": 5,
+            "window_seconds": 10,
+            "group_by": "src_ip",
+        }
+        match.update(match_overrides)
+        return {"id": "test-generic", "enabled": True, "mode": "stateful", "match": match, "action": {"severity": "medium"}}
+
+    def _rst_ack_packet(self, src_ip="10.0.0.5"):
+        return {"proto": "tcp", "tcp_flags": "RST,ACK", "src_ip": src_ip, "dst_ip": "10.0.0.1", "dst_port": 443}
+
+    def test_fires_once_threshold_crossed(self):
+        detector = GenericThresholdDetector("test-generic")
+        monitor = self._monitor()
+        hits = [detector.evaluate(self._rst_ack_packet(), monitor, packet_text="") for _ in range(5)]
+        self.assertTrue(any(hits))
+        self.assertEqual(sum(1 for hit in hits if hit), 1)
+
+    def test_packet_that_does_not_match_criteria_is_never_counted(self):
+        detector = GenericThresholdDetector("test-generic")
+        monitor = self._monitor()
+        packet = {"proto": "tcp", "tcp_flags": "ACK", "src_ip": "10.0.0.5"}
+        hits = [detector.evaluate(packet, monitor, packet_text="") for _ in range(10)]
+        self.assertTrue(all(hit is None for hit in hits))
+
+    def test_zero_threshold_or_window_disables_counting(self):
+        detector = GenericThresholdDetector("test-generic")
+        monitor = self._monitor(count_threshold=0)
+        self.assertIsNone(detector.evaluate(self._rst_ack_packet(), monitor, packet_text=""))
+        monitor = self._monitor(window_seconds=0)
+        self.assertIsNone(detector.evaluate(self._rst_ack_packet(), monitor, packet_text=""))
+
+    def test_distinct_sources_are_counted_separately(self):
+        detector = GenericThresholdDetector("test-generic")
+        monitor = self._monitor(count_threshold=3)
+        for _ in range(2):
+            self.assertIsNone(detector.evaluate(self._rst_ack_packet("10.0.0.5"), monitor, packet_text=""))
+        # A different source's own count starts from zero, not shared state.
+        self.assertIsNone(detector.evaluate(self._rst_ack_packet("10.0.0.9"), monitor, packet_text=""))
+
+
 class TestAnomalyEngine(unittest.TestCase):
     def test_disabled_stateful_monitor_is_not_evaluated(self):
         engine = AnomalyEngine()
@@ -167,6 +233,20 @@ class TestAnomalyEngine(unittest.TestCase):
             self.assertIn(key, hit)
         self.assertEqual(hit["monitor_id"], "builtin-arp-spoof")
         self.assertEqual(hit["severity"], "critical")
+
+    def test_generic_engine_serves_builtin_tcp_rst_sweep(self):
+        # builtin-tcp-rst-sweep declares count_threshold/window_seconds
+        # instead of a bespoke detector class - this is the end-to-end
+        # check that AnomalyEngine's generic path actually picks it up
+        # from the real catalog, not just a hand-built test monitor.
+        engine = AnomalyEngine()
+        monitors = _monitors()
+        packet = {"proto": "tcp", "tcp_flags": "RST,ACK", "src_ip": "203.0.113.9", "dst_ip": "10.0.0.1", "dst_port": 443}
+        hits = []
+        for _ in range(20):
+            hits.extend(engine.evaluate(packet, monitors))
+        sweep_hits = [hit for hit in hits if hit["monitor_id"] == "builtin-tcp-rst-sweep"]
+        self.assertEqual(len(sweep_hits), 1, "should fire once threshold is crossed, not on every packet")
 
 
 class TestSnifferAnomalyIntegration(unittest.TestCase):

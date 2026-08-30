@@ -864,6 +864,7 @@ class SniffStore:
                 self._conn.commit()
 
             self._seed_new_builtin_monitors()
+            self._apply_new_monitor_defaults_once()
 
         self._seed_file_catalogs()
         self._seed_builtin_honeypot_listeners()
@@ -1099,6 +1100,34 @@ class SniffStore:
 
         if insert_rows or update_rows or stale_builtin_ids:
             self._conn.commit()
+
+    def _apply_new_monitor_defaults_once(self):
+        """One-time reset of builtin `enabled` to the current catalog's
+        defaults, for databases seeded before the "critical monitors on by
+        default, the rest opt-in" policy shipped.
+
+        `_seed_new_builtin_monitors` above deliberately never overwrites
+        `enabled` on an already-seeded row - that's the right behavior
+        going forward (a user's manual toggle must survive a later catalog
+        update), but it also means an existing database seeded under the
+        old "almost everything on" defaults would keep that state forever
+        without one deliberate, versioned reset. Guarded by a
+        `runtime_config` flag so this runs exactly once per database, ever
+        - after that, `_seed_new_builtin_monitors`'s normal never-touch-
+        `enabled` rule applies again and any toggle made after the reset
+        is respected like any other.
+        """
+        MIGRATION_KEY = "builtin_monitor_defaults_reset_v2"
+        if self.get_runtime_config(MIGRATION_KEY, "") == "1":
+            return
+        rows = [(enabled, monitor_id) for monitor_id, _, _, enabled, *_ in builtin_monitor_seed_fields()]
+        if rows:
+            self._conn.executemany(
+                "UPDATE monitors SET enabled = ? WHERE id = ? AND source = 'builtin'",
+                rows,
+            )
+            self._conn.commit()
+        self.set_runtime_config(MIGRATION_KEY, "1")
 
     def _seed_file_catalogs(self):
         catalogs = {
