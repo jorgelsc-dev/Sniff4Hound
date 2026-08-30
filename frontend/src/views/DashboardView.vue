@@ -628,12 +628,19 @@ export default {
       this.packetLimit = Math.min(this.packetLimit + 100, 5000);
       this.load({ silent: true }).catch(() => null);
     },
+    dashboardQuery() {
+      const params = new URLSearchParams({ compact: "1" });
+      const range = String(this.store.state.timeRange || "").trim();
+      if (range) params.set("since", range);
+      return `?${params.toString()}`;
+    },
     load(options = {}) {
       if (!options.silent) this.loading = true;
       this.error = "";
+      const dashboardQuery = this.dashboardQuery();
       return Promise.allSettled([
-        this.store.fetchJsonPromise("/api/dashboard/"),
-        this.store.fetchJsonPromise("/api/charts/analytics"),
+        this.store.fetchJsonPromise(`/api/dashboard/${dashboardQuery}`),
+        this.store.fetchJsonPromise(`/api/charts/analytics${dashboardQuery}`),
         this.store.fetchListPromise("/ports/", { limit: this.packetLimit }),
       ])
         .then(([dashboardRes, analyticsRes, packetsRes]) => {

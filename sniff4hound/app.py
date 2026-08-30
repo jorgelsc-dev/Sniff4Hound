@@ -1709,14 +1709,19 @@ def tags_sctp(request):
 
 @app.api("/api/dashboard/", methods=("GET",))
 def dashboard(request):
-    payload = store.dashboard_snapshot(ws_clients=hub.list_clients())
+    compact = str(request.query.get("compact") or "").strip().lower() in {"1", "true", "yes", "on"}
+    payload = store.dashboard_snapshot(
+        ws_clients=hub.list_clients(),
+        compact=compact,
+        since=_normalize_since(request),
+    )
     payload["runtime"] = runtime.snapshot()
     return payload
 
 
 @app.api("/api/charts/analytics", methods=("GET",))
-def charts_analytics(_request):
-    return store.analytics_snapshot()
+def charts_analytics(request):
+    return store.analytics_snapshot(since=_normalize_since(request))
 
 
 @app.api("/api/map/scan", methods=("GET",))
@@ -2622,11 +2627,11 @@ def _feed_targets(p: dict):
 
 
 def _feed_dashboard(_p: dict):
-    return store.dashboard_snapshot(ws_clients=hub.list_clients())
+    return store.dashboard_snapshot(ws_clients=hub.list_clients(), compact=True, since=_p.get("since", ""))
 
 
 def _feed_analytics(_p: dict):
-    return store.analytics_snapshot()
+    return store.analytics_snapshot(since=_p.get("since", ""))
 
 
 def _feed_map(p: dict):
