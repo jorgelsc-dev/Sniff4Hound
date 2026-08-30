@@ -463,14 +463,24 @@ class SniffStore:
         conn = sqlite3.connect(self.path, check_same_thread=False)
         conn.text_factory = _sqlite_text_factory
         conn.row_factory = sqlite3.Row
+        # auto_vacuum only takes effect if it's set before anything else
+        # touches the (empty) file - including switching the journal mode,
+        # which was found to already be enough to lock it in at NONE. That
+        # ordering bug meant every database this app ever created had
+        # auto_vacuum permanently off despite the PRAGMA call below: every
+        # PRAGMA incremental_vacuum elsewhere (purge_capture_data,
+        # enforce_retention's per-trim reclaim) was a silent no-op, so the
+        # file only ever grew and never gave space back, on every purge and
+        # every retention cycle. Changing auto_vacuum on an existing
+        # non-empty database needs a full VACUUM (the exact stall this
+        # codebase deliberately avoids elsewhere), so this fixes it only for
+        # a database created from now on - an existing one keeps its
+        # current mode until it's recreated.
+        conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
-        # Must be set before the first table is created to take effect; on
-        # a pre-existing database SQLite ignores it (changing it there
-        # needs a full VACUUM), so this only ever helps and never breaks.
-        conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         return conn
 
     def _recover_connection(self):
@@ -1200,16 +1210,20 @@ class SniffStore:
             except Exception:
                 pass
 
-    # SQLite reports both a busy database and a wedged connection as
-    # OperationalError; these are the substrings worth one recovery attempt.
-    # A closed connection raises ProgrammingError, not OperationalError, so
-    # both types are inspected; the message is what distinguishes a
-    # recoverable connection problem from a genuine SQL error.
+    # SQLite reports a busy/wedged connection through more than one
+    # exception class - most commonly OperationalError, but a connection
+    # that got out of sync with the file underneath it (the other of the
+    # two processes sharing this database committed or checkpointed at just
+    # the wrong moment) can also surface as the base DatabaseError, e.g.
+    # "another row available" - so every sqlite3.Error is inspected, and
+    # only its message decides whether it's worth a recovery attempt versus
+    # a genuine SQL error that must propagate untouched.
     _RECOVERABLE_ERRORS = (
         "database is locked",
         "database is busy",
         "cannot commit",
         "closed database",
+        "another row available",
     )
 
     def _execute(self, sql, params=(), *, commit=False):
@@ -1219,7 +1233,7 @@ class SniffStore:
                 if commit:
                     self._conn.commit()
                 return cursor
-            except (sqlite3.OperationalError, sqlite3.ProgrammingError) as exc:
+            except sqlite3.Error as exc:
                 message = str(exc).lower()
                 if not any(token in message for token in self._RECOVERABLE_ERRORS):
                     raise
@@ -4160,7 +4174,7 @@ class SniffStore:
         with self._lock:
             try:
                 return self._write_packet_rows(packet, packet_row, flow_key, tags, rule_hits, banner_text, length, payload_len, now)
-            except (sqlite3.OperationalError, sqlite3.ProgrammingError) as exc:
+            except sqlite3.Error as exc:
                 if not any(token in str(exc).lower() for token in self._RECOVERABLE_ERRORS):
                     raise
                 # The whole insert is retried, not just the failing statement:
@@ -4462,7 +4476,7 @@ class SniffStore:
         self.set_runtime_config("declared_location_label", str(label or "").strip()[:120])
         return self.get_declared_location()
 
-    def purge_capture_data(self) -> dict:
+    def purge_capture_data(self, *, progress=None) -> dict:
         """Delete every row produced by capture and honeypot activity.
 
         Broader than `clear_detections`, which only removes per-packet
@@ -4470,9 +4484,34 @@ class SniffStore:
         (flows, domains, paths, sessions) alone so an active session's
         counters stay consistent. This is the "start from an empty database"
         button, so it takes those too.
+
+        `progress`, if given, is called with a single status dict after each
+        table is cleared and periodically while compacting - the two
+        stretches an operator watching the "Clear data" dialog actually
+        waits through on a database that's grown large. It is best-effort
+        (any exception from it is swallowed) and never affects what gets
+        deleted.
         """
+
+        def _report(**status):
+            if progress is not None:
+                try:
+                    progress(status)
+                except Exception:
+                    pass
+
         deleted: dict[str, int] = {}
         with self._lock:
+            totals: dict[str, int] = {}
+            for table in self.CAPTURE_DATA_TABLES:
+                try:
+                    row = self._conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()
+                    totals[table] = int(row["c"] or 0) if row else 0
+                except sqlite3.Error:
+                    totals[table] = 0
+            rows_total = sum(totals.values())
+            rows_done = 0
+            _report(phase="deleting", table=None, rows_done=0, rows_total=rows_total)
             for table in self.CAPTURE_DATA_TABLES:
                 try:
                     cursor = self._conn.execute(f"DELETE FROM {table}")
@@ -4481,6 +4520,8 @@ class SniffStore:
                     # A table missing on an older schema must not abort the
                     # rest of the purge.
                     deleted[table] = 0
+                rows_done += deleted[table]
+                _report(phase="deleting", table=table, rows_done=rows_done, rows_total=rows_total)
             try:
                 self._conn.execute("DELETE FROM sqlite_sequence")
             except sqlite3.Error:
@@ -4492,16 +4533,78 @@ class SniffStore:
             # for twenty minutes afterwards while the database itself was free.
             # The schema sets auto_vacuum=INCREMENTAL, so the free pages can be
             # given back without rebuilding the file, and truncating the WAL
-            # returns the rest.
+            # returns the rest. Reclaiming in bounded chunks (rather than one
+            # unbounded PRAGMA incremental_vacuum call) is what makes a
+            # "compacting" progress step possible - it also keeps any single
+            # call from holding the write lock for the whole freelist at
+            # once, on a database that can be tens of thousands of pages
+            # after a large purge.
             try:
-                self._conn.execute("PRAGMA incremental_vacuum")
-                self._conn.commit()
+                free_row = self._conn.execute("PRAGMA freelist_count").fetchone()
+                pages_total = int(free_row[0] or 0) if free_row else 0
             except sqlite3.Error:
-                pass
+                pages_total = 0
+            if pages_total:
+                _report(phase="compacting", pages_done=0, pages_total=pages_total)
+                remaining = pages_total
+                # PRAGMA incremental_vacuum(N)'s "up to N pages" is what the
+                # docs promise, but it was observed reclaiming only ONE page
+                # per call - regardless of N, and even with no N at all - on
+                # at least one SQLite build. A fixed iteration count can't
+                # cover both that case and the normal one (where a single
+                # call reclaims everything), so this is time-boxed instead:
+                # keep taking bites while it's actually making progress and
+                # there's time left in the budget, then make exactly one
+                # more unbounded call for whatever remains and stop - on a
+                # build where N is honored that call is a fast no-op (the
+                # loop already finished); on one where it isn't, the file
+                # is left slightly larger than optimal rather than the
+                # purge hanging for a long, unbounded stretch reclaiming it
+                # one page at a time.
+                deadline = time.monotonic() + 2.0
+                last_reported_at = time.monotonic()
+                while remaining > 0 and time.monotonic() < deadline:
+                    try:
+                        self._conn.execute("PRAGMA incremental_vacuum(2000)")
+                        self._conn.commit()
+                        next_row = self._conn.execute("PRAGMA freelist_count").fetchone()
+                        next_remaining = int(next_row[0] or 0) if next_row else 0
+                    except sqlite3.Error:
+                        remaining = 0
+                        break
+                    if next_remaining >= remaining:
+                        # No progress this round - stop instead of looping
+                        # forever (e.g. auto_vacuum isn't INCREMENTAL on an
+                        # older database, so the PRAGMA is a silent no-op).
+                        break
+                    remaining = next_remaining
+                    # Throttled: on a build where each call only frees one
+                    # page, this loop can run thousands of times - a
+                    # broadcast (a WS send to every connected client) per
+                    # page would spam the dashboard far more than it would
+                    # inform it.
+                    now = time.monotonic()
+                    if now - last_reported_at >= 0.15:
+                        last_reported_at = now
+                        _report(phase="compacting", pages_done=pages_total - remaining, pages_total=pages_total)
+                if remaining > 0:
+                    try:
+                        self._conn.execute("PRAGMA incremental_vacuum")
+                        self._conn.commit()
+                        final_row = self._conn.execute("PRAGMA freelist_count").fetchone()
+                        remaining = int(final_row[0] or 0) if final_row else remaining
+                    except sqlite3.Error:
+                        pass
+                # Unconditional and unthrottled: the last in-loop report may
+                # have been skipped by the throttle above, so this is what
+                # guarantees the dialog actually reaches 100% instead of
+                # stalling a few points short of it.
+                _report(phase="compacting", pages_done=max(0, pages_total - remaining), pages_total=pages_total)
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except sqlite3.Error:
                 pass
+            _report(phase="done", rows_done=rows_done, rows_total=rows_total)
         return deleted
 
     def clear_detections(self, scope: str = "all") -> dict:

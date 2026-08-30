@@ -66,11 +66,18 @@ DEFAULT_MONITORS = [
         "source": "builtin",
         "mode": "regex",
         "match": {
+            # request_only: a server *response* routinely echoes these same
+            # field names back (a JSON API returning {"username": "..."},
+            # an HTML form's `name="password"` attribute, a JS bundle's
+            # form-validation code) without ever having carried a real
+            # credential - only what the client actually *sent* is a
+            # genuine cleartext-credential exposure.
+            "request_only": True,
             "payload_regex": [
                 r"pass(word|wd)?\s*[:=]",
                 r"user(name)?\s*[:=]",
                 r"\blogin\s*[:=]",
-            ]
+            ],
         },
         "action": {"tag": "credentials", "label": "Cleartext credentials", "severity": "high"},
     },
@@ -88,35 +95,47 @@ DEFAULT_MONITORS = [
     {
         "id": "builtin-sqli",
         "name": "SQL injection pattern",
-        "description": "Common SQL injection payload signatures.",
+        "description": "Common SQL injection payload signatures seen in request traffic.",
         "enabled": True,
         "priority": 30,
         "source": "builtin",
         "mode": "regex",
         "match": {
+            # request_only: an admin panel/DB-tool page (phpMyAdmin, a
+            # query builder, API docs) routinely echoes "UNION SELECT" /
+            # "DROP TABLE" back in its own *response* HTML - only the
+            # client-sent side is an actual injection attempt.
+            "request_only": True,
             "payload_regex": [
                 r"union\s+select",
                 r"or\s+1\s*=\s*1",
                 r"drop\s+table",
                 r"'\s*or\s*'1'\s*=\s*'1",
-            ]
+            ],
         },
         "action": {"tag": "sqli", "label": "SQL injection", "severity": "high"},
     },
     {
         "id": "builtin-xss",
         "name": "XSS pattern",
-        "description": "Common cross-site scripting payload signatures.",
+        "description": "Common cross-site scripting payload signatures seen in request traffic.",
         "enabled": True,
         "priority": 40,
         "source": "builtin",
         "mode": "regex",
         "match": {
+            # request_only: this was the single biggest false-positive
+            # source in the default ruleset - every ordinary HTML page a
+            # sniffed host loads ships a `<script` tag in the *response*
+            # body. Only a `<script`/`onerror=`/`javascript:` payload
+            # riding in what the client sends (a query param, a form post)
+            # is an actual reflected/DOM XSS attempt.
+            "request_only": True,
             "payload_regex": [
                 r"<script",
                 r"onerror\s*=",
                 r"javascript:",
-            ]
+            ],
         },
         "action": {"tag": "xss", "label": "XSS attempt", "severity": "medium"},
     },
@@ -696,7 +715,7 @@ DEFAULT_MONITORS = [
         "priority": 230,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"(\.\.[\\/]){2,}|%2e%2e%2f|%252e%252e%252f"]},
+        "match": {"request_only": True, "payload_regex": [r"(\.\.[\\/]){2,}|%2e%2e%2f|%252e%252e%252f"]},
         "action": {"tag": "path-traversal", "label": "Path traversal attempt", "severity": "high"},
     },
     {
@@ -707,7 +726,10 @@ DEFAULT_MONITORS = [
         "priority": 231,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r";\s*(cat|wget|curl|nc|bash|sh|python|perl)\s|\$\([^)]+\)|`[^`]+`"]},
+        # request_only: the backtick/`$(...)` alternatives otherwise fire on
+        # any markdown/code-snippet/chat-API payload riding in a normal
+        # response body (backticked code spans, shell examples in docs).
+        "match": {"request_only": True, "payload_regex": [r";\s*(cat|wget|curl|nc|bash|sh|python|perl)\s|\$\([^)]+\)|`[^`]+`"]},
         "action": {"tag": "command-injection", "label": "Command injection attempt", "severity": "high"},
     },
     {
@@ -718,7 +740,7 @@ DEFAULT_MONITORS = [
         "priority": 232,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"\$\{jndi:(ldap|rmi|dns|iiop|corba|nis)://"]},
+        "match": {"request_only": True, "payload_regex": [r"\$\{jndi:(ldap|rmi|dns|iiop|corba|nis)://"]},
         "action": {"tag": "log4shell", "label": "Log4Shell / JNDI injection", "severity": "critical"},
     },
     {
@@ -740,7 +762,7 @@ DEFAULT_MONITORS = [
         "priority": 234,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"<!entity\s+\S+\s+system\s+[\"']"]},
+        "match": {"request_only": True, "payload_regex": [r"<!entity\s+\S+\s+system\s+[\"']"]},
         "action": {"tag": "xxe-injection", "label": "XXE injection attempt", "severity": "high"},
     },
     {
@@ -751,7 +773,7 @@ DEFAULT_MONITORS = [
         "priority": 235,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"\b(file|gopher|dict)://|169\.254\.169\.254|metadata\.google\.internal"]},
+        "match": {"request_only": True, "payload_regex": [r"\b(file|gopher|dict)://|169\.254\.169\.254|metadata\.google\.internal"]},
         "action": {"tag": "ssrf-attempt", "label": "SSRF probe attempt", "severity": "high"},
     },
     {
@@ -762,7 +784,7 @@ DEFAULT_MONITORS = [
         "priority": 236,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"\{\{\s*7\s*\*\s*7\s*\}\}|\$\{\s*7\s*\*\s*7\s*\}"]},
+        "match": {"request_only": True, "payload_regex": [r"\{\{\s*7\s*\*\s*7\s*\}\}|\$\{\s*7\s*\*\s*7\s*\}"]},
         "action": {"tag": "ssti-attempt", "label": "SSTI attempt", "severity": "medium"},
     },
     {
@@ -773,7 +795,7 @@ DEFAULT_MONITORS = [
         "priority": 237,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"ro0ab[a-z0-9+/=]{6,}|o:\d+:\"[a-z0-9_\\]+\":\d+:\{"]},
+        "match": {"request_only": True, "payload_regex": [r"ro0ab[a-z0-9+/=]{6,}|o:\d+:\"[a-z0-9_\\]+\":\d+:\{"]},
         "action": {"tag": "insecure-deserialization", "label": "Insecure deserialization payload", "severity": "high"},
     },
     {
@@ -784,7 +806,7 @@ DEFAULT_MONITORS = [
         "priority": 238,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"\b(c99|r57|b374k|wso|weevely)(shell)?\b"]},
+        "match": {"request_only": True, "payload_regex": [r"\b(c99|r57|b374k|wso|weevely)(shell)?\b"]},
         "action": {"tag": "webshell-reference", "label": "Web shell reference", "severity": "critical"},
     },
     {
@@ -795,7 +817,7 @@ DEFAULT_MONITORS = [
         "priority": 239,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"\{\s*\"\$(where|ne|gt|regex)\"\s*:"]},
+        "match": {"request_only": True, "payload_regex": [r"\{\s*\"\$(where|ne|gt|regex)\"\s*:"]},
         "action": {"tag": "nosql-injection", "label": "NoSQL injection attempt", "severity": "high"},
     },
     {
@@ -812,7 +834,7 @@ DEFAULT_MONITORS = [
         # traffic. The actual injection signature is the *encoded* CRLF
         # (%0d%0a) landing inside a request, which only happens when an
         # attacker smuggles it through a URL/parameter.
-        "match": {"payload_regex": [r"%0d%0a(set-cookie|location):"]},
+        "match": {"request_only": True, "payload_regex": [r"%0d%0a(set-cookie|location):"]},
         "action": {"tag": "crlf-injection", "label": "CRLF injection attempt", "severity": "medium"},
     },
     {
@@ -823,7 +845,7 @@ DEFAULT_MONITORS = [
         "priority": 244,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"\(\s*\|\s*\(.*=\*\)\)|\(\s*&\s*\(.*=\*\)\)"]},
+        "match": {"request_only": True, "payload_regex": [r"\(\s*\|\s*\(.*=\*\)\)|\(\s*&\s*\(.*=\*\)\)"]},
         "action": {"tag": "ldap-injection", "label": "LDAP injection attempt", "severity": "high"},
     },
     {
@@ -834,7 +856,7 @@ DEFAULT_MONITORS = [
         "priority": 245,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"%\{.*getruntime\(\).*exec|ognl\.ognlcontext"]},
+        "match": {"request_only": True, "payload_regex": [r"%\{.*getruntime\(\).*exec|ognl\.ognlcontext"]},
         "action": {"tag": "struts2-ognl-injection", "label": "Struts2 OGNL injection attempt", "severity": "critical"},
     },
     {
@@ -845,7 +867,7 @@ DEFAULT_MONITORS = [
         "priority": 246,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"class\.module\.classloader"]},
+        "match": {"request_only": True, "payload_regex": [r"class\.module\.classloader"]},
         "action": {"tag": "spring4shell-attempt", "label": "Spring4Shell attempt", "severity": "critical"},
     },
     # --- Policy violations ---
@@ -2529,9 +2551,11 @@ def _validate_match_not_empty(match: dict):
 
 
 def _validate_regex_patterns(match: dict):
-    patterns = [str(pattern) for pattern in match.get("payload_regex", []) if str(pattern).strip()] + [
-        str(pattern) for pattern in match.get("ip_regex", []) if str(pattern).strip()
-    ]
+    patterns = (
+        [str(pattern) for pattern in match.get("payload_regex", []) if str(pattern).strip()]
+        + [str(pattern) for pattern in match.get("payload_regex_exclude", []) if str(pattern).strip()]
+        + [str(pattern) for pattern in match.get("ip_regex", []) if str(pattern).strip()]
+    )
     if len(patterns) > settings.MONITOR_MAX_REGEX_PATTERNS:
         raise ValueError(f"Too many regex patterns (max {settings.MONITOR_MAX_REGEX_PATTERNS})")
     for pattern in patterns:

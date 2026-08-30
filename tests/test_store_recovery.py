@@ -49,6 +49,34 @@ class ConnectionRecoveryTests(unittest.TestCase):
         self.store.register_packet(self._packet())
         self.assertEqual(self.store.list_count("packets"), 1)
 
+    def test_writes_survive_another_row_available(self):
+        # Observed in production on POST /api/detection/scopes while the
+        # privileged capture child was writing loopback packets
+        # concurrently: sqlite3 can report a connection knocked out of sync
+        # as the base DatabaseError ("another row available"), not just
+        # OperationalError - a class this recovery path used to miss
+        # entirely, so the request 500'd on the very first hiccup instead
+        # of retrying like every other transient lock/connection error.
+        # sqlite3.Connection.execute is a read-only slot, so the flaky
+        # behavior has to come from a thin proxy standing in for the real
+        # connection rather than a per-instance monkeypatch.
+        real_conn = self.store._conn
+        calls = {"n": 0}
+
+        class FlakyConn:
+            def execute(self, *args, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise sqlite3.DatabaseError("another row available")
+                return real_conn.execute(*args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        self.store._conn = FlakyConn()
+        self.store.set_detection_exclude_scopes(["loopback"])
+        self.assertEqual(self.store.get_detection_exclude_scopes(), ["loopback"])
+
     def test_recovery_reopens_a_working_connection(self):
         self.store._conn.close()
         self.store._recover_connection()

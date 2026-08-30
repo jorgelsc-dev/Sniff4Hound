@@ -256,6 +256,21 @@ def normalize_match(match: dict) -> dict:
             if str(item).strip()
         ],
         "payload_regex": [str(item).strip() for item in _list("payload_regex") if str(item).strip()],
+        # Negative-context regex: ANY match here cancels an otherwise-fired
+        # rule (ORed, same as payload_regex, just inverted). Lets a broad
+        # signature ("union select") stay broad while excluding a known
+        # benign context (e.g. an admin-tool's own information_schema
+        # query) without having to make the positive regex itself more
+        # fragile.
+        "payload_regex_exclude": [str(item).strip() for item in _list("payload_regex_exclude") if str(item).strip()],
+        # Scopes a content signature to request-side traffic only (HTTP
+        # request lines/headers/bodies), skipping response bodies. Response
+        # payloads legitimately contain most content signatures verbatim
+        # (any HTML page has "<script", any JSON API echoes "user=" style
+        # field names) so signatures aimed at what a client *sends* - XSS,
+        # SQLi, command injection, path traversal payloads - false-positive
+        # constantly without this.
+        "request_only": bool(data.get("request_only", False)),
         # Header-field criteria. The payload/content keys above cannot express
         # a port scan (no payload at all, the signature *is* the flag
         # combination), a spoofed ARP reply or an ICMP type, so they get
@@ -319,10 +334,25 @@ def build_packet_text(packet: dict) -> str:
     ).lower()
 
 
+def _is_http_response_packet(packet: dict) -> bool:
+    """True for a packet carrying an HTTP response's start-line/body.
+
+    Mirrors the same "HTTP/1." status-line prefix Sniffer._classify_tcp_banner
+    already uses to label response segments - a request packet always starts
+    with a method token (GET/POST/...) instead, so this is a cheap, reliable
+    request/response split without needing a dedicated capture-side field.
+    """
+    text = str(packet.get("payload_text") or "").lstrip()
+    return text[:5].upper() == "HTTP/"
+
+
 def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = None) -> bool:
     if not rule or not rule.get("enabled", True):
         return False
     match = rule.get("match") if isinstance(rule.get("match"), dict) else {}
+    if match.get("request_only") and _is_http_response_packet(packet):
+        return False
+
     proto = normalize_protocol_name(packet.get("proto"))
     # Cheap protocol/port/length checks below run first and short-circuit
     # most non-matches, so packet_text (a string join + lower() over six
@@ -453,6 +483,7 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
     needles = [str(item).lower() for item in match.get("payload_contains", []) if str(item).strip()]
     prefix_hex = [str(item).lower().replace("0x", "") for item in match.get("payload_prefix_hex", []) if str(item).strip()]
     regexes = [str(item).strip() for item in match.get("payload_regex", []) if str(item).strip()]
+    exclude_regexes = [str(item).strip() for item in match.get("payload_regex_exclude", []) if str(item).strip()]
     min_length = safe_int(match.get("min_length", 0), 0)
     max_length = safe_int(match.get("max_length", 0), 0)
     min_payload_text_length = safe_int(match.get("min_payload_text_length", 0), 0)
@@ -474,7 +505,7 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
             if not (match.get("count_threshold") and match.get("window_seconds")):
                 return False
 
-    if needles or regexes:
+    if needles or regexes or exclude_regexes:
         if packet_text is None:
             packet_text = build_packet_text(packet)
 
@@ -493,6 +524,12 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
                 break
         if not matched_any:
             return False
+
+    if exclude_regexes:
+        for pattern in exclude_regexes:
+            compiled = _compiled_regex(pattern)
+            if compiled is not None and compiled.search(packet_text):
+                return False
 
     if min_length and packet_length < min_length:
         return False

@@ -54,6 +54,55 @@ class PurgePreservesConfigTests(unittest.TestCase):
         deleted = self.store.purge_capture_data()
         self.assertEqual(set(deleted), PURGEABLE_TABLES)
 
+    def test_new_databases_get_incremental_auto_vacuum(self):
+        # Regression: PRAGMA auto_vacuum=INCREMENTAL used to be set *after*
+        # PRAGMA journal_mode=WAL in _open_connection, which is too late for
+        # SQLite to accept it - so it silently stayed NONE, and every
+        # PRAGMA incremental_vacuum this store ever ran (here and in
+        # enforce_retention) was a total no-op. The database file only ever
+        # grew, on every purge and every retention cycle.
+        self.assertEqual(self.store._conn.execute("PRAGMA auto_vacuum").fetchone()[0], 2)
+
+    def test_purge_reports_progress(self):
+        packet = {
+            "src_ip": "10.0.0.1", "dst_ip": "1.1.1.1", "proto": "tls", "transport": "tcp",
+            "interface": "eth0", "length": 200, "src_port": 50000, "dst_port": 443,
+        }
+        for _ in range(20):
+            self.store.register_packet(packet)
+
+        events = []
+        deleted = self.store.purge_capture_data(progress=events.append)
+
+        self.assertTrue(events, "expected at least one progress update")
+        self.assertEqual(events[0]["phase"], "deleting")
+        self.assertEqual(events[-1]["phase"], "done")
+        self.assertEqual(events[-1]["rows_done"], events[-1]["rows_total"])
+        self.assertEqual(events[-1]["rows_done"], sum(deleted.values()))
+        # Every "deleting" update's rows_done is monotonically non-decreasing
+        # and never exceeds the declared total - the frontend renders this
+        # straight into a percentage, so a value outside that range would
+        # show a progress bar going backwards or past 100%.
+        deleting = [e for e in events if e["phase"] == "deleting"]
+        rows_done_sequence = [e["rows_done"] for e in deleting]
+        self.assertEqual(rows_done_sequence, sorted(rows_done_sequence))
+        for event in deleting:
+            self.assertLessEqual(event["rows_done"], event["rows_total"])
+
+    def test_purge_progress_errors_do_not_break_the_purge(self):
+        # progress is best-effort: a broken callback must not stop rows
+        # from actually being deleted.
+        self.store.register_packet({
+            "src_ip": "10.0.0.1", "dst_ip": "1.1.1.1", "proto": "tls", "transport": "tcp",
+            "interface": "eth0", "length": 200, "src_port": 50000, "dst_port": 443,
+        })
+
+        def boom(_status):
+            raise RuntimeError("frontend disconnected mid-broadcast")
+
+        deleted = self.store.purge_capture_data(progress=boom)
+        self.assertEqual(deleted["packets"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

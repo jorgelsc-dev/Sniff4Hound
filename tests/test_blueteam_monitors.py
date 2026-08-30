@@ -276,6 +276,67 @@ class TestWebAttackMonitors(unittest.TestCase):
         self.assertEqual(attack_tags, set())
 
 
+class TestRequestOnlyContentSignaturesIgnoreResponses(unittest.TestCase):
+    """Regression coverage for the false-positive fix: content-signature
+    monitors (XSS/SQLi/command-injection/etc.) are scoped to request-side
+    traffic via `request_only`, so an ordinary HTTP *response* carrying the
+    same literal text - which is what they used to false-positive on
+    constantly - must no longer tag."""
+
+    def setUp(self):
+        self.monitors = [normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS]
+
+    def _tags(self, text: str) -> set[str]:
+        packet = _packet(payload_text=text, summary=text)
+        return {hit["tag"] for hit in evaluate_packet(packet, self.monitors)}
+
+    def test_ordinary_page_script_tag_in_response_is_not_xss(self):
+        body = 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><head><script src="/app.js"></script></head></html>'
+        self.assertNotIn("xss", self._tags(body))
+
+    def test_request_script_tag_is_still_xss(self):
+        self.assertIn("xss", self._tags("GET /search?q=<script>alert(1)</script> HTTP/1.1"))
+
+    def test_json_api_response_echoing_username_is_not_credentials(self):
+        body = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"username": "alice", "password": "***"}'
+        self.assertNotIn("credentials", self._tags(body))
+
+    def test_request_login_post_is_still_credentials(self):
+        self.assertIn("credentials", self._tags("POST /login HTTP/1.1\r\n\r\nusername=alice&password=hunter2"))
+
+    def test_admin_tool_response_mentioning_union_select_is_not_sqli(self):
+        body = 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<p>Example query: UNION SELECT * FROM users</p>'
+        self.assertNotIn("sqli", self._tags(body))
+
+    def test_request_union_select_is_still_sqli(self):
+        self.assertIn("sqli", self._tags("GET /products?id=1 UNION SELECT password FROM users-- HTTP/1.1"))
+
+
+class TestPayloadRegexExclude(unittest.TestCase):
+    """`payload_regex_exclude` is a new, generic match criterion (any match
+    cancels an otherwise-fired rule) added alongside `request_only` so a
+    custom monitor can narrow a broad positive regex without having to make
+    the positive pattern itself more fragile."""
+
+    def _tags(self, text: str, match: dict) -> set[str]:
+        monitor = normalize_monitor(
+            {
+                "id": "custom-exclude-test",
+                "name": "exclude test",
+                "match": match,
+                "action": {"tag": "custom-hit"},
+            },
+            allow_source=True,
+        )
+        packet = _packet(payload_text=text, summary=text)
+        return {hit["tag"] for hit in evaluate_packet(packet, [monitor])}
+
+    def test_exclude_cancels_an_otherwise_matching_rule(self):
+        match = {"payload_regex": ["union select"], "payload_regex_exclude": ["information_schema"]}
+        self.assertIn("custom-hit", self._tags("union select 1,2,3", match))
+        self.assertNotIn("custom-hit", self._tags("union select * from information_schema.tables", match))
+
+
 class TestMalwareAndC2Monitors(unittest.TestCase):
     def setUp(self):
         self.monitors = [normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS]
