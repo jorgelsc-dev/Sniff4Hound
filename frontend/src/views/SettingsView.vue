@@ -404,6 +404,33 @@
               @update:model-value="toggleFilter"
             />
           </div>
+          <v-row dense class="mt-3">
+            <v-col cols="12" md="6">
+              <v-select
+                :model-value="monitorMinSeverity"
+                :items="monitorSeverityOptions"
+                item-title="label"
+                item-value="value"
+                label="Minimum monitor severity"
+                variant="outlined"
+                density="comfortable"
+                hide-details="auto"
+                :loading="configSubmitting"
+                @update:model-value="updateMonitorMinSeverity"
+              />
+            </v-col>
+            <v-col cols="12" md="6">
+              <v-switch
+                :model-value="suppressGeneratedInfo"
+                label="Mute generated info/low signals"
+                :loading="configSubmitting"
+                color="warning"
+                hide-details="auto"
+                inset
+                @update:model-value="toggleGeneratedInfoFilter"
+              />
+            </v-col>
+          </v-row>
         </v-card>
 
         <div class="d-flex justify-end mb-3">
@@ -781,6 +808,9 @@ export default {
       lastUpdated: "",
       monitors: [],
       filterEnabled: true,
+      monitorMinSeverity: "info",
+      suppressGeneratedInfo: true,
+      monitorSeverityCatalog: ["info", "low", "medium", "high", "critical"],
       configSubmitting: false,
       configError: "",
       busyIds: {},
@@ -891,6 +921,17 @@ export default {
     regexErrors() {
       const invalid = (this.form.payloadRegex || []).filter((pattern) => !this.isValidRegex(pattern));
       return invalid.length ? [`Invalid regex: ${invalid.join(", ")}`] : [];
+    },
+    monitorSeverityOptions() {
+      const labels = {
+        info: "Info and above",
+        low: "Low and above",
+        medium: "Medium and above",
+        high: "High and critical",
+        critical: "Critical only",
+      };
+      return (this.monitorSeverityCatalog.length ? this.monitorSeverityCatalog : this.severityOptions)
+        .map((value) => ({ value, label: labels[value] || value }));
     },
   },
   watch: {
@@ -1180,7 +1221,7 @@ export default {
       this.store
         .setMonitorConfig({ filter_enabled: Boolean(value) })
         .then((payload) => {
-          this.filterEnabled = Boolean(payload && payload.filter_enabled);
+          this.applyMonitorConfig(payload);
         })
         .catch((err) => {
           this.configError = (err && err.message) || "Failed to update the persistence filter";
@@ -1188,6 +1229,45 @@ export default {
         .finally(() => {
           this.configSubmitting = false;
         });
+    },
+    updateMonitorMinSeverity(value) {
+      this.configSubmitting = true;
+      this.configError = "";
+      this.store
+        .setMonitorConfig({ min_severity: String(value || "info") })
+        .then((payload) => {
+          this.applyMonitorConfig(payload);
+        })
+        .catch((err) => {
+          this.configError = (err && err.message) || "Failed to update monitor severity";
+        })
+        .finally(() => {
+          this.configSubmitting = false;
+        });
+    },
+    toggleGeneratedInfoFilter(value) {
+      this.configSubmitting = true;
+      this.configError = "";
+      this.store
+        .setMonitorConfig({ suppress_generated_info: Boolean(value) })
+        .then((payload) => {
+          this.applyMonitorConfig(payload);
+        })
+        .catch((err) => {
+          this.configError = (err && err.message) || "Failed to update generated signal filter";
+        })
+        .finally(() => {
+          this.configSubmitting = false;
+        });
+    },
+    applyMonitorConfig(payload) {
+      const row = payload && typeof payload === "object" ? payload : {};
+      this.filterEnabled = Boolean(row.filter_enabled);
+      this.monitorMinSeverity = String(row.min_severity || "info");
+      this.suppressGeneratedInfo = row.suppress_generated_info !== false;
+      this.monitorSeverityCatalog = Array.isArray(row.severity_options)
+        ? row.severity_options
+        : this.monitorSeverityCatalog;
     },
     toggleEnabled(item, value) {
       this.setBusy(item.id, true);
@@ -1317,7 +1397,7 @@ export default {
             this.error = (monitorsRes.reason && monitorsRes.reason.message) || "Failed to load monitors";
           }
           if (configRes.status === "fulfilled") {
-            this.filterEnabled = Boolean(configRes.value && configRes.value.filter_enabled);
+            this.applyMonitorConfig(configRes.value);
             this.configError = "";
           } else {
             this.configError = (configRes.reason && configRes.reason.message) || "Failed to load persistence filter state";

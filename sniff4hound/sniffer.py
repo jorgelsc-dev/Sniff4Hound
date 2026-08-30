@@ -17,6 +17,9 @@ from .settings import (
     CAPTURE_BUFFER_BYTES,
     CAPTURE_POLL_TIMEOUT,
     CAPTURE_PROMISCUOUS,
+    MONITOR_MIN_SEVERITY_DEFAULT,
+    MONITOR_SEVERITIES,
+    MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT,
     PAYLOAD_TEXT_MAX_CHARS,
 )
 from .app_decoders import decode as decode_app_payload
@@ -67,6 +70,7 @@ LINK_LAYER_PROTOCOLS = frozenset(
     }
 )
 LLC_STP_HEADER = b"\x42\x42\x03"
+MONITOR_SEVERITY_RANK = {severity: index for index, severity in enumerate(MONITOR_SEVERITIES)}
 # IEEE 802.3: the two bytes after the MACs are a *length* when <= 1500, and an
 # EtherType only when >= 1536. Values in between are undefined. Reading a
 # length as an EtherType is what filed these frames as "unknown protocol".
@@ -594,6 +598,8 @@ class Sniffer:
         self._monitor_cache: list[dict] = []
         self._whitelist_cache: list[dict] = []
         self._monitor_filter_enabled = True
+        self._monitor_min_severity = MONITOR_MIN_SEVERITY_DEFAULT
+        self._monitor_suppress_generated_info = MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT
         self._detection_exclude_scopes: frozenset[str] = frozenset()
         self._monitor_cache_at = 0.0
         self._monitor_refresh_lock = threading.Lock()
@@ -840,6 +846,26 @@ class Sniffer:
                     ).start()
         return self._monitor_cache, self._monitor_filter_enabled
 
+    def _filter_monitor_hits(self, hits: list[dict]) -> list[dict]:
+        if not hits:
+            return hits
+        min_rank = MONITOR_SEVERITY_RANK.get(self._monitor_min_severity, 0)
+        filtered = []
+        for hit in hits:
+            severity = str(hit.get("severity") or "info").strip().lower()
+            rank = MONITOR_SEVERITY_RANK.get(severity, 0)
+            if rank < min_rank:
+                continue
+            monitor_id = str(hit.get("monitor_id") or "").strip()
+            if (
+                self._monitor_suppress_generated_info
+                and monitor_id.startswith("builtin-signal-")
+                and severity in {"info", "low"}
+            ):
+                continue
+            filtered.append(hit)
+        return filtered
+
     def _detection_muted(self, packet: dict) -> bool:
         """True when this packet's traffic falls entirely inside an excluded
         IP scope.
@@ -924,6 +950,14 @@ class Sniffer:
             if not isinstance(whitelist, list):
                 whitelist = []
             filter_enabled = self.store.get_monitor_filter_enabled()
+            get_min_severity = getattr(self.store, "get_monitor_min_severity", None)
+            get_suppress_generated_info = getattr(self.store, "get_monitor_suppress_generated_info", None)
+            min_severity = get_min_severity() if callable(get_min_severity) else MONITOR_MIN_SEVERITY_DEFAULT
+            suppress_generated_info = (
+                get_suppress_generated_info()
+                if callable(get_suppress_generated_info)
+                else MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT
+            )
             exclude_scopes = frozenset(self.store.get_detection_exclude_scopes())
             # Builds/refreshes monitors.evaluate_packet()'s content index
             # for this exact list object; its own expensive part (the
@@ -933,6 +967,8 @@ class Sniffer:
             self._monitor_cache = monitors
             self._whitelist_cache = whitelist
             self._monitor_filter_enabled = filter_enabled
+            self._monitor_min_severity = min_severity
+            self._monitor_suppress_generated_info = suppress_generated_info
             self._detection_exclude_scopes = exclude_scopes
         except sqlite3.ProgrammingError as exc:
             if "closed database" in str(exc).lower():
@@ -1057,6 +1093,7 @@ class Sniffer:
             rulesets = self._get_rulesets()
             matches = classify_packet(packet, rulesets)
             monitor_hits = evaluate_packet(packet, monitors) if filter_enabled else []
+            monitor_hits = self._filter_monitor_hits(monitor_hits)
             if monitor_hits:
                 monitor_hits = self._rule_throttle.filter(monitor_hits, packet.get("src_ip"))
             # Anomaly detectors run unconditionally, regardless of filter_enabled —

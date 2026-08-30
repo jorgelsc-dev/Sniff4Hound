@@ -187,8 +187,14 @@
               <v-icon icon="mdi-swap-horizontal" />
               <v-tooltip activator="parent" location="bottom">Protocols</v-tooltip>
             </v-btn>
-            <v-btn color="primary" variant="outlined" to="/sniffer">Open Sniffer</v-btn>
-            <v-btn color="warning" variant="outlined" to="/honeypot">Open Honeypot</v-btn>
+            <v-btn color="primary" variant="outlined" icon to="/sniffer" aria-label="Open Sniffer">
+              <v-icon icon="mdi-ethernet" />
+              <v-tooltip activator="parent" location="bottom">Open Sniffer</v-tooltip>
+            </v-btn>
+            <v-btn color="warning" variant="outlined" icon to="/honeypot" aria-label="Open Honeypot">
+              <v-icon icon="mdi-spider-web" />
+              <v-tooltip activator="parent" location="bottom">Open Honeypot</v-tooltip>
+            </v-btn>
           </div>
 
           <v-divider class="my-4" />
@@ -313,6 +319,7 @@ export default {
       lastUpdated: "",
       liveRefreshEnabled: true,
       engineBusy: { sniffer: false, honeypot: false },
+      engineDesired: { sniffer: null, honeypot: null },
       engineError: "",
       dashboard: {},
       analytics: {},
@@ -380,8 +387,24 @@ export default {
       return this.dashboard && this.dashboard.counts ? this.dashboard.counts : {};
     },
     runtime() {
-      const runtime = this.dashboard && this.dashboard.runtime ? this.dashboard.runtime : this.store.state.runtime;
-      return runtime && typeof runtime === "object" ? runtime : {};
+      const dashboardRuntime = this.dashboard && this.dashboard.runtime && typeof this.dashboard.runtime === "object"
+        ? this.dashboard.runtime
+        : {};
+      const liveRuntime = this.store.state.runtime && typeof this.store.state.runtime === "object"
+        ? this.store.state.runtime
+        : {};
+      return {
+        ...dashboardRuntime,
+        ...liveRuntime,
+        sniffer: {
+          ...(dashboardRuntime.sniffer && typeof dashboardRuntime.sniffer === "object" ? dashboardRuntime.sniffer : {}),
+          ...(liveRuntime.sniffer && typeof liveRuntime.sniffer === "object" ? liveRuntime.sniffer : {}),
+        },
+        honeypot: {
+          ...(dashboardRuntime.honeypot && typeof dashboardRuntime.honeypot === "object" ? dashboardRuntime.honeypot : {}),
+          ...(liveRuntime.honeypot && typeof liveRuntime.honeypot === "object" ? liveRuntime.honeypot : {}),
+        },
+      };
     },
     snifferRuntime() {
       return this.runtime.sniffer && typeof this.runtime.sniffer === "object" ? this.runtime.sniffer : {};
@@ -458,10 +481,14 @@ export default {
       return this.store.timeRangeLabel();
     },
     snifferRunning() {
-      return Boolean(this.snifferRuntime.running);
+      return this.engineDesired.sniffer === null
+        ? Boolean(this.snifferRuntime.running)
+        : Boolean(this.engineDesired.sniffer);
     },
     honeypotRunning() {
-      return Boolean(this.honeypotRuntime.running);
+      return this.engineDesired.honeypot === null
+        ? Boolean(this.honeypotRuntime.running)
+        : Boolean(this.engineDesired.honeypot);
     },
     // Both engines writing at once is supported, but it is worth saying out
     // loud: raw capture sees the honeypot's own traffic too, so those
@@ -473,6 +500,8 @@ export default {
       return String(this.snifferRuntime.capture_state || "").trim().toLowerCase() === "blocked";
     },
     snifferStatusLabel() {
+      if (this.engineDesired.sniffer === true) return "Starting";
+      if (this.engineDesired.sniffer === false) return "Stopping";
       if (this.snifferBlocked) return "Blocked";
       if (this.snifferRuntime.running) return "Running";
       return "Stopped";
@@ -483,6 +512,7 @@ export default {
       return "secondary";
     },
     snifferStatusIcon() {
+      if (this.engineDesired.sniffer !== null) return "mdi-progress-clock";
       if (this.snifferBlocked) return "mdi-alert-circle-outline";
       if (this.snifferRuntime.running) return "mdi-play-circle-outline";
       return "mdi-stop-circle-outline";
@@ -525,6 +555,8 @@ export default {
       return Number(this.honeypotRuntime.packets_seen || 0);
     },
     honeypotStatusLabel() {
+      if (this.engineDesired.honeypot === true) return "Starting";
+      if (this.engineDesired.honeypot === false) return "Stopping";
       if (this.honeypotRuntime.running) return "Running";
       return "Stopped";
     },
@@ -532,6 +564,7 @@ export default {
       return this.honeypotRuntime.running ? "warning" : "secondary";
     },
     honeypotStatusIcon() {
+      if (this.engineDesired.honeypot !== null) return "mdi-progress-clock";
       return this.honeypotRuntime.running ? "mdi-play-circle-outline" : "mdi-stop-circle-outline";
     },
     honeypotListenersLabel() {
@@ -578,10 +611,15 @@ export default {
     toggleEngine(engine, shouldRun) {
       if (this.engineBusy[engine]) return;
       this.engineBusy[engine] = true;
+      this.engineDesired[engine] = Boolean(shouldRun);
       this.engineError = "";
       this.store
         .controlEngine(engine, shouldRun ? "start" : "stop")
+        .then(() => {
+          this.engineDesired[engine] = null;
+        })
         .catch((err) => {
+          this.engineDesired[engine] = null;
           this.engineError = (err && err.message) || `Failed to ${shouldRun ? "start" : "stop"} the ${engine}`;
         })
         .finally(() => {

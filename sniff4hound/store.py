@@ -27,6 +27,9 @@ from .protocol_facets import (
 from .rulesets import literal_packet_text_pattern, load_builtin_rulesets, normalize_ruleset
 from .settings import (
     MONITOR_FILTER_DEFAULT,
+    MONITOR_MIN_SEVERITY_DEFAULT,
+    MONITOR_SEVERITIES,
+    MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT,
     PAYLOAD_TEXT_MAX_CHARS,
     DECLARED_LATITUDE,
     DECLARED_LOCATION_LABEL,
@@ -2607,6 +2610,34 @@ class SniffStore:
     def set_monitor_filter_enabled(self, value: bool):
         self.set_runtime_config("monitor_filter_enabled", "1" if value else "0")
         return self.get_monitor_filter_enabled()
+
+    def get_monitor_min_severity(self) -> str:
+        value = str(self.get_runtime_config("monitor_min_severity", MONITOR_MIN_SEVERITY_DEFAULT) or "").strip().lower()
+        return value if value in MONITOR_SEVERITIES else MONITOR_MIN_SEVERITY_DEFAULT
+
+    def set_monitor_min_severity(self, severity: str) -> str:
+        value = str(severity or "").strip().lower()
+        if value not in MONITOR_SEVERITIES:
+            raise ValueError(f"unknown severity {value!r}; expected one of {', '.join(MONITOR_SEVERITIES)}")
+        self.set_runtime_config("monitor_min_severity", value)
+        return self.get_monitor_min_severity()
+
+    def get_monitor_suppress_generated_info(self) -> bool:
+        default = "1" if MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT else "0"
+        value = self.get_runtime_config("monitor_suppress_generated_info", default)
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def set_monitor_suppress_generated_info(self, value: bool) -> bool:
+        self.set_runtime_config("monitor_suppress_generated_info", "1" if value else "0")
+        return self.get_monitor_suppress_generated_info()
+
+    def get_monitor_config(self) -> dict:
+        return {
+            "filter_enabled": self.get_monitor_filter_enabled(),
+            "min_severity": self.get_monitor_min_severity(),
+            "suppress_generated_info": self.get_monitor_suppress_generated_info(),
+            "severity_options": list(MONITOR_SEVERITIES),
+        }
 
     def get_detection_exclude_scopes(self) -> list[str]:
         """IP scopes whose traffic must not be run through detection."""

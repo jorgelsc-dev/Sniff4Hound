@@ -2186,12 +2186,17 @@ def monitors_toggle(request):
 @app.api("/api/monitors/config", methods=("GET", "POST"))
 def monitors_config(request):
     if request.method.upper() == "GET":
-        return {"filter_enabled": store.get_monitor_filter_enabled()}
+        return store.get_monitor_config()
     payload = _read_json_body(request)
-    if "filter_enabled" not in payload:
-        raise ValueError("filter_enabled is required")
-    enabled = bool(payload.get("filter_enabled"))
-    return {"filter_enabled": store.set_monitor_filter_enabled(enabled)}
+    if "filter_enabled" in payload:
+        store.set_monitor_filter_enabled(bool(payload.get("filter_enabled")))
+    if "min_severity" in payload:
+        store.set_monitor_min_severity(str(payload.get("min_severity") or ""))
+    if "suppress_generated_info" in payload:
+        store.set_monitor_suppress_generated_info(bool(payload.get("suppress_generated_info")))
+    if not any(key in payload for key in ("filter_enabled", "min_severity", "suppress_generated_info")):
+        raise ValueError("filter_enabled, min_severity, or suppress_generated_info is required")
+    return store.get_monitor_config()
 
 
 @app.api("/api/settings/location", methods=("GET", "POST"))
