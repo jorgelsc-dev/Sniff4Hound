@@ -30,6 +30,23 @@ def _packet(**overrides) -> dict:
     return base
 
 
+def _force_enable(monitors: list[dict], *monitor_ids: str) -> list[dict]:
+    """Force a monitor on regardless of its shipped default.
+
+    Several builtin monitors below default to `enabled: False` (opt-in,
+    visibility/policy-content signals a user turns on as needed) - these
+    tests are about whether the match *logic* is correct, not about the
+    default-enabled policy, so they enable the specific id(s) under test
+    rather than asserting against whatever the current default happens to
+    be.
+    """
+    wanted = set(monitor_ids)
+    for monitor in monitors:
+        if monitor.get("id") in wanted:
+            monitor["enabled"] = True
+    return monitors
+
+
 class TestSensitiveDataMonitors(unittest.TestCase):
     def setUp(self):
         self.monitors = [normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS]
@@ -148,6 +165,7 @@ class TestTorMonitors(unittest.TestCase):
 class TestSuspiciousDomainMonitors(unittest.TestCase):
     def setUp(self):
         self.monitors = [normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS]
+        _force_enable(self.monitors, "builtin-suspicious-tld", "builtin-domain-typosquat-pattern")
 
     def _tags(self, text: str) -> set[str]:
         packet = _packet(payload_text=text, summary=text)
@@ -296,6 +314,7 @@ class TestMalwareAndC2Monitors(unittest.TestCase):
 class TestPhishingMonitors(unittest.TestCase):
     def setUp(self):
         self.monitors = [normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS]
+        _force_enable(self.monitors, "builtin-punycode-domain")
 
     def _tags(self, text: str) -> set[str]:
         packet = _packet(payload_text=text, summary=text)
@@ -337,6 +356,15 @@ class TestRestrictedContentMonitors(unittest.TestCase):
 
     def setUp(self):
         self.monitors = [normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS]
+        _force_enable(
+            self.monitors,
+            "builtin-policy-adult-content-label",
+            "builtin-policy-adult-content-domain",
+            "builtin-policy-weapons-marketplace",
+            "builtin-policy-drugs-marketplace",
+            "builtin-policy-fraud-carding",
+            "builtin-policy-unlicensed-gambling",
+        )
 
     def _tags(self, text: str) -> set[str]:
         packet = _packet(payload_text=text, summary=text)
@@ -498,19 +526,30 @@ class TestNewMonitorsAreStatelessExceptPortScan(unittest.TestCase):
             self.assertEqual(normalized["source"], "builtin")
 
     def test_every_stateful_monitor_has_a_registered_anomaly_detector(self):
-        # Every "mode": "stateful" builtin monitor must have a matching
-        # detector wired into AnomalyEngine._detectors (by id) - a stateful
-        # monitor with no detector would sit in the UI forever without ever
-        # producing a hit, and a detector with no monitor entry could never
-        # be toggled or surfaced.
+        # Every "mode": "stateful" builtin monitor must be servable by
+        # AnomalyEngine: either a bespoke detector wired into
+        # AnomalyEngine._detectors (by id) - for logic too specific to
+        # express declaratively (SYN-only filtering, distinct-port
+        # counting, login-port allowlists...) - or a plain declarative
+        # count_threshold/window_seconds pair, which AnomalyEngine's
+        # generic engine (anomaly.GenericThresholdDetector) can serve for
+        # any monitor id without a bespoke class. A stateful monitor with
+        # neither would sit in the UI forever without ever producing a hit.
         stateful_ids = {item["id"] for item in DEFAULT_MONITORS if item.get("mode") == "stateful"}
         detector_ids = set(AnomalyEngine()._detectors.keys())
-        self.assertEqual(stateful_ids, detector_ids)
+        generic_ids = {
+            item["id"]
+            for item in DEFAULT_MONITORS
+            if item.get("mode") == "stateful" and (item.get("match") or {}).get("count_threshold", 0) > 0
+        }
+        self.assertEqual(stateful_ids, detector_ids | generic_ids)
+        self.assertEqual(detector_ids & generic_ids, set())
 
 
 class TestIcsMonitors(unittest.TestCase):
     def setUp(self):
         self.monitors = [normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS]
+        _force_enable(self.monitors, "builtin-modbus-traffic-seen", "builtin-dnp3-traffic-seen")
 
     def _tags(self, proto: str, summary: str) -> set[str]:
         packet = _packet(proto=proto, payload_text=summary, summary=summary, payload_len=len(summary))
@@ -593,6 +632,7 @@ class TestDhcpRogueServerDetector(unittest.TestCase):
 class TestInfraProtocolMonitors(unittest.TestCase):
     def setUp(self):
         self.monitors = [normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS]
+        _force_enable(self.monitors, "builtin-snmp-traffic-seen", "builtin-tftp-file-transfer", "builtin-mqtt-traffic-seen")
 
     def _tags(self, proto: str, summary: str) -> set[str]:
         packet = _packet(proto=proto, payload_text=summary, summary=summary, payload_len=len(summary))

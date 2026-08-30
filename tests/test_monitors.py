@@ -420,6 +420,46 @@ class TestStoreMonitors(unittest.TestCase):
         self.assertEqual(updated["name"], "Cleartext credentials")
         self.assertEqual(updated["action"]["tag"], "credentials")
 
+    def test_builtin_defaults_are_reset_exactly_once_for_a_pre_existing_db(self):
+        # Simulates a database seeded before the "critical monitors on by
+        # default, the rest opt-in" policy shipped: flip a builtin row's
+        # `enabled` away from the current catalog default and clear the
+        # migration marker, so this database looks like one that predates
+        # _apply_new_monitor_defaults_once. Reopening must force-sync it to
+        # the catalog default exactly once - and a toggle made *after*
+        # that reset must survive a further reopen untouched, same as any
+        # other builtin row.
+        catalog_default = {row["id"]: row["enabled"] for row in self.store.list_monitors()}
+        flipped_id = next(mid for mid, enabled in catalog_default.items() if enabled)
+        with self.store._lock:
+            self.store._conn.execute(
+                "UPDATE monitors SET enabled = 0 WHERE id = ?", (flipped_id,)
+            )
+            self.store._conn.execute(
+                "DELETE FROM runtime_config WHERE key = 'builtin_monitor_defaults_reset_v2'"
+            )
+            self.store._conn.commit()
+
+        reopened = SniffStore(self.db_path)
+        try:
+            synced = {row["id"]: row["enabled"] for row in reopened.list_monitors()}
+        finally:
+            reopened.close()
+        self.assertTrue(synced[flipped_id], "expected the one-shot migration to restore the catalog default")
+
+        # A manual toggle made after the reset must stick across a further reopen.
+        third = SniffStore(self.db_path)
+        try:
+            third.set_monitor_enabled(flipped_id, False)
+        finally:
+            third.close()
+        fourth = SniffStore(self.db_path)
+        try:
+            final = {row["id"]: row["enabled"] for row in fourth.list_monitors()}
+        finally:
+            fourth.close()
+        self.assertFalse(final[flipped_id], "a toggle made after the one-shot reset must not be reverted again")
+
     def test_new_builtin_monitors_reach_an_already_populated_db_without_touching_custom_rows(self):
         # Regression test for _seed_new_builtin_monitors(): simulate an
         # "old" DB that predates the new builtins (and already has a

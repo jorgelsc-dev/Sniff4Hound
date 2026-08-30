@@ -1530,6 +1530,13 @@ function feedUrl(feed, params = {}) {
 // and then went quiet looks exactly like a working one from here). The view
 // answers it with a single HTTP read, not by resuming a poll.
 const FEED_FIRST_FRAME_TIMEOUT_MS = 4000;
+// The server can drop a feed socket at any point (proxy idle timeout, restart,
+// its own push-cycle bookkeeping) with no warning to the client. Without a
+// reconnect loop here, a view's `loading` flag - set on connect and cleared
+// only by an incoming frame - would spin forever once that happens.
+const FEED_RECONNECT_BASE_MS = 1000;
+const FEED_RECONNECT_MAX_MS = 15000;
+const FEED_MAX_SILENT_RECONNECTS = 3;
 
 function openDataFeed(feed, params, onMessage, onUnavailable) {
   const giveUp = () => {
@@ -1548,6 +1555,10 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
   let socket = null;
   let closedByCaller = false;
   let firstFrameTimer = null;
+  let reconnectTimer = null;
+  let reconnectAttempts = 0;
+  let hasGivenUp = false;
+  let currentParams = params || {};
 
   const clearFirstFrameTimer = () => {
     if (firstFrameTimer) {
@@ -1555,8 +1566,16 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
       firstFrameTimer = null;
     }
   };
+  const clearReconnectTimer = () => {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
 
   const connect = (next) => {
+    currentParams = next || {};
+    clearReconnectTimer();
     // Closed before opening the replacement, not after: two sockets for the
     // same feed would both be pushed to, and the view would render whichever
     // frame happened to arrive last.
@@ -1570,7 +1589,7 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
     }
     if (closedByCaller) return false;
     try {
-      socket = new window.WebSocket(feedUrl(feed, next));
+      socket = new window.WebSocket(feedUrl(feed, currentParams));
     } catch {
       socket = null;
       giveUp();
@@ -1585,6 +1604,27 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
       clearFirstFrameTimer();
       if (!closedByCaller) giveUp();
     });
+    socket.addEventListener("close", () => {
+      clearFirstFrameTimer();
+      if (closedByCaller) return;
+      // Keep retrying the connection so a view that already fell back to HTTP
+      // still recovers once the stream comes back, but stop leaving the caller
+      // hanging past a few attempts - fall back explicitly instead. Only the
+      // *first* attempt past the threshold calls giveUp(): without the
+      // `hasGivenUp` guard, every subsequent close (the connection keeps
+      // retrying in the background) would re-trigger the caller's fallback
+      // forever instead of once.
+      reconnectAttempts += 1;
+      if (reconnectAttempts > FEED_MAX_SILENT_RECONNECTS && !hasGivenUp) {
+        hasGivenUp = true;
+        giveUp();
+      }
+      const delay = Math.min(FEED_RECONNECT_BASE_MS * reconnectAttempts, FEED_RECONNECT_MAX_MS);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect(currentParams);
+      }, delay);
+    });
     socket.addEventListener("message", (event) => {
       const payload = parseJsonSafe(event.data);
       if (!payload || typeof payload !== "object") return;
@@ -1593,7 +1633,11 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
         handleUnauthorized(payload.message || "Session expired. Re-enter the security code.");
         return;
       }
-      if (String(payload.type || "") === "feed_data") clearFirstFrameTimer();
+      if (String(payload.type || "") === "feed_data") {
+        clearFirstFrameTimer();
+        reconnectAttempts = 0;
+        hasGivenUp = false;
+      }
       try {
         onMessage(payload);
       } catch {
@@ -1610,6 +1654,7 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
     close: () => {
       closedByCaller = true;
       clearFirstFrameTimer();
+      clearReconnectTimer();
       if (socket) {
         try {
           socket.close(1000, "closed");

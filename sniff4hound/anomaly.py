@@ -21,6 +21,8 @@ import collections
 import time
 
 from . import settings
+from .rulesets import build_packet_text, rule_matches_packet
+from .utils import safe_int
 
 
 class ArpSpoofDetector:
@@ -265,6 +267,71 @@ class DhcpRogueServerDetector:
         }
 
 
+def _group_key(packet: dict, spec: str) -> str:
+    """Composite state key for GenericThresholdDetector's `group_by`.
+
+    Mirrors the header fields the bespoke detectors above already group by
+    (src_ip alone, or src_ip+dst_port for the login/port-scan cases) so a
+    declarative monitor gets the same shape of "who/what is doing this
+    repeatedly" bucketing without needing a new Python class.
+    """
+    src_ip = str(packet.get("src_ip") or "").strip()
+    dst_ip = str(packet.get("dst_ip") or "").strip()
+    dst_port = packet.get("dst_port")
+    if spec == "dst_ip":
+        return dst_ip
+    if spec == "src_ip+dst_port":
+        return f"{src_ip}:{dst_port}" if src_ip and dst_port else ""
+    if spec == "dst_ip+dst_port":
+        return f"{dst_ip}:{dst_port}" if dst_ip and dst_port else ""
+    if spec == "src_ip+dst_ip":
+        return f"{src_ip}->{dst_ip}" if src_ip and dst_ip else ""
+    return src_ip
+
+
+class GenericThresholdDetector:
+    """Windowed count over any declarative match.
+
+    Lets a `mode: "stateful"` monitor express "N matches of my own
+    protocol/port/payload criteria from the same source within T seconds"
+    purely through match.count_threshold/window_seconds/group_by, instead
+    of needing a bespoke detector class wired into AnomalyEngine._detectors
+    like the ones above. rule_matches_packet reuses the exact same match
+    schema every rule/regex-mode monitor already has, so "what counts as
+    one event" stays fully declarative too.
+    """
+
+    def __init__(self, monitor_id: str):
+        self._monitor_id = monitor_id
+        self._events: dict[str, collections.deque] = collections.defaultdict(collections.deque)
+        self._last_alert: dict[str, float] = {}
+
+    def evaluate(self, packet: dict, monitor: dict, *, packet_text: str) -> dict | None:
+        match = monitor.get("match") if isinstance(monitor.get("match"), dict) else {}
+        threshold = safe_int(match.get("count_threshold", 0), 0)
+        window = safe_int(match.get("window_seconds", 0), 0)
+        if threshold <= 0 or window <= 0:
+            return None
+        if not rule_matches_packet(monitor, packet, packet_text=packet_text):
+            return None
+        key = _group_key(packet, str(match.get("group_by") or "src_ip"))
+        if not key:
+            return None
+        now = time.monotonic()
+        events = self._events[key]
+        events.append(now)
+        cutoff = now - window
+        while events and events[0] < cutoff:
+            events.popleft()
+        if len(events) < threshold:
+            return None
+        last = self._last_alert.get(key)
+        if last is not None and now - last < window:
+            return None
+        self._last_alert[key] = now
+        return {"detail": f"{key}: {len(events)}+ matches within {window}s"}
+
+
 class AnomalyEngine:
     def __init__(self):
         self._detectors = {
@@ -276,6 +343,9 @@ class AnomalyEngine:
             "builtin-dns-query-flood": DnsQueryFloodDetector(),
             "builtin-dhcp-rogue-server": DhcpRogueServerDetector(),
         }
+        self._generic_detectors: dict[str, GenericThresholdDetector] = {}
+        self._generic_candidate_ids: frozenset[str] = frozenset()
+        self._generic_candidates_source: int | None = None
 
     def evaluate(self, packet: dict, monitors: list[dict], *, monitors_by_id: dict[str, dict] | None = None) -> list[dict]:
         # Only ever looks up a handful of fixed, known ids (self._detectors'
@@ -313,4 +383,44 @@ class AnomalyEngine:
                     "detail": hit.get("detail", ""),
                 }
             )
+
+        # Same id-map-identity trick as the fixed detectors above: which ids
+        # are eligible for the generic engine only changes when the monitors
+        # list itself is refreshed (~every 2s, see Sniffer._get_monitor_context),
+        # so this full scan is memoized on the dict's identity instead of
+        # running on every single captured packet.
+        if id(monitors_by_id) != self._generic_candidates_source:
+            self._generic_candidate_ids = frozenset(
+                mid
+                for mid, monitor in monitors_by_id.items()
+                if mid not in self._detectors
+                and str(monitor.get("mode") or "").strip().lower() == "stateful"
+                and safe_int((monitor.get("match") or {}).get("count_threshold", 0), 0) > 0
+            )
+            self._generic_candidates_source = id(monitors_by_id)
+
+        if self._generic_candidate_ids:
+            packet_text = build_packet_text(packet)
+            for monitor_id in self._generic_candidate_ids:
+                monitor = monitors_by_id.get(monitor_id)
+                if not monitor or not monitor.get("enabled", True):
+                    continue
+                detector = self._generic_detectors.setdefault(monitor_id, GenericThresholdDetector(monitor_id))
+                try:
+                    hit = detector.evaluate(packet, monitor, packet_text=packet_text)
+                except Exception:
+                    hit = None
+                if not hit:
+                    continue
+                action = monitor.get("action") if isinstance(monitor.get("action"), dict) else {}
+                hits.append(
+                    {
+                        "monitor_id": monitor_id,
+                        "monitor_name": monitor.get("name"),
+                        "tag": action.get("tag") or monitor_id,
+                        "label": action.get("label") or monitor.get("name"),
+                        "severity": action.get("severity") or "info",
+                        "detail": hit.get("detail", ""),
+                    }
+                )
         return hits

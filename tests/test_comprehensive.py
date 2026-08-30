@@ -431,6 +431,13 @@ class TestSnifferParsing(unittest.TestCase):
         self.assertEqual(packet["payload_text"], "")
 
         monitors = [normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS]
+        # builtin-unknown-protocol defaults to opt-in (a "we don't recognize
+        # this" visibility monitor, not a threat signal on its own) - forced
+        # on here since the assertion below needs it to see whether anything
+        # *else* rides along with it, not whether it's on by default.
+        for monitor in monitors:
+            if monitor["id"] == "builtin-unknown-protocol":
+                monitor["enabled"] = True
         hits = evaluate_packet(packet, monitors)
         # The generic "unknown protocol" visibility monitor is expected to
         # match (that's its whole purpose) - the regression this test
@@ -445,6 +452,12 @@ class TestSnifferParsing(unittest.TestCase):
         self.assertIn("Unparseable frame", packet["summary"])
 
         monitors = [normalize_monitor(item, allow_source=True) for item in DEFAULT_MONITORS]
+        # See the matching comment on the unknown-ethertype test above:
+        # builtin-unparseable-packet defaults to opt-in, forced on here so
+        # the assertion actually exercises whether anything else fires too.
+        for monitor in monitors:
+            if monitor["id"] == "builtin-unparseable-packet":
+                monitor["enabled"] = True
         hits = evaluate_packet(packet, monitors)
         self.assertEqual({hit["tag"] for hit in hits}, {"unparseable-packet"})
 
