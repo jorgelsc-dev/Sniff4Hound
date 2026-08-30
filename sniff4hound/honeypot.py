@@ -594,6 +594,7 @@ class HoneypotEngine:
         self._listener_stop_events: dict[str, threading.Event] = {}
         self._listener_threads: dict[str, threading.Thread] = {}
         self._writer_thread: threading.Thread | None = None
+        self._start_thread: threading.Thread | None = None
         self._state = HoneypotState()
         self._tls_sni_map: dict[int, str] = {}
         self._tls_sni_lock = threading.Lock()
@@ -910,6 +911,21 @@ class HoneypotEngine:
         self._writer_thread = threading.Thread(target=self._event_writer, name="sniff4hound-listener-writer", daemon=True)
         self._writer_thread.start()
 
+        # Binding every enabled listener (TLS setup + one bind()/thread
+        # spawn per port) runs on a background thread so this call - and
+        # the IPC dispatch loop that's synchronously blocked on it - return
+        # immediately. With hundreds of enabled listeners the sequential
+        # bind loop used to take long enough to starve unrelated IPC calls
+        # (e.g. runtime.snapshot() on every dashboard/WS connect), which is
+        # what made the app appear to hang right after starting the
+        # honeypot. `running` is already true above so callers can poll
+        # snapshot() to watch `running_listener_count` climb.
+        self._start_thread = threading.Thread(target=self._start_listeners, name="sniff4hound-honeypot-start", daemon=True)
+        self._start_thread.start()
+
+        return self.snapshot()
+
+    def _start_listeners(self):
         try:
             self._tls_context = self._create_tls_context()
             LOGGER.info("TLS habilitado con certificados %s y %s", CERT_FILE, KEY_FILE)
@@ -920,18 +936,26 @@ class HoneypotEngine:
 
         started = 0
         for listener in self.store.list_honeypot_listeners():
+            if self._stop_event.is_set():
+                break
             if not listener.get("enabled"):
                 continue
             if self._spawn_listener(listener["id"], listener["proto"], listener["port"]):
                 started += 1
 
         LOGGER.info("Motor de listeners activo en %s con %s listeners", self.bind_host, started)
-        return self.snapshot()
 
     def stop(self):
         self._stop_event.set()
         with self._state_lock:
             self._state.running = False
+        # start() may still be mid-flight spawning listeners on its own
+        # background thread; it checks _stop_event between listeners and
+        # exits promptly once it sees it, but wait it out (briefly) so the
+        # listener_ids snapshot below isn't taken mid-spawn and doesn't miss
+        # a listener that starts right after.
+        if self._start_thread and self._start_thread.is_alive():
+            self._start_thread.join(timeout=2.0)
         # Signal every listener's stop_event before joining any of them -
         # each listener thread only notices within its own ~1s accept()/
         # recvfrom() timeout, so joining sequentially (signal, join, signal,
