@@ -54,6 +54,10 @@ class TestBlacklistEntries(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.create_blacklist_entry("ip", "exact", "   ")
 
+    def test_create_rejects_invalid_exact_port(self):
+        with self.assertRaises(ValueError):
+            self.store.create_blacklist_entry("port", "exact", "70000")
+
     def test_create_mirrors_a_monitor(self):
         entry = self.store.create_blacklist_entry("ip", "exact", "203.0.113.5", label="Known bad actor")
         monitor = self.store.get_monitor(entry["id"])
@@ -90,6 +94,32 @@ class TestBlacklistEntries(unittest.TestCase):
         self.assertEqual(len(evaluate_packet(hit_packet, [monitor])), 1)
         miss_packet = _packet(http_path="/not-wp-admin/setup-config.php")
         self.assertEqual(evaluate_packet(miss_packet, [monitor]), [])
+
+    def test_exact_port_match_uses_transport_ports(self):
+        entry = self.store.create_blacklist_entry("port", "exact", "3389")
+        monitor = self.store.get_monitor(entry["id"])
+        hit_packet = _packet(dst_port=3389)
+        self.assertEqual(len(evaluate_packet(hit_packet, [monitor])), 1)
+        miss_packet = _packet(dst_port=3390)
+        self.assertEqual(evaluate_packet(miss_packet, [monitor]), [])
+
+    def test_exact_protocol_match_uses_proto_and_transport(self):
+        entry = self.store.create_blacklist_entry("protocol", "exact", "HTTP")
+        monitor = self.store.get_monitor(entry["id"])
+        hit_packet = _packet(proto="http", transport="tcp")
+        self.assertEqual(len(evaluate_packet(hit_packet, [monitor])), 1)
+        transport_hit_packet = _packet(proto="tls", transport="http")
+        self.assertEqual(len(evaluate_packet(transport_hit_packet, [monitor])), 1)
+        miss_packet = _packet(proto="dns", transport="udp")
+        self.assertEqual(evaluate_packet(miss_packet, [monitor]), [])
+
+    def test_regex_port_and_protocol_entries_match_direct_fields(self):
+        port_entry = self.store.create_blacklist_entry("port", "regex", r"^33\d{2}$")
+        protocol_entry = self.store.create_blacklist_entry("protocol", "regex", r"^ht")
+        port_monitor = self.store.get_monitor(port_entry["id"])
+        protocol_monitor = self.store.get_monitor(protocol_entry["id"])
+        self.assertEqual(len(evaluate_packet(_packet(dst_port=3389), [port_monitor])), 1)
+        self.assertEqual(len(evaluate_packet(_packet(proto="http"), [protocol_monitor])), 1)
 
     def test_disable_disables_the_mirrored_monitor(self):
         entry = self.store.create_blacklist_entry("path", "exact", "/wp-admin/setup-config.php")
@@ -140,6 +170,10 @@ class TestWhitelistEntries(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.create_whitelist_entry("ip", "exact", "   ")
 
+    def test_create_rejects_invalid_exact_port(self):
+        with self.assertRaises(ValueError):
+            self.store.create_whitelist_entry("port", "exact", "ssh")
+
     def test_create_toggle_delete_and_filter(self):
         ip_entry = self.store.create_whitelist_entry("ip", "exact", "203.0.113.8")
         self.store.create_whitelist_entry("domain", "exact", "trusted.example.com")
@@ -174,6 +208,31 @@ class TestWhitelistEntries(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         tags = self.store.list_tags(limit=20)
         self.assertFalse(any(tag["key"] == "monitor" for tag in tags))
+
+    def test_whitelist_port_and_protocol_suppress_detection(self):
+        sniffer = Sniffer(self.store, _Hub(), interfaces=())
+        sniffer._monitor_cache = [
+            {
+                "id": "always-hit",
+                "name": "Always hit",
+                "enabled": True,
+                "mode": "rule",
+                "match": {"ports": [80]},
+                "action": {"tag": "always-hit", "label": "Always hit", "severity": "critical"},
+            }
+        ]
+        sniffer._monitor_filter_enabled = True
+        sniffer._monitor_cache_at = 999999999.0
+
+        self.store.create_whitelist_entry("port", "exact", "80")
+        sniffer._whitelist_cache = self.store.list_whitelist_entries()
+        sniffer._store_packet(_packet(dst_port=80))
+        self.assertFalse(any(tag["key"] == "monitor" for tag in self.store.list_tags(limit=20)))
+
+        self.store.create_whitelist_entry("protocol", "exact", "http")
+        sniffer._whitelist_cache = self.store.list_whitelist_entries()
+        sniffer._store_packet(_packet(proto="http", transport="tcp", dst_port=80))
+        self.assertFalse(any(tag["key"] == "monitor" for tag in self.store.list_tags(limit=40)))
 
 
 if __name__ == "__main__":

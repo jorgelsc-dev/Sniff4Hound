@@ -60,6 +60,7 @@
 
       <svg
         :viewBox="`0 0 ${mapWidth} ${mapHeight}`"
+        preserveAspectRatio="xMidYMid meet"
         role="img"
         aria-label="Sniff4Hound geolocated telemetry map"
       >
@@ -160,7 +161,7 @@
           </path>
         </g>
 
-        <g class="map-arcs">
+        <g class="map-arcs" :clip-path="isGlobeMode ? `url(#${globeClipId})` : null">
           <path
             v-for="arc in arcPaths"
             :key="`glow-${arc.id}`"
@@ -602,7 +603,9 @@ export default {
       // back-facing coordinate; anchoring arcs there would draw them through
       // the planet, so fall back until it rotates into view.
       if (this.isGlobeMode && Number.isFinite(projected.depth) && projected.depth < 0) return null;
-      return projected;
+      if (!this.isGlobeMode) return projected;
+      const clamped = this.clampToGlobeInterior(projected.x, projected.y, 22);
+      return { ...projected, x: clamped.x, y: clamped.y };
     },
     hasDeclaredOrigin() {
       return Boolean(this.projectedOrigin);
@@ -616,11 +619,14 @@ export default {
           const projected = this.projectPoint(lon, lat);
           if (!projected) return null;
           const depth = Number.isFinite(projected.depth) ? projected.depth : 1;
+          const display = this.isGlobeMode
+            ? this.clampToGlobeInterior(projected.x, projected.y, 10)
+            : projected;
           return {
             ...item,
             id: `public-${item.ip}`,
-            x: projected.x,
-            y: projected.y,
+            x: display.x,
+            y: display.y,
             depth,
             color: this.pointColor(item, depth),
             glowColor: this.pointGlowColor(item, depth),
@@ -1020,6 +1026,22 @@ export default {
     projectPoint(lon, lat) {
       return this.isGlobeMode ? this.projectPointGlobe(lon, lat) : this.projectPointFlat(lon, lat);
     },
+    clampToGlobeInterior(x, y, margin = 0) {
+      const cx = this.globeCenterX;
+      const cy = this.globeCenterY;
+      const dx = x - cx;
+      const dy = y - cy;
+      const maxDistance = Math.max(0, this.globeRadius - margin);
+      const distance = Math.hypot(dx, dy);
+      if (!distance || distance <= maxDistance) {
+        return { x, y };
+      }
+      const scale = maxDistance / distance;
+      return {
+        x: cx + (dx * scale),
+        y: cy + (dy * scale),
+      };
+    },
     pointCoordinates(item) {
       if (!item || typeof item !== "object") return null;
       const lonRaw = item.lon;
@@ -1132,10 +1154,15 @@ export default {
       const vx = mx - this.globeCenterX;
       const vy = my - this.globeCenterY;
       const length = Math.hypot(vx, vy) || 1;
-      const lift = Math.min(130, 42 + (Math.hypot(tx - sx, ty - sy) * 0.18));
-      const cx = mx + ((vx / length) * lift);
-      const cy = my + ((vy / length) * lift) - 10;
-      return `M${sx},${sy} Q${cx},${cy} ${tx},${ty}`;
+      const lift = Math.min(72, 22 + (Math.hypot(tx - sx, ty - sy) * 0.11));
+      const control = this.clampToGlobeInterior(
+        mx - ((vx / length) * lift),
+        my - ((vy / length) * lift),
+        14
+      );
+      const start = this.clampToGlobeInterior(sx, sy, 14);
+      const end = this.clampToGlobeInterior(tx, ty, 10);
+      return `M${start.x},${start.y} Q${control.x},${control.y} ${end.x},${end.y}`;
     },
     pointColor(item, depth = 1) {
       const weight = Number(item.open_port_count) || 0;

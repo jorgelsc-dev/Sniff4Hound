@@ -325,6 +325,14 @@ class TestRequestOnlyContentSignaturesIgnoreResponses(unittest.TestCase):
     def test_request_union_select_is_still_sqli(self):
         self.assertIn("sqli", self._tags("GET /products?id=1 UNION SELECT password FROM users-- HTTP/1.1"))
 
+    def test_testmyids_root_id_response_is_critical(self):
+        body = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nuid=0(root) gid=0(root) groups=0(root)"
+        self.assertIn("root-id-response", self._tags(body))
+
+    def test_ordinary_root_text_is_not_root_id_response(self):
+        body = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nroot user documentation"
+        self.assertNotIn("root-id-response", self._tags(body))
+
 
 class TestPayloadRegexExclude(unittest.TestCase):
     """`payload_regex_exclude` is a new, generic match criterion (any match

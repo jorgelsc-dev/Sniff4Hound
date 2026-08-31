@@ -827,6 +827,20 @@ DEFAULT_MONITORS = [
         "action": {"tag": "webshell-reference", "label": "Web shell reference", "severity": "critical"},
     },
     {
+        "id": "builtin-root-id-response",
+        "name": "Root id command response",
+        "description": "Unix id command output showing uid/gid/groups as root, the classic testmyids.com IDS validation response.",
+        "enabled": True,
+        "priority": 239,
+        "source": "builtin",
+        "mode": "regex",
+        "match": {
+            "protocols": ["tcp"],
+            "payload_regex": [r"(?:^|[^A-Za-z0-9_])uid=0\(root\)\s+gid=0\(root\)\s+groups=0\(root\)(?![A-Za-z0-9_])"],
+        },
+        "action": {"tag": "root-id-response", "label": "Root id command response", "severity": "critical"},
+    },
+    {
         "id": "builtin-nosql-injection",
         "name": "NoSQL injection pattern",
         "description": "MongoDB query-operator injection pattern ($where/$ne/$gt as a JSON key) seen in request traffic.",
@@ -2546,8 +2560,10 @@ def _validate_match_not_empty(match: dict):
         "ports",
         "src_ports",
         "dst_ports",
+        "port_regex",
         "ips",
         "ip_regex",
+        "protocol_regex",
         "payload_contains",
         "payload_prefix_hex",
         "payload_regex",
@@ -2580,6 +2596,8 @@ def _validate_regex_patterns(match: dict):
         [str(pattern) for pattern in match.get("payload_regex", []) if str(pattern).strip()]
         + [str(pattern) for pattern in match.get("payload_regex_exclude", []) if str(pattern).strip()]
         + [str(pattern) for pattern in match.get("ip_regex", []) if str(pattern).strip()]
+        + [str(pattern) for pattern in match.get("port_regex", []) if str(pattern).strip()]
+        + [str(pattern) for pattern in match.get("protocol_regex", []) if str(pattern).strip()]
     )
     if len(patterns) > settings.MONITOR_MAX_REGEX_PATTERNS:
         raise ValueError(f"Too many regex patterns (max {settings.MONITOR_MAX_REGEX_PATTERNS})")

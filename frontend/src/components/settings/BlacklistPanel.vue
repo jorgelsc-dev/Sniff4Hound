@@ -112,6 +112,26 @@ export default {
           valuePlaceholder: blacklist ? "/wp-admin/setup-config.php" : "/health",
           icon: "mdi-routes",
         },
+        {
+          category: "port",
+          title: `Port ${blacklist ? "Blacklist" : "Whitelist"}`,
+          subtitle: blacklist
+            ? "Flag traffic touching a specific source or destination port."
+            : "Trust traffic touching a specific source or destination port.",
+          valueLabel: "Port",
+          valuePlaceholder: blacklist ? "3389" : "443",
+          icon: "mdi-ethernet-cable",
+        },
+        {
+          category: "protocol",
+          title: `Protocol ${blacklist ? "Blacklist" : "Whitelist"}`,
+          subtitle: blacklist
+            ? "Flag traffic decoded as a specific transport or application protocol."
+            : "Trust traffic decoded as a specific transport or application protocol.",
+          valueLabel: "Protocol",
+          valuePlaceholder: blacklist ? "telnet" : "dns",
+          icon: "mdi-lan",
+        },
       ];
     },
     formKey(kind, category) {
