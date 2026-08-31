@@ -71,8 +71,13 @@ DEFAULT_MONITORS = [
             # an HTML form's `name="password"` attribute, a JS bundle's
             # form-validation code) without ever having carried a real
             # credential - only what the client actually *sent* is a
-            # genuine cleartext-credential exposure.
+            # genuine cleartext-credential exposure. protocols: ["tcp"] -
+            # non-TCP payload text is either absent or a best-effort decode
+            # of something that was never meant to be read as text (mDNS/
+            # QUIC/etc.), and short generic patterns like these coincide
+            # with that noise by chance often enough to matter.
             "request_only": True,
+            "protocols": ["tcp"],
             "payload_regex": [
                 r"pass(word|wd)?\s*[:=]",
                 r"user(name)?\s*[:=]",
@@ -106,6 +111,7 @@ DEFAULT_MONITORS = [
             # "DROP TABLE" back in its own *response* HTML - only the
             # client-sent side is an actual injection attempt.
             "request_only": True,
+            "protocols": ["tcp"],
             "payload_regex": [
                 r"union\s+select",
                 r"or\s+1\s*=\s*1",
@@ -131,6 +137,7 @@ DEFAULT_MONITORS = [
             # riding in what the client sends (a query param, a form post)
             # is an actual reflected/DOM XSS attempt.
             "request_only": True,
+            "protocols": ["tcp"],
             "payload_regex": [
                 r"<script",
                 r"onerror\s*=",
@@ -715,7 +722,7 @@ DEFAULT_MONITORS = [
         "priority": 230,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"(\.\.[\\/]){2,}|%2e%2e%2f|%252e%252e%252f"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"(\.\.[\\/]){2,}|%2e%2e%2f|%252e%252e%252f"]},
         "action": {"tag": "path-traversal", "label": "Path traversal attempt", "severity": "high"},
     },
     {
@@ -729,7 +736,17 @@ DEFAULT_MONITORS = [
         # request_only: the backtick/`$(...)` alternatives otherwise fire on
         # any markdown/code-snippet/chat-API payload riding in a normal
         # response body (backticked code spans, shell examples in docs).
-        "match": {"request_only": True, "payload_regex": [r";\s*(cat|wget|curl|nc|bash|sh|python|perl)\s|\$\([^)]+\)|`[^`]+`"]},
+        # protocols: ["tcp"] - observed matching decoded mDNS/UDP service
+        # discovery text (a device announcing an mDNS service name that
+        # happened to contain a byte sequence read back as a backtick pair)
+        # on live traffic; command injection is a request/response
+        # application-layer attack, never something UDP broadcast chatter
+        # should be evaluated against.
+        "match": {
+            "request_only": True,
+            "protocols": ["tcp"],
+            "payload_regex": [r";\s*(cat|wget|curl|nc|bash|sh|python|perl)\s|\$\([^)]+\)|`[^`]+`"],
+        },
         "action": {"tag": "command-injection", "label": "Command injection attempt", "severity": "high"},
     },
     {
@@ -740,7 +757,7 @@ DEFAULT_MONITORS = [
         "priority": 232,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"\$\{jndi:(ldap|rmi|dns|iiop|corba|nis)://"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"\$\{jndi:(ldap|rmi|dns|iiop|corba|nis)://"]},
         "action": {"tag": "log4shell", "label": "Log4Shell / JNDI injection", "severity": "critical"},
     },
     {
@@ -762,7 +779,7 @@ DEFAULT_MONITORS = [
         "priority": 234,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"<!entity\s+\S+\s+system\s+[\"']"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"<!entity\s+\S+\s+system\s+[\"']"]},
         "action": {"tag": "xxe-injection", "label": "XXE injection attempt", "severity": "high"},
     },
     {
@@ -773,7 +790,7 @@ DEFAULT_MONITORS = [
         "priority": 235,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"\b(file|gopher|dict)://|169\.254\.169\.254|metadata\.google\.internal"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"\b(file|gopher|dict)://|169\.254\.169\.254|metadata\.google\.internal"]},
         "action": {"tag": "ssrf-attempt", "label": "SSRF probe attempt", "severity": "high"},
     },
     {
@@ -784,7 +801,7 @@ DEFAULT_MONITORS = [
         "priority": 236,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"\{\{\s*7\s*\*\s*7\s*\}\}|\$\{\s*7\s*\*\s*7\s*\}"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"\{\{\s*7\s*\*\s*7\s*\}\}|\$\{\s*7\s*\*\s*7\s*\}"]},
         "action": {"tag": "ssti-attempt", "label": "SSTI attempt", "severity": "medium"},
     },
     {
@@ -795,7 +812,7 @@ DEFAULT_MONITORS = [
         "priority": 237,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"ro0ab[a-z0-9+/=]{6,}|o:\d+:\"[a-z0-9_\\]+\":\d+:\{"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"ro0ab[a-z0-9+/=]{6,}|o:\d+:\"[a-z0-9_\\]+\":\d+:\{"]},
         "action": {"tag": "insecure-deserialization", "label": "Insecure deserialization payload", "severity": "high"},
     },
     {
@@ -806,7 +823,7 @@ DEFAULT_MONITORS = [
         "priority": 238,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"\b(c99|r57|b374k|wso|weevely)(shell)?\b"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"\b(c99|r57|b374k|wso|weevely)(shell)?\b"]},
         "action": {"tag": "webshell-reference", "label": "Web shell reference", "severity": "critical"},
     },
     {
@@ -817,7 +834,7 @@ DEFAULT_MONITORS = [
         "priority": 239,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"\{\s*\"\$(where|ne|gt|regex)\"\s*:"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"\{\s*\"\$(where|ne|gt|regex)\"\s*:"]},
         "action": {"tag": "nosql-injection", "label": "NoSQL injection attempt", "severity": "high"},
     },
     {
@@ -834,7 +851,7 @@ DEFAULT_MONITORS = [
         # traffic. The actual injection signature is the *encoded* CRLF
         # (%0d%0a) landing inside a request, which only happens when an
         # attacker smuggles it through a URL/parameter.
-        "match": {"request_only": True, "payload_regex": [r"%0d%0a(set-cookie|location):"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"%0d%0a(set-cookie|location):"]},
         "action": {"tag": "crlf-injection", "label": "CRLF injection attempt", "severity": "medium"},
     },
     {
@@ -845,7 +862,7 @@ DEFAULT_MONITORS = [
         "priority": 244,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"\(\s*\|\s*\(.*=\*\)\)|\(\s*&\s*\(.*=\*\)\)"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"\(\s*\|\s*\(.*=\*\)\)|\(\s*&\s*\(.*=\*\)\)"]},
         "action": {"tag": "ldap-injection", "label": "LDAP injection attempt", "severity": "high"},
     },
     {
@@ -856,7 +873,7 @@ DEFAULT_MONITORS = [
         "priority": 245,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"%\{.*getruntime\(\).*exec|ognl\.ognlcontext"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"%\{.*getruntime\(\).*exec|ognl\.ognlcontext"]},
         "action": {"tag": "struts2-ognl-injection", "label": "Struts2 OGNL injection attempt", "severity": "critical"},
     },
     {
@@ -867,7 +884,7 @@ DEFAULT_MONITORS = [
         "priority": 246,
         "source": "builtin",
         "mode": "regex",
-        "match": {"request_only": True, "payload_regex": [r"class\.module\.classloader"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"class\.module\.classloader"]},
         "action": {"tag": "spring4shell-attempt", "label": "Spring4Shell attempt", "severity": "critical"},
     },
     # --- Policy violations ---
@@ -2435,18 +2452,26 @@ def _load_builtin_monitors_cached() -> tuple[dict, ...]:
         )
 
     # The packaged catalog is generated and huge; DEFAULT_MONITORS is the
-    # hand-written set in this file. Merging (rather than letting the file
-    # win outright, as it used to) is what makes a monitor added here take
-    # effect without regenerating a 25 MB JSON - the file still owns every id
-    # it defines, so a catalog entry is never silently overridden by a
-    # stale in-code copy of the same monitor.
-    known = {str(item.get("id") or "") for item in catalog}
+    # hand-written, actively-tuned set in this file. DEFAULT_MONITORS wins
+    # for any id both define: it used to be the other way around (the file
+    # "owns" every id it defines), which meant a fix made here to an id the
+    # bulk catalog also happened to define - e.g. narrowing a noisy
+    # false-positive-prone regex - was silently discarded the moment the
+    # catalog was regenerated, with no error or warning. A hand-tuned rule
+    # in this file is deliberate; the file's copy of the same id is, by
+    # definition, whatever the bulk generation process produced for it -
+    # so the hand-tuned one is the one that should stick.
+    positions = {str(item.get("id") or ""): index for index, item in enumerate(catalog)}
     for item in DEFAULT_MONITORS:
         monitor_id = str(item.get("id") or "").strip()
-        if not monitor_id or monitor_id in known:
+        if not monitor_id:
             continue
-        catalog.append(_apply_builtin_monitor_quality_overrides(normalize_monitor(item, allow_source=True)))
-        known.add(monitor_id)
+        normalized = _apply_builtin_monitor_quality_overrides(normalize_monitor(item, allow_source=True))
+        if monitor_id in positions:
+            catalog[positions[monitor_id]] = normalized
+        else:
+            positions[monitor_id] = len(catalog)
+            catalog.append(normalized)
     return tuple(catalog)
 
 
