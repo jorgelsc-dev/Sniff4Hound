@@ -1392,6 +1392,11 @@ def root(_request):
     return Response.html(_frontend_index_html())
 
 
+@app.view("/.well-known/appspecific/com.chrome.devtools.json", methods=("GET",))
+def chrome_devtools_workspace(_request):
+    return Response.json({})
+
+
 @app.view("/favicon.ico")
 def favicon(_request):
     for path in (

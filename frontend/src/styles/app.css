@@ -34,12 +34,7 @@ body {
   line-height: 1.45;
   font-weight: 470;
   font-feature-settings: "ss01" 1, "cv08" 1;
-  background:
-    radial-gradient(920px 720px at 50% 14%, rgba(var(--brand-cyan-rgb), 0.18), transparent 58%),
-    radial-gradient(760px 560px at 52% 86%, rgba(var(--brand-violet-rgb), 0.16), transparent 60%),
-    radial-gradient(1260px 820px at -16% -18%, rgba(var(--brand-blue-rgb), 0.14), transparent 60%),
-    radial-gradient(1260px 820px at 118% -24%, rgba(var(--brand-sky-rgb), 0.08), transparent 58%),
-    linear-gradient(160deg, var(--bg-0), var(--bg-1) 46%, #050b13 100%);
+  background: var(--bg-0);
   margin: 0;
   min-height: 100vh;
   color: rgba(233, 243, 255, 0.96);

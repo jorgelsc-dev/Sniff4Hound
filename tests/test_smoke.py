@@ -1270,6 +1270,22 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(response.body, b"static payload")
             self.assertEqual(response.headers.get("Content-Type"), "text/plain")
 
+    def test_chrome_devtools_workspace_probe_does_not_404(self):
+        import sniff4hound.app as app_module
+
+        request = Request(
+            "GET",
+            "/.well-known/appspecific/com.chrome.devtools.json",
+            "",
+            {},
+            b"",
+            ("127.0.0.1", 0),
+        )
+
+        response = app_module.app.dispatch(request)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {})
+
     def test_frontend_dist_resolution_prefers_packaged_assets(self):
         import sniff4hound.app as app_module
 

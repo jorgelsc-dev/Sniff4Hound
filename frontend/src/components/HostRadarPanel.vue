@@ -90,19 +90,6 @@
             opacity="0.78"
           />
 
-          <g class="host-radar-mesh">
-            <path
-              v-for="meshPath in backdropPaths"
-              :key="meshPath.id"
-              :d="meshPath.d"
-              fill="none"
-              :stroke="meshPath.stroke"
-              :stroke-width="meshPath.strokeWidth"
-              :stroke-dasharray="meshPath.dash"
-              :opacity="meshPath.opacity"
-            />
-          </g>
-
           <g v-if="arcPaths.length" class="host-radar-arcs">
             <path
               v-for="arc in arcPaths"
@@ -579,42 +566,6 @@ export default {
     },
     attackMarkerId() {
       return `host-stage-attack-${this.stageUid}`;
-    },
-    backdropPaths() {
-      return [
-        {
-          id: "mesh-left",
-          d: this.buildBackdropArc(96, 336, 534, 152, -1, 0.2),
-          stroke: "rgba(86, 214, 255, 0.18)",
-          strokeWidth: 1.1,
-          dash: "",
-          opacity: 0.82,
-        },
-        {
-          id: "mesh-core",
-          d: this.buildBackdropArc(172, 244, 810, 230, 1, 0.16),
-          stroke: "rgba(96, 245, 189, 0.14)",
-          strokeWidth: 0.96,
-          dash: "9 14",
-          opacity: 0.9,
-        },
-        {
-          id: "mesh-right",
-          d: this.buildBackdropArc(440, 146, 886, 332, 1, 0.18),
-          stroke: "rgba(255, 186, 114, 0.16)",
-          strokeWidth: 1.06,
-          dash: "",
-          opacity: 0.8,
-        },
-        {
-          id: "mesh-history",
-          d: this.buildBackdropArc(84, 410, 896, 406, -1, 0.08),
-          stroke: "rgba(122, 188, 255, 0.12)",
-          strokeWidth: 0.9,
-          dash: "6 16",
-          opacity: 0.82,
-        },
-      ];
     },
     aggregatedLinks() {
       const raw = Array.isArray(this.snapshot && this.snapshot.links) ? this.snapshot.links : [];
@@ -1509,19 +1460,6 @@ export default {
       const nx = -dy / distance;
       const ny = dx / distance;
       const bend = Math.min(84, 18 + (distance * 0.12) + ((curveLevel - 1) * 12));
-      const cx = mx + (nx * bend * curveSign);
-      const cy = my + (ny * bend * curveSign);
-      return `M${sx.toFixed(2)},${sy.toFixed(2)} Q${cx.toFixed(2)},${cy.toFixed(2)} ${tx.toFixed(2)},${ty.toFixed(2)}`;
-    },
-    buildBackdropArc(sx, sy, tx, ty, curveSign = 1, curvature = 0.18) {
-      const dx = tx - sx;
-      const dy = ty - sy;
-      const distance = Math.hypot(dx, dy) || 1;
-      const mx = (sx + tx) / 2;
-      const my = (sy + ty) / 2;
-      const nx = -dy / distance;
-      const ny = dx / distance;
-      const bend = Math.min(146, 18 + (distance * Math.max(0.04, curvature)));
       const cx = mx + (nx * bend * curveSign);
       const cy = my + (ny * bend * curveSign);
       return `M${sx.toFixed(2)},${sy.toFixed(2)} Q${cx.toFixed(2)},${cy.toFixed(2)} ${tx.toFixed(2)},${ty.toFixed(2)}`;
