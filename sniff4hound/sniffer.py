@@ -21,6 +21,7 @@ from .settings import (
     MONITOR_SEVERITIES,
     MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT,
     PAYLOAD_TEXT_MAX_CHARS,
+    PORT,
 )
 from .app_decoders import decode as decode_app_payload
 from .app_protocols import (
@@ -1083,7 +1084,30 @@ class Sniffer:
             self._set_error(interface, f"promiscuous mode unavailable: {exc}")
 
 
+    def _is_own_dashboard_traffic(self, packet: dict) -> bool:
+        """True for a TCP segment to/from this app's own web server port.
+
+        A live dashboard tab (or the VS Code extension) polling the API and
+        holding an open WebSocket generates a steady stream of loopback
+        traffic that this same sniffer then captures, classifies and
+        broadcasts right back over that very WebSocket - a self-amplifying
+        loop that was observed saturating the capture socket's receive
+        buffer under normal desktop use (an open dashboard tab plus one
+        editor extension), silently dropping *other* traffic's data
+        segments while empty TCP control packets kept getting through.
+        Nothing legitimate to detect ever talks to this port - it's this
+        process's own HTTP/WebSocket listener - so it's cheaper and safer
+        to not even classify/store/broadcast it, rather than try to detect
+        and later filter an ever-growing pile of it.
+        """
+        if str(packet.get("transport") or "").strip().lower() != "tcp":
+            return False
+        return safe_int(packet.get("src_port"), 0) == PORT or safe_int(packet.get("dst_port"), 0) == PORT
+
     def _store_packet(self, packet: dict):
+        if self._is_own_dashboard_traffic(packet):
+            self._touch_packet(packet, stored=False)
+            return
         monitors, filter_enabled = self._get_monitor_context()
         detection_muted = self._detection_muted(packet) or self._whitelisted(packet)
         if detection_muted:
