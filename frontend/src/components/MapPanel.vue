@@ -471,8 +471,9 @@ export default {
       lastUpdated: "",
       liveRefreshEnabled: false,
       mapUid: this.buildMapUid(),
-      mapWidth: 920,
-      mapHeight: 470,
+      flatMapWidth: 920,
+      flatMapHeight: 470,
+      globeMapSize: 720,
       mapPadding: 18,
       stopTableRefreshSubscription: null,
       stopMapSnapshotSubscription: null,
@@ -568,14 +569,20 @@ export default {
       if (this.geoipStatus.partial) parts.push("partial catalog");
       return parts.join(" · ");
     },
+    mapWidth() {
+      return this.isGlobeMode ? this.globeMapSize : this.flatMapWidth;
+    },
+    mapHeight() {
+      return this.isGlobeMode ? this.globeMapSize : this.flatMapHeight;
+    },
     globeCenterX() {
       return this.mapWidth / 2;
     },
     globeCenterY() {
-      return this.mapHeight / 2 + 10;
+      return this.mapHeight / 2;
     },
     globeRadius() {
-      return Math.min(this.mapWidth, this.mapHeight) * 0.34;
+      return Math.min(this.mapWidth, this.mapHeight) * 0.42;
     },
     originCoord() {
       // With a declared site location the arcs start where the sensor
@@ -1392,6 +1399,8 @@ export default {
 }
 
 .map-wrapper--globe {
+  display: grid;
+  justify-items: center;
   background: linear-gradient(180deg, rgba(4, 14, 28, 0.99), rgba(3, 9, 17, 0.98));
 }
 
@@ -1447,11 +1456,16 @@ export default {
 }
 
 .map-wrapper--globe svg {
-  height: clamp(360px, 54vw, 720px);
+  width: min(calc(100% - 32px), clamp(520px, 58vw, 760px));
+  height: auto;
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
 }
 
 .map-wrapper--immersive.map-wrapper--globe svg {
-  height: clamp(540px, 82vh, 980px);
+  width: min(calc(100% - 32px), clamp(620px, 82vh, 840px));
+  height: auto;
+  aspect-ratio: 1 / 1;
 }
 
 .map-wrapper--immersive {
@@ -1653,9 +1667,14 @@ export default {
     right: 12px;
   }
 
-  .map-wrapper--immersive svg,
-  .map-wrapper--immersive.map-wrapper--globe svg {
+  .map-wrapper--immersive svg {
     height: clamp(460px, 74vh, 820px);
+  }
+
+  .map-wrapper--globe svg,
+  .map-wrapper--immersive.map-wrapper--globe svg {
+    width: min(calc(100% - 24px), clamp(360px, 92vw, 720px));
+    height: auto;
   }
 }
 
