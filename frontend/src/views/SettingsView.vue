@@ -522,12 +522,12 @@
           View monitor traffic &amp; charts
         </v-btn>
 
-        <v-dialog v-model="dialogOpen" max-width="720">
-          <v-card rounded="xl" class="pa-2">
+        <v-dialog v-model="dialogOpen" max-width="980">
+          <v-card rounded="xl" class="pa-2 monitor-dialog-card">
             <v-card-title class="text-h6">
               {{ editingId ? "Edit monitor" : "New monitor" }}
             </v-card-title>
-            <v-card-text>
+            <v-card-text class="monitor-dialog-body">
               <v-alert v-if="formError" type="error" variant="tonal" density="comfortable" class="mb-4">
                 {{ formError }}
               </v-alert>
@@ -579,89 +579,381 @@
               <v-btn-toggle v-model="form.mode" mandatory color="primary" class="mode-toggle my-4">
                 <v-btn value="rule">Rule builder</v-btn>
                 <v-btn value="regex">Regex</v-btn>
+                <v-btn value="stateful">Stateful</v-btn>
               </v-btn-toggle>
 
-              <div v-if="form.mode === 'rule'">
-                <v-row dense>
-                  <v-col cols="12" sm="6">
-                    <v-select
-                      v-model="form.protocols"
-                      :items="protocolOptions"
-                      label="Protocols"
-                      multiple
-                      chips
-                      closable-chips
-                      clearable
-                      variant="outlined"
-                      density="comfortable"
-                    />
-                  </v-col>
-                  <v-col cols="12" sm="6">
-                    <v-combobox
-                      v-model="form.ports"
-                      label="Ports"
-                      hint="Matches source or destination port"
-                      persistent-hint
-                      multiple
-                      chips
-                      closable-chips
-                      clearable
-                      variant="outlined"
-                      density="comfortable"
-                    />
-                  </v-col>
-                  <v-col cols="12">
-                    <v-combobox
-                      v-model="form.payloadContains"
-                      label="Payload contains"
-                      hint="Case-insensitive plain-text substrings"
-                      persistent-hint
-                      multiple
-                      chips
-                      closable-chips
-                      clearable
-                      variant="outlined"
-                      density="comfortable"
-                    />
-                  </v-col>
-                  <v-col cols="12" sm="6">
-                    <v-text-field
-                      v-model.number="form.minLength"
-                      type="number"
-                      label="Min packet length"
-                      variant="outlined"
-                      density="comfortable"
-                    />
-                  </v-col>
-                  <v-col cols="12" sm="6">
-                    <v-text-field
-                      v-model.number="form.maxLength"
-                      type="number"
-                      label="Max packet length"
-                      variant="outlined"
-                      density="comfortable"
-                    />
-                  </v-col>
-                </v-row>
-              </div>
+              <v-expansion-panels v-model="monitorBuilderPanels" multiple variant="accordion" class="monitor-builder">
+                <v-expansion-panel value="include">
+                  <v-expansion-panel-title>Include</v-expansion-panel-title>
+                  <v-expansion-panel-text>
+                    <v-row dense>
+                      <v-col cols="12" sm="6">
+                        <v-select
+                          v-model="form.protocols"
+                          :items="protocolOptions"
+                          label="Protocols"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.ports"
+                          label="Ports"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.srcPorts"
+                          label="Source ports"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.dstPorts"
+                          label="Destination ports"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12">
+                        <v-combobox
+                          v-model="form.ips"
+                          label="IPs"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12">
+                        <v-combobox
+                          v-model="form.payloadContains"
+                          label="Payload contains"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" class="d-flex align-start ga-2">
+                        <v-combobox
+                          v-model="form.payloadRegex"
+                          label="Payload regex"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                          :error-messages="regexErrors"
+                          class="flex-grow-1"
+                        />
+                        <RegexHelperButton class="mt-2" @apply="(pattern) => form.payloadRegex.push(pattern)" />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.ipRegex"
+                          label="IP regex"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.portRegex"
+                          label="Port regex"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.protocolRegex"
+                          label="Protocol regex"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.payloadPrefixHex"
+                          label="Payload hex prefix"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                    </v-row>
+                  </v-expansion-panel-text>
+                </v-expansion-panel>
 
-              <div v-else class="d-flex align-start ga-2">
-                <v-combobox
-                  v-model="form.payloadRegex"
-                  label="Regex patterns"
-                  hint="Enter, then press Enter to add another pattern. Any pattern matching flags this packet."
-                  persistent-hint
-                  multiple
-                  chips
-                  closable-chips
-                  clearable
-                  variant="outlined"
-                  density="comfortable"
-                  :error-messages="regexErrors"
-                  class="flex-grow-1"
-                />
-                <RegexHelperButton class="mt-2" @apply="(pattern) => form.payloadRegex.push(pattern)" />
-              </div>
+                <v-expansion-panel value="exclude">
+                  <v-expansion-panel-title>Exclude</v-expansion-panel-title>
+                  <v-expansion-panel-text>
+                    <v-row dense>
+                      <v-col cols="12" sm="6">
+                        <v-select
+                          v-model="form.excludeProtocols"
+                          :items="protocolOptions"
+                          label="Protocols"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.excludePorts"
+                          label="Ports"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12">
+                        <v-combobox
+                          v-model="form.excludeIps"
+                          label="IPs"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12">
+                        <v-combobox
+                          v-model="form.excludePayloadContains"
+                          label="Payload contains"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12">
+                        <v-combobox
+                          v-model="form.payloadRegexExclude"
+                          label="Payload regex"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                          :error-messages="regexErrors"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.excludeIpRegex"
+                          label="IP regex"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.excludePortRegex"
+                          label="Port regex"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.excludeProtocolRegex"
+                          label="Protocol regex"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-combobox
+                          v-model="form.excludePayloadPrefixHex"
+                          label="Payload hex prefix"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                    </v-row>
+                  </v-expansion-panel-text>
+                </v-expansion-panel>
+
+                <v-expansion-panel value="advanced">
+                  <v-expansion-panel-title>Advanced</v-expansion-panel-title>
+                  <v-expansion-panel-text>
+                    <v-row dense>
+                      <v-col cols="12" sm="6">
+                        <v-text-field
+                          v-model.number="form.minLength"
+                          type="number"
+                          label="Min packet length"
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-text-field
+                          v-model.number="form.maxLength"
+                          type="number"
+                          label="Max packet length"
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12">
+                        <v-checkbox
+                          v-model="form.requestOnly"
+                          label="Request traffic only"
+                          color="primary"
+                          density="compact"
+                          hide-details
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="4">
+                        <v-combobox
+                          v-model="form.tcpFlags"
+                          label="Exact TCP flags"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="4">
+                        <v-combobox
+                          v-model="form.tcpFlagsAny"
+                          label="Any TCP flags"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="4">
+                        <v-combobox
+                          v-model="form.tcpFlagsAll"
+                          label="All TCP flags"
+                          multiple
+                          chips
+                          closable-chips
+                          clearable
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col v-if="form.mode === 'stateful'" cols="12" sm="4">
+                        <v-text-field
+                          v-model.number="form.countThreshold"
+                          type="number"
+                          label="Count threshold"
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col v-if="form.mode === 'stateful'" cols="12" sm="4">
+                        <v-text-field
+                          v-model.number="form.windowSeconds"
+                          type="number"
+                          label="Window seconds"
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col v-if="form.mode === 'stateful'" cols="12" sm="4">
+                        <v-select
+                          v-model="form.groupBy"
+                          :items="groupByOptions"
+                          label="Group by"
+                          variant="outlined"
+                          density="comfortable"
+                        />
+                      </v-col>
+                      <v-col cols="12">
+                        <v-textarea
+                          v-model="form.advancedMatchJson"
+                          label="Advanced match JSON"
+                          rows="7"
+                          auto-grow
+                          variant="outlined"
+                          density="comfortable"
+                          :error-messages="advancedJsonError ? [advancedJsonError] : []"
+                        />
+                      </v-col>
+                    </v-row>
+                  </v-expansion-panel-text>
+                </v-expansion-panel>
+              </v-expansion-panels>
             </v-card-text>
             <v-card-actions>
               <v-spacer />
@@ -734,6 +1026,31 @@ const PROTOCOL_OPTIONS = [
 ];
 const SEVERITY_OPTIONS = ["info", "low", "medium", "high", "critical"];
 const VALID_TABS = new Set(["capture", "honeypot", "detection", "blacklist", "notifications"]);
+const GROUP_BY_OPTIONS = ["src_ip", "dst_ip", "src_ip+dst_port", "dst_ip+dst_port", "src_ip+dst_ip"];
+const MATCH_REGEX_KEYS = [
+  "payload_regex",
+  "payload_regex_exclude",
+  "ip_regex",
+  "exclude_ip_regex",
+  "port_regex",
+  "exclude_port_regex",
+  "protocol_regex",
+  "exclude_protocol_regex",
+];
+const CONDITION_KEYS = ["all", "any", "none"];
+
+function collectMatchRegexes(match, depth = 0) {
+  if (!match || typeof match !== "object" || Array.isArray(match) || depth > 6) return [];
+  const patterns = MATCH_REGEX_KEYS
+    .flatMap((key) => Array.isArray(match[key]) ? match[key] : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  const groups = CONDITION_KEYS.flatMap((key) => match[key] || []);
+  const nested = match.conditions && typeof match.conditions === "object" && !Array.isArray(match.conditions)
+    ? CONDITION_KEYS.flatMap((key) => match.conditions[key] || [])
+    : [];
+  return [...patterns, ...[...groups, ...nested].flatMap((item) => collectMatchRegexes(item, depth + 1))];
+}
 
 function emptyForm() {
   return {
@@ -744,11 +1061,35 @@ function emptyForm() {
     tag: "",
     mode: "rule",
     protocols: [],
+    excludeProtocols: [],
     ports: [],
+    srcPorts: [],
+    dstPorts: [],
+    excludePorts: [],
+    ips: [],
+    excludeIps: [],
+    ipRegex: [],
+    excludeIpRegex: [],
+    portRegex: [],
+    excludePortRegex: [],
+    protocolRegex: [],
+    excludeProtocolRegex: [],
     payloadContains: [],
+    excludePayloadContains: [],
+    payloadPrefixHex: [],
+    excludePayloadPrefixHex: [],
     minLength: null,
     maxLength: null,
+    requestOnly: false,
+    tcpFlags: [],
+    tcpFlagsAny: [],
+    tcpFlagsAll: [],
+    countThreshold: null,
+    windowSeconds: null,
+    groupBy: "src_ip",
     payloadRegex: [],
+    payloadRegexExclude: [],
+    advancedMatchJson: "",
   };
 }
 
@@ -819,8 +1160,10 @@ export default {
       form: emptyForm(),
       formError: "",
       formSubmitting: false,
+      monitorBuilderPanels: ["include"],
       protocolOptions: PROTOCOL_OPTIONS,
       severityOptions: SEVERITY_OPTIONS,
+      groupByOptions: GROUP_BY_OPTIONS,
       columns: [
         { key: "name", label: "Name" },
         { key: "mode", label: "Mode" },
@@ -919,8 +1262,31 @@ export default {
       return "An empty selection means Sniff4Hound will listen on every visible interface.";
     },
     regexErrors() {
-      const invalid = (this.form.payloadRegex || []).filter((pattern) => !this.isValidRegex(pattern));
+      const invalid = [
+        ...(this.form.payloadRegex || []),
+        ...(this.form.payloadRegexExclude || []),
+        ...(this.form.ipRegex || []),
+        ...(this.form.excludeIpRegex || []),
+        ...(this.form.portRegex || []),
+        ...(this.form.excludePortRegex || []),
+        ...(this.form.protocolRegex || []),
+        ...(this.form.excludeProtocolRegex || []),
+      ].map((pattern) => String(pattern || "").trim()).filter((pattern) => pattern && !this.isValidRegex(pattern));
       return invalid.length ? [`Invalid regex: ${invalid.join(", ")}`] : [];
+    },
+    advancedJsonError() {
+      const text = String(this.form.advancedMatchJson || "").trim();
+      if (!text) return "";
+      try {
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return "Advanced match JSON must be an object";
+        }
+        const invalid = collectMatchRegexes(parsed).filter((pattern) => !this.isValidRegex(pattern));
+        return invalid.length ? `Invalid advanced regex: ${invalid.join(", ")}` : "";
+      } catch (err) {
+        return (err && err.message) || "Invalid JSON";
+      }
     },
     monitorSeverityOptions() {
       const labels = {
@@ -1192,7 +1558,13 @@ export default {
       const match = item.match || {};
       const parts = [];
       if (match.protocols && match.protocols.length) parts.push(match.protocols.join("/").toUpperCase());
+      if (match.exclude_protocols && match.exclude_protocols.length) parts.push(`not ${match.exclude_protocols.join("/").toUpperCase()}`);
       if (match.ports && match.ports.length) parts.push(`ports ${match.ports.join(",")}`);
+      if (match.src_ports && match.src_ports.length) parts.push(`src ${match.src_ports.join(",")}`);
+      if (match.dst_ports && match.dst_ports.length) parts.push(`dst ${match.dst_ports.join(",")}`);
+      if (match.exclude_ports && match.exclude_ports.length) parts.push(`not ports ${match.exclude_ports.join(",")}`);
+      if (match.ips && match.ips.length) parts.push(`ips ${match.ips.join(",")}`);
+      if (match.exclude_ips && match.exclude_ips.length) parts.push(`not ips ${match.exclude_ips.join(",")}`);
       if (match.eth_types && match.eth_types.length) {
         parts.push(`eth 0x${match.eth_types.map((value) => Number(value).toString(16)).join(",0x")}`);
       }
@@ -1202,9 +1574,16 @@ export default {
       if (match.payload_regex && match.payload_regex.length) {
         parts.push(`regex ${match.payload_regex.length === 1 ? match.payload_regex[0] : `${match.payload_regex.length} patterns`}`);
       }
+      if (match.payload_regex_exclude && match.payload_regex_exclude.length) {
+        parts.push(`not regex ${match.payload_regex_exclude.length === 1 ? match.payload_regex_exclude[0] : `${match.payload_regex_exclude.length} patterns`}`);
+      }
       if (match.min_length) parts.push(`>=${match.min_length}B`);
       if (match.max_length) parts.push(`<=${match.max_length}B`);
       if (match.min_payload_text_length) parts.push(`>=${match.min_payload_text_length} readable chars`);
+      if (match.request_only) parts.push("request only");
+      if (match.all && match.all.length) parts.push(`all ${match.all.length}`);
+      if (match.any && match.any.length) parts.push(`any ${match.any.length}`);
+      if (match.none && match.none.length) parts.push(`none ${match.none.length}`);
       return parts.length ? parts.join(" · ") : "-";
     },
     isValidRegex(pattern) {
@@ -1299,6 +1678,7 @@ export default {
     openCreateDialog() {
       this.editingId = "";
       this.form = emptyForm();
+      this.monitorBuilderPanels = ["include"];
       this.formError = "";
       this.dialogOpen = true;
     },
@@ -1312,33 +1692,122 @@ export default {
         priority: item.priority || 100,
         severity: action.severity || "medium",
         tag: action.tag || "",
-        mode: item.mode === "regex" ? "regex" : "rule",
+        mode: item.mode === "stateful" ? "stateful" : item.mode === "regex" ? "regex" : "rule",
         protocols: Array.isArray(match.protocols) ? [...match.protocols] : [],
+        excludeProtocols: Array.isArray(match.exclude_protocols) ? [...match.exclude_protocols] : [],
         ports: Array.isArray(match.ports) ? match.ports.map(String) : [],
+        srcPorts: Array.isArray(match.src_ports) ? match.src_ports.map(String) : [],
+        dstPorts: Array.isArray(match.dst_ports) ? match.dst_ports.map(String) : [],
+        excludePorts: Array.isArray(match.exclude_ports) ? match.exclude_ports.map(String) : [],
+        ips: Array.isArray(match.ips) ? [...match.ips] : [],
+        excludeIps: Array.isArray(match.exclude_ips) ? [...match.exclude_ips] : [],
+        ipRegex: Array.isArray(match.ip_regex) ? [...match.ip_regex] : [],
+        excludeIpRegex: Array.isArray(match.exclude_ip_regex) ? [...match.exclude_ip_regex] : [],
+        portRegex: Array.isArray(match.port_regex) ? [...match.port_regex] : [],
+        excludePortRegex: Array.isArray(match.exclude_port_regex) ? [...match.exclude_port_regex] : [],
+        protocolRegex: Array.isArray(match.protocol_regex) ? [...match.protocol_regex] : [],
+        excludeProtocolRegex: Array.isArray(match.exclude_protocol_regex) ? [...match.exclude_protocol_regex] : [],
         payloadContains: Array.isArray(match.payload_contains) ? [...match.payload_contains] : [],
+        excludePayloadContains: Array.isArray(match.exclude_payload_contains) ? [...match.exclude_payload_contains] : [],
+        payloadPrefixHex: Array.isArray(match.payload_prefix_hex) ? [...match.payload_prefix_hex] : [],
+        excludePayloadPrefixHex: Array.isArray(match.exclude_payload_prefix_hex) ? [...match.exclude_payload_prefix_hex] : [],
         minLength: match.min_length || null,
         maxLength: match.max_length || null,
+        requestOnly: Boolean(match.request_only),
+        tcpFlags: Array.isArray(match.tcp_flags) ? [...match.tcp_flags] : [],
+        tcpFlagsAny: Array.isArray(match.tcp_flags_any) ? [...match.tcp_flags_any] : [],
+        tcpFlagsAll: Array.isArray(match.tcp_flags_all) ? [...match.tcp_flags_all] : [],
+        countThreshold: match.count_threshold || null,
+        windowSeconds: match.window_seconds || null,
+        groupBy: match.group_by || "src_ip",
         payloadRegex: Array.isArray(match.payload_regex) ? [...match.payload_regex] : [],
+        payloadRegexExclude: Array.isArray(match.payload_regex_exclude) ? [...match.payload_regex_exclude] : [],
+        advancedMatchJson: (match.all && match.all.length) || (match.any && match.any.length) || (match.none && match.none.length)
+          ? JSON.stringify(
+              {
+                ...(match.all && match.all.length ? { all: match.all } : {}),
+                ...(match.any && match.any.length ? { any: match.any } : {}),
+                ...(match.none && match.none.length ? { none: match.none } : {}),
+              },
+              null,
+              2
+            )
+          : "",
       };
+      this.monitorBuilderPanels = ["include"];
+      if (
+        this.form.excludeProtocols.length
+        || this.form.excludePorts.length
+        || this.form.excludeIps.length
+        || this.form.excludePayloadContains.length
+        || this.form.payloadRegexExclude.length
+        || this.form.excludeIpRegex.length
+        || this.form.excludePortRegex.length
+        || this.form.excludeProtocolRegex.length
+      ) {
+        this.monitorBuilderPanels.push("exclude");
+      }
+      if (this.form.advancedMatchJson || this.form.mode === "stateful") {
+        this.monitorBuilderPanels.push("advanced");
+      }
       this.formError = "";
       this.dialogOpen = true;
     },
-    buildMatchPayload() {
-      if (this.form.mode === "regex") {
-        const patterns = (this.form.payloadRegex || []).map((item) => String(item || "").trim()).filter(Boolean);
-        return { payload_regex: patterns };
-      }
-      const ports = (this.form.ports || [])
+    cleanTextList(values) {
+      return (Array.isArray(values) ? values : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+    },
+    cleanNumberList(values) {
+      return this.cleanTextList(values)
         .map((item) => Number(item))
-        .filter((value) => Number.isFinite(value) && value > 0);
-      const contains = (this.form.payloadContains || []).map((item) => String(item || "").trim()).filter(Boolean);
-      return {
-        protocols: [...(this.form.protocols || [])],
-        ports,
-        payload_contains: contains,
-        min_length: Number(this.form.minLength) || 0,
-        max_length: Number(this.form.maxLength) || 0,
-      };
+        .filter((value) => Number.isInteger(value) && value > 0);
+    },
+    assignList(target, key, values) {
+      if (values.length) target[key] = values;
+    },
+    assignNumber(target, key, value) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed > 0) target[key] = Math.floor(parsed);
+    },
+    buildMatchPayload() {
+      const match = {};
+      this.assignList(match, "protocols", this.cleanTextList(this.form.protocols));
+      this.assignList(match, "exclude_protocols", this.cleanTextList(this.form.excludeProtocols));
+      this.assignList(match, "ports", this.cleanNumberList(this.form.ports));
+      this.assignList(match, "src_ports", this.cleanNumberList(this.form.srcPorts));
+      this.assignList(match, "dst_ports", this.cleanNumberList(this.form.dstPorts));
+      this.assignList(match, "exclude_ports", this.cleanNumberList(this.form.excludePorts));
+      this.assignList(match, "ips", this.cleanTextList(this.form.ips));
+      this.assignList(match, "exclude_ips", this.cleanTextList(this.form.excludeIps));
+      this.assignList(match, "ip_regex", this.cleanTextList(this.form.ipRegex));
+      this.assignList(match, "exclude_ip_regex", this.cleanTextList(this.form.excludeIpRegex));
+      this.assignList(match, "port_regex", this.cleanTextList(this.form.portRegex));
+      this.assignList(match, "exclude_port_regex", this.cleanTextList(this.form.excludePortRegex));
+      this.assignList(match, "protocol_regex", this.cleanTextList(this.form.protocolRegex));
+      this.assignList(match, "exclude_protocol_regex", this.cleanTextList(this.form.excludeProtocolRegex));
+      this.assignList(match, "payload_contains", this.cleanTextList(this.form.payloadContains));
+      this.assignList(match, "exclude_payload_contains", this.cleanTextList(this.form.excludePayloadContains));
+      this.assignList(match, "payload_prefix_hex", this.cleanTextList(this.form.payloadPrefixHex));
+      this.assignList(match, "exclude_payload_prefix_hex", this.cleanTextList(this.form.excludePayloadPrefixHex));
+      this.assignList(match, "payload_regex", this.cleanTextList(this.form.payloadRegex));
+      this.assignList(match, "payload_regex_exclude", this.cleanTextList(this.form.payloadRegexExclude));
+      this.assignList(match, "tcp_flags", this.cleanTextList(this.form.tcpFlags));
+      this.assignList(match, "tcp_flags_any", this.cleanTextList(this.form.tcpFlagsAny));
+      this.assignList(match, "tcp_flags_all", this.cleanTextList(this.form.tcpFlagsAll));
+      this.assignNumber(match, "min_length", this.form.minLength);
+      this.assignNumber(match, "max_length", this.form.maxLength);
+      if (this.form.requestOnly) match.request_only = true;
+      if (this.form.mode === "stateful") {
+        this.assignNumber(match, "count_threshold", this.form.countThreshold);
+        this.assignNumber(match, "window_seconds", this.form.windowSeconds);
+        match.group_by = this.form.groupBy || "src_ip";
+      }
+      const advanced = String(this.form.advancedMatchJson || "").trim();
+      if (advanced) {
+        Object.assign(match, JSON.parse(advanced));
+      }
+      return match;
     },
     submitForm() {
       this.formError = "";
@@ -1347,16 +1816,33 @@ export default {
         this.formError = "Name is required";
         return;
       }
+      if (this.regexErrors.length) {
+        this.formError = this.regexErrors[0];
+        return;
+      }
+      if (this.advancedJsonError) {
+        this.formError = this.advancedJsonError;
+        return;
+      }
       if (this.form.mode === "regex") {
-        const patterns = (this.form.payloadRegex || []).map((item) => String(item || "").trim()).filter(Boolean);
+        const patterns = this.cleanTextList(this.form.payloadRegex);
         if (!patterns.length) {
           this.formError = "Add at least one regex pattern";
           return;
         }
-        if (patterns.some((pattern) => !this.isValidRegex(pattern))) {
-          this.formError = "One or more regex patterns are invalid";
+      }
+      if (this.form.mode === "stateful") {
+        if (!(Number(this.form.countThreshold) > 0) || !(Number(this.form.windowSeconds) > 0)) {
+          this.formError = "Stateful monitors require count threshold and window seconds";
           return;
         }
+      }
+      let match;
+      try {
+        match = this.buildMatchPayload();
+      } catch (err) {
+        this.formError = (err && err.message) || "Invalid monitor match";
+        return;
       }
       const payload = {
         id: this.editingId || undefined,
@@ -1364,7 +1850,7 @@ export default {
         description: String(this.form.description || "").trim(),
         priority: Number(this.form.priority) || 100,
         mode: this.form.mode,
-        match: this.buildMatchPayload(),
+        match,
         action: {
           severity: this.form.severity,
           tag: String(this.form.tag || "").trim(),
@@ -1434,6 +1920,16 @@ export default {
 
 .mode-toggle {
   width: 100%;
+}
+
+.monitor-dialog-card {
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+
+.monitor-dialog-body {
+  overflow-y: auto;
 }
 
 .match-summary {

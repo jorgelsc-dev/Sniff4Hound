@@ -263,7 +263,7 @@ DEFAULT_MONITORS = [
         "priority": 130,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"authorization:\s*basic\s+[a-z0-9+/=]+"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"authorization:\s*basic\s+[a-z0-9+/=]+"]},
         "action": {"tag": "http-basic-auth", "label": "HTTP Basic Auth", "severity": "high"},
     },
     {
@@ -503,7 +503,7 @@ DEFAULT_MONITORS = [
         "priority": 190,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"/setupwizard\.aspx/"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"/setupwizard\.aspx/"]},
         "action": {"tag": "cve-2024-1709-screenconnect", "label": "ScreenConnect auth bypass (CVE-2024-1709)", "severity": "critical"},
     },
     {
@@ -514,7 +514,7 @@ DEFAULT_MONITORS = [
         "priority": 191,
         "source": "builtin",
         "mode": "regex",
-        "match": {"payload_regex": [r"api/v1/totp/user-backup-code/\.\./"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_regex": [r"api/v1/totp/user-backup-code/\.\./"]},
         "action": {"tag": "cve-2024-21887-ivanti", "label": "Ivanti Connect Secure path traversal (CVE-2023-46805/CVE-2024-21887)", "severity": "critical"},
     },
     # --- Parser coverage gaps: traffic the sniffer can't classify or parse ---
@@ -768,7 +768,7 @@ DEFAULT_MONITORS = [
         "priority": 233,
         "source": "builtin",
         "mode": "rule",
-        "match": {"payload_contains": ["() { :;"]},
+        "match": {"request_only": True, "protocols": ["tcp"], "payload_contains": ["() { :;"]},
         "action": {"tag": "shellshock", "label": "Shellshock attempt", "severity": "critical"},
     },
     {
@@ -921,7 +921,7 @@ DEFAULT_MONITORS = [
         "priority": 241,
         "source": "builtin",
         "mode": "rule",
-        "match": {"payload_contains": ["mining.subscribe", "mining.notify", "mining.authorize"]},
+        "match": {"protocols": ["tcp"], "payload_contains": ["mining.subscribe", "mining.notify", "mining.authorize"]},
         "action": {"tag": "crypto-mining", "label": "Cryptomining traffic", "severity": "high"},
     },
     {
@@ -933,6 +933,8 @@ DEFAULT_MONITORS = [
         "source": "builtin",
         "mode": "regex",
         "match": {
+            "request_only": True,
+            "protocols": ["tcp"],
             "payload_regex": [
                 r"user-agent:\s*[^\r\n]*(sqlmap|nikto|nmap|masscan|zgrab|metasploit|dirbuster|gobuster|wpscan"
                 r"|whatweb|acunetix|nessus|openvas|qualys|burpsuite|hydra|nuclei|ffuf|feroxbuster)"
@@ -2552,6 +2554,22 @@ def builtin_monitor_seed_fields() -> tuple[tuple, ...]:
     return tuple(rows)
 
 
+def _iter_match_tree(match: dict):
+    yield match
+    for key in ("all", "any", "none"):
+        for child in match.get(key, []) if isinstance(match.get(key), list) else []:
+            if isinstance(child, dict):
+                yield from _iter_match_tree(child)
+
+
+def _iter_positive_match_nodes(match: dict):
+    yield match
+    for key in ("all", "any"):
+        for child in match.get(key, []) if isinstance(match.get(key), list) else []:
+            if isinstance(child, dict):
+                yield from _iter_positive_match_nodes(child)
+
+
 def _validate_match_not_empty(match: dict):
     criteria_keys = (
         "protocols",
@@ -2574,11 +2592,13 @@ def _validate_match_not_empty(match: dict):
         "icmp_codes",
         "arp_opcodes",
     )
-    has_list_criteria = any(match.get(key) for key in criteria_keys)
-    has_length_criteria = (
-        bool(match.get("min_length"))
-        or bool(match.get("max_length"))
-        or bool(match.get("min_payload_text_length"))
+    positive_nodes = list(_iter_positive_match_nodes(match))
+    has_list_criteria = any(node.get(key) for node in positive_nodes for key in criteria_keys)
+    has_length_criteria = any(
+        bool(node.get("min_length"))
+        or bool(node.get("max_length"))
+        or bool(node.get("min_payload_text_length"))
+        for node in positive_nodes
     )
     # A pure declarative count condition ("N events within T seconds",
     # with no other filter - e.g. "any traffic from the same source more
@@ -2586,19 +2606,25 @@ def _validate_match_not_empty(match: dict):
     # `mode: "stateful"` monitor targeting GenericThresholdDetector; it
     # would otherwise be rejected here even though every other criterion
     # is deliberately optional for it (see rulesets.normalize_match).
-    has_count_criteria = bool(match.get("count_threshold")) and bool(match.get("window_seconds"))
+    has_count_criteria = any(
+        bool(node.get("count_threshold")) and bool(node.get("window_seconds"))
+        for node in positive_nodes
+    )
     if not has_list_criteria and not has_length_criteria and not has_count_criteria:
         raise ValueError("Monitor match must include at least one condition")
 
 
 def _validate_regex_patterns(match: dict):
-    patterns = (
-        [str(pattern) for pattern in match.get("payload_regex", []) if str(pattern).strip()]
-        + [str(pattern) for pattern in match.get("payload_regex_exclude", []) if str(pattern).strip()]
-        + [str(pattern) for pattern in match.get("ip_regex", []) if str(pattern).strip()]
-        + [str(pattern) for pattern in match.get("port_regex", []) if str(pattern).strip()]
-        + [str(pattern) for pattern in match.get("protocol_regex", []) if str(pattern).strip()]
-    )
+    patterns = []
+    for node in _iter_match_tree(match):
+        patterns.extend(str(pattern) for pattern in node.get("payload_regex", []) if str(pattern).strip())
+        patterns.extend(str(pattern) for pattern in node.get("payload_regex_exclude", []) if str(pattern).strip())
+        patterns.extend(str(pattern) for pattern in node.get("ip_regex", []) if str(pattern).strip())
+        patterns.extend(str(pattern) for pattern in node.get("port_regex", []) if str(pattern).strip())
+        patterns.extend(str(pattern) for pattern in node.get("protocol_regex", []) if str(pattern).strip())
+        patterns.extend(str(pattern) for pattern in node.get("exclude_ip_regex", []) if str(pattern).strip())
+        patterns.extend(str(pattern) for pattern in node.get("exclude_port_regex", []) if str(pattern).strip())
+        patterns.extend(str(pattern) for pattern in node.get("exclude_protocol_regex", []) if str(pattern).strip())
     if len(patterns) > settings.MONITOR_MAX_REGEX_PATTERNS:
         raise ValueError(f"Too many regex patterns (max {settings.MONITOR_MAX_REGEX_PATTERNS})")
     for pattern in patterns:

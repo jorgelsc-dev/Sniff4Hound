@@ -333,6 +333,21 @@ class TestRequestOnlyContentSignaturesIgnoreResponses(unittest.TestCase):
         body = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nroot user documentation"
         self.assertNotIn("root-id-response", self._tags(body))
 
+    def test_http_basic_auth_example_in_response_is_not_auth_exposure(self):
+        body = "HTTP/1.1 200 OK\r\n\r\nExample: Authorization: Basic dGVzdDp0ZXN0"
+        self.assertNotIn("http-basic-auth", self._tags(body))
+
+    def test_http_basic_auth_request_still_matches(self):
+        self.assertIn("http-basic-auth", self._tags("GET / HTTP/1.1\r\nAuthorization: Basic dGVzdDp0ZXN0\r\n\r\n"))
+
+    def test_shellshock_example_in_response_is_not_exploit(self):
+        body = "HTTP/1.1 200 OK\r\n\r\nShellshock test payload: () { :; }; echo vulnerable"
+        self.assertNotIn("shellshock", self._tags(body))
+
+    def test_screenconnect_path_example_in_response_is_not_exploit(self):
+        body = "HTTP/1.1 200 OK\r\n\r\nBlocked path example: /SetupWizard.aspx/theme/images/logo.png"
+        self.assertNotIn("cve-2024-1709-screenconnect", self._tags(body))
+
 
 class TestPayloadRegexExclude(unittest.TestCase):
     """`payload_regex_exclude` is a new, generic match criterion (any match
@@ -511,6 +526,11 @@ class TestPolicyMonitors(unittest.TestCase):
     def test_stratum_mining_notify(self):
         self.assertIn("crypto-mining", self._tags('{"id":null,"method":"mining.notify","params":[]}'))
 
+    def test_stratum_like_udp_text_is_not_mining(self):
+        packet = _packet(proto="mdns", transport="udp", payload_text='{"method":"mining.notify"}')
+        tags = {hit["tag"] for hit in evaluate_packet(packet, self.monitors)}
+        self.assertNotIn("crypto-mining", tags)
+
     def test_sqlmap_user_agent(self):
         text = "GET / HTTP/1.1\r\nUser-Agent: sqlmap/1.7.2#stable (http://sqlmap.org)"
         self.assertIn("suspicious-user-agent", self._tags(text))
@@ -521,6 +541,10 @@ class TestPolicyMonitors(unittest.TestCase):
 
     def test_ordinary_browser_user_agent_is_not_flagged(self):
         text = "GET / HTTP/1.1\r\nUser-Agent: Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0"
+        self.assertNotIn("suspicious-user-agent", self._tags(text))
+
+    def test_scanner_user_agent_example_in_response_is_not_flagged(self):
+        text = "HTTP/1.1 200 OK\r\n\r\nExample User-Agent: sqlmap/1.7.2"
         self.assertNotIn("suspicious-user-agent", self._tags(text))
 
 

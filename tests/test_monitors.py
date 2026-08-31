@@ -202,6 +202,37 @@ class TestNormalizeMonitor(unittest.TestCase):
         )
         self.assertEqual(monitor["mode"], "regex")
 
+    def test_accepts_nested_condition_groups(self):
+        monitor = normalize_monitor(
+            {
+                "id": "custom-advanced",
+                "name": "Custom advanced",
+                "match": {
+                    "protocols": ["tcp"],
+                    "any": [
+                        {"dst_ports": [8080]},
+                        {"payload_regex": ["admin=true"]},
+                    ],
+                    "none": [
+                        {"ips": ["10.0.0.250"]},
+                    ],
+                },
+            }
+        )
+        self.assertEqual(monitor["match"]["protocols"], ["tcp"])
+        self.assertEqual(monitor["match"]["any"][0]["dst_ports"], [8080])
+        self.assertEqual(monitor["match"]["none"][0]["ips"], ["10.0.0.250"])
+
+    def test_rejects_bad_regex_inside_nested_condition(self):
+        with self.assertRaises(ValueError):
+            normalize_monitor(
+                {
+                    "id": "bad-nested-regex",
+                    "name": "Bad nested regex",
+                    "match": {"any": [{"payload_regex": ["("]}]},
+                }
+            )
+
     def test_builtin_monitors_normalize_cleanly(self):
         for raw in DEFAULT_MONITORS:
             normalized = normalize_monitor(raw, allow_source=True)
@@ -318,6 +349,71 @@ class TestEvaluatePacket(unittest.TestCase):
             }
         )
         self.assertEqual(evaluate_packet(_packet(src_ip="10.0.0.5", payload_text="ordinary traffic"), [monitor]), [])
+
+    def test_advanced_any_group_matches_one_of_multiple_conditions(self):
+        monitor = normalize_monitor(
+            {
+                "id": "advanced-any",
+                "name": "Advanced any",
+                "match": {
+                    "protocols": ["tcp"],
+                    "any": [
+                        {"dst_ports": [4444]},
+                        {"payload_regex": ["admin=true"]},
+                    ],
+                },
+                "action": {"tag": "advanced-any", "label": "Advanced any", "severity": "medium"},
+            }
+        )
+        self.assertEqual(evaluate_packet(_packet(dst_port=80, payload_text="GET / HTTP/1.1"), [monitor]), [])
+        self.assertEqual(len(evaluate_packet(_packet(dst_port=4444), [monitor])), 1)
+        self.assertEqual(len(evaluate_packet(_packet(dst_port=80, payload_text="GET /?admin=true HTTP/1.1"), [monitor])), 1)
+
+    def test_advanced_none_group_excludes_otherwise_matching_packet(self):
+        monitor = normalize_monitor(
+            {
+                "id": "advanced-none",
+                "name": "Advanced none",
+                "match": {
+                    "protocols": ["tcp"],
+                    "payload_regex": ["union\\s+select"],
+                    "none": [
+                        {"ips": ["10.0.0.250"]},
+                        {"payload_regex": ["information_schema"]},
+                    ],
+                },
+                "action": {"tag": "advanced-none", "label": "Advanced none", "severity": "high"},
+            }
+        )
+        self.assertEqual(len(evaluate_packet(_packet(payload_text="GET /?q=union select 1,2 HTTP/1.1"), [monitor])), 1)
+        self.assertEqual(
+            evaluate_packet(_packet(payload_text="GET /?q=union select * from information_schema.tables HTTP/1.1"), [monitor]),
+            [],
+        )
+        self.assertEqual(
+            evaluate_packet(
+                _packet(src_ip="10.0.0.250", payload_text="GET /?q=union select 1,2 HTTP/1.1"),
+                [monitor],
+            ),
+            [],
+        )
+
+    def test_direct_negative_criteria_exclude_matches(self):
+        monitor = normalize_monitor(
+            {
+                "id": "advanced-negative-fields",
+                "name": "Advanced negative fields",
+                "match": {
+                    "ports": [80, 8080],
+                    "exclude_ips": ["10.0.0.250"],
+                    "exclude_payload_contains": ["healthcheck"],
+                },
+                "action": {"tag": "advanced-negative-fields", "label": "Advanced negative fields", "severity": "medium"},
+            }
+        )
+        self.assertEqual(len(evaluate_packet(_packet(dst_port=8080, payload_text="GET /admin HTTP/1.1"), [monitor])), 1)
+        self.assertEqual(evaluate_packet(_packet(dst_port=8080, src_ip="10.0.0.250"), [monitor]), [])
+        self.assertEqual(evaluate_packet(_packet(dst_port=8080, payload_text="GET /healthcheck HTTP/1.1"), [monitor]), [])
 
     def test_full_builtin_catalog_still_matches_core_monitors(self):
         hits = evaluate_packet(
