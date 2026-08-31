@@ -209,7 +209,7 @@ def normalize_ruleset(item: dict, allow_source: bool = False) -> dict:
     return normalized
 
 
-def normalize_match(match: dict) -> dict:
+def normalize_match(match: dict, _depth: int = 0) -> dict:
     data = match if isinstance(match, dict) else {}
 
     def _list(key):
@@ -239,22 +239,51 @@ def normalize_match(match: dict) -> dict:
                 continue
         return unique_ordered(values)
 
+    def _condition_list(key):
+        raw = data.get(key, [])
+        if not raw and isinstance(data.get("conditions"), dict):
+            raw = data["conditions"].get(key, [])
+        if isinstance(raw, dict):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            return []
+        # Enough for expressive monitor rules, bounded so a bad API payload
+        # cannot create a recursively huge object on the capture path.
+        if _depth >= 4:
+            return []
+        return [normalize_match(item, _depth + 1) for item in raw if isinstance(item, dict)]
+
     normalized = {
         "protocols": _list("protocols"),
         "exclude_protocols": _list("exclude_protocols"),
         "ip_versions": _int_list("ip_versions"),
+        "exclude_ip_versions": _int_list("exclude_ip_versions"),
         "eth_types": _int_list("eth_types"),
+        "exclude_eth_types": _int_list("exclude_eth_types"),
         "ports": _int_list("ports"),
+        "exclude_ports": _int_list("exclude_ports"),
         "src_ports": _int_list("src_ports"),
+        "exclude_src_ports": _int_list("exclude_src_ports"),
         "dst_ports": _int_list("dst_ports"),
+        "exclude_dst_ports": _int_list("exclude_dst_ports"),
         "port_regex": [str(item).strip() for item in _list("port_regex") if str(item).strip()],
+        "exclude_port_regex": [str(item).strip() for item in _list("exclude_port_regex") if str(item).strip()],
         "ips": [str(item).strip().lower() for item in _list("ips") if str(item).strip()],
+        "exclude_ips": [str(item).strip().lower() for item in _list("exclude_ips") if str(item).strip()],
         "ip_regex": [str(item).strip() for item in _list("ip_regex") if str(item).strip()],
+        "exclude_ip_regex": [str(item).strip() for item in _list("exclude_ip_regex") if str(item).strip()],
         "protocol_regex": [str(item).strip() for item in _list("protocol_regex") if str(item).strip()],
+        "exclude_protocol_regex": [str(item).strip() for item in _list("exclude_protocol_regex") if str(item).strip()],
         "payload_contains": [str(item) for item in _list("payload_contains") if str(item).strip()],
+        "exclude_payload_contains": [str(item) for item in _list("exclude_payload_contains") if str(item).strip()],
         "payload_prefix_hex": [
             str(item).strip().lower().replace("0x", "")
             for item in _list("payload_prefix_hex")
+            if str(item).strip()
+        ],
+        "exclude_payload_prefix_hex": [
+            str(item).strip().lower().replace("0x", "")
+            for item in _list("exclude_payload_prefix_hex")
             if str(item).strip()
         ],
         "payload_regex": [str(item).strip() for item in _list("payload_regex") if str(item).strip()],
@@ -293,6 +322,9 @@ def normalize_match(match: dict) -> dict:
         "count_threshold": max(0, safe_int(data.get("count_threshold", 0), 0)),
         "window_seconds": max(0, safe_int(data.get("window_seconds", 0), 0)),
         "group_by": _group_by_spec(data.get("group_by")),
+        "all": _condition_list("all"),
+        "any": _condition_list("any"),
+        "none": _condition_list("none"),
     }
     return normalized
 
@@ -348,6 +380,17 @@ def _is_http_response_packet(packet: dict) -> bool:
     return text[:5].upper() == "HTTP/"
 
 
+def _regex_matches_any(patterns, *values) -> bool:
+    for pattern in [str(item).strip() for item in patterns if str(item).strip()]:
+        compiled = _compiled_regex(pattern)
+        if compiled is None:
+            continue
+        for value in values:
+            if value and compiled.search(str(value)):
+                return True
+    return False
+
+
 def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = None) -> bool:
     if not rule or not rule.get("enabled", True):
         return False
@@ -391,37 +434,58 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
     if ip_versions and safe_int(packet.get("ip_version", 0), 0) not in ip_versions:
         return False
 
+    excluded_ip_versions = [safe_int(item, 0) for item in match.get("exclude_ip_versions", []) if safe_int(item, 0)]
+    if excluded_ip_versions and safe_int(packet.get("ip_version", 0), 0) in excluded_ip_versions:
+        return False
+
     eth_types = [safe_int(item, 0) for item in match.get("eth_types", []) if safe_int(item, 0)]
     if eth_types and safe_int(packet.get("eth_type", 0), 0) not in eth_types:
         return False
 
+    excluded_eth_types = [safe_int(item, 0) for item in match.get("exclude_eth_types", []) if safe_int(item, 0)]
+    if excluded_eth_types and safe_int(packet.get("eth_type", 0), 0) in excluded_eth_types:
+        return False
+
     ports = [safe_int(item, 0) for item in match.get("ports", []) if safe_int(item, 0)]
+    src_port = safe_int(packet.get("src_port", 0), 0)
+    dst_port = safe_int(packet.get("dst_port", 0), 0)
     if ports:
-        src_port = safe_int(packet.get("src_port", 0), 0)
-        dst_port = safe_int(packet.get("dst_port", 0), 0)
         if src_port not in ports and dst_port not in ports:
             return False
 
+    excluded_ports = [safe_int(item, 0) for item in match.get("exclude_ports", []) if safe_int(item, 0)]
+    if excluded_ports and (src_port in excluded_ports or dst_port in excluded_ports):
+        return False
+
     src_ports = [safe_int(item, 0) for item in match.get("src_ports", []) if safe_int(item, 0)]
-    if src_ports and safe_int(packet.get("src_port", 0), 0) not in src_ports:
+    if src_ports and src_port not in src_ports:
+        return False
+
+    excluded_src_ports = [safe_int(item, 0) for item in match.get("exclude_src_ports", []) if safe_int(item, 0)]
+    if excluded_src_ports and src_port in excluded_src_ports:
         return False
 
     dst_ports = [safe_int(item, 0) for item in match.get("dst_ports", []) if safe_int(item, 0)]
-    if dst_ports and safe_int(packet.get("dst_port", 0), 0) not in dst_ports:
+    if dst_ports and dst_port not in dst_ports:
+        return False
+
+    excluded_dst_ports = [safe_int(item, 0) for item in match.get("exclude_dst_ports", []) if safe_int(item, 0)]
+    if excluded_dst_ports and dst_port in excluded_dst_ports:
         return False
 
     port_regexes = [str(item).strip() for item in match.get("port_regex", []) if str(item).strip()]
     if port_regexes:
-        src_port = str(safe_int(packet.get("src_port", 0), 0))
-        dst_port = str(safe_int(packet.get("dst_port", 0), 0))
         matched_port = False
         for pattern in port_regexes:
             compiled = _compiled_regex(pattern)
-            if compiled is not None and (compiled.search(src_port) or compiled.search(dst_port)):
+            if compiled is not None and (compiled.search(str(src_port)) or compiled.search(str(dst_port))):
                 matched_port = True
                 break
         if not matched_port:
             return False
+
+    if _regex_matches_any(match.get("exclude_port_regex", []), str(src_port), str(dst_port)):
+        return False
 
     # Deliberately checked as direct header fields (src_ip/dst_ip), not via
     # build_packet_text's payload blob - that blob excludes endpoint
@@ -432,16 +496,18 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
     # over a blob that could contain one address as a substring of another
     # (e.g. "1.2.3.4" is a substring of "21.2.3.45").
     ips = [str(item).strip().lower() for item in match.get("ips", []) if str(item).strip()]
+    src_ip = str(packet.get("src_ip") or "").strip().lower()
+    dst_ip = str(packet.get("dst_ip") or "").strip().lower()
     if ips:
-        src_ip = str(packet.get("src_ip") or "").strip().lower()
-        dst_ip = str(packet.get("dst_ip") or "").strip().lower()
         if src_ip not in ips and dst_ip not in ips:
             return False
 
+    excluded_ips = [str(item).strip().lower() for item in match.get("exclude_ips", []) if str(item).strip()]
+    if excluded_ips and (src_ip in excluded_ips or dst_ip in excluded_ips):
+        return False
+
     ip_regexes = [str(item).strip() for item in match.get("ip_regex", []) if str(item).strip()]
     if ip_regexes:
-        src_ip = str(packet.get("src_ip") or "")
-        dst_ip = str(packet.get("dst_ip") or "")
         matched_ip = False
         for pattern in ip_regexes:
             compiled = _compiled_regex(pattern)
@@ -450,6 +516,9 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
                 break
         if not matched_ip:
             return False
+
+    if _regex_matches_any(match.get("exclude_ip_regex", []), src_ip, dst_ip):
+        return False
 
     protocol_regexes = [str(item).strip() for item in match.get("protocol_regex", []) if str(item).strip()]
     if protocol_regexes:
@@ -462,6 +531,9 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
                 break
         if not matched_protocol:
             return False
+
+    if _regex_matches_any(match.get("exclude_protocol_regex", []), proto, str(packet.get("transport") or "").strip().lower()):
+        return False
 
     # Header-field criteria: a scan, a spoofed ARP reply or an ICMP redirect
     # carries no payload to search, so these are matched against the decoded
@@ -508,7 +580,13 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
         return False
 
     needles = [str(item).lower() for item in match.get("payload_contains", []) if str(item).strip()]
+    excluded_needles = [str(item).lower() for item in match.get("exclude_payload_contains", []) if str(item).strip()]
     prefix_hex = [str(item).lower().replace("0x", "") for item in match.get("payload_prefix_hex", []) if str(item).strip()]
+    excluded_prefix_hex = [
+        str(item).lower().replace("0x", "")
+        for item in match.get("exclude_payload_prefix_hex", [])
+        if str(item).strip()
+    ]
     regexes = [str(item).strip() for item in match.get("payload_regex", []) if str(item).strip()]
     exclude_regexes = [str(item).strip() for item in match.get("payload_regex_exclude", []) if str(item).strip()]
     min_length = safe_int(match.get("min_length", 0), 0)
@@ -521,6 +599,7 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
             protocol_regexes,
             needles, prefix_hex, regexes, flag_specs, flags_any, flags_all,
             icmp_types, icmp_codes, arp_opcodes,
+            match.get("all"), match.get("any"),
         )
     ):
         if not (min_length or max_length or min_payload_text_length):
@@ -533,14 +612,20 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
             if not (match.get("count_threshold") and match.get("window_seconds")):
                 return False
 
-    if needles or regexes or exclude_regexes:
+    if needles or excluded_needles or regexes or exclude_regexes:
         if packet_text is None:
             packet_text = build_packet_text(packet)
 
     if needles and not any(needle in packet_text for needle in needles):
         return False
 
+    if excluded_needles and any(needle in packet_text for needle in excluded_needles):
+        return False
+
     if prefix_hex and not any(payload_hex.startswith(prefix) for prefix in prefix_hex):
+        return False
+
+    if excluded_prefix_hex and any(payload_hex.startswith(prefix) for prefix in excluded_prefix_hex):
         return False
 
     if regexes:
@@ -573,6 +658,21 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
         # summary/IP/MAC text that's always present regardless of payload.
         payload_text_length = len(str(packet.get("payload_text") or ""))
         if payload_text_length < min_payload_text_length:
+            return False
+
+    all_conditions = [item for item in match.get("all", []) if isinstance(item, dict)]
+    if all_conditions:
+        if not all(rule_matches_packet({"enabled": True, "match": item}, packet, packet_text=packet_text) for item in all_conditions):
+            return False
+
+    any_conditions = [item for item in match.get("any", []) if isinstance(item, dict)]
+    if any_conditions:
+        if not any(rule_matches_packet({"enabled": True, "match": item}, packet, packet_text=packet_text) for item in any_conditions):
+            return False
+
+    none_conditions = [item for item in match.get("none", []) if isinstance(item, dict)]
+    if none_conditions:
+        if any(rule_matches_packet({"enabled": True, "match": item}, packet, packet_text=packet_text) for item in none_conditions):
             return False
 
     return True
