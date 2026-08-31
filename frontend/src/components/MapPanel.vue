@@ -471,8 +471,9 @@ export default {
       lastUpdated: "",
       liveRefreshEnabled: false,
       mapUid: this.buildMapUid(),
-      mapWidth: 920,
-      mapHeight: 470,
+      flatMapWidth: 920,
+      flatMapHeight: 470,
+      globeMapSize: 720,
       mapPadding: 18,
       stopTableRefreshSubscription: null,
       stopMapSnapshotSubscription: null,
@@ -568,14 +569,20 @@ export default {
       if (this.geoipStatus.partial) parts.push("partial catalog");
       return parts.join(" · ");
     },
+    mapWidth() {
+      return this.isGlobeMode ? this.globeMapSize : this.flatMapWidth;
+    },
+    mapHeight() {
+      return this.isGlobeMode ? this.globeMapSize : this.flatMapHeight;
+    },
     globeCenterX() {
       return this.mapWidth / 2;
     },
     globeCenterY() {
-      return this.mapHeight / 2 + 10;
+      return this.mapHeight / 2;
     },
     globeRadius() {
-      return Math.min(this.mapWidth, this.mapHeight) * 0.34;
+      return Math.min(this.mapWidth, this.mapHeight) * 0.42;
     },
     originCoord() {
       // With a declared site location the arcs start where the sensor
