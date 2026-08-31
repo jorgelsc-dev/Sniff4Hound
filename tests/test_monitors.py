@@ -16,6 +16,7 @@ from sniff4hound.monitors import (
     load_builtin_monitors,
     normalize_monitor,
 )
+from sniff4hound.settings import PORT as SNIFFER_PORT
 from sniff4hound.sniffer import Sniffer
 from sniff4hound.store import SniffStore
 
@@ -650,6 +651,29 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.sniffer._store_packet(self._base_packet(dst_port=3389))
         self.assertEqual(self.store.list_count("packets"), 1)
         self.assertEqual(self.sniffer.state.packets_stored, 1)
+
+    def test_own_dashboard_traffic_is_seen_but_never_stored(self):
+        # Regression: a live dashboard tab's own polling/WebSocket traffic
+        # to this app's web port, captured right back by this same sniffer,
+        # was observed saturating the capture socket under normal desktop
+        # use. dst_port==3389 above is what would normally persist (an
+        # admin-port hit); pointed at PORT instead, it must not, even
+        # though otherwise identical.
+        self.sniffer._store_packet(self._base_packet(transport="tcp", dst_port=3389, src_port=SNIFFER_PORT))
+        self.assertEqual(self.store.list_count("packets"), 0)
+        self.assertEqual(self.sniffer.state.packets_seen, 1)
+        self.assertEqual(self.sniffer.state.packets_stored, 0)
+
+    def test_own_dashboard_traffic_as_destination_is_also_skipped(self):
+        self.sniffer._store_packet(self._base_packet(transport="tcp", src_port=3389, dst_port=SNIFFER_PORT))
+        self.assertEqual(self.store.list_count("packets"), 0)
+
+    def test_non_tcp_traffic_on_the_same_port_number_is_not_excluded(self):
+        # The exclusion is TCP-specific (this app's listener is TCP) - a UDP
+        # packet that merely happens to share the port number is unrelated
+        # traffic and must not be short-circuited by it.
+        packet = self._base_packet(transport="udp", proto="udp", dst_port=SNIFFER_PORT, src_port=51234)
+        self.assertFalse(self.sniffer._is_own_dashboard_traffic(packet))
 
     def test_filter_disabled_persists_everything(self):
         self.store.set_monitor_filter_enabled(False)
