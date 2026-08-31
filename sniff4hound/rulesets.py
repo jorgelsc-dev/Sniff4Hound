@@ -247,8 +247,10 @@ def normalize_match(match: dict) -> dict:
         "ports": _int_list("ports"),
         "src_ports": _int_list("src_ports"),
         "dst_ports": _int_list("dst_ports"),
+        "port_regex": [str(item).strip() for item in _list("port_regex") if str(item).strip()],
         "ips": [str(item).strip().lower() for item in _list("ips") if str(item).strip()],
         "ip_regex": [str(item).strip() for item in _list("ip_regex") if str(item).strip()],
+        "protocol_regex": [str(item).strip() for item in _list("protocol_regex") if str(item).strip()],
         "payload_contains": [str(item) for item in _list("payload_contains") if str(item).strip()],
         "payload_prefix_hex": [
             str(item).strip().lower().replace("0x", "")
@@ -408,6 +410,19 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
     if dst_ports and safe_int(packet.get("dst_port", 0), 0) not in dst_ports:
         return False
 
+    port_regexes = [str(item).strip() for item in match.get("port_regex", []) if str(item).strip()]
+    if port_regexes:
+        src_port = str(safe_int(packet.get("src_port", 0), 0))
+        dst_port = str(safe_int(packet.get("dst_port", 0), 0))
+        matched_port = False
+        for pattern in port_regexes:
+            compiled = _compiled_regex(pattern)
+            if compiled is not None and (compiled.search(src_port) or compiled.search(dst_port)):
+                matched_port = True
+                break
+        if not matched_port:
+            return False
+
     # Deliberately checked as direct header fields (src_ip/dst_ip), not via
     # build_packet_text's payload blob - that blob excludes endpoint
     # addresses on purpose (see its own docstring) so payload/content
@@ -434,6 +449,18 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
                 matched_ip = True
                 break
         if not matched_ip:
+            return False
+
+    protocol_regexes = [str(item).strip() for item in match.get("protocol_regex", []) if str(item).strip()]
+    if protocol_regexes:
+        transport = str(packet.get("transport") or "").strip().lower()
+        matched_protocol = False
+        for pattern in protocol_regexes:
+            compiled = _compiled_regex(pattern)
+            if compiled is not None and (compiled.search(proto) or (transport and compiled.search(transport))):
+                matched_protocol = True
+                break
+        if not matched_protocol:
             return False
 
     # Header-field criteria: a scan, a spoofed ARP reply or an ICMP redirect
@@ -490,7 +517,8 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
 
     if not any(
         (
-            protocols, ip_versions, eth_types, ports, src_ports, dst_ports, ips, ip_regexes,
+            protocols, ip_versions, eth_types, ports, src_ports, dst_ports, port_regexes, ips, ip_regexes,
+            protocol_regexes,
             needles, prefix_hex, regexes, flag_specs, flags_any, flags_all,
             icmp_types, icmp_codes, arp_opcodes,
         )

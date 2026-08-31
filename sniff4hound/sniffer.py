@@ -918,6 +918,27 @@ class Sniffer:
                 return bool(pattern.search(src_ip) or pattern.search(dst_ip))
             wanted = value.lower()
             return src_ip == wanted or dst_ip == wanted
+        if category == "port":
+            src_port = str(safe_int(packet.get("src_port"), 0))
+            dst_port = str(safe_int(packet.get("dst_port"), 0))
+            if is_regex:
+                try:
+                    pattern = re.compile(value)
+                except re.error:
+                    return False
+                return bool(pattern.search(src_port) or pattern.search(dst_port))
+            return src_port == value or dst_port == value
+        if category == "protocol":
+            proto = normalize_protocol_name(packet.get("proto"))
+            transport = str(packet.get("transport") or "").strip().lower()
+            if is_regex:
+                try:
+                    pattern = re.compile(value, flags=re.IGNORECASE)
+                except re.error:
+                    return False
+                return bool(pattern.search(proto) or (transport and pattern.search(transport)))
+            wanted = normalize_protocol_name(value)
+            return proto == wanted or transport == wanted
         if category not in ("domain", "path"):
             return False
         if packet_text is None:

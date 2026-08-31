@@ -2380,7 +2380,7 @@ class SniffStore:
 
     # --- Blacklist -----------------------------------------------------
     #
-    # A blacklist entry (an IP/domain/path an operator wants flagged
+    # A blacklist entry (an IP/domain/path/port/protocol an operator wants flagged
     # unconditionally) is stored in its own table so the dedicated
     # Blacklist settings UI can list/manage them without wading through the
     # full monitors catalog - but detection itself is never duplicated:
@@ -2401,12 +2401,28 @@ class SniffStore:
     # matching). The word-boundary regex form matches the literal value
     # only when it isn't glued to more word characters on either side,
     # which is what an operator typing an exact IP/domain/path actually
-    # means. "Regex" mode uses the operator's own pattern verbatim.
+    # means. Port/protocol entries match their decoded packet fields
+    # directly. "Regex" mode uses the operator's own pattern verbatim.
 
-    BLACKLIST_CATEGORIES = ("ip", "domain", "path")
+    BLACKLIST_CATEGORIES = ("ip", "domain", "path", "port", "protocol")
 
     def _blacklist_monitor_id(self, entry_id: str) -> str:
         return str(entry_id)
+
+    def _normalize_list_value(self, category: str, value: str, *, exact: bool = True) -> str:
+        category = str(category or "").strip().lower()
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("value is required")
+        if category == "port" and exact:
+            port = safe_int(value, 0)
+            if port < 1 or port > 65535 or str(port) != value:
+                raise ValueError("port must be an integer between 1 and 65535")
+            return str(port)
+        if category == "protocol" and exact:
+            normalized = normalize_protocol_name(value)
+            return normalized
+        return value
 
     def _sync_blacklist_monitor(self, entry: dict):
         category = str(entry.get("category") or "")
@@ -2424,6 +2440,10 @@ class SniffStore:
             # positive-matching another that merely contains it as a
             # run of digits (e.g. "1.2.3.4" inside "21.2.3.45").
             match = {"ip_regex": [value]} if is_regex else {"ips": [value.strip().lower()]}
+        elif category == "port":
+            match = {"port_regex": [value]} if is_regex else {"ports": [safe_int(value, 0)]}
+        elif category == "protocol":
+            match = {"protocol_regex": [value]} if is_regex else {"protocols": [normalize_protocol_name(value)]}
         else:
             # Domain/path values DO appear in build_packet_text (via
             # summary/payload_text/domain/http_host/http_path/http_method),
@@ -2499,6 +2519,8 @@ class SniffStore:
                 re.compile(value)
             except re.error as exc:
                 raise ValueError(f"Invalid regex pattern: {exc}") from exc
+        else:
+            value = self._normalize_list_value(category, value, exact=True)
         entry_id = f"blacklist-{category}-{uuid.uuid4().hex[:12]}"
         now = utc_now()
         self._execute(
@@ -2585,6 +2607,8 @@ class SniffStore:
                 re.compile(value)
             except re.error as exc:
                 raise ValueError(f"Invalid regex pattern: {exc}") from exc
+        else:
+            value = self._normalize_list_value(category, value, exact=True)
         entry_id = f"whitelist-{category}-{uuid.uuid4().hex[:12]}"
         now = utc_now()
         self._execute(
