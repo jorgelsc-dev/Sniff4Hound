@@ -547,6 +547,7 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ip/intel/", "desc": "Combined host intel."},
     {"method": "GET", "path": "/api/soc/analysis/", "desc": "Iterative SOC triage analysis."},
     {"method": "GET", "path": "/api/ai/packets/", "desc": "Local byte-image anomaly analysis of the latest 200 packets."},
+    {"method": "POST", "path": "/api/ai/feedback", "desc": "Learn from a reviewed packet: label, confidence and note."},
     {"method": "POST", "path": "/api/ai/config", "desc": "Enable or disable sampling of traffic without monitor alerts."},
     {"method": "GET", "path": "/api/runtime/", "desc": "Runtime mode and engine snapshot."},
     {"method": "POST", "path": "/api/runtime/", "desc": "Start/stop engines and update the sniffer interface. Sniffer and honeypot are independent: {\"engines\": {\"sniffer\": true, \"honeypot\": true}} runs both, {\"engine\": \"honeypot\", \"action\": \"stop\"} stops one."},
@@ -1975,11 +1976,15 @@ def soc_analysis(request):
 
 @app.api("/api/ai/packets/", methods=("GET",))
 def ai_packets(request):
-    from .packet_ai import analyze_packets
+    return _ai_snapshot(clamp_int(request.query.get("threshold"), 1, 99, default=50))
 
-    threshold = clamp_int(request.query.get("threshold"), 1, 99, default=50)
+
+def _ai_snapshot(threshold=50):
+    from .packet_ai import analyze_packets
+    from .ai_learning import learning_snapshot
+
     packets = store.list_ai_packets()
-    result = analyze_packets(packets, threshold=threshold)
+    result = learning_snapshot(store.ai_learning_state(), packets, analyze_packets(packets, threshold=threshold))
     result["sampling_enabled"] = store.get_runtime_config("ai_sampling_enabled", "0") == "1"
     return result
 
@@ -1992,6 +1997,24 @@ def ai_config(request):
         raise ValueError("sampling_enabled must be a boolean")
     store.set_runtime_config("ai_sampling_enabled", "1" if enabled else "0")
     return {"sampling_enabled": enabled}
+
+
+@app.api("/api/ai/feedback", methods=("POST",))
+def ai_feedback(request):
+    payload = _read_json_body(request)
+    packet_id = payload.get("packet_id")
+    confidence = payload.get("confidence", 1)
+    label = payload.get("label")
+    note = payload.get("note", "")
+    if type(packet_id) is not int or packet_id < 1:
+        raise ValueError("packet_id debe ser un entero positivo.")
+    if label not in ("benign", "malicious", "unreviewed"):
+        raise ValueError("Etiqueta de revisión inválida.")
+    if type(confidence) is not int or confidence not in (1, 2, 3):
+        raise ValueError("La confianza debe ser 1, 2 o 3.")
+    if not isinstance(note, str) or len(note) > 500:
+        raise ValueError("La nota debe contener como máximo 500 caracteres.")
+    return store.save_ai_feedback(packet_id, label, confidence, note.strip())
 
 
 @app.api("/api/runtime/", methods=("GET", "POST"))
@@ -2713,6 +2736,7 @@ def _feed_soc(p: dict):
 # every few seconds would be megabytes per client for data that is identical
 # each time. Both stay on HTTP, where they are read once.
 WS_FEEDS = {
+    "ai": lambda p: _ai_snapshot(p.get("threshold", 50)),
     "protocols": _feed_protocols,
     "ips": _feed_ports,
     "ports": _feed_ports,
@@ -2930,6 +2954,7 @@ def _normalize_feed_params(request) -> dict:
         # client helper and the tests all having to learn a new field.
         "scope": str(query.get("scope") or "").strip().lower(),
         "cycles": max(1, min(20, safe_int(query.get("cycles"), 4))),
+        "threshold": clamp_int(query.get("threshold"), 1, 99, default=50),
     }
 
 

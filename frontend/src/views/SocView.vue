@@ -9,6 +9,7 @@
       @refresh="load"
     >
       <template #actions>
+        <v-btn to="/ai" prepend-icon="mdi-brain" variant="tonal">IA · Feedback</v-btn>
         <IocExportMenu />
         <v-btn
           icon="mdi-refresh"

@@ -1699,16 +1699,33 @@ class SniffStore:
             tuple(params),
         )
 
-    def list_ai_packets(self):
+    def list_ai_packets(self, packet_id=None):
         # Convert the bounded BLOB in SQL: the normal row serializer limits
         # binary fields to a 256-byte preview and would lose image data.
-        return self._fetchall("""
+        where = "WHERE id = ?" if packet_id is not None else ""
+        return self._fetchall(f"""
             SELECT id, proto, src_ip, dst_ip, src_port, dst_port, created_at,
                    length, payload_hex, details_json, tags_json, rule_hits_json,
                    hex(substr(raw_packet, 1, 4096)) AS frame_hex,
                    length(raw_packet) AS frame_length
-            FROM packets ORDER BY id DESC LIMIT 200
-        """)
+            FROM packets {where} ORDER BY id DESC LIMIT 200
+        """, (packet_id,) if packet_id is not None else ())
+
+    def ai_learning_state(self):
+        return json.loads(self.get_runtime_config("ai_learning_state", "{}"))
+
+    def save_ai_feedback(self, packet_id, label, confidence, note):
+        from .ai_learning import update_feedback
+
+        # Serialize feedback from concurrent operators; parameters, labels and
+        # revision are committed together as one bounded state document.
+        with self._lock:
+            packets = self.list_ai_packets(packet_id)
+            if not packets:
+                raise ValueError("El paquete ya no está disponible.")
+            state = update_feedback(self.ai_learning_state(), packets[0], label, confidence, note)
+            self.set_runtime_config("ai_learning_state", json.dumps(state))
+            return {"revision": state.get("revision", 0)}
 
     def count_packets(self, *, proto="", session_id=0, search="", interface="", mode="", since=""):
         where, params = self._packet_filter(

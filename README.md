@@ -426,3 +426,63 @@ API (uses the existing authentication gate):
   request, outside the capture path; no external provider receives traffic.
 - `POST /api/ai/config` with `{"sampling_enabled": true}`: enable sampling;
   pass `false` to stop retaining additional samples.
+
+### Operator-guided neural learning and live SOC triage
+
+The IA view also includes an inspectable **8 → 6 → 1** neural network. Its
+inputs come from the same bounded bytes displayed as an image: mean intensity,
+standard deviation, normalized entropy, zero-byte ratio, printable-byte ratio,
+horizontal contrast, vertical contrast and occupancy relative to 4096 bytes.
+Hidden neurons use `tanh`; the output uses a sigmoid. The graph displays the
+actual model weights, biases and activations for the selected packet. Selecting
+a neuron exposes each incoming weight and its contribution. The reported
+neuron threshold is `-bias` (zero tanh / 0.5 sigmoid), separate from the
+operator's decision threshold on the output score. Parameters are initialized
+deterministically; an initial graph does **not** imply a trained model.
+
+Use **Revisar / enseñar** to label a packet benign or malicious, supply a
+confidence weight of 1–3, and record evidence. These are supervised labels,
+not autonomous reinforcement learning or a reward for agreeing with the model.
+Only explicit operator labels train the network; predictions never become
+training labels automatically. The last 200 distinct examples are retained.
+Identical bounded bytes with the same protocol/source/completeness share one
+label, so repeating a click cannot multiply its reward. The latest operator
+revision wins; shared session authentication does not identify individual
+reviewers. Confidence scales the gradient by `confidence / 3`.
+
+Each revision deterministically replays the retained examples for 80 epochs
+using binary cross-entropy and backpropagation (learning rate 0.08). Correction
+or withdrawal rebuilds the model from the remaining labels. Labels, features,
+weights, training-loss history and the last 100 audit events are persisted
+atomically in `runtime_config.ai_learning_state`; no external service is used.
+They survive process restarts and capture-data purges. Packet review requires
+that the captured packet is still retained. Training features and operator
+notes are retained separately from capture bytes. This is a small experimental
+model; training loss is not held-out accuracy or a measured false-negative rate.
+Encrypted traffic, biased labels, repeated flows and unrepresentative feedback
+can produce misleading results. Three distinct benign and three malicious
+examples are required before its output contributes to triage; this is a
+warm-up gate, not proof of model quality.
+
+LOF and neural scores remain visible separately. Review priority takes their
+maximum; a high score with no recorded alert and completed monitor evaluation
+becomes a candidate for investigation. Reviewed packets leave the pending
+candidate queue. The source-host table summarizes only the current bounded
+snapshot, with observed alerts, pending candidates and maximum score. The
+existing SOC view links directly to the learning workspace. No classification
+blocks traffic or changes detection rules automatically.
+
+`POST /api/ai/feedback` accepts `packet_id`, `label` (`benign`, `malicious`, or
+`unreviewed`), `confidence` (integer 1–3), and `note` (up to 500 characters).
+The existing API authentication gate applies. `/ws/ai?threshold=50&refresh=5000`
+streams the same snapshot as `/api/ai/packets/`, including model revision,
+parameters, packet activations, feedback history and host priorities. The UI
+uses a 5-second update interval, marks stale data and falls back to HTTP during
+connection failures; it closes subscriptions and timers when leaving the view.
+Training runs on feedback submission; inference runs on snapshot requests,
+not in the capture loop.
+
+The supervised-network approach is described in the
+[neural network documentation](https://scikit-learn.org/stable/modules/neural_networks_supervised.html).
+This implementation uses standard-library Python and does not depend on
+scikit-learn.
