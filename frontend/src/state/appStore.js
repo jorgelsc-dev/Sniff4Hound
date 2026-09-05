@@ -352,6 +352,13 @@ function getMonitorConfig() {
   return fetchJsonPromise("/api/monitors/config");
 }
 
+function reviewPacket(packetId, label) {
+  return fetchJsonPromise("/api/packets/review", {
+    method: "POST",
+    body: JSON.stringify({ packet_id: Number(packetId), label }),
+  });
+}
+
 function getDeclaredLocation() {
   return fetchJsonPromise("/api/settings/location");
 }
@@ -1957,6 +1964,7 @@ export default {
   toggleMonitorEnabled,
   getMonitorConfig,
   setMonitorConfig,
+  reviewPacket,
   getDetectionScopes,
   setDetectionScopes,
   getDeclaredLocation,
