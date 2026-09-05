@@ -95,6 +95,3 @@ Thumbs.db
 
 # Assembled GitHub Pages output (landing at the root + MkDocs under /docs/)
 public-site/
-
-# Local VirtualBox test lab (disks, keys and captures)
-/.lab-vbox/
