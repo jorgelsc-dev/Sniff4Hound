@@ -1699,6 +1699,17 @@ class SniffStore:
             tuple(params),
         )
 
+    def list_ai_packets(self):
+        # Convert the bounded BLOB in SQL: the normal row serializer limits
+        # binary fields to a 256-byte preview and would lose image data.
+        return self._fetchall("""
+            SELECT id, proto, src_ip, dst_ip, src_port, dst_port, created_at,
+                   length, payload_hex, details_json, tags_json, rule_hits_json,
+                   hex(substr(raw_packet, 1, 4096)) AS frame_hex,
+                   length(raw_packet) AS frame_length
+            FROM packets ORDER BY id DESC LIMIT 200
+        """)
+
     def count_packets(self, *, proto="", session_id=0, search="", interface="", mode="", since=""):
         where, params = self._packet_filter(
             proto=proto, session_id=session_id, search=search, interface=interface, mode=mode, since=since

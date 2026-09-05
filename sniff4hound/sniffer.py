@@ -972,6 +972,8 @@ class Sniffer:
             if not isinstance(whitelist, list):
                 whitelist = []
             filter_enabled = self.store.get_monitor_filter_enabled()
+            get_config = getattr(self.store, "get_runtime_config", None)
+            self._ai_sampling_enabled = callable(get_config) and get_config("ai_sampling_enabled", "0") == "1"
             get_min_severity = getattr(self.store, "get_monitor_min_severity", None)
             get_suppress_generated_info = getattr(self.store, "get_monitor_suppress_generated_info", None)
             min_severity = get_min_severity() if callable(get_min_severity) else MONITOR_MIN_SEVERITY_DEFAULT
@@ -1131,6 +1133,7 @@ class Sniffer:
             return
         monitors, filter_enabled = self._get_monitor_context()
         detection_muted = self._detection_muted(packet) or self._whitelisted(packet)
+        monitor_matched = False
         if detection_muted:
             matches = []
             monitor_hits = []
@@ -1138,6 +1141,7 @@ class Sniffer:
             rulesets = self._get_rulesets()
             matches = classify_packet(packet, rulesets)
             monitor_hits = evaluate_packet(packet, monitors) if filter_enabled else []
+            monitor_matched = bool(monitor_hits)
             monitor_hits = self._filter_monitor_hits(monitor_hits)
             if monitor_hits:
                 monitor_hits = self._rule_throttle.filter(monitor_hits, packet.get("src_ip"))
@@ -1155,10 +1159,21 @@ class Sniffer:
         packet["rule_hits"] = matches
         packet["monitor_hits"] = monitor_hits
         packet["tags"] = tags
+        packet["ai_detection_status"] = "muted" if detection_muted else ("evaluated" if filter_enabled else "disabled")
+        if monitor_matched and not monitor_hits:
+            packet["ai_detection_status"] = "suppressed"
         packet["banner_text"] = packet.get("banner_text") or packet.get("payload_text") or ""
 
         detected = detection_muted or bool(monitor_hits) or not filter_enabled
-        if detected:
+        ai_sample = False
+        if not detected and getattr(self, "_ai_sampling_enabled", False):
+            now = time.monotonic()
+            with self._state_lock:
+                if now - getattr(self, "_ai_last_sample", float("-inf")) >= 1:
+                    ai_sample = True
+                    self._ai_last_sample = now
+        packet["ai_sample"] = ai_sample
+        if detected or ai_sample:
             saved = self.store.register_packet(packet)
             self._touch_packet(saved or packet, stored=True)
             self._broadcast_packet(saved or packet, persisted=True)

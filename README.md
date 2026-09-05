@@ -385,3 +385,44 @@ mkdocs build --strict
   tiene permisos de administracion para crear el sitio por API.
 - Reporta vulnerabilidades por canal privado.
 - Soporte y notas adicionales: `SUPPORT.md`
+
+### Local packet-image analysis
+
+Open **IA** (`/ai`) and select **Analizar paquetes**. Each captured byte becomes
+one grayscale pixel (0 black, 255 white), in rows of 64 pixels. The last row is
+zero-padded for display; padding is excluded from the image features. Analysis
+uses at most the first 4096 bytes of each of the latest 200 stored packets.
+Records without original frame bytes use their payload preview and are marked
+partial; records without bytes receive no score.
+
+The dependency-free local model (`byte-image-lof-v1`) applies Local Outlier
+Factor with 10 neighbors to intensity histograms and 8×8 spatial intensity
+averages. It fits each snapshot separately, grouping by protocol, byte source
+and truncation status, with at least 20 images per group. Score is
+`100 * max(0, 1 - 1 / max(LOF, 1))`; the default review threshold is 50.
+This is an experimental anomaly score, **not an attack probability**, a trained
+malware classifier, or a measured false-negative rate. Cohorts are unlabelled
+and may contain attacks; encryption, protocol differences and sampling bias
+can influence the result. Scores can change as the latest cohort changes.
+The model follows the density-comparison approach described in the
+[LOF documentation](https://scikit-learn.org/stable/modules/generated/sklearn.neighbors.LocalOutlierFactor.html),
+with fixed-size neighborhoods and deterministic tie ordering.
+
+Enable **Conservar una muestra sin alertas** to retain at most one otherwise
+filtered-out packet per second across sniffer interfaces. This opt-in setting
+is persisted in the database and picked up on the next monitor-cache refresh.
+Sampled packets share the normal sniffer storage, retention and deletion
+controls; sampling never creates a monitor hit. Traffic excluded as the app's
+own dashboard traffic remains excluded. A candidate requires a score above
+the selected threshold, no recorded rule/monitor hit, and an explicit record
+that monitors were evaluated. Muted, suppressed, disabled and legacy unknown
+evaluations are excluded from candidate classification. Candidates require
+human investigation; low scores do not establish that traffic is safe.
+
+API (uses the existing authentication gate):
+
+- `GET /api/ai/packets/?threshold=50`: bounded snapshot, PNG data URLs, scores,
+  candidate flags, capture completeness and cohort sizes. Analysis runs on
+  request, outside the capture path; no external provider receives traffic.
+- `POST /api/ai/config` with `{"sampling_enabled": true}`: enable sampling;
+  pass `false` to stop retaining additional samples.
