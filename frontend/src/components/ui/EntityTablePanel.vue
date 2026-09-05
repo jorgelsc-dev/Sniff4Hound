@@ -259,6 +259,44 @@
             <td :colspan="columns.length" class="entity-data-table__expanded-cell">
               <slot :item="item" :json="formatJson(item)" name="row-expanded">
                 <div class="entity-json-panel">
+                  <div v-if="packetReviewEnabled" class="d-flex align-center flex-wrap ga-2 mb-3">
+                    <span class="text-caption text-medium-emphasis">Revisión del paquete:</span>
+                    <v-chip
+                      size="small"
+                      :color="reviewChipColor(item.review_label)"
+                      variant="tonal"
+                    >
+                      {{ reviewChipLabel(item.review_label) }}
+                    </v-chip>
+                    <v-btn
+                      size="x-small"
+                      variant="outlined"
+                      color="success"
+                      :disabled="item.review_label === 'benign' || reviewingRowKey === item.__entityTableRowKey"
+                      @click.stop="reviewRow(item, 'benign')"
+                    >
+                      Benigno
+                    </v-btn>
+                    <v-btn
+                      size="x-small"
+                      variant="outlined"
+                      color="error"
+                      :disabled="item.review_label === 'malicious' || reviewingRowKey === item.__entityTableRowKey"
+                      @click.stop="reviewRow(item, 'malicious')"
+                    >
+                      Maligno
+                    </v-btn>
+                    <v-btn
+                      v-if="item.review_label"
+                      size="x-small"
+                      variant="text"
+                      color="secondary"
+                      :disabled="reviewingRowKey === item.__entityTableRowKey"
+                      @click.stop="reviewRow(item, 'unreviewed')"
+                    >
+                      Quitar etiqueta
+                    </v-btn>
+                  </div>
                   <div class="d-flex align-center flex-wrap ga-2 mb-2">
                     <div class="entity-json-panel__label mb-0">Full row JSON</div>
                     <v-spacer />
@@ -480,6 +518,14 @@ export default {
       type: Array,
       default: null,
     },
+    // Shows a benign/malign review control in the expanded-row panel and
+    // writes it through store.reviewPacket. Only meaningful for packet rows
+    // (rows carrying an `id` from the packets table), so parents opt in
+    // explicitly rather than this component guessing the row shape.
+    packetReviewEnabled: {
+      type: Boolean,
+      default: false,
+    },
   },
   emits: ["load-more"],
   data() {
@@ -490,6 +536,7 @@ export default {
       tableFilterValues: {},
       visibleColumnKeys: [],
       valueFilters: [],
+      reviewingRowKey: "",
     };
   },
   computed: {
@@ -857,6 +904,40 @@ export default {
           groupKey: `clipboard:${label}`,
         });
       });
+    },
+    reviewChipColor(label) {
+      if (label === "benign") return "success";
+      if (label === "malicious") return "error";
+      return "secondary";
+    },
+    reviewChipLabel(label) {
+      if (label === "benign") return "Benigno";
+      if (label === "malicious") return "Maligno";
+      return "Sin revisar";
+    },
+    reviewRow(item, label) {
+      if (!item || item.id === undefined || item.id === null) return;
+      const rowKey = item.__entityTableRowKey;
+      const previous = item.review_label;
+      this.reviewingRowKey = rowKey;
+      store
+        .reviewPacket(item.id, label)
+        .then(() => {
+          item.review_label = label === "unreviewed" ? "" : label;
+        })
+        .catch((err) => {
+          store.pushNotification({
+            kind: "review",
+            severity: "medium",
+            title: "No se pudo guardar la revisión",
+            message: (err && err.message) || "Intenta de nuevo.",
+            groupKey: `packet-review:${item.id}`,
+          });
+          item.review_label = previous;
+        })
+        .finally(() => {
+          if (this.reviewingRowKey === rowKey) this.reviewingRowKey = "";
+        });
     },
     exportColumns() {
       const columns = this.visibleColumns.filter((column) => column.key !== "actions");

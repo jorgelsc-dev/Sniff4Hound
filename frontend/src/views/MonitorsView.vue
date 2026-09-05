@@ -133,6 +133,17 @@
               aria-label="Investigate this monitor"
               @click.stop
             />
+            <v-btn
+              size="x-small"
+              variant="text"
+              color="secondary"
+              icon="mdi-file-document-outline"
+              aria-label="View rule"
+              @click.stop="openRuleDetail(monitor)"
+            >
+              <v-icon icon="mdi-file-document-outline" />
+              <v-tooltip activator="parent" location="bottom">View rule</v-tooltip>
+            </v-btn>
           </div>
         </v-expansion-panel-title>
         <v-expansion-panel-text>
@@ -145,6 +156,8 @@
       No monitor has matched any traffic yet. Monitors show up here automatically as soon as they
       have at least one match.
     </v-alert>
+
+    <RuleDetailDialog v-model="ruleDetailOpen" :monitor="ruleDetailMonitor" />
 
     <div class="d-flex flex-wrap ga-2 mb-6">
       <v-btn size="small" variant="tonal" color="info" prepend-icon="mdi-web" to="/domains">
@@ -170,6 +183,7 @@
 import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import MonitorMatchesPanel from "../components/monitors/MonitorMatchesPanel.vue";
+import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 
 const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
 
@@ -178,6 +192,7 @@ export default {
   components: {
     ViewHeader,
     MonitorMatchesPanel,
+    RuleDetailDialog,
   },
   data() {
     return {
@@ -193,6 +208,8 @@ export default {
       clearDialog: false,
       clearing: false,
       clearError: "",
+      ruleDetailOpen: false,
+      ruleDetailMonitor: null,
     };
   },
   computed: {
@@ -293,6 +310,10 @@ export default {
       if (mode === "regex") return "info";
       if (mode === "stateful") return "warning";
       return "primary";
+    },
+    openRuleDetail(monitor) {
+      this.ruleDetailMonitor = monitor;
+      this.ruleDetailOpen = true;
     },
     focusMonitorFromQuery() {
       const target = String((this.$route.query && this.$route.query.monitor) || "").trim();

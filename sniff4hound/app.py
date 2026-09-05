@@ -548,7 +548,9 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/soc/analysis/", "desc": "Iterative SOC triage analysis."},
     {"method": "GET", "path": "/api/ai/packets/", "desc": "Local byte-image anomaly analysis of the latest 200 packets."},
     {"method": "POST", "path": "/api/ai/feedback", "desc": "Learn from a reviewed packet: label, confidence and note."},
-    {"method": "POST", "path": "/api/ai/config", "desc": "Enable or disable sampling of traffic without monitor alerts."},
+    {"method": "POST", "path": "/api/packets/review", "desc": "Label any captured packet benign, malicious or unreviewed."},
+    {"method": "GET", "path": "/api/ai/config", "desc": "Current AI sampling flag and exclusion filters."},
+    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable sampling and/or set AI exclusion filters (IP type, CIDR, protocol, port) - excluded traffic is skipped by the packet-image analysis."},
     {"method": "GET", "path": "/api/runtime/", "desc": "Runtime mode and engine snapshot."},
     {"method": "POST", "path": "/api/runtime/", "desc": "Start/stop engines and update the sniffer interface. Sniffer and honeypot are independent: {\"engines\": {\"sniffer\": true, \"honeypot\": true}} runs both, {\"engine\": \"honeypot\", \"action\": \"stop\"} stops one."},
     {"method": "GET", "path": "/api/settings/location", "desc": "Declared sensor site location used to plot private/loopback hosts."},
@@ -979,6 +981,7 @@ def _packet_row_to_port(packet: dict) -> dict:
         "banner_text": banner,
         "tags": tags,
         "rule_hits": rule_hits,
+        "review_label": packet.get("review_label") or "",
     }
 
 
@@ -1986,17 +1989,32 @@ def _ai_snapshot(threshold=50):
     packets = store.list_ai_packets()
     result = learning_snapshot(store.ai_learning_state(), packets, analyze_packets(packets, threshold=threshold))
     result["sampling_enabled"] = store.get_runtime_config("ai_sampling_enabled", "0") == "1"
+    result["exclusion_filters"] = store.get_ai_exclusion_filters()
     return result
 
 
-@app.api("/api/ai/config", methods=("POST",))
+@app.api("/api/ai/config", methods=("GET", "POST"))
 def ai_config(request):
+    if request.method.upper() == "GET":
+        return {
+            "sampling_enabled": store.get_runtime_config("ai_sampling_enabled", "0") == "1",
+            "exclusion_filters": store.get_ai_exclusion_filters(),
+        }
     payload = _read_json_body(request)
-    enabled = payload.get("sampling_enabled")
-    if not isinstance(enabled, bool):
-        raise ValueError("sampling_enabled must be a boolean")
-    store.set_runtime_config("ai_sampling_enabled", "1" if enabled else "0")
-    return {"sampling_enabled": enabled}
+    has_sampling = "sampling_enabled" in payload
+    has_filters = "exclusion_filters" in payload
+    if not has_sampling and not has_filters:
+        raise ValueError("sampling_enabled or exclusion_filters is required")
+    response = {}
+    if has_sampling:
+        enabled = payload.get("sampling_enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("sampling_enabled must be a boolean")
+        store.set_runtime_config("ai_sampling_enabled", "1" if enabled else "0")
+        response["sampling_enabled"] = enabled
+    if has_filters:
+        response["exclusion_filters"] = store.set_ai_exclusion_filters(payload.get("exclusion_filters"))
+    return response
 
 
 @app.api("/api/ai/feedback", methods=("POST",))
@@ -2015,6 +2033,16 @@ def ai_feedback(request):
     if not isinstance(note, str) or len(note) > 500:
         raise ValueError("La nota debe contener como máximo 500 caracteres.")
     return store.save_ai_feedback(packet_id, label, confidence, note.strip())
+
+
+@app.api("/api/packets/review", methods=("POST",))
+def packet_review(request):
+    payload = _read_json_body(request)
+    packet_id = payload.get("packet_id")
+    label = payload.get("label")
+    if type(packet_id) is not int or packet_id < 1:
+        raise ValueError("packet_id debe ser un entero positivo.")
+    return store.save_packet_review(packet_id, label)
 
 
 @app.api("/api/runtime/", methods=("GET", "POST"))

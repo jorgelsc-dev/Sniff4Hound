@@ -29,6 +29,34 @@
       </v-row>
       <p class="text-caption mt-3">Umbral aplicado: {{ result.threshold ?? 50 }}. Pulsa Analizar paquetes para aplicar cambios. Actualización en vivo cada 5 segundos. La muestra comparte la retención y el borrado del sniffer.</p>
     </v-card>
+
+    <v-card class="pa-5 mb-4" variant="tonal">
+      <div class="d-flex align-center flex-wrap ga-2 mb-2">
+        <h2 class="text-h6 mb-0">Excluir tráfico del análisis</h2>
+        <v-chip v-if="activeFilterCount" size="small" color="warning">{{ activeFilterCount }} filtro(s) activo(s)</v-chip>
+      </div>
+      <p class="text-body-2 text-medium-emphasis mb-3">
+        El tráfico que coincida con alguno de estos criterios se ignora al analizar paquetes (no
+        afecta a la captura ni a los monitores). Útil para excluir loopback/salud del propio panel,
+        redes internas conocidas, o protocolos/puertos ruidosos que no aportan al análisis de imagen.
+      </p>
+      <v-alert v-if="filtersError" type="error" density="comfortable" class="mb-3">{{ filtersError }}</v-alert>
+      <v-row dense>
+        <v-col cols="12" md="4">
+          <div class="text-caption text-medium-emphasis mb-1">Tipo de IP</div>
+          <v-checkbox v-for="opt in ipTypeOptions" :key="opt.value" v-model="filtersDraft.ip_types" :value="opt.value" :label="opt.label" density="compact" hide-details />
+        </v-col>
+        <v-col cols="12" md="8">
+          <v-combobox v-model="filtersDraft.cidrs" label="IPs o bloques CIDR excluidos" hint="Ej: 127.0.0.1, 10.0.0.0/8, 203.0.113.5" persistent-hint multiple chips closable-chips clearable variant="outlined" density="comfortable" class="mb-4" />
+          <v-combobox v-model="filtersDraft.protocols" label="Protocolos excluidos" hint="Ej: dns, icmp, ntp" persistent-hint multiple chips closable-chips clearable variant="outlined" density="comfortable" class="mb-4" />
+          <v-combobox v-model="filtersDraft.ports" label="Puertos excluidos" hint="Coincide con puerto origen o destino" persistent-hint multiple chips closable-chips clearable variant="outlined" density="comfortable" />
+        </v-col>
+      </v-row>
+      <div class="d-flex ga-2 mt-2">
+        <v-btn color="primary" :loading="savingFilters" @click="saveFilters">Guardar filtros</v-btn>
+        <v-btn variant="text" :disabled="savingFilters" @click="resetFiltersDraft">Descartar cambios</v-btn>
+      </div>
+    </v-card>
     <template v-if="result.learning">
       <NeuralGraph ref="graph" :learning="result.learning" :packet="selectedPacket" />
       <v-card class="pa-5 mb-4" variant="tonal">
@@ -106,7 +134,7 @@ import ViewHeader from "../components/ui/ViewHeader.vue";
 import NeuralGraph from "../components/NeuralGraph.vue";
 import store from "../state/appStore";
 
-const result = ref({ rows: [], sampling_enabled: false });
+const result = ref({ rows: [], sampling_enabled: false, exclusion_filters: null });
 const threshold = ref(50);
 const selectedId = ref(null);
 const graph = ref(null);
@@ -132,6 +160,61 @@ const savingFeedback = ref(false);
 const feedbackError = ref("");
 const labels = [{ title: "Benigno", value: "benign" }, { title: "Malicioso", value: "malicious" }, { title: "Retirar etiqueta", value: "unreviewed" }];
 
+const ipTypeOptions = [
+  { value: "loopback", label: "Loopback (127.0.0.1, ::1)" },
+  { value: "private", label: "Privada (RFC1918, link-local)" },
+  { value: "public", label: "Pública" },
+  { value: "multicast", label: "Multicast / broadcast" },
+];
+const emptyFilters = () => ({ ip_types: [], cidrs: [], protocols: [], ports: [] });
+const filtersDraft = ref(emptyFilters());
+const filtersLoaded = ref(false);
+const savingFilters = ref(false);
+const filtersError = ref("");
+const activeFilterCount = computed(() =>
+  filtersDraft.value.ip_types.length + filtersDraft.value.cidrs.length +
+  filtersDraft.value.protocols.length + filtersDraft.value.ports.length
+);
+
+function resetFiltersDraft() {
+  const source = result.value.exclusion_filters || emptyFilters();
+  filtersDraft.value = {
+    ip_types: [...(source.ip_types || [])],
+    cidrs: [...(source.cidrs || [])],
+    protocols: [...(source.protocols || [])],
+    ports: (source.ports || []).map(String),
+  };
+  filtersError.value = "";
+}
+
+async function saveFilters() {
+  savingFilters.value = true;
+  filtersError.value = "";
+  try {
+    const ports = filtersDraft.value.ports
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 0 && value <= 65535);
+    const config = await store.fetchJsonPromise("/api/ai/config", {
+      method: "POST",
+      body: JSON.stringify({
+        exclusion_filters: {
+          ip_types: filtersDraft.value.ip_types,
+          cidrs: filtersDraft.value.cidrs,
+          protocols: filtersDraft.value.protocols,
+          ports,
+        },
+      }),
+    });
+    result.value.exclusion_filters = config.exclusion_filters;
+    resetFiltersDraft();
+    await load();
+  } catch (err) {
+    filtersError.value = err.message || "No se pudieron guardar los filtros.";
+  } finally {
+    savingFilters.value = false;
+  }
+}
+
 function applySnapshot(snapshot) {
   if (disposed || (snapshot.learning?.revision ?? 0) < (result.value.learning?.revision ?? 0)) return;
   if (snapshot.generated_at < (result.value.generated_at || "")) return;
@@ -139,6 +222,10 @@ function applySnapshot(snapshot) {
   lastReceived = Date.now();
   lastUpdate.value = new Date(snapshot.generated_at).toLocaleTimeString();
   error.value = "";
+  if (!filtersLoaded.value && snapshot.exclusion_filters) {
+    filtersLoaded.value = true;
+    resetFiltersDraft();
+  }
 }
 
 function openFeed() {

@@ -53,6 +53,7 @@ from .utils import (
     safe_float,
     safe_int,
     stable_flow_key,
+    unique_ordered,
     utc_now,
     utc_since,
 )
@@ -161,6 +162,63 @@ def _ip_scope(ip: str) -> str:
 
 
 IP_SCOPES = ("local", "private", "public", "multicast", "reserved", "unknown")
+
+# The AI packet-image view's exclusion filter uses its own 4-bucket vocabulary
+# (loopback kept separate from private, unlike `_ip_scope`'s "local") because
+# an operator excluding "loopback" (their own dashboard's health checks) does
+# not necessarily want to exclude all of RFC1918 too.
+AI_EXCLUSION_IP_TYPES = ("loopback", "private", "public", "multicast")
+
+
+def _ai_ip_type(ip: str) -> str:
+    text = str(ip or "").strip()
+    if not text:
+        return "unknown"
+    try:
+        ip_obj = ipaddress.ip_address(text)
+    except Exception:
+        return "unknown"
+    if ip_obj.is_loopback:
+        return "loopback"
+    if ip_obj.is_multicast:
+        return "multicast"
+    if ip_obj.is_private or ip_obj.is_link_local or getattr(ip_obj, "is_reserved", False):
+        return "private"
+    if ip_obj.is_global:
+        return "public"
+    return "unknown"
+
+
+def _ip_in_any_network(ip: str, networks: list) -> bool:
+    text = str(ip or "").strip()
+    if not text or not networks:
+        return False
+    try:
+        ip_obj = ipaddress.ip_address(text)
+    except Exception:
+        return False
+    return any(ip_obj in network for network in networks)
+
+
+def _packet_matches_ai_exclusion(row: dict, filters: dict, networks: list) -> bool:
+    if filters["protocols"]:
+        if normalize_protocol_name(row.get("proto")) in filters["protocols"]:
+            return True
+        if row.get("transport") and normalize_protocol_name(row.get("transport")) in filters["protocols"]:
+            return True
+    if filters["ports"]:
+        packet_ports = {safe_int(row.get("src_port"), -1), safe_int(row.get("dst_port"), -1)}
+        if packet_ports & set(filters["ports"]):
+            return True
+    if filters["ip_types"] or networks:
+        for ip_value in (row.get("src_ip"), row.get("dst_ip")):
+            if not ip_value:
+                continue
+            if filters["ip_types"] and _ai_ip_type(ip_value) in filters["ip_types"]:
+                return True
+            if networks and _ip_in_any_network(ip_value, networks):
+                return True
+    return False
 
 # Ceiling on the distinct-IP scan behind scope filtering and scope counts, so
 # a database with a pathological number of unique addresses cannot turn one
@@ -1694,22 +1752,164 @@ class SniffStore:
         params = list(params)
         params.extend([int(limit), int(offset)])
         columns = "*" if include_raw else PACKET_LIST_SELECT
-        return self._fetchall(
+        rows = self._fetchall(
             f"SELECT {columns} FROM packets {where} ORDER BY id DESC LIMIT ? OFFSET ?",
             tuple(params),
         )
+        return self._attach_review_labels(rows)
+
+    def _attach_review_labels(self, rows):
+        # Operator benign/malign review lives in the generic key/value `tags`
+        # table (key='review_label'), decoupled from the AI-learning feedback
+        # blob so any packet listing can surface and edit it, not only the
+        # AI view's own snapshot.
+        ids = [row["id"] for row in rows if row.get("id") is not None]
+        if not ids:
+            return rows
+        placeholders = ",".join("?" * len(ids))
+        tag_rows = self._fetchall(
+            f"SELECT packet_id, value FROM tags WHERE key = 'review_label' AND packet_id IN ({placeholders})",
+            tuple(ids),
+        )
+        labels = {row["packet_id"]: row["value"] for row in tag_rows}
+        for row in rows:
+            row["review_label"] = labels.get(row.get("id"), "")
+        return rows
+
+    def save_packet_review(self, packet_id, label):
+        label = str(label or "").strip().lower()
+        if label not in ("benign", "malicious", "unreviewed"):
+            raise ValueError("Etiqueta de revisión inválida.")
+        packet_id = int(packet_id)
+        with self._lock:
+            packet = self._fetchone(
+                "SELECT id, flow_key, src_ip, src_port, proto FROM packets WHERE id = ?", (packet_id,)
+            )
+            if not packet:
+                raise ValueError("El paquete ya no está disponible.")
+            now = utc_now()
+            self._execute("DELETE FROM tags WHERE packet_id = ? AND key = 'review_label'", (packet_id,))
+            if label != "unreviewed":
+                self._execute(
+                    """
+                    INSERT INTO tags (packet_id, flow_key, ip, port, proto, key, value, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 'review_label', ?, ?, ?)
+                    """,
+                    (
+                        packet_id,
+                        packet.get("flow_key") or "",
+                        packet.get("src_ip") or "",
+                        int(packet.get("src_port") or 0),
+                        packet.get("proto") or "unknown",
+                        label,
+                        now,
+                        now,
+                    ),
+                    commit=True,
+                )
+            else:
+                self._conn.commit()
+        return {"packet_id": packet_id, "review_label": "" if label == "unreviewed" else label}
+
+    _AI_PACKET_COLUMNS = (
+        "id, proto, transport, src_ip, dst_ip, src_port, dst_port, ip_version, created_at, "
+        "length, payload_hex, details_json, tags_json, rule_hits_json, "
+        "hex(substr(raw_packet, 1, 4096)) AS frame_hex, length(raw_packet) AS frame_length"
+    )
 
     def list_ai_packets(self, packet_id=None):
         # Convert the bounded BLOB in SQL: the normal row serializer limits
         # binary fields to a 256-byte preview and would lose image data.
-        where = "WHERE id = ?" if packet_id is not None else ""
-        return self._fetchall(f"""
-            SELECT id, proto, src_ip, dst_ip, src_port, dst_port, created_at,
-                   length, payload_hex, details_json, tags_json, rule_hits_json,
-                   hex(substr(raw_packet, 1, 4096)) AS frame_hex,
-                   length(raw_packet) AS frame_length
-            FROM packets {where} ORDER BY id DESC LIMIT 200
-        """, (packet_id,) if packet_id is not None else ())
+        if packet_id is not None:
+            return self._fetchall(
+                f"SELECT {self._AI_PACKET_COLUMNS} FROM packets WHERE id = ?", (packet_id,)
+            )
+        filters = self.get_ai_exclusion_filters()
+        has_filters = any(filters.values())
+        # No filters: keep the cheap, direct 200-row fetch. With filters,
+        # over-fetch a bounded window so excluded traffic doesn't just shrink
+        # the analyzed set, then filter and trim back down to 200 in Python -
+        # scope/CIDR classification isn't expressible in SQLite (same reason
+        # `_grouped_ip_catalog` filters after the fetch).
+        fetch_limit = 1000 if has_filters else 200
+        rows = self._fetchall(
+            f"SELECT {self._AI_PACKET_COLUMNS} FROM packets ORDER BY id DESC LIMIT ?", (fetch_limit,)
+        )
+        if not has_filters:
+            return rows
+        networks = []
+        for cidr in filters["cidrs"]:
+            try:
+                networks.append(ipaddress.ip_network(cidr, strict=False))
+            except ValueError:
+                continue
+        return [row for row in rows if not _packet_matches_ai_exclusion(row, filters, networks)][:200]
+
+    def get_ai_exclusion_filters(self):
+        data = json_loads(self.get_runtime_config("ai_exclusion_filters", ""), default={})
+        if not isinstance(data, dict):
+            data = {}
+        ip_types = [str(v) for v in data.get("ip_types", []) if str(v) in AI_EXCLUSION_IP_TYPES]
+        cidrs = [str(v).strip() for v in data.get("cidrs", []) if str(v).strip()]
+        protocols = [normalize_protocol_name(v) for v in data.get("protocols", []) if str(v).strip()]
+        ports = []
+        for v in data.get("ports", []):
+            port = safe_int(v, -1)
+            if 0 <= port <= 65535:
+                ports.append(port)
+        return {
+            "ip_types": unique_ordered(ip_types),
+            "cidrs": unique_ordered(cidrs),
+            "protocols": unique_ordered(protocols),
+            "ports": unique_ordered(ports),
+        }
+
+    def set_ai_exclusion_filters(self, filters):
+        data = filters if isinstance(filters, dict) else {}
+        ip_types_raw = data.get("ip_types", [])
+        if not isinstance(ip_types_raw, (list, tuple)):
+            raise ValueError("ip_types debe ser una lista.")
+        invalid_types = unique_ordered(str(v) for v in ip_types_raw if str(v) not in AI_EXCLUSION_IP_TYPES)
+        if invalid_types:
+            raise ValueError(f"Tipo de IP inválido: {', '.join(invalid_types)}")
+
+        cidrs_raw = data.get("cidrs", [])
+        if not isinstance(cidrs_raw, (list, tuple)):
+            raise ValueError("cidrs debe ser una lista.")
+        cidrs = []
+        for item in cidrs_raw:
+            text = str(item).strip()
+            if not text:
+                continue
+            try:
+                ipaddress.ip_network(text, strict=False)
+            except ValueError:
+                raise ValueError(f"IP o bloque CIDR inválido: {text}")
+            cidrs.append(text)
+
+        protocols_raw = data.get("protocols", [])
+        if not isinstance(protocols_raw, (list, tuple)):
+            raise ValueError("protocols debe ser una lista.")
+        protocols = [normalize_protocol_name(item) for item in protocols_raw if str(item).strip()]
+
+        ports_raw = data.get("ports", [])
+        if not isinstance(ports_raw, (list, tuple)):
+            raise ValueError("ports debe ser una lista.")
+        ports = []
+        for item in ports_raw:
+            port = safe_int(item, -1)
+            if port < 0 or port > 65535:
+                raise ValueError(f"Puerto inválido: {item}")
+            ports.append(port)
+
+        normalized = {
+            "ip_types": unique_ordered(str(v) for v in ip_types_raw),
+            "cidrs": unique_ordered(cidrs),
+            "protocols": unique_ordered(protocols),
+            "ports": unique_ordered(ports),
+        }
+        self.set_runtime_config("ai_exclusion_filters", json_dumps(normalized))
+        return normalized
 
     def ai_learning_state(self):
         return json.loads(self.get_runtime_config("ai_learning_state", "{}"))
@@ -1770,7 +1970,7 @@ class SniffStore:
         else:
             for row in rows:
                 row["matched_value"] = ""
-        return rows
+        return self._attach_review_labels(rows)
 
     def count_packets_by_monitor(self, monitor_id: str, *, since=""):
         clauses = ["tags.key = 'monitor_id'", "tags.value = ?"]
