@@ -108,6 +108,7 @@ class AiApiTests(unittest.TestCase):
     def test_api_snapshot_config_validation_and_auth(self):
         from wsbuilder import Request
         from sniff4hound import app as module
+        from sniff4hound import auth
         request = lambda method, path, body=b'': Request(method, path, '', {}, body, ('203.0.113.10', 1234))
         with patch.object(module, 'store', self.store):
             self.store.register_packet(packet())
@@ -119,7 +120,13 @@ class AiApiTests(unittest.TestCase):
             self.assertEqual(self.store.get_runtime_config('ai_sampling_enabled'), '1')
             with self.assertRaises(ValueError):
                 module.ai_config(request('POST', '/api/ai/config', b'{"sampling_enabled":"false"}'))
-            with patch.object(module, 'REQUIRE_AUTH', True):
+            # app imports a copy of the flag, while authenticate_request reads
+            # auth's flag. Earlier tests reload those modules with auth disabled;
+            # isolate both flags and the limiter instead of relying on test order.
+            with patch.object(module, 'REQUIRE_AUTH', True), \
+                 patch.object(auth, 'REQUIRE_AUTH', True), \
+                 patch.object(module, 'RATE_LIMITER', auth.AuthRateLimiter(threshold=10)):
                 for method, path in [('GET', '/api/ai/packets/'), ('POST', '/api/ai/config')]:
-                    response = module.app.dispatch(request(method, path))
-                    self.assertIn(response.status, (401, 429))
+                    response = module.app.dispatch(request(method, path, b'{"sampling_enabled":false}'))
+                    self.assertEqual(response.status, 401)
+                self.assertEqual(self.store.get_runtime_config('ai_sampling_enabled'), '1')
