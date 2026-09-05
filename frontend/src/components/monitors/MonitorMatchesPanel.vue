@@ -67,6 +67,7 @@
       :columns="columns"
       :loading="loading"
       :expandable-rows="true"
+      :packet-review-enabled="true"
       variant="flat"
       search-enabled
       search-label="Search matched traffic"

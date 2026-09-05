@@ -173,6 +173,7 @@
         :rows="filteredPackets"
         :columns="columns"
         :expandable-rows="true"
+        :packet-review-enabled="true"
         :loading="loading"
         :error="error"
         :last-updated="lastUpdated"

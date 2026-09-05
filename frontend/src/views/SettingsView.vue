@@ -486,6 +486,15 @@
           <template #cell-actions="{ item }">
             <div class="row-actions">
               <v-btn
+                size="small"
+                variant="tonal"
+                color="secondary"
+                prepend-icon="mdi-file-document-outline"
+                @click="openRuleDetail(item)"
+              >
+                View
+              </v-btn>
+              <v-btn
                 v-if="item.source !== 'builtin'"
                 size="small"
                 variant="tonal"
@@ -510,6 +519,8 @@
             </div>
           </template>
         </EntityTablePanel>
+
+        <RuleDetailDialog v-model="ruleDetailOpen" :monitor="ruleDetailMonitor" />
 
         <v-btn
           size="small"
@@ -1002,6 +1013,7 @@ import DataPanel from "../components/ui/DataPanel.vue";
 import LocationPicker from "../components/settings/LocationPicker.vue";
 import RegexHelperButton from "../components/ui/RegexHelperButton.vue";
 import BlacklistPanel from "../components/settings/BlacklistPanel.vue";
+import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 import { formatTimestamp, matchesSearch, uniqueSorted } from "../utils/traffic";
 
 const PROTOCOL_OPTIONS = [
@@ -1102,12 +1114,15 @@ export default {
     RegexHelperButton,
     BlacklistPanel,
     LocationPicker,
+    RuleDetailDialog,
   },
   data() {
     const requested = String((this.$route && this.$route.query && this.$route.query.section) || "").trim();
     return {
       store,
       activeTab: VALID_TABS.has(requested) ? requested : "capture",
+      ruleDetailOpen: false,
+      ruleDetailMonitor: null,
 
       // Capture
       interfaceSubmitting: false,
@@ -1681,6 +1696,10 @@ export default {
       this.monitorBuilderPanels = ["include"];
       this.formError = "";
       this.dialogOpen = true;
+    },
+    openRuleDetail(item) {
+      this.ruleDetailMonitor = item;
+      this.ruleDetailOpen = true;
     },
     openEditDialog(item) {
       const match = item.match || {};
