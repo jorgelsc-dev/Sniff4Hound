@@ -135,6 +135,7 @@ export default {
       // reachable only by typing the URL by hand.
       navItems: [
         { label: "Dashboard", to: "/", icon: "mdi-view-dashboard" },
+        { label: "IA", to: "/ai", icon: "mdi-brain" },
         { label: "SOC", to: "/soc", icon: "mdi-shield-search" },
         { label: "Investigate", to: "/investigate", icon: "mdi-magnify-scan" },
         { label: "Monitors", to: "/monitors", icon: "mdi-target-account" },

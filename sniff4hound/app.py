@@ -90,6 +90,7 @@ FRONTEND_DIST_DIR = _resolve_frontend_dist_dir()
 # Each entry is registered both with and without a trailing slash (see
 # _register_static_frontend), since "/soc/" used to 404 while "/soc" worked.
 SPA_ROUTES = (
+    "/ai",
     "/dashboard",
     "/radar",
     "/investigate",
@@ -545,6 +546,8 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ip/ttl-path/", "desc": "TTL path estimate for an IP."},
     {"method": "GET", "path": "/api/ip/intel/", "desc": "Combined host intel."},
     {"method": "GET", "path": "/api/soc/analysis/", "desc": "Iterative SOC triage analysis."},
+    {"method": "GET", "path": "/api/ai/packets/", "desc": "Local byte-image anomaly analysis of the latest 200 packets."},
+    {"method": "POST", "path": "/api/ai/config", "desc": "Enable or disable sampling of traffic without monitor alerts."},
     {"method": "GET", "path": "/api/runtime/", "desc": "Runtime mode and engine snapshot."},
     {"method": "POST", "path": "/api/runtime/", "desc": "Start/stop engines and update the sniffer interface. Sniffer and honeypot are independent: {\"engines\": {\"sniffer\": true, \"honeypot\": true}} runs both, {\"engine\": \"honeypot\", \"action\": \"stop\"} stops one."},
     {"method": "GET", "path": "/api/settings/location", "desc": "Declared sensor site location used to plot private/loopback hosts."},
@@ -1968,6 +1971,27 @@ def soc_analysis(request):
     cycles = clamp_int(request.query.get("cycles"), 1, 4, default=4) or 4
     limit = _normalize_limit(request.query.get("limit"), default=500, maximum=2000)
     return store.soc_analysis_snapshot(cycles=cycles, limit=limit)
+
+
+@app.api("/api/ai/packets/", methods=("GET",))
+def ai_packets(request):
+    from .packet_ai import analyze_packets
+
+    threshold = clamp_int(request.query.get("threshold"), 1, 99, default=50)
+    packets = store.list_ai_packets()
+    result = analyze_packets(packets, threshold=threshold)
+    result["sampling_enabled"] = store.get_runtime_config("ai_sampling_enabled", "0") == "1"
+    return result
+
+
+@app.api("/api/ai/config", methods=("POST",))
+def ai_config(request):
+    payload = _read_json_body(request)
+    enabled = payload.get("sampling_enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("sampling_enabled must be a boolean")
+    store.set_runtime_config("ai_sampling_enabled", "1" if enabled else "0")
+    return {"sampling_enabled": enabled}
 
 
 @app.api("/api/runtime/", methods=("GET", "POST"))

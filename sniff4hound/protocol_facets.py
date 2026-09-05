@@ -147,6 +147,7 @@ PACKET_COLUMNS = frozenset(
 # declared here, so nothing derived from a request can ever be interpolated.
 DETAIL_KEYS = frozenset(
     {
+        "ai_sample", "ai_detection_status",
         "http_status", "http_server", "http_user_agent",
         "tls_version", "tls_record", "tls_handshake",
         "ssh_version", "ssh_software",
