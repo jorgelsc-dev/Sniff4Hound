@@ -273,7 +273,9 @@ Rutas mas utiles:
 - `POST /api/ws/ping`
 - `POST /api/ws/close`
 - `GET /api/chat/messages`
+- `POST /api/chat/messages`
 - `POST /api/chat/clear`
+- `POST /api/console/execute` (solo comandos operativos registrados; no es un shell del sistema)
 - `GET /api/export/` y `GET /api/export/{alerts,endpoints,flows,domains}?format=csv|json`
 - `WS /ws/`
 
@@ -450,11 +452,14 @@ label, so repeating a click cannot multiply its reward. The latest operator
 revision wins; shared session authentication does not identify individual
 reviewers. Confidence scales the gradient by `confidence / 3`.
 
-Each revision deterministically replays the retained examples for 80 epochs
-using binary cross-entropy and backpropagation (learning rate 0.08). Correction
-or withdrawal rebuilds the model from the remaining labels. Labels, features,
-weights, training-loss history and the last 100 audit events are persisted
-atomically in `runtime_config.ai_learning_state`; no external service is used.
+Each revision updates the previously persisted weights using an online
+mini-batch of at most eight recent examples for eight short epochs. Runtime
+cost therefore stays bounded as the retained label set grows; normal feedback
+never replays the complete dataset. Corrections continue from the saved model,
+and removing the final remaining label resets it to its deterministic initial
+weights. Labels, features, weights, incremental training history and the last
+100 audit events are persisted atomically in
+`runtime_config.ai_learning_state`; no external service is used.
 They survive process restarts and capture-data purges. Packet review requires
 that the captured packet is still retained. Training features and operator
 notes are retained separately from capture bytes. This is a small experimental
@@ -481,6 +486,11 @@ uses a 5-second update interval, marks stale data and falls back to HTTP during
 connection failures; it closes subscriptions and timers when leaving the view.
 Training runs on feedback submission; inference runs on snapshot requests,
 not in the capture loop.
+
+The IP catalog also derives a conservative device profile (`Router`, `Switch`,
+`Phone`, `PC`, `Server`, `Printer`, `Camera`, `IoT`, or `Unknown`) from passive
+ports, protocols, banners and decoder metadata. The API returns the label,
+confidence and short evidence list; it performs no active probe.
 
 The supervised-network approach is described in the
 [neural network documentation](https://scikit-learn.org/stable/modules/neural_networks_supervised.html).

@@ -551,6 +551,7 @@ ENDPOINTS = [
     {"method": "POST", "path": "/api/packets/review", "desc": "Label any captured packet benign, malicious or unreviewed."},
     {"method": "GET", "path": "/api/ai/config", "desc": "Current AI sampling flag and exclusion filters."},
     {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable sampling and/or set AI exclusion filters (IP type, CIDR, protocol, port) - excluded traffic is skipped by the packet-image analysis."},
+    {"method": "POST", "path": "/api/console/execute", "desc": "Execute a safe registered Sniff4Hound operation from the dashboard console."},
     {"method": "GET", "path": "/api/runtime/", "desc": "Runtime mode and engine snapshot."},
     {"method": "POST", "path": "/api/runtime/", "desc": "Start/stop engines and update the sniffer interface. Sniffer and honeypot are independent: {\"engines\": {\"sniffer\": true, \"honeypot\": true}} runs both, {\"engine\": \"honeypot\", \"action\": \"stop\"} stops one."},
     {"method": "GET", "path": "/api/settings/location", "desc": "Declared sensor site location used to plot private/loopback hosts."},
@@ -1883,6 +1884,28 @@ def chat_messages(request):
 def chat_clear(_request):
     _CHAT_MESSAGES.clear()
     return {"status": "ok"}
+
+
+@app.api("/api/console/execute", methods=("POST",))
+def console_execute(request):
+    from .web_console import execute_dashboard_command
+
+    payload = _read_json_body(request)
+    command = str(payload.get("command") or "").strip()
+    if not command:
+        raise ValueError("command is required")
+    append_chat_message(command, author="dashboard", kind="command", meta={"source": "dashboard"}, broadcast=True)
+    try:
+        result = execute_dashboard_command(command, runtime=runtime, store=store, hub=hub)
+    except ValueError as exc:
+        result = {"ok": False, "command": command, "output": str(exc)}
+    except Exception as exc:
+        result = {"ok": False, "command": command, "output": f"La operación no pudo completarse: {exc}"}
+    append_chat_message(
+        result["output"], author="system", kind="command_result",
+        meta={"source": "dashboard", "ok": result["ok"]}, broadcast=True,
+    )
+    return result
 
 
 @app.api("/api/app/shutdown", methods=("POST",))

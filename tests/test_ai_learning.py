@@ -5,7 +5,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sniff4hound.ai_learning import features, fingerprint, forward, initial_model, train, update_feedback, learning_snapshot
+from sniff4hound.ai_learning import (
+    ONLINE_BATCH_SIZE,
+    features,
+    fingerprint,
+    forward,
+    initial_model,
+    train,
+    update_feedback,
+    learning_snapshot,
+)
 from sniff4hound.packet_ai import analyze_packets
 from sniff4hound.store import SniffStore
 from tests.test_packet_ai import packet
@@ -38,10 +47,27 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(len(corrected['examples']), 1)
         self.assertEqual(corrected['revision'], 2)
         self.assertEqual(corrected['audit'][-1]['previous'], 'malicious')
-        self.assertEqual(corrected['model'], update_feedback({}, p, 'benign', 1, 'corrected')['model'])
+        self.assertNotEqual(corrected['model'], first['model'])
+        self.assertEqual(corrected['training']['mode'], 'online_mini_batch')
         removed = update_feedback(corrected, p, 'unreviewed', 1, '')
         self.assertEqual(removed['examples'], [])
         self.assertEqual(removed['model'], initial_model())
+
+    def test_feedback_uses_bounded_online_batches_and_persisted_weights(self):
+        state = {}
+        with patch('sniff4hound.ai_learning.train', side_effect=AssertionError('full replay used')):
+            for index in range(20):
+                state = update_feedback(
+                    state,
+                    packet(index + 1, bytes([index + 1]) * 256),
+                    'benign' if index % 2 else 'malicious',
+                    2,
+                    '',
+                )
+        self.assertEqual(state['training']['updates'], 20)
+        self.assertLessEqual(state['training']['batch_size'], ONLINE_BATCH_SIZE)
+        self.assertEqual(state['training']['samples_seen'], sum(min(i, ONLINE_BATCH_SIZE) for i in range(1, 21)))
+        self.assertTrue(state['training']['weights_persisted'])
 
     def test_duplicate_frames_do_not_multiply_reward(self):
         state = update_feedback({}, packet(1), 'benign', 1, '')
