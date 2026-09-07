@@ -45,7 +45,7 @@ const DATASET_LABELS = {
 const DATASET_DESCRIPTIONS = {
   alerts: "Rule, severity, 5-tuple, evidence, first/last seen",
   endpoints: "Observed IPs with hit counts and worst severity",
-  flows: "Conversations with packet/byte counts and banners",
+  flows: "Flows active in window; lifetime packet/byte counts",
   domains: "Domains seen in DNS/TLS-SNI/HTTP traffic",
 };
 

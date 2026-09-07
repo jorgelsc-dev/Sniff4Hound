@@ -2069,9 +2069,12 @@ class SniffStore:
         )
         return int((row or {}).get("count") or 0)
 
-    def list_flows(self, *, proto="", search="", limit=250, offset=0):
+    def list_flows(self, *, proto="", search="", limit=250, offset=0, since=""):
         clauses = []
         params = []
+        if since:
+            clauses.append("last_seen >= ?")
+            params.append(str(since))
         if proto:
             clauses.append("LOWER(proto) = ?")
             params.append(normalize_protocol_name(proto))
@@ -3177,18 +3180,21 @@ class SniffStore:
         risk_ports = [
             item for item in top_open_ports if safe_int(item.get("port"), 0) in {21, 22, 23, 25, 53, 110, 135, 139, 143, 445, 3389}
         ]
+        session_where, session_params = self._session_filter(since=since)
         targets_by_status = [
             {
                 "label": str(row.get("status") or "stopped").strip().lower() or "stopped",
                 "value": safe_int(row.get("value"), 0),
             }
             for row in self._fetchall(
-                """
+                f"""
                 SELECT status, COUNT(*) AS value
                 FROM sessions
+                {session_where}
                 GROUP BY status
                 ORDER BY value DESC, status ASC
-                """
+                """,
+                tuple(session_params),
             )
         ]
         session_where, session_params = self._session_filter(since=since)
@@ -3266,15 +3272,26 @@ class SniffStore:
                 ]
         return []
 
-    def soc_analysis_snapshot(self, *, cycles=4, limit=PACKET_TABLE_LIMIT) -> dict:
+    def soc_analysis_snapshot(self, *, cycles=4, limit=PACKET_TABLE_LIMIT, since="") -> dict:
         cycle_count = clamp_int(cycles, 1, 4)
         sample_limit = clamp_int(limit, 250, PACKET_TABLE_LIMIT)
-        packets = self.list_packets(limit=sample_limit)
-        payloads = self.list_payloads(limit=min(sample_limit, PAYLOAD_TABLE_LIMIT))
-        tags = self.list_tags(limit=min(sample_limit * 2, TAG_TABLE_LIMIT))
-        flows = self.list_flows(limit=min(sample_limit, FLOW_TABLE_LIMIT))
-        snapshot = self.analytics_snapshot()
-        snapshot["timeline"] = self._timeline_snapshot(packets, self.list_sessions(limit=1000), flows)
+        packets = self.list_packets(limit=sample_limit, since=since)
+        payloads = self.list_payloads(limit=min(sample_limit, PAYLOAD_TABLE_LIMIT), since=since)
+        tags = self.list_tags(limit=min(sample_limit * 2, TAG_TABLE_LIMIT), since=since)
+        flows = self.list_flows(limit=min(sample_limit, FLOW_TABLE_LIMIT), since=since)
+        snapshot = self.analytics_snapshot(since=since)
+        available_packets = snapshot["summary"]["ports"]
+        snapshot["analysis_context"] = {
+            "since": since,
+            "sample_limit": sample_limit,
+            "available_packets": available_packets,
+            "sample_truncated": available_packets > len(packets),
+            "cycles_requested": cycle_count,
+            "method": "heuristic",
+            "confidence_kind": "heuristic weight, not a calibrated probability",
+            "flow_counters": "lifetime totals for flows active since the cutoff",
+            "visibility": "retained traffic only; monitor rules, exclusions and sampling affect coverage",
+        }
 
         risky_ports = {21, 22, 23, 25, 53, 110, 135, 139, 143, 445, 3389}
         packet_total = len(packets)
@@ -3331,7 +3348,7 @@ class SniffStore:
             for host in unique_hosts:
                 host_counts[host] += 1
                 host_protocols[host][proto] += 1
-                for port in unique_ports:
+                for port in {port for ip, port in ((src_ip, src_port), (dst_ip, dst_port)) if ip == host and port > 0}:
                     host_ports[host][port] += 1
                 if host not in host_scopes:
                     host_scopes[host] = _soc_ip_scope(host)
@@ -3527,7 +3544,7 @@ class SniffStore:
         if packet_total:
             cycle_1_observations.append(f"{total_local_rows} local rows out of {packet_total} sampled packets")
             cycle_1_observations.append(f"{total_cross_scope_rows} cross-scope rows detected")
-        if packet_total and total_local_rows >= int(packet_total * 0.5):
+        if packet_total and total_local_rows >= packet_total * 0.5:
             cycle_1_findings.append(
                 add_finding(
                     1,
@@ -3571,7 +3588,7 @@ class SniffStore:
                     confidence=0.85,
                 )
             )
-        if len([item for item in top_protocol_rows if item["label"]]) <= 2:
+        if packet_total and len([item for item in top_protocol_rows if item["label"]]) <= 2:
             cycle_1_findings.append(
                 add_finding(
                     1,
@@ -3583,15 +3600,15 @@ class SniffStore:
                     confidence=0.88,
                 )
             )
-        if not direction_counts.get("unknown") and total_unknown_rows == 0:
+        if packet_total and not direction_counts.get("unknown") and total_unknown_rows == 0:
             cycle_1_findings.append(
                 add_finding(
                     1,
                     "info",
                     "coverage",
-                    "No unknown protocol rows or honeypot artifacts are present in this sample",
-                    ["unknown protocol rows=0", "honeypot rows=0"],
-                    "Keep this slice in the low-risk bucket unless new protocol families appear.",
+                    "Direction and address scope are available for every sampled packet",
+                    [f"packets with direction and scope={packet_total}"],
+                    "Use this metadata to pivot; complete metadata does not establish benign traffic.",
                     confidence=0.9,
                 )
             )
@@ -3754,11 +3771,11 @@ class SniffStore:
                     3,
                     "info",
                     "telemetry",
-                    "Structured JSON-like payloads are present in the local traffic",
+                    "Structured JSON-like payloads are present in the sample",
                     [
                         ", ".join(payload_signature_examples.get("structured", [])[:2]) or "structured payload evidence present",
                     ],
-                    "The loopback activity looks like internal telemetry or event relay traffic.",
+                    "Validate the endpoints and application before attributing structured payloads to internal telemetry.",
                     confidence=0.82,
                 )
             )
@@ -3783,7 +3800,7 @@ class SniffStore:
                     3,
                     "info",
                     "tag-depth",
-                    "Tags stay at transport metadata depth",
+                    "Tags provide additional context for investigation",
                     [
                         ", ".join(f"{label}={value}" for label, value in tag_key_counts.most_common(4)),
                         ", ".join(f"{label}={value}" for label, value in tag_value_counts.most_common(4)) or "no tag values",
@@ -3868,7 +3885,7 @@ class SniffStore:
                         f"public hosts={len(top_public_hosts)}",
                         f"cross-scope rows={total_cross_scope_rows}",
                     ],
-                    "Focus on external 443 and 51820 flows first, then map the loopback owners.",
+                    "Validate the hosts and services referenced by the findings, then confirm ownership and expected behavior.",
                     confidence=0.9,
                 )
             )
@@ -3908,14 +3925,18 @@ class SniffStore:
         }
         selected_findings = [finding for finding in findings if finding["id"] in selected_finding_ids]
         severity_counts = Counter(finding["severity"] for finding in selected_findings)
-        if not questions:
-            questions = [
-                "Which host should be investigated first?",
-                "Are the public flows expected?",
-                "Is the loopback telemetry an internal control channel?",
-            ]
+        if not packet_total:
+            selected_cycles = []
+            selected_findings = []
+            severity_counts = Counter()
+            risk_score = None
+            verdict = "insufficient-evidence"
+            questions = ["Is capture running, and do the selected time window and retention filters include traffic?"]
+        elif not questions:
+            questions = ["Do the observed hosts and services match the expected environment?"]
 
         snapshot["soc_summary"] = {
+            "assessment_status": "assessed" if packet_total else "insufficient-evidence",
             "sampled_packets": packet_total,
             "sampled_payloads": len(payloads),
             "sampled_tags": len(tags),

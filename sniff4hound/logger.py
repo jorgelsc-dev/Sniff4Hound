@@ -108,7 +108,9 @@ def get_logger(name: str, log_file: Path | str | None = None, level: int = loggi
     logger.setLevel(level)
 
     # Remove any existing handlers to prevent duplicates
-    logger.handlers.clear()
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
     logger.propagate = False
 
     # Console handler (stderr)
