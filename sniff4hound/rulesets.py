@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 
 from .runtime_paths import resolve_data_file
-from .utils import normalize_protocol_name, unique_ordered, safe_int
+from .utils import coerce_bool, normalize_protocol_name, unique_ordered, safe_int
 
 
 # Compiled-pattern cache, keyed by pattern text, shared by every ruleset/
@@ -191,7 +191,7 @@ def normalize_ruleset(item: dict, allow_source: bool = False) -> dict:
         rule_id = "custom-rule"
     name = str(data.get("name") or rule_id).strip() or rule_id
     description = str(data.get("description") or "").strip()
-    enabled = bool(data.get("enabled", True))
+    enabled = coerce_bool(data["enabled"], "enabled") if "enabled" in data else True
     priority = safe_int(data.get("priority", 100), 100)
     match = data.get("match") if isinstance(data.get("match"), dict) else {}
     action = data.get("action") if isinstance(data.get("action"), dict) else {}
@@ -301,7 +301,7 @@ def normalize_match(match: dict, _depth: int = 0) -> dict:
         # field names) so signatures aimed at what a client *sends* - XSS,
         # SQLi, command injection, path traversal payloads - false-positive
         # constantly without this.
-        "request_only": bool(data.get("request_only", False)),
+        "request_only": coerce_bool(data["request_only"], "request_only") if "request_only" in data else False,
         # Header-field criteria. The payload/content keys above cannot express
         # a port scan (no payload at all, the signature *is* the flag
         # combination), a spoofed ARP reply or an ICMP type, so they get

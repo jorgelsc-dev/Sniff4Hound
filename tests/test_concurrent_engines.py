@@ -120,6 +120,14 @@ class ConcurrentEngineTests(unittest.TestCase):
         self.runtime.set_engines(["honeypot"])
         self.assertEqual(self._running(), {"honeypot"})
 
+    def test_set_engines_accepts_bool_like_strings(self):
+        self.runtime.set_engines({"sniffer": "true", "honeypot": "false"})
+        self.assertEqual(self._running(), {"sniffer"})
+
+    def test_set_engines_rejects_ambiguous_strings(self):
+        with self.assertRaises(ValueError):
+            self.runtime.set_engines({"sniffer": "maybe"})
+
     def test_set_engines_does_not_restart_an_already_running_engine(self):
         self.runtime.set_engines({"sniffer": True})
         self.runtime.set_engines({"sniffer": True})

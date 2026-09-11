@@ -16,6 +16,7 @@ from sniff4hound.monitors import (
     load_builtin_monitors,
     normalize_monitor,
 )
+from sniff4hound.rulesets import normalize_ruleset
 from sniff4hound.settings import PORT as SNIFFER_PORT
 from sniff4hound.sniffer import Sniffer
 from sniff4hound.store import SniffStore
@@ -202,6 +203,12 @@ class TestNormalizeMonitor(unittest.TestCase):
         )
         self.assertEqual(monitor["mode"], "regex")
 
+    def test_enabled_string_false_is_disabled(self):
+        monitor = normalize_monitor(
+            {"id": "custom-disabled", "name": "Disabled", "enabled": "false", "match": {"ports": [22]}}
+        )
+        self.assertFalse(monitor["enabled"])
+
     def test_accepts_nested_condition_groups(self):
         monitor = normalize_monitor(
             {
@@ -262,6 +269,24 @@ class TestNormalizeMonitor(unittest.TestCase):
             if raw["id"] in stateful_ids:
                 normalized = normalize_monitor(raw, allow_source=True)
                 self.assertEqual(normalized["mode"], "stateful")
+
+
+class TestNormalizeRuleset(unittest.TestCase):
+    def test_enabled_string_false_is_disabled(self):
+        ruleset = normalize_ruleset(
+            {"id": "custom-disabled", "name": "Disabled", "enabled": "false", "match": {"ports": [22]}}
+        )
+        self.assertFalse(ruleset["enabled"])
+
+    def test_request_only_string_true_is_enabled(self):
+        ruleset = normalize_ruleset(
+            {
+                "id": "request-only",
+                "name": "Request only",
+                "match": {"payload_contains": ["POST"], "request_only": "true"},
+            }
+        )
+        self.assertTrue(ruleset["match"]["request_only"])
 
 
 class TestEvaluatePacket(unittest.TestCase):
