@@ -138,11 +138,18 @@ class ScopeHeaderContractTests(unittest.TestCase):
         self.addCleanup(guard.__exit__)
 
         import sniff4hound.app as app_module
+        import sniff4hound.auth as auth_module
         import sniff4hound.settings as settings_module
 
         # settings computes DATA_DIR/DB_PATH at import, so it has to be
         # reloaded too - reloading only sniff4hound.app would keep writing
-        # into the shared suite database and give false isolation.
+        # into the shared suite database and give false isolation. auth
+        # computes its own REQUIRE_AUTH from the same env var independently
+        # of app's copy, so it needs reloading here too - otherwise this
+        # test's SNIFF4HOUND_REQUIRE_AUTH="0" only takes effect when some
+        # earlier test happened to leave auth.REQUIRE_AUTH False already,
+        # and a real request through app.dispatch() (which checks auth's
+        # flag, not app's) gets a 401 whenever it didn't.
         previous_app = sys.modules.get("sniff4hound.app")
         if previous_app is not None and getattr(previous_app, "store", None) is not None:
             try:
@@ -150,6 +157,7 @@ class ScopeHeaderContractTests(unittest.TestCase):
             except Exception:
                 pass
         importlib.reload(settings_module)
+        importlib.reload(auth_module)
         self.app_module = importlib.reload(app_module)
 
         # Leave the module-global store open and pointing at a real database:
@@ -161,6 +169,7 @@ class ScopeHeaderContractTests(unittest.TestCase):
             except Exception:
                 pass
             importlib.reload(settings_module)
+            importlib.reload(auth_module)
             importlib.reload(app_module)
 
         self.addCleanup(_restore)
