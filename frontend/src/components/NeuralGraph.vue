@@ -1,26 +1,24 @@
 <template>
-  <v-card class="pa-5 mb-4" variant="tonal">
+  <v-card class="pa-4 mb-4" variant="tonal">
     <div class="d-flex flex-wrap ga-3 align-center">
-      <h2 class="text-h6">Red neuronal · 8 → {{ learning.parameters.b1.length }} → 1</h2>
+      <h2 class="text-subtitle-1 font-weight-bold">Red neuronal · {{ shapeLabel }}</h2>
       <v-chip size="small">Revisión {{ learning.revision }}</v-chip>
       <v-chip :color="learning.ready ? 'success' : 'warning'" size="small">{{ learning.ready ? 'Modelo experimental' : 'Aprendizaje inicial' }}</v-chip>
     </div>
     <p class="mt-2 text-body-2">{{ packet ? `Activaciones reales del paquete #${packet.id}` : 'Selecciona un paquete para ver sus activaciones.' }} · Pesos azules positivos, rojos negativos. Pulsa una neurona para inspeccionarla.</p>
     <div class="network-scroll">
-      <svg :viewBox="`0 0 880 ${viewBoxHeight}`" role="img" aria-label="Red neuronal con pesos y activaciones reales">
-        <text x="20" y="24" fill="currentColor">Características de imagen</text>
-        <text x="405" y="24" fill="currentColor">Capa tanh</text>
-        <text x="700" y="24" fill="currentColor">Salida sigmoide</text>
+      <svg :viewBox="`0 0 ${viewBoxWidth} ${viewBoxHeight}`" role="img" aria-label="Red neuronal con pesos y activaciones reales">
+        <text v-for="(label, i) in columnLabels" :key="label" :x="columnX(i)" y="14" text-anchor="middle" fill="currentColor" font-size="9">{{ label }}</text>
         <line v-for="(edge, i) in edges" :key="i" :x1="edge.from.x" :y1="edge.from.y" :x2="edge.to.x" :y2="edge.to.y"
-          :stroke="edge.weight >= 0 ? '#56baff' : '#ff7788'" :stroke-width="Math.min(5, 0.4 + Math.abs(edge.weight))" opacity="0.45">
+          :stroke="edge.weight >= 0 ? '#56baff' : '#ff7788'" :stroke-width="Math.min(4, 0.3 + Math.abs(edge.weight))" opacity="0.4">
           <title>Peso {{ edge.weight.toFixed(5) }} · contribución {{ edge.contribution === null ? 'sin paquete' : edge.contribution.toFixed(5) }}</title>
         </line>
         <g v-for="node in nodes" :key="node.id" tabindex="0" role="button" :aria-label="`Inspeccionar ${node.label}`"
           class="neuron" @click="selectNode(node.id)" @keydown.enter="selectNode(node.id)" @keydown.space.prevent="selectNode(node.id)">
-          <circle :cx="node.x" :cy="node.y" r="18" :fill="node.activation === null ? '#263344' : `hsl(${node.activation < 0 ? 350 : 195} 60% ${22 + Math.abs(node.activation) * 28}%)`"
-            :stroke="selectedId === node.id ? '#fff' : '#6c8197'" stroke-width="2" />
-          <text :x="node.x" :y="node.y + 4" text-anchor="middle" fill="white" font-size="10">{{ node.activation === null ? '—' : node.activation.toFixed(2) }}</text>
-          <text :x="node.x - 25" :y="node.y + 4" text-anchor="end" fill="currentColor" font-size="11">{{ node.label }}</text>
+          <circle :cx="node.x" :cy="node.y" r="12" :fill="node.activation === null ? '#263344' : `hsl(${node.activation < 0 ? 350 : 195} 60% ${22 + Math.abs(node.activation) * 28}%)`"
+            :stroke="selectedId === node.id ? '#fff' : '#6c8197'" stroke-width="1.5" />
+          <text :x="node.x" :y="node.y + 3" text-anchor="middle" fill="white" font-size="7">{{ node.activation === null ? '—' : node.activation.toFixed(2) }}</text>
+          <text :x="node.x" :y="node.y + 22" text-anchor="middle" fill="currentColor" font-size="7.5">{{ node.label }}</text>
         </g>
       </svg>
     </div>
@@ -44,32 +42,110 @@ const props = defineProps({ learning: { type: Object, required: true }, packet: 
 const selectedId = ref("output");
 const openPanel = ref(null);
 function selectNode(id) { selectedId.value = id; openPanel.value = 0; }
-// The hidden layer's size is a configurable knob (Configuración > IA), not
-// always 6, so node/edge layout has to derive it from the actual persisted
-// weights rather than assume a fixed count or a fixed output-node index.
-const hiddenCount = computed(() => props.learning.parameters.b1.length);
-const viewBoxHeight = computed(() => Math.max(440, 120 + hiddenCount.value * 52));
-const nodes = computed(() => {
+
+// The hidden-layer shape is a configurable knob (Configuración > IA) -
+// anywhere from 1 to MAX_HIDDEN_LAYERS layers, each with its own width -
+// not always a single 6-neuron layer, so the whole graph is laid out from
+// the model's actual persisted shape rather than an assumed one.
+const hiddenSizes = computed(() =>
+  Array.isArray(props.learning.hidden_sizes) && props.learning.hidden_sizes.length
+    ? props.learning.hidden_sizes
+    : props.learning.parameters.layers.slice(0, -1).map((layer) => layer.b.length)
+);
+const columnSizes = computed(() => [props.learning.feature_names.length, ...hiddenSizes.value, 1]);
+const numColumns = computed(() => columnSizes.value.length);
+const maxRows = computed(() => Math.max(...columnSizes.value));
+const shapeLabel = computed(() => columnSizes.value.join(" → "));
+const columnLabels = computed(() => [
+  "Entrada",
+  ...hiddenSizes.value.map((_, i) => `Oculta ${i + 1} (tanh)`),
+  "Salida (sigmoide)",
+]);
+
+const ROW_HEIGHT = 30;
+const TOP_MARGIN = 34;
+const SIDE_MARGIN = 60;
+const viewBoxWidth = 720;
+const viewBoxHeight = computed(() => TOP_MARGIN + maxRows.value * ROW_HEIGHT + 14);
+function columnX(index) {
+  const usable = viewBoxWidth - SIDE_MARGIN * 2;
+  const step = numColumns.value > 1 ? usable / (numColumns.value - 1) : 0;
+  return SIDE_MARGIN + index * step;
+}
+function rowY(index, rowCount) {
+  // Centers a shorter column vertically against the tallest one instead of
+  // always top-aligning, so a 3-neuron layer next to a 16-neuron one still
+  // reads as part of the same network rather than floating at the top.
+  const offset = ((maxRows.value - rowCount) / 2) * ROW_HEIGHT;
+  return TOP_MARGIN + offset + index * ROW_HEIGHT;
+}
+
+const columns = computed(() => {
   const a = props.packet?.activations;
-  const inputs = props.learning.feature_names.map((label, i) => ({ id: `i${i}`, label, x: 230, y: 65 + i * 48, activation: a?.input?.[i] ?? null, bias: null }));
-  const hidden = props.learning.parameters.b1.map((bias, i) => ({ id: `h${i}`, label: `H${i + 1}`, x: 460, y: 100 + i * 52, activation: a?.hidden?.[i] ?? null, bias }));
-  const outputY = 100 + (Math.max(0, hiddenCount.value - 1) * 52) / 2;
-  return [...inputs, ...hidden, { id: "output", label: "Riesgo", x: 780, y: outputY, activation: a?.output ?? null, bias: props.learning.parameters.b2 }];
+  const cols = [];
+  cols.push(
+    props.learning.feature_names.map((label, i) => ({
+      id: `c0_${i}`,
+      label,
+      x: columnX(0),
+      y: rowY(i, props.learning.feature_names.length),
+      activation: a?.input?.[i] ?? null,
+      bias: null,
+    }))
+  );
+  hiddenSizes.value.forEach((size, layerIdx) => {
+    const layer = props.learning.parameters.layers[layerIdx];
+    const col = [];
+    for (let i = 0; i < size; i++) {
+      col.push({
+        id: `c${layerIdx + 1}_${i}`,
+        label: `L${layerIdx + 1}·${i + 1}`,
+        x: columnX(layerIdx + 1),
+        y: rowY(i, size),
+        activation: a?.hidden_layers?.[layerIdx]?.[i] ?? null,
+        bias: layer.b[i],
+      });
+    }
+    cols.push(col);
+  });
+  const outputLayer = props.learning.parameters.layers[props.learning.parameters.layers.length - 1];
+  cols.push([
+    {
+      id: "output",
+      label: "Riesgo",
+      x: columnX(numColumns.value - 1),
+      y: rowY(0, 1),
+      activation: a?.output ?? null,
+      bias: outputLayer.b[0],
+    },
+  ]);
+  return cols;
 });
+const nodes = computed(() => columns.value.flat());
 const edges = computed(() => {
   const result = [];
-  const outputIndex = nodes.value.length - 1;
-  const add = (from, to, weight) => result.push({ from, to, weight, contribution: from.activation === null ? null : from.activation * weight });
-  props.learning.parameters.w1.forEach((weights, j) => weights.forEach((weight, i) => add(nodes.value[i], nodes.value[8 + j], weight)));
-  props.learning.parameters.w2.forEach((weight, j) => add(nodes.value[8 + j], nodes.value[outputIndex], weight));
+  const add = (from, to, weight) =>
+    result.push({ from, to, weight, contribution: from.activation === null ? null : from.activation * weight });
+  const layers = props.learning.parameters.layers;
+  for (let layerIdx = 0; layerIdx < layers.length; layerIdx++) {
+    const fromCol = columns.value[layerIdx];
+    const toCol = columns.value[layerIdx + 1];
+    layers[layerIdx].w.forEach((weights, j) => weights.forEach((weight, i) => add(fromCol[i], toCol[j], weight)));
+  }
   return result;
 });
-const selected = computed(() => nodes.value.find(n => n.id === selectedId.value));
-const incoming = computed(() => edges.value.filter(e => e.to.id === selectedId.value));
+const selected = computed(() => nodes.value.find((n) => n.id === selectedId.value));
+const incoming = computed(() => edges.value.filter((e) => e.to.id === selectedId.value));
 </script>
 <style scoped>
-.network-scroll { overflow: auto; max-height: 640px; }
-svg { width: 100%; min-width: 680px; display: block; }
+.network-scroll { overflow: auto; max-height: 360px; }
+/* The SVG's width:100% with no cap let it grow to fill a wide desktop
+   viewport, and since the viewBox's aspect ratio is preserved, everything
+   inside - circles, text, the whole layout - scaled up right along with it,
+   which is what actually made the font/nodes look oversized. Capping the
+   rendered width keeps it close to its designed (viewBox) scale on wide
+   screens; it can still shrink on narrow ones. */
+svg { width: 100%; max-width: 560px; min-width: 300px; display: block; margin: 0 auto; }
 .neuron { cursor: pointer; }
 .neuron:focus circle { stroke: white; stroke-width: 4; }
 </style>

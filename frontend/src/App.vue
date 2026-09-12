@@ -1,21 +1,11 @@
 <template>
   <v-app class="sniff4hound-app">
-    <AppSidebar
-      :open="drawer"
-      :nav-items="navItems"
-      @update:open="drawer = $event"
-    />
-
     <AppTopBar
-      :nav-items="navItems"
-      :auth-required="authRequired"
-      :auth-status="authStatus"
-      :ws-status="wsStatus"
       :shutdown-pending="shutdownPending"
-      @open-drawer="drawer = true"
-      @open-auth="openAuthPrompt"
+      :shutdown-label="shutdownLabel"
       @shutdown-app="shutdownApplication"
     />
+    <GlobalToolsMenu />
 
     <v-main class="app-main">
       <v-container class="app-container">
@@ -109,28 +99,28 @@
 <script>
 import { nextTick } from "vue";
 import store from "./state/appStore";
-import AppSidebar from "./components/layout/AppSidebar.vue";
 import AppTopBar from "./components/layout/AppTopBar.vue";
+import GlobalToolsMenu from "./components/layout/GlobalToolsMenu.vue";
 import NotificationStack from "./components/ui/NotificationStack.vue";
+
+// Purely a UX beat: give the operator a moment to see the "shutting down"
+// state (and the backend a moment to actually stop) before the tab closes
+// itself out from under them.
+const SHUTDOWN_TAB_CLOSE_DELAY_MS = 4000;
 
 export default {
   name: "App",
   components: {
-    AppSidebar,
     AppTopBar,
+    GlobalToolsMenu,
     NotificationStack,
   },
   data() {
     return {
       store,
-      drawer: false,
       accessTokenInput: "",
       authSubmitting: false,
-      navItems: [
-        { label: "Dashboard", to: "/", icon: "mdi-view-dashboard" },
-        { label: "Chat", to: "/chat", icon: "mdi-message-processing-outline" },
-        { label: "Configuración", to: "/settings", icon: "mdi-cog-outline" },
-      ],
+      shutdownLabel: "",
     };
   },
   computed: {
@@ -199,11 +189,25 @@ export default {
         );
         if (!confirmed) return;
       }
+      this.shutdownLabel = "Apagando...";
       this.store.shutdownApplication().catch((error) => {
+        // The backend is terminating itself either way - a failed response
+        // here is usually just the connection dropping mid-request, not a
+        // real failure worth alarming over. Still surface it, but the tab
+        // closes on schedule regardless.
         if (typeof window !== "undefined" && error && error.message) {
           window.alert(error.message);
         }
       });
+      setTimeout(() => {
+        if (typeof window === "undefined" || typeof window.close !== "function") return;
+        this.shutdownLabel = "Cerrando pestaña...";
+        // Browsers silently ignore window.close() on a tab the user
+        // navigated to directly (as opposed to one opened via
+        // window.open()) - there's no client-side way to detect or work
+        // around that, so this is a best-effort close, not a guarantee.
+        window.close();
+      }, SHUTDOWN_TAB_CLOSE_DELAY_MS);
     },
   },
 };
@@ -217,12 +221,6 @@ export default {
 
 .app-main {
   padding-bottom: 40px;
-}
-
-@media (max-width: 959px) {
-  .app-main {
-    padding-top: 104px;
-  }
 }
 
 .auth-stage {

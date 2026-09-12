@@ -52,7 +52,7 @@ const state = reactive({
   shutdownPending: false,
   notifications: [],
   notifySoundEnabled: true,
-  // Incremented on every inbound chat frame; OperatorChat watches it.
+  // Incremented on every inbound chat frame; ChatView watches it.
   chatRevision: 0,
   timeRange: "",
   // Latest "data_clear_progress" WS frame (see clear_detections_api /
@@ -1437,7 +1437,7 @@ function notifyForRuntimeChange(payload) {
 }
 
 function notifyForChatMessage(payload) {
-  // Bumped on every inbound chat frame so OperatorChat can refresh (and count
+  // Bumped on every inbound chat frame so ChatView can refresh (and count
   // unread) off a single watcher instead of polling.
   state.chatRevision = (state.chatRevision || 0) + 1;
   const message = payload && payload.message;

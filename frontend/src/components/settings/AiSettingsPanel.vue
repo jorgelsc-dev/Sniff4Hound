@@ -59,7 +59,7 @@
       :loading="loading || savingLearning"
     >
       <div class="d-flex flex-wrap ga-2 mb-4">
-        <v-chip size="small" color="primary">{{ learningConfig.hidden_neurons }} neuronas ocultas</v-chip>
+        <v-chip size="small" color="primary">{{ learningConfig.hidden_sizes.length }} capa(s) · {{ learningConfig.hidden_sizes.join('-') }}</v-chip>
         <v-chip size="small" color="secondary">Cohorte mínima LOF: {{ learningConfig.min_cohort }}</v-chip>
         <v-chip v-if="effectiveness.ready" size="small" :color="effectivenessColor">
           Efectividad {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
@@ -68,19 +68,65 @@
       </div>
       <v-row dense>
         <v-col cols="12" md="6">
-          <div class="text-caption text-medium-emphasis">Neuronas en la capa oculta</div>
-          <v-slider v-model="learningDraft.hidden_neurons" :min="3" :max="16" :step="1" thumb-label="always" hide-details />
+          <div class="d-flex align-center justify-space-between">
+            <div class="text-caption text-medium-emphasis">Capas ocultas y neuronas por capa</div>
+            <v-btn
+              size="x-small"
+              variant="tonal"
+              color="primary"
+              prepend-icon="mdi-plus"
+              :disabled="learningDraft.hidden_sizes.length >= maxHiddenLayers"
+              @click="addHiddenLayer"
+            >
+              Añadir capa
+            </v-btn>
+          </div>
+          <div v-for="(size, index) in learningDraft.hidden_sizes" :key="index" class="hidden-layer-row">
+            <span class="hidden-layer-row__label">Capa {{ index + 1 }}</span>
+            <v-slider
+              :model-value="size"
+              :min="3"
+              :max="16"
+              :step="1"
+              thumb-label="always"
+              hide-details
+              density="compact"
+              @update:model-value="(value) => setHiddenLayerSize(index, value)"
+            />
+            <v-btn
+              icon
+              size="x-small"
+              variant="text"
+              color="error"
+              :disabled="learningDraft.hidden_sizes.length <= 1"
+              aria-label="Quitar capa"
+              @click="removeHiddenLayer(index)"
+            >
+              <v-icon icon="mdi-close" size="16" />
+            </v-btn>
+          </div>
         </v-col>
         <v-col cols="12" md="6">
           <div class="text-caption text-medium-emphasis">Tamaño mínimo de grupo (LOF)</div>
           <v-slider v-model="learningDraft.min_cohort" :min="5" :max="200" :step="1" thumb-label="always" hide-details />
         </v-col>
       </v-row>
-      <div class="d-flex ga-2 mt-2">
+      <div class="d-flex flex-wrap ga-2 mt-2">
         <v-btn color="primary" variant="flat" :loading="savingLearning" @click="saveLearning">Guardar y reentrenar</v-btn>
         <v-btn variant="text" :disabled="savingLearning" @click="resetLearningDraft">Descartar cambios</v-btn>
+        <v-spacer />
+        <v-btn variant="outlined" color="secondary" prepend-icon="mdi-tray-arrow-down" :loading="exportingModel" @click="exportModel">
+          Exportar modelo
+        </v-btn>
+        <v-btn variant="outlined" color="secondary" prepend-icon="mdi-tray-arrow-up" :loading="importingModel" @click="triggerImport">
+          Importar modelo
+        </v-btn>
+        <input ref="importInput" type="file" accept="application/json" class="d-none" @change="importModel" />
       </div>
       <v-alert v-if="learningError" type="error" variant="tonal" density="comfortable" class="mt-3">{{ learningError }}</v-alert>
+      <v-alert v-if="modelIoMessage" :type="modelIoError ? 'error' : 'success'" variant="tonal" density="comfortable" class="mt-3">
+        {{ modelIoMessage }}
+      </v-alert>
       <v-btn class="mt-4" to="/ai" variant="text" prepend-icon="mdi-brain">Ver detalle en la vista de IA</v-btn>
     </DataPanel>
   </div>
@@ -102,10 +148,15 @@ export default {
       error: "",
       samplingEnabled: false,
       learning: {},
-      learningConfig: { hidden_neurons: 6, min_cohort: 20 },
-      learningDraft: { hidden_neurons: 6, min_cohort: 20 },
+      learningConfig: { hidden_sizes: [6], min_cohort: 20 },
+      learningDraft: { hidden_sizes: [6], min_cohort: 20 },
       savingLearning: false,
       learningError: "",
+      maxHiddenLayers: 4,
+      exportingModel: false,
+      importingModel: false,
+      modelIoMessage: "",
+      modelIoError: false,
     };
   },
   computed: {
@@ -128,8 +179,64 @@ export default {
   },
   methods: {
     resetLearningDraft() {
-      this.learningDraft = { ...this.learningConfig };
+      this.learningDraft = { hidden_sizes: [...this.learningConfig.hidden_sizes], min_cohort: this.learningConfig.min_cohort };
       this.learningError = "";
+    },
+    addHiddenLayer() {
+      if (this.learningDraft.hidden_sizes.length >= this.maxHiddenLayers) return;
+      this.learningDraft.hidden_sizes.push(6);
+    },
+    removeHiddenLayer(index) {
+      if (this.learningDraft.hidden_sizes.length <= 1) return;
+      this.learningDraft.hidden_sizes.splice(index, 1);
+    },
+    setHiddenLayerSize(index, value) {
+      this.learningDraft.hidden_sizes.splice(index, 1, value);
+    },
+    triggerImport() {
+      this.$refs.importInput?.click();
+    },
+    exportModel() {
+      this.exportingModel = true;
+      this.modelIoMessage = "";
+      this.modelIoError = false;
+      this.store.fetchJsonPromise("/api/ai/model")
+        .then((payload) => {
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `sniff4hound-ai-model-${payload.hidden_sizes.join("-")}.json`;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(url);
+          this.modelIoMessage = "Modelo exportado.";
+        })
+        .catch((error) => {
+          this.modelIoError = true;
+          this.modelIoMessage = error.message || "No se pudo exportar el modelo.";
+        })
+        .finally(() => { this.exportingModel = false; });
+    },
+    importModel(event) {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+      this.importingModel = true;
+      this.modelIoMessage = "";
+      this.modelIoError = false;
+      file.text()
+        .then((text) => this.store.fetchJsonPromise("/api/ai/model", { method: "POST", body: text }))
+        .then((config) => {
+          this.modelIoMessage = `Modelo importado: ${config.hidden_sizes.join("-")}.`;
+          return this.load();
+        })
+        .catch((error) => {
+          this.modelIoError = true;
+          this.modelIoMessage = error.message || "No se pudo importar el modelo.";
+        })
+        .finally(() => { this.importingModel = false; });
     },
     load() {
       this.loading = true;
@@ -179,3 +286,8 @@ export default {
   },
 };
 </script>
+
+<style scoped>
+.hidden-layer-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.hidden-layer-row__label { flex: 0 0 56px; font-size: 0.76rem; color: var(--text-dim); }
+</style>

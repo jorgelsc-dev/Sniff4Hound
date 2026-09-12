@@ -55,7 +55,7 @@
             <div class="bell-menu-item-title-row">
               <span class="bell-menu-item-title">{{ item.title }}</span>
               <v-chip v-if="item.count > 1" size="x-small" variant="flat" color="primary">
-                ×{{ item.count }}
+                ×{{ countLabel(item.count) }}
               </v-chip>
             </div>
             <div v-if="item.message" class="bell-menu-item-message">{{ item.message }}</div>
@@ -120,6 +120,13 @@ export default {
   methods: {
     iconFor(item) {
       return ICONS_BY_KIND[item.kind] || "mdi-bell-ring";
+    },
+    // A flapping connection or a noisy monitor can repeat into the hundreds
+    // (pushNotification groups repeats into one entry's `count` instead of
+    // spamming new rows - see appStore.js), but the raw number still grew
+    // this chip without bound and it started overflowing/wrapping.
+    countLabel(count) {
+      return count > 99 ? "99+" : String(count);
     },
     dismiss(id) {
       this.store.dismissNotification(id);
