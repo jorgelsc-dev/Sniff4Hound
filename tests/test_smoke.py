@@ -873,6 +873,54 @@ class SmokeTests(unittest.TestCase):
             command = manage_module._build_capture_relaunch_command("/tmp/x.sock", "tok", 1000)
         self.assertIn("SNIFF4HOUND_DATA_DIR=/home/example/.local/share/sniff4hound", command)
 
+    def test_clear_stale_capture_socket_removes_a_leftover_socket_file(self):
+        # Regression: a capture child from a run whose parent never exited
+        # cleanly (killed terminal, crashed, `kill -9`) keeps listening on
+        # its old socket with its own token. A fresh `sniff4hound` run's
+        # client can then win the race and connect to that stale listener
+        # before its own freshly spawned child has unlinked and rebound the
+        # same path - reads back as a flat "unauthorized" instead of the
+        # transient "nothing's listening yet" the client already retries
+        # through, and the whole run fails. Clearing any stale entry before
+        # spawning the new child closes that window.
+        import sniff4hound.manage as manage_module
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            socket_path = Path(tmp_dir) / "capture-45678.sock"
+            stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.addCleanup(stale.close)
+            stale.bind(str(socket_path))
+            self.assertTrue(socket_path.exists())
+
+            manage_module._clear_stale_capture_socket(str(socket_path))
+
+            self.assertFalse(socket_path.exists())
+
+    def test_clear_stale_capture_socket_tolerates_a_missing_path(self):
+        import sniff4hound.manage as manage_module
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manage_module._clear_stale_capture_socket(str(Path(tmp_dir) / "never-existed.sock"))
+
+    def test_manage_main_clears_stale_socket_before_spawning_capture_child(self):
+        # Ordering regression, same rationale as
+        # test_manage_main_creates_web_store_before_spawning_capture_child:
+        # the cleanup has to run before the child is spawned to actually
+        # close the race, and by the time any test runs `sniff4hound.app`
+        # is already cached so a functional check can't observe it.
+        import inspect
+
+        import sniff4hound.manage as manage_module
+
+        source = inspect.getsource(manage_module.main)
+        clear_index = source.index("_clear_stale_capture_socket(")
+        spawn_index = source.index("_spawn_capture_child(")
+        self.assertLess(
+            clear_index,
+            spawn_index,
+            "the stale socket must be cleared before the privileged capture child is spawned",
+        )
+
     def test_manage_main_pins_data_dir_before_spawning_capture_child(self):
         # Regression test: the capture child is relaunched via `sudo`,
         # which resets HOME to root's home by default. DATA_DIR (and so

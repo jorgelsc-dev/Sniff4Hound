@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed `sniff4hound` intermittently refusing to start with `Could not connect to the capture service: unauthorized`, even as a normal (non-root) user. A capture child from a previous run that never exited cleanly (killed terminal, crashed parent, `kill -9`) keeps listening on its old IPC socket with its own token; a fresh run's client could win the race and connect to that stale listener before its own freshly spawned child had unlinked and rebound the same path - the client read the resulting rejection as a flat, non-retryable "unauthorized" instead of the transient "nothing's listening yet" it already retries through, and the whole run failed even though the new child would have come up correctly moments later. `manage.py` now clears any stale socket at that path before spawning the new capture child.
+
 - Fixed honeypot runtime start/stop timing out over IPC after the listener catalog grew: runtime snapshots now carry listener counts instead of the full 10k+ catalog, and `SNIFF4HOUND_IPC_CALL_TIMEOUT` gives slow first-start operations more room.
 - Expanded the honeypot listener catalog from 290 to 10k+ TCP/UDP entries. The previously curated 290 stay enabled by default; the newly discovered range is seeded disabled with service labels so operators can enable only the decoys they want without starting thousands of sockets.
 - Pruned noisy generated threat-signal monitors whose only evidence was common HTTP/discovery text such as `M-SEARCH`, `Mozilla/5.0`, `Keep-Alive`, `text/html`, `image/webp` or `gzip, deflate`, and tightened the generic plaintext monitor so mDNS/IGMP/SSDP/NTP/control traffic no longer double-fires as readable plaintext.

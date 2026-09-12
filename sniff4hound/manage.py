@@ -390,6 +390,35 @@ def _remove_ipc_token_file(path: str | None) -> None:
         pass
 
 
+def _clear_stale_capture_socket(ipc_socket: str) -> None:
+    """Remove a capture IPC socket left behind by a process that never
+    exited cleanly (killed terminal, crashed parent, `kill -9`, ...).
+
+    Without this, the capture child we are about to spawn below still
+    unlinks-and-rebinds its own fresh socket at this path once it starts
+    (see ipc.prepare_socket_path) - but the client connect loop we run
+    right after spawning it can win the race and reach the *old* listener
+    first, whenever sudo prompts for a password/fingerprint and the new
+    child is still waiting on that. The old process answers with its own
+    (different) token, which the client reads as a hard, non-retryable
+    "unauthorized" instead of the transient "nothing's listening yet" it
+    already retries through - so the whole run fails even though the new
+    child would have come up correctly a moment later.
+
+    Unlinking here only detaches the path; if that old process is still
+    alive it keeps running on its already-open file descriptor, unreachable
+    by name from now on, until whatever cleans up orphaned processes gets to
+    it. It is never a live socket this run's own client already depends on -
+    this runs before that client's first connection attempt.
+    """
+    path = Path(ipc_socket).expanduser()
+    try:
+        if path.exists() or path.is_symlink():
+            path.unlink()
+    except OSError:
+        pass
+
+
 def _capture_log_path(ipc_socket: str) -> Path:
     return Path(ipc_socket).with_suffix(".log")
 
@@ -579,6 +608,7 @@ def main():
         return 1
 
     ipc_socket = resolve_ipc_socket(selected_port)
+    _clear_stale_capture_socket(ipc_socket)
     ipc_token = resolve_ipc_token() or generate_ipc_token()
     # The token reaches the privileged child through a 0600 file whose path
     # (never its contents) is what goes on the `sudo env ...` command line -
