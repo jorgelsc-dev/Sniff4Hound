@@ -2162,6 +2162,9 @@ class SniffStore:
                 p.src_port AS src_port,
                 p.dst_port AS dst_port,
                 p.summary AS summary,
+                p.payload_hex AS payload_hex,
+                p.http_path AS http_path,
+                p.http_host AS http_host,
                 p.tags_json AS tags_json
             FROM payloads
             LEFT JOIN packets AS p
@@ -2171,6 +2174,31 @@ class SniffStore:
             LIMIT ? OFFSET ?
             """,
             tuple(params),
+        )
+
+    def get_payload_with_packet(self, payload_id: int):
+        return self._fetchone(
+            """
+            SELECT
+                payloads.*,
+                p.session_id AS session_id,
+                p.interface AS interface,
+                p.direction AS direction,
+                p.src_ip AS src_ip,
+                p.dst_ip AS dst_ip,
+                p.src_port AS src_port,
+                p.dst_port AS dst_port,
+                p.summary AS summary,
+                p.payload_hex AS payload_hex,
+                p.http_path AS http_path,
+                p.http_host AS http_host,
+                p.tags_json AS tags_json
+            FROM payloads
+            LEFT JOIN packets AS p
+                ON p.id = payloads.packet_id
+            WHERE payloads.id = ?
+            """,
+            (safe_int(payload_id, 0),),
         )
 
     def _tag_filter(self, *, proto="", search="", since=""):

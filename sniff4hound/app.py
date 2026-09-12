@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 from urllib.parse import urlencode
 import mimetypes
@@ -51,6 +52,7 @@ from .utils import (
     KNOWN_PROTOCOLS,
     bytes_to_hex_preview,
     clamp_int,
+    coerce_bool,
     ip_scope,
     json_dumps,
     normalize_protocol_name,
@@ -68,6 +70,46 @@ SOURCE_FRONTEND_DIST_DIR = PROJECT_ROOT / "frontend" / "dist"
 PACKAGE_FRONTEND_DIST_DIR = PACKAGE_ROOT / "_frontend_dist"
 FRONTEND_PUBLIC_DIR = PROJECT_ROOT / "frontend" / "public"
 DOCS_DIR = PROJECT_ROOT / "docs"
+DEFAULT_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+}
+FAVICON_SCAN_DEFAULT_LIMIT = min(API_MAX_LIMIT, 5000)
+FAVICON_MAX_BYTES = 512 * 1024
+FAVICON_CONTENT_TYPE_ALIASES = {
+    "image/ico": "image/x-icon",
+    "image/icon": "image/x-icon",
+    "image/vnd.microsoft.icon": "image/x-icon",
+}
+FAVICON_IMAGE_MIME_TYPES = frozenset({
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/svg+xml",
+    "image/webp",
+    "image/x-icon",
+})
+FAVICON_ICON_HINT_MIME_TYPES = frozenset({
+    "image/x-icon",
+    "image/svg+xml",
+})
+FAVICON_PATH_MARKERS = (
+    "/favicon",
+    "apple-touch-icon",
+    "browserconfig",
+    "mask-icon",
+    "mstile",
+    "site.webmanifest",
+)
+FAVICON_EXTENSION_BY_MIME = {
+    "image/gif": "gif",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/svg+xml": "svg",
+    "image/webp": "webp",
+    "image/x-icon": "ico",
+}
 
 
 def _resolve_frontend_dist_dir() -> Path:
@@ -149,6 +191,11 @@ def _guarded_send_http_response(conn, response, *, send_body=True):
             raise ValueError(f"Duplicate response header: {header_name}")
         seen_headers.add(normalized)
         headers[header_name] = _wsbuilder_http.validate_header_value(value)
+    for name, value in DEFAULT_SECURITY_HEADERS.items():
+        if name.lower() in seen_headers:
+            continue
+        seen_headers.add(name.lower())
+        headers[name] = value
 
     lowermap = {k.lower(): v for k, v in headers.items()}
     status_allows_body = not (100 <= status_code < 200 or status_code in {204, 304})
@@ -535,7 +582,10 @@ ENDPOINTS = [
     {"method": "GET", "path": "/ports/udp/", "desc": "List captured UDP packets."},
     {"method": "GET", "path": "/ports/icmp/", "desc": "List captured ICMP packets."},
     {"method": "GET", "path": "/ports/sctp/", "desc": "List captured SCTP packets."},
+    {"method": "POST", "path": "/port/action/", "desc": "Start/stop/restart/delete a captured packet endpoint."},
     {"method": "GET", "path": "/banners/", "desc": "List responses."},
+    {"method": "GET", "path": "/favicons/", "desc": "List favicon images discovered in captured HTTP responses."},
+    {"method": "GET", "path": "/favicons/raw/", "desc": "Return one captured favicon image by payload id."},
     {"method": "GET", "path": "/tags/", "desc": "List packet tags."},
     {"method": "GET", "path": "/api/dashboard/", "desc": "Dashboard snapshot."},
     {"method": "GET", "path": "/api/charts/analytics", "desc": "Analytics snapshot for charts."},
@@ -642,7 +692,7 @@ class _NotFound(ValueError):
     it to 404 rather than 400."""
 
 
-def _read_json_body(request):
+def _read_json_body(request, *, allow_array: bool = False):
     raw = request.text() if request is not None else ""
     stripped = str(raw or "").strip()
     if not stripped:
@@ -653,7 +703,26 @@ def _read_json_body(request):
         raise _InvalidJsonBody("Request body is not valid JSON") from exc
     if isinstance(data, dict):
         return data
-    raise _InvalidJsonBody("Request body must be a JSON object")
+    if allow_array and isinstance(data, list):
+        return data
+    expected = "a JSON object or array" if allow_array else "a JSON object"
+    raise _InvalidJsonBody(f"Request body must be {expected}")
+
+
+def _coerce_json_bool(value, field_name: str) -> bool:
+    return coerce_bool(value, field_name)
+
+
+def _optional_json_bool(payload: dict, field_name: str, default: bool = False) -> bool:
+    if field_name not in payload:
+        return bool(default)
+    return _coerce_json_bool(payload.get(field_name), field_name)
+
+
+def _required_json_bool(payload: dict, field_name: str) -> bool:
+    if field_name not in payload:
+        raise ValueError(f"{field_name} is required")
+    return _coerce_json_bool(payload.get(field_name), field_name)
 
 
 def _normalize_limit(value, default=200, maximum=None):
@@ -1015,6 +1084,225 @@ def _packet_row_to_banner(packet: dict) -> dict:
         "summary": packet.get("summary") or "",
         "tags": tags,
     }
+
+
+def _payload_bytes_for_favicon(row: dict) -> bytes:
+    raw_hex = str((row or {}).get("payload_hex") or "").strip()
+    if raw_hex:
+        compact = "".join(raw_hex.split())
+        try:
+            return bytes.fromhex(compact)
+        except ValueError:
+            return b""
+    text = str((row or {}).get("response_plain") or "")
+    return text.encode("utf-8", errors="ignore")
+
+
+def _split_http_payload(payload: bytes) -> tuple[bytes, bytes]:
+    if not payload:
+        return b"", b""
+    for separator in (b"\r\n\r\n", b"\n\n"):
+        index = payload.find(separator)
+        if index < 0 or index > 16_384:
+            continue
+        header = payload[:index]
+        if header.lower().startswith(b"http/") or b":" in header:
+            return header, payload[index + len(separator):]
+    return b"", payload
+
+
+def _http_message_header(headers: bytes, name: str) -> str:
+    wanted = str(name or "").strip().lower()
+    if not headers or not wanted:
+        return ""
+    text = headers.decode("iso-8859-1", errors="ignore")
+    for line in text.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip().lower() == wanted:
+            return value.strip()
+    return ""
+
+
+def _decode_chunked_body(body: bytes) -> bytes:
+    if not body:
+        return body
+    decoded = bytearray()
+    offset = 0
+    while offset < len(body):
+        line_end = body.find(b"\r\n", offset)
+        newline_size = 2
+        if line_end < 0:
+            line_end = body.find(b"\n", offset)
+            newline_size = 1
+        if line_end < 0:
+            return body
+        size_line = body[offset:line_end].split(b";", 1)[0].strip()
+        try:
+            chunk_size = int(size_line, 16)
+        except ValueError:
+            return body
+        offset = line_end + newline_size
+        if chunk_size == 0:
+            return bytes(decoded)
+        if offset + chunk_size > len(body):
+            return body
+        decoded.extend(body[offset:offset + chunk_size])
+        offset += chunk_size
+        if body[offset:offset + 2] == b"\r\n":
+            offset += 2
+        elif body[offset:offset + 1] == b"\n":
+            offset += 1
+    return bytes(decoded) if decoded else body
+
+
+def _canonical_favicon_content_type(value: str) -> str:
+    mime = str(value or "").split(";", 1)[0].strip().lower()
+    return FAVICON_CONTENT_TYPE_ALIASES.get(mime, mime)
+
+
+def _favicon_mime_from_magic(body: bytes) -> str:
+    if body.startswith(b"\x00\x00\x01\x00"):
+        return "image/x-icon"
+    if body.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if body.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if body.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(body) >= 12 and body.startswith(b"RIFF") and body[8:12] == b"WEBP":
+        return "image/webp"
+    prefix = body[:512].lstrip().lower()
+    if prefix.startswith(b"<svg") or (prefix.startswith(b"<?xml") and b"<svg" in prefix):
+        return "image/svg+xml"
+    return ""
+
+
+def _favicon_body_and_mime(row: dict) -> tuple[bytes, str]:
+    payload = _payload_bytes_for_favicon(row)
+    headers, body = _split_http_payload(payload)
+    transfer_encoding = _http_message_header(headers, "transfer-encoding").lower()
+    if "chunked" in transfer_encoding:
+        body = _decode_chunked_body(body)
+    if not body:
+        return b"", ""
+    content_type = _canonical_favicon_content_type(_http_message_header(headers, "content-type"))
+    magic_mime = _favicon_mime_from_magic(body)
+    return body, magic_mime or content_type
+
+
+def _favicon_service(row: dict) -> tuple[str, int]:
+    src_ip = str(row.get("src_ip") or "").strip()
+    dst_ip = str(row.get("dst_ip") or "").strip()
+    src_port = safe_int(row.get("src_port"), 0)
+    dst_port = safe_int(row.get("dst_port"), 0)
+    if src_ip and src_port in {80, 443, 8000, 8080, 8443}:
+        return src_ip, src_port
+    if dst_ip and dst_port in {80, 443, 8000, 8080, 8443}:
+        return dst_ip, dst_port
+    return str(row.get("ip") or dst_ip or src_ip or "").strip(), safe_int(row.get("port") or dst_port or src_port, 0)
+
+
+def _favicon_icon_url(row: dict, ip: str, port: int, mime_type: str) -> str:
+    path = str(row.get("http_path") or "").strip()
+    if path.startswith(("http://", "https://")):
+        return path
+    if not path:
+        path = "/favicon.ico" if mime_type == "image/x-icon" else ""
+    if not path:
+        return ""
+    if not path.startswith("/"):
+        path = f"/{path}"
+    host = str(row.get("http_host") or ip or "").strip()
+    if not host:
+        return path
+    scheme = "https" if port in {443, 8443} or str(row.get("proto") or "").lower() in {"https", "tls"} else "http"
+    default_port = 443 if scheme == "https" else 80
+    port_part = "" if not port or port == default_port or row.get("http_host") else f":{port}"
+    return f"{scheme}://{host}{port_part}{path}"
+
+
+def _is_favicon_candidate(row: dict, mime_type: str, body: bytes) -> bool:
+    if not mime_type or mime_type not in FAVICON_IMAGE_MIME_TYPES:
+        return False
+    if len(body) > FAVICON_MAX_BYTES:
+        return False
+    path = str(row.get("http_path") or "").strip().lower()
+    if any(marker in path for marker in FAVICON_PATH_MARKERS):
+        return True
+    if mime_type in FAVICON_ICON_HINT_MIME_TYPES:
+        return True
+    return bool(_favicon_mime_from_magic(body))
+
+
+def _favicon_candidate_from_payload(row: dict) -> dict | None:
+    body, mime_type = _favicon_body_and_mime(row)
+    if not _is_favicon_candidate(row, mime_type, body):
+        return None
+    ip, port = _favicon_service(row)
+    created = row.get("created_at") or utc_now()
+    updated = row.get("updated_at") or created
+    return {
+        "id": row.get("id"),
+        "packet_id": row.get("packet_id") or row.get("port_id") or 0,
+        "ip": ip,
+        "port": port,
+        "proto": row.get("proto") or "unknown",
+        "icon_url": _favicon_icon_url(row, ip, port, mime_type),
+        "mime_type": mime_type,
+        "size": len(body),
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "created_at": created,
+        "updated_at": updated,
+        "flow_key": row.get("flow_key") or "",
+        "_body": body,
+    }
+
+
+def _favicon_matches_search(row: dict, search: str) -> bool:
+    needle = str(search or "").strip().lower()
+    if not needle:
+        return True
+    return any(
+        needle in str(value or "").lower()
+        for value in (
+            row.get("id"),
+            row.get("packet_id"),
+            row.get("ip"),
+            row.get("port"),
+            row.get("proto"),
+            row.get("icon_url"),
+            row.get("mime_type"),
+            row.get("sha256"),
+            row.get("flow_key"),
+        )
+    )
+
+
+def _favicon_public_row(row: dict) -> dict:
+    return {key: value for key, value in row.items() if not key.startswith("_")}
+
+
+def _list_favicon_candidates(*, search="", proto="", mode="", interface="", since="", mime_type="", limit=250, offset=0):
+    scan_limit = min(API_MAX_LIMIT, max(FAVICON_SCAN_DEFAULT_LIMIT, int(offset) + int(limit)))
+    rows = store.list_payloads(
+        proto=proto,
+        mode=mode,
+        interface=interface,
+        since=since,
+        limit=scan_limit,
+    )
+    requested_mime = _canonical_favicon_content_type(mime_type)
+    favicons = []
+    for row in rows:
+        candidate = _favicon_candidate_from_payload(row)
+        if not candidate:
+            continue
+        if requested_mime and candidate.get("mime_type") != requested_mime:
+            continue
+        if not _favicon_matches_search(candidate, search):
+            continue
+        favicons.append(candidate)
+    return favicons
 
 
 def _packet_row_to_tag(packet: dict) -> dict:
@@ -1511,7 +1799,7 @@ def target_crud(request):
         row = store.update_session(session_id, payload)
         return _session_row(row) if row else {}
     if method == "DELETE":
-        if payload.get("clean_results"):
+        if _optional_json_bool(payload, "clean_results"):
             _clear_packets_for_session(session_id)
         store.delete_session(session_id)
         return {"status": "ok"}
@@ -1523,7 +1811,7 @@ def target_action(request):
     payload = _read_json_body(request)
     session_id = safe_int(payload.get("id"), 0)
     action = str(payload.get("action") or "").strip().lower()
-    clean_results = bool(payload.get("clean_results"))
+    clean_results = _optional_json_bool(payload, "clean_results")
     row = store.get_session(session_id)
     if not row:
         raise _NotFound("Unknown session id")
@@ -1536,7 +1824,7 @@ def target_action_bulk(request):
     payload = _read_json_body(request)
     action = str(payload.get("action") or "").strip().lower()
     proto = normalize_protocol_name(payload.get("proto"))
-    clean_results = bool(payload.get("clean_results"))
+    clean_results = _optional_json_bool(payload, "clean_results")
     rows = store.list_sessions(limit=1000, proto=proto)
     for row in rows:
         _capture_session_action(row, action, clean_results=clean_results)
@@ -1630,6 +1918,19 @@ def ports_sctp(request):
     return _ports_by_proto(request, "sctp")
 
 
+@app.api("/port/action/", methods=("POST",))
+def port_action(request):
+    payload = _read_json_body(request)
+    packet_id = safe_int(payload.get("id"), 0)
+    action = str(payload.get("action") or "").strip().lower()
+    clean_results = _optional_json_bool(payload, "clean_results")
+    row = store.get_packet(packet_id)
+    if not row:
+        raise _NotFound("Unknown packet id")
+    updated = _packet_action(row, action, clean_results=clean_results)
+    return _packet_row_to_port(updated) if updated else {"status": "ok"}
+
+
 @app.api("/banners/", methods=("GET", "DELETE"))
 def banners(request):
     if request.method.upper() == "DELETE":
@@ -1662,12 +1963,65 @@ def banners(request):
     )
 
 
+@app.api("/favicons/", methods=("GET",))
+def favicons(request):
+    search = str(request.query.get("search") or "").strip()
+    proto_value = str(request.query.get("proto") or "").strip()
+    proto = normalize_protocol_name(proto_value) if proto_value else ""
+    mode = str(request.query.get("mode") or "").strip().lower()
+    interface = str(request.query.get("interface") or "").strip()
+    mime_type = str(request.query.get("mime") or request.query.get("mime_type") or "").strip()
+    limit = _normalize_limit(request.query.get("limit"), default=250)
+    offset = _normalize_offset(request.query.get("offset"))
+    since = _normalize_since(request)
+    rows = _list_favicon_candidates(
+        search=search,
+        proto=proto,
+        mode=mode,
+        interface=interface,
+        since=since,
+        mime_type=mime_type,
+        limit=limit,
+        offset=offset,
+    )
+    page = rows[offset:offset + limit]
+    return _listing_response(
+        [_favicon_public_row(row) for row in page],
+        total=len(rows),
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.view("/favicons/raw/", methods=("GET",))
+def favicon_raw(request):
+    denied = _guard_request_auth(request, allow_query=True)
+    if denied is not None:
+        return denied
+    favicon_id = safe_int(request.query.get("id"), 0)
+    if not favicon_id:
+        return Response.text("Not Found", status=404)
+    row = store.get_payload_with_packet(favicon_id)
+    candidate = _favicon_candidate_from_payload(row or {})
+    if not candidate:
+        return Response.text("Not Found", status=404)
+    extension = FAVICON_EXTENSION_BY_MIME.get(candidate["mime_type"], "bin")
+    return Response(
+        body=candidate["_body"],
+        headers={
+            "Content-Type": candidate["mime_type"],
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'inline; filename="favicon-{favicon_id}.{extension}"',
+        },
+    )
+
+
 @app.api("/banner/action/", methods=("POST",))
 def banner_action(request):
     payload = _read_json_body(request)
     banner_id = safe_int(payload.get("id"), 0)
     action = str(payload.get("action") or "").strip().lower()
-    clean_results = bool(payload.get("clean_results"))
+    clean_results = _optional_json_bool(payload, "clean_results")
     row = store.get_payload(banner_id)
     if not row:
         raise _NotFound("Unknown response id")
@@ -2095,7 +2449,14 @@ def runtime_api(request):
 
     # {"engines": {"sniffer": true, "honeypot": false}} sets the running set
     # outright - any of the four combinations, including neither.
-    if isinstance(engine, dict) or (isinstance(engine, (list, tuple)) and not action):
+    if isinstance(engine, dict):
+        engine_selection = {}
+        for name in ("sniffer", "honeypot"):
+            if name in engine:
+                engine_selection[name] = _coerce_json_bool(engine.get(name), f"engines.{name}")
+        snapshot = runtime.set_engines(engine_selection)
+        engine = None
+    elif isinstance(engine, (list, tuple)) and not action:
         snapshot = runtime.set_engines(engine)
         engine = None
 
@@ -2134,10 +2495,18 @@ def honeypot_listeners_toggle_api(request):
     listener_id = str(payload.get("id") or "").strip()
     if not listener_id:
         raise ValueError("id is required")
-    if "enabled" not in payload:
-        raise ValueError("enabled is required")
-    enabled = bool(payload.get("enabled"))
+    enabled = _required_json_bool(payload, "enabled")
     return runtime.set_honeypot_listener_enabled(listener_id, enabled)
+
+
+def _write_catalog_file_rows(request, filename: str):
+    payload = _read_json_body(request, allow_array=True)
+    rows = payload if isinstance(payload, list) else payload.get("rows", [])
+    if not isinstance(rows, list):
+        raise ValueError("rows must be a list")
+    accepted = [item for item in rows if isinstance(item, dict)]
+    store.write_catalog_file(filename, accepted)
+    return {"status": "ok", "count": len(accepted), "ignored": len(rows) - len(accepted)}
 
 
 @app.api("/api/catalog/file/banner-rules", methods=("GET", "POST"))
@@ -2145,12 +2514,7 @@ def file_banner_rules(request):
     filename = "banner_regex_rules.json"
     if request.method.upper() == "GET":
         return store.read_catalog_file(filename)
-    payload = _read_json_body(request)
-    rows = payload if isinstance(payload, list) else payload.get("rows", [])
-    if not isinstance(rows, list):
-        rows = []
-    store.write_catalog_file(filename, [item for item in rows if isinstance(item, dict)])
-    return {"status": "ok", "count": len(rows)}
+    return _write_catalog_file_rows(request, filename)
 
 
 @app.api("/api/catalog/file/banner-requests", methods=("GET", "POST"))
@@ -2158,12 +2522,7 @@ def file_banner_requests(request):
     filename = "banner_probe_requests.json"
     if request.method.upper() == "GET":
         return store.read_catalog_file(filename)
-    payload = _read_json_body(request)
-    rows = payload if isinstance(payload, list) else payload.get("rows", [])
-    if not isinstance(rows, list):
-        rows = []
-    store.write_catalog_file(filename, [item for item in rows if isinstance(item, dict)])
-    return {"status": "ok", "count": len(rows)}
+    return _write_catalog_file_rows(request, filename)
 
 
 @app.api("/api/catalog/file/ip-presets", methods=("GET", "POST"))
@@ -2171,12 +2530,7 @@ def file_ip_presets(request):
     filename = "ip_presets.json"
     if request.method.upper() == "GET":
         return store.read_catalog_file(filename)
-    payload = _read_json_body(request)
-    rows = payload if isinstance(payload, list) else payload.get("rows", [])
-    if not isinstance(rows, list):
-        rows = []
-    store.write_catalog_file(filename, [item for item in rows if isinstance(item, dict)])
-    return {"status": "ok", "count": len(rows)}
+    return _write_catalog_file_rows(request, filename)
 
 
 @app.api("/api/catalog/banner-rules/", methods=("GET", "POST", "PUT", "DELETE"))
@@ -2280,9 +2634,7 @@ def monitors_toggle(request):
     monitor_id = str(payload.get("id") or "").strip()
     if not monitor_id:
         raise ValueError("id is required")
-    if "enabled" not in payload:
-        raise ValueError("enabled is required")
-    enabled = bool(payload.get("enabled"))
+    enabled = _required_json_bool(payload, "enabled")
     return _monitor_row(store.set_monitor_enabled(monitor_id, enabled))
 
 
@@ -2292,11 +2644,13 @@ def monitors_config(request):
         return store.get_monitor_config()
     payload = _read_json_body(request)
     if "filter_enabled" in payload:
-        store.set_monitor_filter_enabled(bool(payload.get("filter_enabled")))
+        store.set_monitor_filter_enabled(_coerce_json_bool(payload.get("filter_enabled"), "filter_enabled"))
     if "min_severity" in payload:
         store.set_monitor_min_severity(str(payload.get("min_severity") or ""))
     if "suppress_generated_info" in payload:
-        store.set_monitor_suppress_generated_info(bool(payload.get("suppress_generated_info")))
+        store.set_monitor_suppress_generated_info(
+            _coerce_json_bool(payload.get("suppress_generated_info"), "suppress_generated_info")
+        )
     if not any(key in payload for key in ("filter_enabled", "min_severity", "suppress_generated_info")):
         raise ValueError("filter_enabled, min_severity, or suppress_generated_info is required")
     return store.get_monitor_config()
@@ -2308,7 +2662,7 @@ def declared_location_api(request):
     if request.method.upper() == "GET":
         return store.get_declared_location()
     payload = _read_json_body(request)
-    if payload.get("clear"):
+    if _optional_json_bool(payload, "clear"):
         return store.set_declared_location(None, None, label=str(payload.get("label") or ""))
     if "lat" not in payload or "lon" not in payload:
         raise ValueError("lat and lon are required (or pass clear: true)")
@@ -2385,9 +2739,7 @@ def blacklist_toggle(request):
     entry_id = str(payload.get("id") or "").strip()
     if not entry_id:
         raise ValueError("id is required")
-    if "enabled" not in payload:
-        raise ValueError("enabled is required")
-    enabled = bool(payload.get("enabled"))
+    enabled = _required_json_bool(payload, "enabled")
     return _blacklist_row(store.set_blacklist_entry_enabled(entry_id, enabled))
 
 
@@ -2433,9 +2785,7 @@ def whitelist_toggle(request):
     entry_id = str(payload.get("id") or "").strip()
     if not entry_id:
         raise ValueError("id is required")
-    if "enabled" not in payload:
-        raise ValueError("enabled is required")
-    enabled = bool(payload.get("enabled"))
+    enabled = _required_json_bool(payload, "enabled")
     return _whitelist_row(store.set_whitelist_entry_enabled(entry_id, enabled))
 
 

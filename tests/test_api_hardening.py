@@ -53,8 +53,10 @@ def _reload_app_stack(require_auth: str = "1"):
             os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = previous
 
 
-def _request(path, *, query="", headers=None, client=("203.0.113.10", 4444), method="GET"):
-    return Request(method, path, query, dict(headers or {}), b"", client)
+def _request(path, *, query="", headers=None, client=("203.0.113.10", 4444), method="GET", body=b""):
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    return Request(method, path, query, dict(headers or {}), body, client)
 
 
 class AuthGuardHardeningTests(unittest.TestCase):
@@ -248,6 +250,219 @@ class ExportContentTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             export.build_export(self.store, "everything")
+
+
+class ApiInputCoercionTests(unittest.TestCase):
+    """Client JSON should mean what it says, even when it comes from forms or
+    scripts that send booleans as strings."""
+
+    def setUp(self):
+        self.auth, self.app = _reload_app_stack("0")
+
+    def _store_with_captured_favicon(self, tmp_dir):
+        replacement_store = SniffStore(Path(tmp_dir) / "api.db")
+        icon = b"\x00\x00\x01\x00\x01\x00\x10\x10\x00\x00\x01\x00"
+        http_response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: image/vnd.microsoft.icon\r\n"
+            b"Content-Length: 12\r\n"
+            b"\r\n"
+            + icon
+        )
+        replacement_store.register_packet(
+            {
+                "proto": "tcp",
+                "src_ip": "198.51.100.10",
+                "dst_ip": "10.0.0.5",
+                "src_port": 80,
+                "dst_port": 51321,
+                "summary": "HTTP favicon response",
+                "payload_text": "HTTP/1.1 200 OK\r\nContent-Type: image/vnd.microsoft.icon",
+                "payload_hex": http_response.hex(),
+                "banner_text": "HTTP/1.1 200 OK\r\nContent-Type: image/vnd.microsoft.icon",
+                "http_path": "/favicon.ico",
+                "http_host": "example.test",
+                "raw_packet": b"",
+            }
+        )
+        return replacement_store, icon
+
+    def test_file_catalog_endpoints_accept_root_arrays(self):
+        class FakeStore:
+            def __init__(self):
+                self.filename = ""
+                self.rows = None
+
+            def read_catalog_file(self, _filename):
+                return []
+
+            def write_catalog_file(self, filename, rows):
+                self.filename = filename
+                self.rows = rows
+
+        fake = FakeStore()
+        body = json.dumps([{"id": "home", "label": "Home lab"}, "skip-me", {"id": "corp"}])
+        with patch.object(self.app, "store", fake):
+            response = self.app.app.dispatch(_request(
+                "/api/catalog/file/ip-presets",
+                method="POST",
+                body=body,
+            ))
+
+        self.assertEqual(response.status, 200)
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["ignored"], 1)
+        self.assertEqual(fake.filename, "ip_presets.json")
+        self.assertEqual([row["id"] for row in fake.rows], ["home", "corp"])
+
+    def test_bool_like_strings_are_not_all_truthy_for_toggles(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            replacement_store = SniffStore(Path(tmp_dir) / "api.db")
+            self.addCleanup(replacement_store.close)
+            entry = replacement_store.create_blacklist_entry("ip", "exact", "203.0.113.55")
+            with patch.object(self.app, "store", replacement_store):
+                response = self.app.app.dispatch(_request(
+                    "/api/blacklist/toggle",
+                    method="POST",
+                    body=json.dumps({"id": entry["id"], "enabled": "false"}),
+                ))
+
+            self.assertEqual(response.status, 200)
+            payload = json.loads(response.body.decode("utf-8"))
+            self.assertFalse(payload["enabled"])
+            self.assertFalse(replacement_store.get_blacklist_entry(entry["id"])["enabled"])
+
+    def test_false_clean_results_string_does_not_delete_related_rows(self):
+        class FakeStore:
+            def __init__(self):
+                self.deleted = None
+
+            def delete_session(self, session_id):
+                self.deleted = session_id
+
+        fake = FakeStore()
+        with patch.object(self.app, "store", fake), patch.object(self.app, "_clear_packets_for_session") as clear:
+            response = self.app.app.dispatch(_request(
+                "/target/",
+                method="DELETE",
+                body=json.dumps({"id": 42, "clean_results": "false"}),
+            ))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(fake.deleted, 42)
+        clear.assert_not_called()
+
+    def test_port_action_endpoint_updates_captured_packet_state(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            replacement_store = SniffStore(Path(tmp_dir) / "api.db")
+            self.addCleanup(replacement_store.close)
+            packet = replacement_store.register_packet(
+                {
+                    "proto": "tcp",
+                    "src_ip": "10.0.0.5",
+                    "dst_ip": "10.0.0.10",
+                    "src_port": 51234,
+                    "dst_port": 443,
+                    "summary": "TLS probe",
+                    "payload_text": "",
+                    "payload_hex": "",
+                    "raw_packet": b"",
+                }
+            )
+            with patch.object(self.app, "store", replacement_store):
+                response = self.app.app.dispatch(_request(
+                    "/port/action/",
+                    method="POST",
+                    body=json.dumps({"id": packet["id"], "action": "stop"}),
+                ))
+
+            self.assertEqual(response.status, 200)
+            payload = json.loads(response.body.decode("utf-8"))
+            self.assertEqual(payload["state"], "filtered")
+            self.assertEqual(payload["scan_state"], "stopped")
+
+    def test_runtime_engines_accept_bool_like_strings(self):
+        class FakeRuntime:
+            mode = "sniffer"
+
+            def __init__(self):
+                self.selection = None
+
+            def set_engines(self, selection):
+                self.selection = selection
+                return {"mode": self.mode, "selection": selection}
+
+        fake = FakeRuntime()
+        with patch.object(self.app, "runtime", fake):
+            response = self.app.app.dispatch(_request(
+                "/api/runtime/",
+                method="POST",
+                body=json.dumps({"engines": {"sniffer": "false", "honeypot": "1"}}),
+            ))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(fake.selection, {"sniffer": False, "honeypot": True})
+
+    def test_invalid_boolean_values_are_clean_400s(self):
+        response = self.app.app.dispatch(_request(
+            "/api/runtime/",
+            method="POST",
+            body=json.dumps({"engines": {"sniffer": "maybe"}}),
+        ))
+        self.assertEqual(response.status, 400)
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["code"], "invalid_request")
+        self.assertIn("engines.sniffer", payload["message"])
+
+    def test_favicon_endpoints_extract_and_serve_captured_http_icons(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            replacement_store, icon = self._store_with_captured_favicon(tmp_dir)
+            try:
+                with patch.object(self.app, "store", replacement_store):
+                    response = self.app.app.dispatch(_request("/favicons/"))
+
+                self.assertEqual(response.status, 200)
+                rows = json.loads(response.body.decode("utf-8"))
+                self.assertEqual(len(rows), 1)
+                self.assertNotIn("_body", rows[0])
+                self.assertEqual(rows[0]["mime_type"], "image/x-icon")
+                self.assertEqual(rows[0]["size"], len(icon))
+                self.assertEqual(rows[0]["ip"], "198.51.100.10")
+                self.assertEqual(rows[0]["port"], 80)
+                self.assertEqual(rows[0]["icon_url"], "http://example.test/favicon.ico")
+
+                with patch.object(self.app, "store", replacement_store):
+                    raw_response = self.app.app.dispatch(_request(
+                        "/favicons/raw/",
+                        query=f"id={rows[0]['id']}",
+                    ))
+
+                self.assertEqual(raw_response.status, 200)
+                self.assertEqual(raw_response.body, icon)
+                self.assertEqual(raw_response.headers.get("Content-Type"), "image/x-icon")
+            finally:
+                replacement_store.close()
+
+    def test_favicon_raw_accepts_query_security_code_for_image_tags(self):
+        self.auth, self.app = _reload_app_stack("1")
+        self.auth._SESSION_TOKEN = "Ab12Cd34"
+        self.auth.RATE_LIMITER.reset()
+        self.addCleanup(self.auth.RATE_LIMITER.reset)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            replacement_store, icon = self._store_with_captured_favicon(tmp_dir)
+            try:
+                payload_id = replacement_store.list_payloads(limit=1)[0]["id"]
+                with patch.object(self.app, "store", replacement_store):
+                    response = self.app.app.dispatch(_request(
+                        "/favicons/raw/",
+                        query=f"id={payload_id}&security_code=Ab12Cd34",
+                    ))
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.body, icon)
+            finally:
+                replacement_store.close()
 
 
 class CaptureIpcTokenTests(unittest.TestCase):
