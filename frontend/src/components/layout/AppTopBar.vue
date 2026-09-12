@@ -63,7 +63,11 @@ export default {
 <style scoped>
 .top-bar {
   position: relative;
-  overflow: hidden;
+  /* Was overflow:hidden (only needed to clip the ::after accent line) - but
+     that also clipped the notification bell's floating badge, which sits a
+     few px above the bell icon and pokes past this 40px bar's edge. The
+     accent line is a 2px strip pinned to top:0/left:0/right:0, so it never
+     needs clipping in the first place. */
   border-bottom: 1px solid rgba(var(--brand-sky-rgb), 0.18);
   backdrop-filter: blur(18px) saturate(130%);
   background:
@@ -132,7 +136,10 @@ export default {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  /* Was 6px - the bell's floating badge extends past the bell icon's own
+     edge, and at 6px it overlapped the shutdown button's glow halo, which
+     painted over (and hid) the badge's count digit. */
+  gap: 22px;
   min-width: 0;
 }
 

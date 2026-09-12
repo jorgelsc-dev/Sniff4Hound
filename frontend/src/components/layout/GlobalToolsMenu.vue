@@ -92,11 +92,11 @@ export default {
 .tools-fab-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(4, 8, 13, 0.5);
-  /* "Difumina lo demas para enfoque en esos botones" - blur the rest of the
-     page while the menu is open, not just dim it. */
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: rgba(4, 8, 13, 0.82);
+  /* "Difumina mucho mas que el fondo se vea casi nada" - the background
+     behind the menu should read as nearly invisible, not just softened. */
+  backdrop-filter: blur(18px) saturate(120%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
   z-index: 3090;
 }
 

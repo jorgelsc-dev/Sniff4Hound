@@ -38,8 +38,8 @@
     </v-alert>
 
     <div class="mt-6">
-      <v-row dense class="mb-3">
-        <v-col cols="12" md="4">
+      <div class="sniffer-filter-row mb-3">
+        <div class="sniffer-filter-field sniffer-filter-field--search">
           <v-text-field
             v-model.trim="filters.query"
             label="Search packets"
@@ -49,9 +49,10 @@
             clearable
             variant="outlined"
             density="comfortable"
+            hide-details
           />
-        </v-col>
-        <v-col cols="12" sm="6" md="2">
+        </div>
+        <div class="sniffer-filter-field">
           <v-select
             v-model="filters.proto"
             :items="protocolOptions"
@@ -61,9 +62,10 @@
             clearable
             variant="outlined"
             density="comfortable"
+            hide-details
           />
-        </v-col>
-        <v-col cols="12" sm="6" md="2">
+        </div>
+        <div class="sniffer-filter-field">
           <v-select
             v-model="filters.interface"
             :items="interfaceOptions"
@@ -73,9 +75,10 @@
             clearable
             variant="outlined"
             density="comfortable"
+            hide-details
           />
-        </v-col>
-        <v-col cols="12" sm="6" md="2">
+        </div>
+        <div class="sniffer-filter-field">
           <v-select
             v-model="filters.direction"
             :items="directionOptions"
@@ -85,9 +88,10 @@
             clearable
             variant="outlined"
             density="comfortable"
+            hide-details
           />
-        </v-col>
-        <v-col cols="12" sm="6" md="2">
+        </div>
+        <div class="sniffer-filter-field">
           <v-select
             v-model="filters.state"
             :items="stateOptions"
@@ -97,9 +101,10 @@
             clearable
             variant="outlined"
             density="comfortable"
+            hide-details
           />
-        </v-col>
-      </v-row>
+        </div>
+      </div>
 
       <div class="d-flex flex-wrap ga-2 mb-4">
         <v-chip size="small" variant="tonal" color="info" prepend-icon="mdi-lan-check">
@@ -562,6 +567,28 @@ export default {
 </script>
 
 <style scoped>
+/* The 5 filter fields (Search + 4 selects) used to be a v-row of v-col
+   widths that summed to exactly 12 at the md breakpoint - fragile, since
+   any width just under md dropped the 4 selects to half-width (sm=6) while
+   Search stayed full-width, forcing a multi-row wrap across that whole
+   range. A flex-wrap row with per-field min/basis widths reflows smoothly
+   instead of jumping between two rigid layouts. */
+.sniffer-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sniffer-filter-field {
+  flex: 1 1 140px;
+  min-width: 140px;
+}
+
+.sniffer-filter-field--search {
+  flex: 2 1 220px;
+  min-width: 200px;
+}
+
 .metric-card {
   border-radius: 16px;
 }

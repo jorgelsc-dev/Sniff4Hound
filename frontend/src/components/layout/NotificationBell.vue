@@ -1,27 +1,32 @@
 <template>
   <v-menu location="bottom end" :close-on-content-click="false" max-width="380">
     <template #activator="{ props: menuProps }">
-      <v-btn
-        icon
-        variant="text"
-        size="small"
-        density="comfortable"
-        class="bell-trigger"
-        aria-label="Notifications"
-        v-bind="menuProps"
+      <!-- v-badge wraps v-btn, not the other way around: an icon v-btn
+           clips its own content to a circle (for the ripple), and a badge
+           nested inside it got clipped to a thin crescent - the count digit
+           was rendered but invisible. Wrapping the button in the badge
+           keeps the badge outside that clip. -->
+      <v-badge
+        :model-value="totalCount > 0"
+        :content="badgeContent"
+        color="error"
+        floating
+        offset-x="2"
+        offset-y="2"
+        class="bell-badge"
       >
-        <v-badge
-          :model-value="totalCount > 0"
-          :content="badgeContent"
-          color="error"
-          floating
-          offset-x="2"
-          offset-y="2"
-          class="bell-badge"
+        <v-btn
+          icon
+          variant="text"
+          size="small"
+          density="comfortable"
+          class="bell-trigger"
+          aria-label="Notifications"
+          v-bind="menuProps"
         >
           <v-icon icon="mdi-bell-outline" size="20" />
-        </v-badge>
-      </v-btn>
+        </v-btn>
+      </v-badge>
     </template>
 
     <v-card class="bell-menu" rounded="lg">
@@ -158,12 +163,35 @@ export default {
   color: rgba(210, 223, 238, 0.85);
 }
 
+.bell-badge {
+  /* The floating badge sits a few px above the bell icon - with the top bar
+     flush against the very top of the page (y:0), that put the badge's top
+     edge above y:0, clipped by the viewport edge itself before any CSS
+     overflow even comes into play. Margin has to be on the badge's own
+     wrapper (not the button inside it) since v-badge is now the outer
+     element - see the template comment on why v-btn moved inside v-badge. */
+  margin-top: 10px;
+}
+
 /* Matches AppTopBar's .runtime-badge treatment - without the ring the red
    badge dot reads as overlapping/cutting into the bell icon instead of
    sitting on top of it, inconsistent with every other badged icon in the
-   top bar. */
+   top bar. Bumped size/weight/contrast - at the default Vuetify badge size
+   the count was unreadable against the dark top bar. */
 .bell-badge :deep(.v-badge__badge) {
-  border: 2px solid rgba(5, 10, 18, 0.9);
+  border: 2px solid rgba(5, 10, 18, 0.95);
+  min-width: 17px;
+  height: 17px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  line-height: 13px;
+  padding: 0 4px;
+  box-shadow: 0 0 6px rgba(255, 61, 87, 0.65);
+  /* Vuetify already positions this absolutely (relative to
+     .v-badge__wrapper) - overriding position would knock it out of that
+     placement entirely and send it flowing off next to the shutdown button
+     instead of sitting on the bell icon's corner. Only raise stacking. */
+  z-index: 2;
 }
 
 .bell-menu {

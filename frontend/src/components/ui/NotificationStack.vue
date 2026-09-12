@@ -131,12 +131,15 @@ export default {
 <style scoped>
 .notification-stack {
   position: fixed;
-  right: 18px;
+  /* Was anchored bottom-right, same corner as the global tools FAB - toasts
+     could render on top of and cover the FAB trigger. Moved to bottom-left
+     so the two stop competing for the same corner. */
+  left: 18px;
   bottom: 18px;
   z-index: 3000;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 8px;
   width: min(360px, calc(100vw - 32px));
   pointer-events: none;
@@ -154,7 +157,7 @@ export default {
   color: rgba(210, 223, 238, 0.82);
   font-size: 0.72rem;
   cursor: pointer;
-  align-self: flex-end;
+  align-self: flex-start;
 }
 
 .notification-toolbar-divider {
@@ -308,7 +311,7 @@ export default {
   }
 
   .notification-toolbar {
-    align-self: flex-end;
+    align-self: flex-start;
   }
 }
 </style>

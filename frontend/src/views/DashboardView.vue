@@ -33,7 +33,7 @@
     </v-alert>
 
     <v-row class="mt-3" density="compact">
-      <v-col cols="12" xl="7">
+      <v-col cols="12" md="6">
         <DataPanel
           title="Runtime Posture"
           subtitle="Both engines start stopped. Sniffer blockers and service-listener readiness are surfaced here."
@@ -158,7 +158,7 @@
         </DataPanel>
       </v-col>
 
-      <v-col cols="12" xl="5">
+      <v-col cols="12" md="6">
         <DataPanel
           title="Protocol Pressure"
           subtitle="Top observed protocols and quick entry points into the dedicated traffic views."
@@ -756,7 +756,7 @@ export default {
 }
 
 .runtime-state-card {
-  padding: 10px;
+  padding: 8px;
   border-radius: 8px;
   border: 1px solid rgba(104, 184, 229, 0.16);
   background: linear-gradient(180deg, rgba(12, 21, 33, 0.88), rgba(8, 14, 23, 0.84));
@@ -784,20 +784,20 @@ export default {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 5px 8px;
+  gap: 8px;
+  padding: 4px 7px;
   border-radius: 6px;
   background: rgba(4, 10, 18, 0.44);
 }
 
 .runtime-stat__label {
   color: rgba(176, 199, 220, 0.76);
-  font-size: 0.76rem;
+  font-size: 0.7rem;
 }
 
 .runtime-stat__value {
   font-weight: 700;
-  font-size: 0.86rem;
+  font-size: 0.8rem;
 }
 
 .flow-cell {
@@ -841,7 +841,17 @@ export default {
   white-space: nowrap;
 }
 
-@media (max-width: 1264px) {
+/* The panel is now only ~50% of the viewport from md up (it used to be
+   full-width until xl), so the two-column sniffer/honeypot grid needs to
+   collapse to one column across that whole md-to-xl range or its cards get
+   cramped - not just below the old single 1264px cutoff. */
+@media (max-width: 1900px) and (min-width: 600px) {
+  .runtime-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
   .runtime-grid {
     grid-template-columns: 1fr;
   }
