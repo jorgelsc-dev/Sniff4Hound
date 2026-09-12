@@ -598,7 +598,14 @@ export default {
 }
 
 .chat-workspace {
-  min-height: calc(100vh - 154px);
+  /* Fixed, not min-height: with only a floor, a tall right-hand side stack
+     (multiple stacked side panels) stretched this card past the viewport
+     via v-row's align-items: stretch, pushing the composer off-screen and
+     making the whole page scroll instead of just the message log. Capping
+     it keeps the toolbar/shortcuts/composer put and leaves .chat-log's own
+     overflow-y (below) as the only thing that scrolls. */
+  height: calc(100vh - 206px);
+  max-height: calc(100vh - 206px);
   display: flex;
   flex-direction: column;
 }
@@ -747,7 +754,14 @@ export default {
 
 .chat-side-stack {
   display: grid;
+  align-content: start;
   gap: 10px;
+  /* v-row's align-items: stretch matches this column's height to
+     .chat-workspace, now fixed (see above) - scroll internally instead of
+     overflowing that fixed box and dragging the page down with it. */
+  height: calc(100vh - 206px);
+  max-height: calc(100vh - 206px);
+  overflow-y: auto;
 }
 
 .side-panel {
@@ -859,8 +873,15 @@ export default {
 }
 
 @media (max-width: 959px) {
-  .chat-workspace {
-    min-height: 0;
+  .chat-workspace,
+  .chat-side-stack {
+    /* Below lg, v-col stacks the two chat-grid columns instead of placing
+       them side by side, so there's no more align-items: stretch height to
+       fight - let both size to their natural content and the page scroll
+       normally, same as any other stacked mobile layout. */
+    height: auto;
+    max-height: none;
+    overflow-y: visible;
   }
 
   .chat-toolbar,
