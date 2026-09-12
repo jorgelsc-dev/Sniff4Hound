@@ -29,7 +29,7 @@
     </DataPanel>
 
     <DataPanel
-      title="Muestreo y exclusiones de IA"
+      title="Muestreo"
       subtitle="Controla qué tráfico llega al análisis local sin modificar la captura ni los monitores."
       variant="tonal"
       :loading="loading || saving"
@@ -42,28 +42,46 @@
         :disabled="saving"
         @update:model-value="save"
       />
-      <v-row dense>
-        <v-col cols="12" md="4">
-          <v-select
-            v-model="filters.ip_types"
-            :items="ipTypeOptions"
-            item-title="title"
-            item-value="value"
-            label="Tipos de IP excluidos"
-            multiple chips closable-chips clearable variant="outlined"
-          />
-        </v-col>
-        <v-col cols="12" md="8">
-          <v-combobox v-model="filters.cidrs" label="IPs o redes CIDR excluidas" multiple chips closable-chips clearable variant="outlined" />
-          <v-combobox v-model="filters.protocols" label="Protocolos excluidos" multiple chips closable-chips clearable variant="outlined" />
-          <v-combobox v-model="filters.ports" label="Puertos excluidos" multiple chips closable-chips clearable variant="outlined" />
-        </v-col>
-      </v-row>
-      <div class="d-flex justify-end">
-        <v-btn color="primary" variant="flat" :loading="saving" @click="save">Guardar configuración de IA</v-btn>
-      </div>
+      <v-alert type="info" variant="tonal" density="comfortable">
+        Los filtros de exclusión (IP, CIDR, puerto, protocolo) ahora viven en la pestaña
+        <strong>Exclusions</strong> de esta misma pantalla - aplican a Monitores y a la detección
+        del Sniffer, no solo a la IA.
+      </v-alert>
       <v-alert v-if="error" type="error" variant="tonal" density="comfortable" class="mt-3">{{ error }}</v-alert>
       <v-alert v-if="saved" type="success" variant="tonal" density="comfortable" class="mt-3">Configuración guardada.</v-alert>
+    </DataPanel>
+
+    <DataPanel
+      title="Ajustes del motor de IA"
+      subtitle="Los parámetros reales que tienen los dos motores de IA - sin fingir controles que no existen."
+      variant="tonal"
+      class="mt-4"
+      :loading="loading || savingLearning"
+    >
+      <div class="d-flex flex-wrap ga-2 mb-4">
+        <v-chip size="small" color="primary">{{ learningConfig.hidden_neurons }} neuronas ocultas</v-chip>
+        <v-chip size="small" color="secondary">Cohorte mínima LOF: {{ learningConfig.min_cohort }}</v-chip>
+        <v-chip v-if="effectiveness.ready" size="small" :color="effectivenessColor">
+          Efectividad {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
+        </v-chip>
+        <v-chip v-else size="small" color="warning">Efectividad: faltan revisiones</v-chip>
+      </div>
+      <v-row dense>
+        <v-col cols="12" md="6">
+          <div class="text-caption text-medium-emphasis">Neuronas en la capa oculta</div>
+          <v-slider v-model="learningDraft.hidden_neurons" :min="3" :max="16" :step="1" thumb-label="always" hide-details />
+        </v-col>
+        <v-col cols="12" md="6">
+          <div class="text-caption text-medium-emphasis">Tamaño mínimo de grupo (LOF)</div>
+          <v-slider v-model="learningDraft.min_cohort" :min="5" :max="200" :step="1" thumb-label="always" hide-details />
+        </v-col>
+      </v-row>
+      <div class="d-flex ga-2 mt-2">
+        <v-btn color="primary" variant="flat" :loading="savingLearning" @click="saveLearning">Guardar y reentrenar</v-btn>
+        <v-btn variant="text" :disabled="savingLearning" @click="resetLearningDraft">Descartar cambios</v-btn>
+      </div>
+      <v-alert v-if="learningError" type="error" variant="tonal" density="comfortable" class="mt-3">{{ learningError }}</v-alert>
+      <v-btn class="mt-4" to="/ai" variant="text" prepend-icon="mdi-brain">Ver detalle en la vista de IA</v-btn>
     </DataPanel>
   </div>
 </template>
@@ -83,25 +101,36 @@ export default {
       saved: false,
       error: "",
       samplingEnabled: false,
-      filters: { ip_types: [], cidrs: [], protocols: [], ports: [] },
       learning: {},
-      ipTypeOptions: [
-        { title: "Loopback", value: "loopback" },
-        { title: "Privadas", value: "private" },
-        { title: "Públicas", value: "public" },
-        { title: "Multicast", value: "multicast" },
-      ],
+      learningConfig: { hidden_neurons: 6, min_cohort: 20 },
+      learningDraft: { hidden_neurons: 6, min_cohort: 20 },
+      savingLearning: false,
+      learningError: "",
     };
   },
   computed: {
     training() {
       return this.learning.training || {};
     },
+    effectiveness() {
+      return this.learning.effectiveness || { ready: false, accuracy: null, correct: 0, total: 0 };
+    },
+    effectivenessColor() {
+      const accuracy = this.effectiveness.accuracy;
+      if (accuracy === null) return "warning";
+      if (accuracy >= 0.8) return "success";
+      if (accuracy >= 0.5) return "warning";
+      return "error";
+    },
   },
   mounted() {
     this.load();
   },
   methods: {
+    resetLearningDraft() {
+      this.learningDraft = { ...this.learningConfig };
+      this.learningError = "";
+    },
     load() {
       this.loading = true;
       this.error = "";
@@ -111,13 +140,8 @@ export default {
       ])
         .then(([config, snapshot]) => {
           this.samplingEnabled = Boolean(config.sampling_enabled);
-          const filters = config.exclusion_filters || {};
-          this.filters = {
-            ip_types: [...(filters.ip_types || [])],
-            cidrs: [...(filters.cidrs || [])],
-            protocols: [...(filters.protocols || [])],
-            ports: (filters.ports || []).map(String),
-          };
+          this.learningConfig = config.learning_config || this.learningConfig;
+          this.resetLearningDraft();
           this.learning = snapshot.learning || {};
         })
         .catch((error) => { this.error = error.message || "No se pudo cargar la configuración de IA."; })
@@ -128,24 +152,29 @@ export default {
       this.saving = true;
       this.saved = false;
       this.error = "";
-      const ports = this.filters.ports
-        .map((value) => Number(value))
-        .filter((value) => Number.isInteger(value) && value >= 0 && value <= 65535);
       this.store.fetchJsonPromise("/api/ai/config", {
         method: "POST",
-        body: JSON.stringify({
-          sampling_enabled: Boolean(this.samplingEnabled),
-          exclusion_filters: {
-            ip_types: this.filters.ip_types,
-            cidrs: this.filters.cidrs,
-            protocols: this.filters.protocols,
-            ports,
-          },
-        }),
+        body: JSON.stringify({ sampling_enabled: Boolean(this.samplingEnabled) }),
       })
         .then(() => { this.saved = true; })
         .catch((error) => { this.error = error.message || "No se pudo guardar la configuración de IA."; })
         .finally(() => { this.saving = false; });
+    },
+    saveLearning() {
+      if (this.savingLearning) return;
+      this.savingLearning = true;
+      this.learningError = "";
+      this.store.fetchJsonPromise("/api/ai/config", {
+        method: "POST",
+        body: JSON.stringify({ learning_config: { ...this.learningDraft } }),
+      })
+        .then((config) => {
+          this.learningConfig = config.learning_config;
+          this.resetLearningDraft();
+          return this.load();
+        })
+        .catch((error) => { this.learningError = error.message || "No se pudo guardar la configuración."; })
+        .finally(() => { this.savingLearning = false; });
     },
   },
 };

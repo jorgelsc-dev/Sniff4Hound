@@ -24,6 +24,10 @@
         <v-icon icon="mdi-format-list-checks" start />
         Lists
       </v-tab>
+      <v-tab value="exclusions">
+        <v-icon icon="mdi-filter-off-outline" start />
+        Exclusions
+      </v-tab>
       <v-tab value="notifications">
         <v-icon icon="mdi-bell-outline" start />
         Notifications
@@ -985,6 +989,10 @@
         <BlacklistPanel />
       </v-window-item>
 
+      <v-window-item value="exclusions">
+        <ExclusionsPanel />
+      </v-window-item>
+
       <v-window-item value="notifications">
         <v-card variant="tonal" class="pa-4 notify-card">
           <div class="d-flex align-start justify-space-between flex-wrap ga-3">
@@ -1021,6 +1029,7 @@ import DataPanel from "../components/ui/DataPanel.vue";
 import LocationPicker from "../components/settings/LocationPicker.vue";
 import RegexHelperButton from "../components/ui/RegexHelperButton.vue";
 import BlacklistPanel from "../components/settings/BlacklistPanel.vue";
+import ExclusionsPanel from "../components/settings/ExclusionsPanel.vue";
 import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 import AiSettingsPanel from "../components/settings/AiSettingsPanel.vue";
 import { formatTimestamp, matchesSearch, uniqueSorted } from "../utils/traffic";
@@ -1122,6 +1131,7 @@ export default {
     DataPanel,
     RegexHelperButton,
     BlacklistPanel,
+    ExclusionsPanel,
     LocationPicker,
     RuleDetailDialog,
     AiSettingsPanel,

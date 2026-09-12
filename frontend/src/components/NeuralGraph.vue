@@ -1,13 +1,13 @@
 <template>
   <v-card class="pa-5 mb-4" variant="tonal">
     <div class="d-flex flex-wrap ga-3 align-center">
-      <h2 class="text-h6">Red neuronal · 8 → 6 → 1</h2>
+      <h2 class="text-h6">Red neuronal · 8 → {{ learning.parameters.b1.length }} → 1</h2>
       <v-chip size="small">Revisión {{ learning.revision }}</v-chip>
       <v-chip :color="learning.ready ? 'success' : 'warning'" size="small">{{ learning.ready ? 'Modelo experimental' : 'Aprendizaje inicial' }}</v-chip>
     </div>
     <p class="mt-2 text-body-2">{{ packet ? `Activaciones reales del paquete #${packet.id}` : 'Selecciona un paquete para ver sus activaciones.' }} · Pesos azules positivos, rojos negativos. Pulsa una neurona para inspeccionarla.</p>
     <div class="network-scroll">
-      <svg viewBox="0 0 880 440" role="img" aria-label="Red neuronal con pesos y activaciones reales">
+      <svg :viewBox="`0 0 880 ${viewBoxHeight}`" role="img" aria-label="Red neuronal con pesos y activaciones reales">
         <text x="20" y="24" fill="currentColor">Características de imagen</text>
         <text x="405" y="24" fill="currentColor">Capa tanh</text>
         <text x="700" y="24" fill="currentColor">Salida sigmoide</text>
@@ -44,25 +44,32 @@ const props = defineProps({ learning: { type: Object, required: true }, packet: 
 const selectedId = ref("output");
 const openPanel = ref(null);
 function selectNode(id) { selectedId.value = id; openPanel.value = 0; }
+// The hidden layer's size is a configurable knob (Configuración > IA), not
+// always 6, so node/edge layout has to derive it from the actual persisted
+// weights rather than assume a fixed count or a fixed output-node index.
+const hiddenCount = computed(() => props.learning.parameters.b1.length);
+const viewBoxHeight = computed(() => Math.max(440, 120 + hiddenCount.value * 52));
 const nodes = computed(() => {
   const a = props.packet?.activations;
   const inputs = props.learning.feature_names.map((label, i) => ({ id: `i${i}`, label, x: 230, y: 65 + i * 48, activation: a?.input?.[i] ?? null, bias: null }));
   const hidden = props.learning.parameters.b1.map((bias, i) => ({ id: `h${i}`, label: `H${i + 1}`, x: 460, y: 100 + i * 52, activation: a?.hidden?.[i] ?? null, bias }));
-  return [...inputs, ...hidden, { id: "output", label: "Riesgo", x: 780, y: 230, activation: a?.output ?? null, bias: props.learning.parameters.b2 }];
+  const outputY = 100 + (Math.max(0, hiddenCount.value - 1) * 52) / 2;
+  return [...inputs, ...hidden, { id: "output", label: "Riesgo", x: 780, y: outputY, activation: a?.output ?? null, bias: props.learning.parameters.b2 }];
 });
 const edges = computed(() => {
   const result = [];
+  const outputIndex = nodes.value.length - 1;
   const add = (from, to, weight) => result.push({ from, to, weight, contribution: from.activation === null ? null : from.activation * weight });
   props.learning.parameters.w1.forEach((weights, j) => weights.forEach((weight, i) => add(nodes.value[i], nodes.value[8 + j], weight)));
-  props.learning.parameters.w2.forEach((weight, j) => add(nodes.value[8 + j], nodes.value[14], weight));
+  props.learning.parameters.w2.forEach((weight, j) => add(nodes.value[8 + j], nodes.value[outputIndex], weight));
   return result;
 });
 const selected = computed(() => nodes.value.find(n => n.id === selectedId.value));
 const incoming = computed(() => edges.value.filter(e => e.to.id === selectedId.value));
 </script>
 <style scoped>
-.network-scroll { overflow-x: auto; }
-svg { width: 100%; min-width: 680px; max-height: 440px; }
+.network-scroll { overflow: auto; max-height: 640px; }
+svg { width: 100%; min-width: 680px; display: block; }
 .neuron { cursor: pointer; }
 .neuron:focus circle { stroke: white; stroke-width: 4; }
 </style>
