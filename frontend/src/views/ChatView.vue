@@ -68,7 +68,7 @@
           </div>
 
           <div class="chat-shortcuts">
-            <v-btn
+            <v-chip
               v-for="shortcut in quickCommands"
               :key="shortcut.command"
               size="small"
@@ -76,10 +76,11 @@
               :color="shortcut.color"
               :prepend-icon="shortcut.icon"
               :disabled="sending || !canLoad"
+              class="chat-shortcut-chip"
               @click="runCommand(shortcut.command)"
             >
               {{ shortcut.label }}
-            </v-btn>
+            </v-chip>
           </div>
 
           <div ref="log" class="chat-log">
@@ -204,7 +205,7 @@
                 class="command-item"
                 @click="insertCommand(command.command)"
               >
-                <v-icon :icon="command.icon" size="18" :color="command.color" />
+                <v-icon :icon="command.icon" size="15" :color="command.color" />
                 <span class="command-item__body">
                   <span class="command-item__label">{{ command.label }}</span>
                   <span class="command-item__command">{{ command.command }}</span>
@@ -229,14 +230,14 @@
                 :class="{ 'engine-tile--running': engine.running }"
               >
                 <div class="engine-tile__main">
-                  <v-icon :icon="engine.icon" :color="engine.color" />
+                  <v-icon :icon="engine.icon" :color="engine.color" size="18" />
                   <div>
                     <div class="engine-tile__label">{{ engine.label }}</div>
                     <div class="engine-tile__value">{{ engine.running ? "activo" : "detenido" }}</div>
                   </div>
                 </div>
                 <v-btn
-                  size="small"
+                  size="x-small"
                   variant="tonal"
                   :color="engine.running ? 'error' : engine.color"
                   :loading="engineBusy === engine.key"
@@ -247,28 +248,6 @@
                 </v-btn>
               </div>
             </div>
-          </v-card>
-
-          <v-card variant="tonal" class="side-panel result-panel">
-            <div class="side-panel__header">
-              <div>
-                <div class="text-subtitle-2">Último resultado</div>
-                <div class="side-panel__meta">{{ lastResultTime || "sin salida" }}</div>
-              </div>
-              <v-btn
-                icon
-                size="small"
-                variant="text"
-                color="secondary"
-                :disabled="!lastResult"
-                aria-label="Copiar último resultado"
-                @click="copyTextValue(lastResult, 'Resultado')"
-              >
-                <v-icon icon="mdi-content-copy" />
-                <v-tooltip activator="parent" location="bottom">Copiar</v-tooltip>
-              </v-btn>
-            </div>
-            <pre class="last-result">{{ lastResult || "—" }}</pre>
           </v-card>
         </div>
       </v-col>
@@ -392,15 +371,6 @@ export default {
           running: Boolean(this.honeypotRuntime.running),
         },
       ];
-    },
-    lastResultMessage() {
-      return [...this.messages].reverse().find((message) => message.kind === "command_result") || null;
-    },
-    lastResult() {
-      return this.lastResultMessage ? String(this.lastResultMessage.content || "") : "";
-    },
-    lastResultTime() {
-      return this.lastResultMessage ? this.formatTimestamp(this.lastResultMessage.created_at) : "";
     },
   },
   watch: {
@@ -643,15 +613,26 @@ export default {
 .chat-shortcuts {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
-  padding: 10px 14px;
+  gap: 6px;
+  padding: 8px 14px;
   border-bottom: 1px solid rgba(var(--brand-sky-rgb), 0.1);
 }
 
+.chat-shortcut-chip {
+  cursor: pointer;
+  font-weight: 650;
+}
+
 .chat-log {
-  flex: 1 1 auto;
-  min-height: 430px;
-  max-height: calc(100vh - 350px);
+  /* flex-basis 0 + min-height 0 is what lets this shrink below its
+     content's natural height instead of forcing the fixed-height
+     .chat-workspace to overflow - without min-height: 0, a flex child's
+     implicit height floor is its own content, which is exactly what pushed
+     the composer below out of the clipped (overflow: hidden) card. This is
+     the ONLY flexible element in that column; toolbar/shortcuts/composer
+     keep their natural height and always stay visible. */
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 14px;
   background: rgba(2, 8, 14, 0.58);
@@ -710,8 +691,11 @@ export default {
 }
 
 .chat-message__copy {
+  /* Was opacity: 0 until hover/focus - easy to miss entirely on a touch
+     device, or just never noticed, which is exactly what was reported as
+     "missing". Always visible now, just dimmed until hovered/focused. */
   margin-left: auto;
-  opacity: 0;
+  opacity: 0.55;
 }
 
 .chat-message__bubble:hover .chat-message__copy,
@@ -777,20 +761,22 @@ export default {
 }
 
 .command-list {
+  /* No max-height/scroll of its own: .chat-side-stack (the whole right
+     column) already scrolls as one unit - nesting a second scroll region
+     in here just hid most of the list behind its own tiny scrollbar
+     instead of the column's. */
   display: grid;
-  gap: 6px;
-  max-height: 358px;
-  overflow-y: auto;
+  gap: 4px;
 }
 
 .command-item {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 8px 9px;
+  gap: 8px;
+  padding: 5px 8px;
   border: 1px solid rgba(var(--brand-sky-rgb), 0.14);
-  border-radius: 8px;
+  border-radius: 6px;
   background: rgba(4, 10, 18, 0.45);
   color: inherit;
   cursor: pointer;
@@ -811,7 +797,7 @@ export default {
 }
 
 .command-item__label {
-  font-size: 0.84rem;
+  font-size: 0.78rem;
   color: var(--text-soft);
 }
 
@@ -819,7 +805,7 @@ export default {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 0.72rem var(--font-mono);
+  font: 0.68rem var(--font-mono);
   color: var(--text-dim);
 }
 
@@ -832,9 +818,10 @@ export default {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 9px;
-  border-radius: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
   border: 1px solid rgba(var(--brand-sky-rgb), 0.14);
   background: rgba(4, 10, 18, 0.45);
 }
@@ -858,18 +845,6 @@ export default {
 .engine-tile__value {
   color: var(--text-dim);
   font-size: 0.74rem;
-}
-
-.last-result {
-  min-height: 120px;
-  max-height: 260px;
-  margin: 0;
-  overflow: auto;
-  color: var(--text-soft);
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  line-height: 1.42;
-  white-space: pre-wrap;
 }
 
 @media (max-width: 959px) {
@@ -906,8 +881,9 @@ export default {
 }
 
 @media (max-width: 600px) {
-  .chat-shortcuts :deep(.v-btn) {
+  .chat-shortcuts :deep(.v-chip) {
     flex: 1 1 calc(50% - 8px);
+    justify-content: center;
   }
 
   .chat-message__bubble {
