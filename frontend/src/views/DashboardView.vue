@@ -13,17 +13,17 @@
       </template>
     </ViewHeader>
 
-    <v-row dense>
-      <v-col v-for="metric in metricCards" :key="metric.key" cols="12" sm="6" xl="2">
-        <v-card variant="tonal" class="pa-5 metric-card">
+    <v-row density="compact" class="metric-row">
+      <v-col v-for="metric in metricCards" :key="metric.key" cols="6" sm="4" lg="2">
+        <v-card variant="tonal" class="pa-3 metric-card">
           <div class="d-flex align-center justify-space-between ga-3">
             <div>
               <div class="text-caption text-medium-emphasis">{{ metric.label }}</div>
-              <div class="text-h5 font-weight-bold" :class="metric.colorClass">{{ metric.value }}</div>
+              <div class="text-h6 font-weight-bold" :class="metric.colorClass">{{ metric.value }}</div>
             </div>
             <v-icon :icon="metric.icon" class="metric-icon" :class="metric.colorClass" />
           </div>
-          <div class="text-caption text-medium-emphasis mt-3">{{ metric.caption }}</div>
+          <div class="text-caption text-medium-emphasis mt-1 metric-caption">{{ metric.caption }}</div>
         </v-card>
       </v-col>
     </v-row>
@@ -32,9 +32,19 @@
       {{ error }}
     </v-alert>
 
-    <OperationsCenter />
+    <div class="dashboard-tools">
+      <router-link
+        v-for="tool in toolLinks"
+        :key="tool.to"
+        class="dashboard-tool"
+        :to="tool.to"
+      >
+        <v-icon :icon="tool.icon" :color="tool.color" size="20" />
+        <span>{{ tool.label }}</span>
+      </router-link>
+    </div>
 
-    <v-row class="mt-4" dense>
+    <v-row class="mt-3" density="compact">
       <v-col cols="12" xl="7">
         <DataPanel
           title="Runtime Posture"
@@ -227,7 +237,7 @@
       </v-col>
     </v-row>
 
-    <v-row class="mt-4" dense>
+    <v-row class="mt-3" density="compact">
       <v-col cols="12">
         <EntityTablePanel
           title="Latest Packets"
@@ -296,7 +306,6 @@ import ViewHeader from "../components/ui/ViewHeader.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import ClearDataButton from "../components/ui/ClearDataButton.vue";
-import OperationsCenter from "../components/operations/OperationsCenter.vue";
 import {
   buildPacketSizeSummary,
   buildPacketSummary,
@@ -313,7 +322,6 @@ export default {
     DataPanel,
     EntityTablePanel,
     ClearDataButton,
-    OperationsCenter,
   },
   data() {
     return {
@@ -329,6 +337,19 @@ export default {
       analytics: {},
       packets: [],
       packetLimit: 12,
+      toolLinks: [
+        { label: "IA", to: "/ai", icon: "mdi-brain", color: "secondary" },
+        { label: "SOC", to: "/soc", icon: "mdi-shield-search", color: "error" },
+        { label: "Investigar", to: "/investigate", icon: "mdi-magnify-scan", color: "info" },
+        { label: "Monitores", to: "/monitors", icon: "mdi-target-account", color: "success" },
+        { label: "Radar", to: "/radar", icon: "mdi-radar", color: "primary" },
+        { label: "Protocolos", to: "/protocols", icon: "mdi-swap-horizontal", color: "secondary" },
+        { label: "Sniffer", to: "/sniffer", icon: "mdi-ethernet", color: "info" },
+        { label: "Honeypot", to: "/honeypot", icon: "mdi-spider-web", color: "warning" },
+        { label: "Dominios", to: "/domains", icon: "mdi-web", color: "primary" },
+        { label: "Paths", to: "/paths", icon: "mdi-routes", color: "secondary" },
+        { label: "IPs", to: "/ips", icon: "mdi-ip-network", color: "success" },
+      ],
       packetsMeta: { totalAvailable: null, returned: null, truncated: null },
       packetColumns: [
         { key: "updated_at", label: "Seen" },
@@ -719,23 +740,66 @@ export default {
 </script>
 
 <style scoped>
+.metric-row {
+  margin-top: -2px;
+}
+
 .metric-card {
-  border-radius: 16px;
+  min-height: 96px;
+  border-radius: 8px;
 }
 
 .metric-icon {
   opacity: 0.92;
 }
 
+.metric-caption {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.25;
+}
+
+.dashboard-tools {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.dashboard-tool {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--brand-sky-rgb), 0.16);
+  border-radius: 8px;
+  background: rgba(6, 13, 22, 0.56);
+  color: var(--text-soft);
+  text-decoration: none;
+  font-size: 0.84rem;
+  font-weight: 650;
+}
+
+.dashboard-tool:hover,
+.dashboard-tool:focus-visible {
+  border-color: rgba(var(--brand-cyan-rgb), 0.44);
+  background: rgba(var(--brand-cyan-rgb), 0.08);
+  outline: none;
+}
+
 .runtime-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 10px;
 }
 
 .runtime-state-card {
-  padding: 16px;
-  border-radius: 16px;
+  padding: 12px;
+  border-radius: 8px;
   border: 1px solid rgba(104, 184, 229, 0.16);
   background: linear-gradient(180deg, rgba(12, 21, 33, 0.88), rgba(8, 14, 23, 0.84));
 }
@@ -754,8 +818,8 @@ export default {
 
 .runtime-state-card__body {
   display: grid;
-  gap: 10px;
-  margin-top: 14px;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .runtime-stat {
@@ -763,8 +827,8 @@ export default {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
   background: rgba(4, 10, 18, 0.44);
 }
 

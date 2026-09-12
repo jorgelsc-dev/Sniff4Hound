@@ -20,9 +20,7 @@
     <v-main class="app-main">
       <v-container class="app-container">
         <div v-if="canRenderViews">
-          <AppHero v-if="showHero" />
-
-          <div :class="showHero ? 'mt-8' : 'mt-3'">
+          <div class="mt-3">
             <router-view v-slot="{ Component }">
               <transition name="view-fade" mode="out-in">
                 <component :is="Component" />
@@ -113,7 +111,6 @@ import { nextTick } from "vue";
 import store from "./state/appStore";
 import AppSidebar from "./components/layout/AppSidebar.vue";
 import AppTopBar from "./components/layout/AppTopBar.vue";
-import AppHero from "./components/layout/AppHero.vue";
 import NotificationStack from "./components/ui/NotificationStack.vue";
 
 export default {
@@ -121,7 +118,6 @@ export default {
   components: {
     AppSidebar,
     AppTopBar,
-    AppHero,
     NotificationStack,
   },
   data() {
@@ -130,29 +126,10 @@ export default {
       drawer: false,
       accessTokenInput: "",
       authSubmitting: false,
-      // Ordered by the analyst's triage flow (alert -> understand -> pivot),
-      // not by implementation order. SOC, Investigate and Protocols used to be
-      // reachable only by typing the URL by hand.
       navItems: [
         { label: "Dashboard", to: "/", icon: "mdi-view-dashboard" },
-        { label: "IA", to: "/ai", icon: "mdi-brain" },
-        { label: "SOC", to: "/soc", icon: "mdi-shield-search" },
-        { label: "Investigate", to: "/investigate", icon: "mdi-magnify-scan" },
-        { label: "Monitors", to: "/monitors", icon: "mdi-target-account" },
-        { label: "Radar", to: "/radar", icon: "mdi-radar" },
-        { label: "Protocols", to: "/protocols", icon: "mdi-swap-horizontal" },
-        { label: "Sniffer", to: "/sniffer", icon: "mdi-ethernet" },
-        { label: "Honeypot", to: "/honeypot", icon: "mdi-spider-web" },
-        // Supporting catalogs, grouped so the top bar stays readable.
-        {
-          label: "Assets",
-          icon: "mdi-folder-network-outline",
-          children: [
-            { label: "Domains", to: "/domains", icon: "mdi-web" },
-            { label: "Paths", to: "/paths", icon: "mdi-routes" },
-            { label: "IPs", to: "/ips", icon: "mdi-ip-network" },
-          ],
-        },
+        { label: "Chat", to: "/chat", icon: "mdi-message-processing-outline" },
+        { label: "Configuración", to: "/settings", icon: "mdi-cog-outline" },
       ],
     };
   },
@@ -176,11 +153,6 @@ export default {
     },
     wsStatus() {
       return this.store.state.wsStatus || "offline";
-    },
-    showHero() {
-      if (!this.canRenderViews) return false;
-      const name = String((this.$route && this.$route.name) || "").toLowerCase();
-      return name === "dashboard";
     },
     shutdownPending() {
       return Boolean(this.store.state.shutdownPending);
@@ -245,6 +217,12 @@ export default {
 
 .app-main {
   padding-bottom: 40px;
+}
+
+@media (max-width: 959px) {
+  .app-main {
+    padding-top: 104px;
+  }
 }
 
 .auth-stage {

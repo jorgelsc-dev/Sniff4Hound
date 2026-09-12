@@ -4,6 +4,7 @@ import { appBaseUrl } from "../utils/runtimeEnv";
 const routes = [
   { path: "/ai", name: "ai", component: () => import("../views/AiView.vue") },
   { path: "/", name: "dashboard", component: () => import("../views/DashboardView.vue") },
+  { path: "/chat", name: "chat", component: () => import("../views/ChatView.vue") },
   { path: "/radar", name: "radar", component: () => import("../views/RadarView.vue") },
   { path: "/investigate", name: "investigate", component: () => import("../views/InvestigateView.vue") },
   { path: "/sniffer", name: "sniffer", component: () => import("../views/SnifferView.vue") },

@@ -37,6 +37,7 @@
             :aria-label="item.label"
           >
             <v-icon :icon="item.icon" size="20" />
+            <span class="nav-tab-label">{{ item.label }}</span>
             <v-tooltip activator="parent" location="bottom">{{ item.label }}</v-tooltip>
           </v-tab>
           <v-menu v-else location="bottom start">
@@ -48,6 +49,7 @@
                 :aria-label="item.label"
               >
                 <v-icon :icon="item.icon" size="20" />
+                <span class="nav-tab-label">{{ item.label }}</span>
                 <v-icon icon="mdi-menu-down" size="14" class="nav-group-caret" />
                 <v-tooltip activator="parent" location="bottom">{{ item.label }}</v-tooltip>
               </v-tab>
@@ -460,11 +462,15 @@ export default {
   );
 }
 
-/* Icon-only tabs: the labels moved into tooltips so the whole nav fits
-   without horizontal scrolling. */
 .top-tabs :deep(.v-tab) {
-  min-width: 44px;
-  padding: 0 10px;
+  min-width: 96px;
+  padding: 0 12px;
+  gap: 7px;
+}
+
+.nav-tab-label {
+  font-size: 0.78rem;
+  line-height: 1;
 }
 
 .nav-group-caret {

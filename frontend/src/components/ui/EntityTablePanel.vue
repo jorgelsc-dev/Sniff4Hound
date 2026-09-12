@@ -62,7 +62,7 @@
       </div>
     </v-alert>
 
-    <v-row v-if="showTableControls" dense class="mb-3">
+    <v-row v-if="showTableControls" density="compact" class="mb-3">
       <v-col v-if="searchEnabled" cols="12" md="6">
         <v-text-field
           v-model.trim="tableSearchQuery"
@@ -71,7 +71,7 @@
           prepend-inner-icon="mdi-magnify"
           clearable
           variant="outlined"
-          density="comfortable"
+          density="compact"
         />
       </v-col>
       <v-col
@@ -89,7 +89,7 @@
           item-value="value"
           clearable
           variant="outlined"
-          density="comfortable"
+          density="compact"
         />
       </v-col>
     </v-row>
@@ -158,7 +158,7 @@
         :hide-no-data="loading"
         :show-expand="expandableRows"
         expand-strategy="single"
-        density="comfortable"
+        density="compact"
         class="entity-data-table"
         mobile-breakpoint="960"
       >
@@ -1032,11 +1032,17 @@ export default {
 
 <style scoped>
 .entity-table-wrap {
-  border-radius: 12px;
+  border-radius: 8px;
 }
 
 .entity-data-table :deep(.v-table__wrapper) {
   overflow: auto;
+}
+
+.entity-data-table :deep(.v-data-table__td),
+.entity-data-table :deep(.v-data-table__th) {
+  height: 38px;
+  padding-inline: 10px;
 }
 
 .entity-data-table :deep(table) {

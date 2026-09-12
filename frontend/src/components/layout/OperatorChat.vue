@@ -30,10 +30,16 @@
 
     <v-card class="chat-menu" rounded="lg">
       <div class="chat-menu-header">
-        <span class="text-subtitle-2">Consola del operador</span>
-        <span class="text-caption text-medium-emphasis">
-          Chat compartido · usa <code>/help</code> para comandos
-        </span>
+        <div>
+          <span class="text-subtitle-2">Consola del operador</span>
+          <span class="text-caption text-medium-emphasis">
+            Chat compartido
+          </span>
+        </div>
+        <v-btn icon size="x-small" variant="text" color="primary" to="/chat" aria-label="Abrir chat">
+          <v-icon icon="mdi-open-in-new" />
+          <v-tooltip activator="parent" location="bottom">Abrir chat</v-tooltip>
+        </v-btn>
       </div>
 
       <div ref="log" class="chat-log">
@@ -117,7 +123,7 @@ export default {
     // is not there yet on first paint, so calling the API from mounted()
     // produced a 401 in the console on every load.
     canLoad() {
-      return !this.store.authRequired || this.store.authStatus === "authenticated";
+      return !this.store.state.authRequired || this.store.state.authStatus === "authenticated";
     },
   },
   watch: {
@@ -199,10 +205,17 @@ export default {
 
 .chat-menu-header {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
   padding: 12px 16px 8px;
   border-bottom: 1px solid rgba(var(--brand-sky-rgb), 0.14);
+}
+
+.chat-menu-header > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
 }
 
 .chat-log {
