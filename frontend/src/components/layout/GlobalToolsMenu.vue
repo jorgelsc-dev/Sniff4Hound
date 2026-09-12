@@ -92,11 +92,13 @@ export default {
 .tools-fab-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(4, 8, 13, 0.82);
-  /* "Difumina mucho mas que el fondo se vea casi nada" - the background
-     behind the menu should read as nearly invisible, not just softened. */
-  backdrop-filter: blur(18px) saturate(120%);
-  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  background: rgba(4, 8, 13, 0.93);
+  /* "Difumina mas el fondo" - still readable at blur(18px)/0.82 opacity, so
+     pushed both further: heavier blur radius and a near-opaque backing tint
+     underneath it (the tint alone already does most of the work in browsers
+     where backdrop-filter is unsupported/disabled). */
+  backdrop-filter: blur(32px) saturate(120%);
+  -webkit-backdrop-filter: blur(32px) saturate(120%);
   z-index: 3090;
 }
 
