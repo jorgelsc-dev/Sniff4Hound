@@ -1,8 +1,8 @@
 <template>
-  <v-card :variant="variant" class="pa-4 data-panel">
+  <v-card :variant="variant" class="pa-3 data-panel">
     <div
       v-if="showHeader"
-      class="d-flex align-center justify-space-between flex-wrap ga-2 mb-4 panel-head"
+      class="d-flex align-center justify-space-between flex-wrap ga-2 mb-3 panel-head"
     >
       <div class="d-flex align-center ga-3">
         <span class="panel-pulse" :class="`panel-pulse--${liveState.tone}`" role="img" :aria-label="liveState.label">
