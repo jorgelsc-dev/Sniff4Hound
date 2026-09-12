@@ -63,7 +63,15 @@ un limitador por IP; superado el umbral la API responde `429` con `Retry-After`
 - `POST /api/ws/ping`
 - `POST /api/ws/close`
 - `GET /api/chat/messages`
+- `POST /api/chat/messages`
 - `POST /api/chat/clear`
+- `POST /api/console/execute`: ejecuta comandos operativos registrados de
+  Sniff4Hound (`/status`, `/start`, `/stop`, `/alerts`, `/packets`, `/top`,
+  `/intel`, etc.). No ejecuta comandos arbitrarios del sistema; las acciones
+  destructivas, el cierre y la lectura del token están bloqueados en web.
+
+`GET /api/intel/ips/` incluye `device_type`, `device_confidence` y
+`device_evidence`, inferidos pasivamente a partir de los metadatos capturados.
 
 ## Notas utiles
 

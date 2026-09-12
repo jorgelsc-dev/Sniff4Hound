@@ -72,6 +72,16 @@ class TestNDJsonLogger(unittest.TestCase):
             self.assertIn("timestamp", parsed)
             self.assertIn("level", parsed)
             self.assertIn("message", parsed)
+        self.assertEqual(json.loads(lines[0])["custom_field"], "value")
+
+    def test_logger_extra_fields_are_serialized_safely(self):
+        """Structured extras should survive even when values are not JSON-native."""
+        test_logger = logger.get_logger("test-extra-fields", log_file=self.log_file)
+        test_logger.info("with extras", extra={"extra_fields": {"payload": b"\x01\x02", "path": self.log_file}})
+
+        parsed = json.loads(self.log_file.read_text(encoding="utf-8").strip())
+        self.assertEqual(parsed["payload"], "0102")
+        self.assertEqual(parsed["path"], str(self.log_file))
 
     def test_logger_captures_exceptions(self):
         """Logger should capture exception info."""
@@ -97,6 +107,23 @@ class TestNDJsonLogger(unittest.TestCase):
             self.assertEqual(test_logger.level, 10)
 
         self.assertEqual(test_logger.level, original_level)
+
+    def test_reconfiguring_logger_closes_old_file_handler(self):
+        """Replacing handlers should not leak the previous log file."""
+        test_logger = logger.get_logger("test-reconfigure", log_file=self.log_file)
+        test_logger.info("first")
+        old_file_handlers = [
+            handler
+            for handler in test_logger.handlers
+            if isinstance(handler, logger.NDJsonHandler)
+        ]
+        self.assertEqual(len(old_file_handlers), 1)
+        self.assertIsNotNone(old_file_handlers[0]._file)
+
+        second_file = Path(self.temp_dir.name) / "second.log"
+        logger.get_logger("test-reconfigure", log_file=second_file)
+
+        self.assertIsNone(old_file_handlers[0]._file)
 
 
 class TestJWTAuth(unittest.TestCase):
@@ -209,6 +236,15 @@ class TestUtils(unittest.TestCase):
         """Should safely parse floats."""
         self.assertEqual(utils.safe_float("3.14", 0.0), 3.14)
         self.assertEqual(utils.safe_float("invalid", 2.0), 2.0)
+
+    def test_coerce_bool_parses_json_style_values(self):
+        self.assertTrue(utils.coerce_bool(True))
+        self.assertTrue(utils.coerce_bool("yes"))
+        self.assertFalse(utils.coerce_bool(False))
+        self.assertFalse(utils.coerce_bool("false"))
+        self.assertFalse(utils.coerce_bool(0))
+        with self.assertRaises(ValueError):
+            utils.coerce_bool("maybe", "enabled")
 
     def test_clamp_int(self):
         """Should clamp integer to range."""
@@ -771,7 +807,7 @@ class TestSecurityBasics(unittest.TestCase):
 
         modules = [sniff4hound.app, sniff4hound.auth, sniff4hound.settings]
         for module in modules:
-            source = open(module.__file__).read()
+            source = Path(module.__file__).read_text(encoding="utf-8")
             self.assertNotIn("password", source.lower())
             self.assertNotIn("secret123", source.lower())
 
@@ -779,7 +815,7 @@ class TestSecurityBasics(unittest.TestCase):
         """JWT should use HS256."""
         import sniff4hound.auth as auth_module
 
-        source = open(auth_module.__file__).read()
+        source = Path(auth_module.__file__).read_text(encoding="utf-8")
         self.assertIn("HS256", source)
         self.assertIn("sha256", source)
 

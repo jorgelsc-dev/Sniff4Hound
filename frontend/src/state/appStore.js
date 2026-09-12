@@ -399,6 +399,13 @@ function postChatMessage(content) {
   });
 }
 
+function executeConsoleCommand(command) {
+  return fetchJsonPromise("/api/console/execute", {
+    method: "POST",
+    body: JSON.stringify({ command: String(command || "").trim() }),
+  });
+}
+
 function listHoneypotListeners() {
   return fetchJsonPromise("/api/honeypot/listeners/");
 }
@@ -1437,6 +1444,10 @@ function notifyForChatMessage(payload) {
   const content = message && String(message.content || "").trim();
   if (!content) return;
   const author = String((message && message.author) || "operator").trim() || "operator";
+  // Commands typed in this browser produce a dashboard row plus a system
+  // result row. They are already visible in the operations console and must
+  // not turn into two self-notifications in the bell.
+  if (author === "dashboard" || author === "system") return;
   pushNotification({
     kind: "broadcast",
     severity: "info",
@@ -1979,6 +1990,7 @@ export default {
   clearDeclaredLocation,
   listChatMessages,
   postChatMessage,
+  executeConsoleCommand,
   listBlacklistEntries,
   createBlacklistEntry,
   deleteBlacklistEntry,

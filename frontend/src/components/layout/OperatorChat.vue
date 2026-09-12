@@ -11,7 +11,7 @@
         variant="text"
         size="small"
         class="chat-trigger"
-        aria-label="Operator chat"
+        aria-label="Chat y consola del operador"
         v-bind="menuProps"
       >
         <v-badge
@@ -24,29 +24,33 @@
         >
           <v-icon icon="mdi-forum-outline" size="22" />
         </v-badge>
-        <v-tooltip activator="parent" location="bottom">Operator chat</v-tooltip>
+        <v-tooltip activator="parent" location="bottom">Chat y comandos</v-tooltip>
       </v-btn>
     </template>
 
     <v-card class="chat-menu" rounded="lg">
       <div class="chat-menu-header">
-        <span class="text-subtitle-2">Operator chat</span>
+        <span class="text-subtitle-2">Consola del operador</span>
         <span class="text-caption text-medium-emphasis">
-          Shared with the <code>sniff4hound&gt;</code> terminal
+          Chat compartido · usa <code>/help</code> para comandos
         </span>
       </div>
 
       <div ref="log" class="chat-log">
         <div v-if="loading && !messages.length" class="chat-empty text-medium-emphasis">Loading…</div>
         <div v-else-if="!messages.length" class="chat-empty text-medium-emphasis">
-          No messages yet. Anything typed here shows up in the terminal, and plain text typed at the
-          <code>sniff4hound&gt;</code> prompt shows up here.
+          Aún no hay mensajes. Escribe una nota o ejecuta un comando seguro como
+          <code>/status</code>, <code>/alerts</code> o <code>/start sniffer</code>.
         </div>
         <div
           v-for="message in messages"
           :key="message.id"
           class="chat-row"
-          :class="{ 'chat-row--self': message.author === 'dashboard' }"
+          :class="{
+            'chat-row--self': message.author === 'dashboard',
+            'chat-row--command': message.kind === 'command',
+            'chat-row--result': message.kind === 'command_result',
+          }"
         >
           <div class="chat-bubble">
             <div class="chat-meta">
@@ -65,7 +69,7 @@
       <div class="chat-compose">
         <v-text-field
           v-model.trim="draft"
-          placeholder="Message the terminal…"
+          placeholder="Mensaje o /comando…"
           density="compact"
           variant="outlined"
           hide-details
@@ -162,8 +166,10 @@ export default {
       if (!content || this.sending || !this.canLoad) return;
       this.sending = true;
       this.error = "";
-      this.store
-        .postChatMessage(content)
+      const request = content.startsWith("/")
+        ? this.store.executeConsoleCommand(content)
+        : this.store.postChatMessage(content);
+      request
         .then(() => {
           this.draft = "";
           this.load();
@@ -236,6 +242,17 @@ export default {
 .chat-row--self .chat-bubble {
   background: rgba(var(--brand-cyan-rgb), 0.12);
   border-color: rgba(var(--brand-cyan-rgb), 0.28);
+}
+
+.chat-row--command .chat-content,
+.chat-row--result .chat-content {
+  font-family: var(--font-mono);
+}
+
+.chat-row--result .chat-bubble {
+  max-width: 94%;
+  background: rgba(11, 24, 37, 0.96);
+  border-color: rgba(var(--brand-violet-rgb), 0.3);
 }
 
 .chat-meta {

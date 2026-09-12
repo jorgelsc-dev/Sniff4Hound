@@ -25,6 +25,7 @@ from .protocol_facets import (
     resolve_row_columns,
 )
 from .rulesets import literal_packet_text_pattern, load_builtin_rulesets, normalize_ruleset
+from .device_profiles import infer_device_profile
 from .settings import (
     MONITOR_FILTER_DEFAULT,
     MONITOR_MIN_SEVERITY_DEFAULT,
@@ -512,6 +513,7 @@ class SniffStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._last_retention_at = 0.0
+        self._device_profile_cache = {}
         self._conn = self._open_connection()
         self._geoip_resolver = _GeoCountryResolver()
         self._create_schema()
@@ -2163,6 +2165,9 @@ class SniffStore:
                 p.src_port AS src_port,
                 p.dst_port AS dst_port,
                 p.summary AS summary,
+                p.payload_hex AS payload_hex,
+                p.http_path AS http_path,
+                p.http_host AS http_host,
                 p.tags_json AS tags_json
             FROM payloads
             LEFT JOIN packets AS p
@@ -2172,6 +2177,31 @@ class SniffStore:
             LIMIT ? OFFSET ?
             """,
             tuple(params),
+        )
+
+    def get_payload_with_packet(self, payload_id: int):
+        return self._fetchone(
+            """
+            SELECT
+                payloads.*,
+                p.session_id AS session_id,
+                p.interface AS interface,
+                p.direction AS direction,
+                p.src_ip AS src_ip,
+                p.dst_ip AS dst_ip,
+                p.src_port AS src_port,
+                p.dst_port AS dst_port,
+                p.summary AS summary,
+                p.payload_hex AS payload_hex,
+                p.http_path AS http_path,
+                p.http_host AS http_host,
+                p.tags_json AS tags_json
+            FROM payloads
+            LEFT JOIN packets AS p
+                ON p.id = payloads.packet_id
+            WHERE payloads.id = ?
+            """,
+            (safe_int(payload_id, 0),),
         )
 
     def _tag_filter(self, *, proto="", search="", since=""):
@@ -2411,7 +2441,8 @@ class SniffStore:
             # filter then removes and the last page would come back short.
             rows = self._grouped_ip_catalog(search=search, since=since, scope=wanted)
             start = max(0, int(offset))
-            return rows[start : start + int(limit)]
+            page = rows[start : start + int(limit)]
+            return self._enrich_ip_devices(page)
         source, where, params = self._ip_catalog_source(search=search, since=since)
         params = list(params)
         params.extend([int(limit), int(offset)])
@@ -2437,6 +2468,59 @@ class SniffStore:
                 row["private"] = ipaddress.ip_address(ip).is_private
             except Exception:
                 row["private"] = False
+        return self._enrich_ip_devices(rows)
+
+    def _enrich_ip_devices(self, rows):
+        """Attach passive device profiles without turning the catalog into N+1 queries."""
+        ips = []
+        for row in rows:
+            ip = str(row.get("ip") or "")
+            cached = self._device_profile_cache.get(ip)
+            signature = (row.get("last_seen"), safe_int(row.get("hit_count"), 0))
+            if cached and cached.get("signature") == signature:
+                row.update(cached["profile"])
+            elif ip:
+                ips.append(ip)
+        observations = defaultdict(list)
+        # SQLite builds commonly cap a statement at 999 bind parameters.
+        # Keep comfortably below that while supporting the 500-row API page.
+        for start in range(0, len(ips), 200):
+            chunk = ips[start : start + 200]
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            facts = self._fetchall(
+                f"""
+                SELECT ip, local_port, proto, summary, banner_text, domain, details_json, tags_json, created_at
+                FROM (
+                  SELECT endpoint_facts.*,
+                         ROW_NUMBER() OVER (PARTITION BY ip ORDER BY created_at DESC) AS metadata_rank
+                  FROM (
+                    SELECT src_ip AS ip, src_port AS local_port, proto, summary,
+                           banner_text, domain, details_json, tags_json, created_at
+                    FROM packets WHERE src_ip IN ({placeholders})
+                    UNION ALL
+                    SELECT dst_ip AS ip, dst_port AS local_port, proto, summary,
+                           banner_text, domain, details_json, tags_json, created_at
+                    FROM packets WHERE dst_ip IN ({placeholders})
+                  ) AS endpoint_facts
+                )
+                WHERE metadata_rank <= 20
+                """,
+                tuple(chunk + chunk),
+            )
+            for fact in facts:
+                observations[str(fact.get("ip") or "")].append(fact)
+        for row in rows:
+            ip = str(row.get("ip") or "")
+            if "device_type" in row:
+                continue
+            profile = infer_device_profile(observations.get(ip, ()))
+            row.update(profile)
+            self._device_profile_cache[ip] = {
+                "signature": (row.get("last_seen"), safe_int(row.get("hit_count"), 0)),
+                "profile": profile,
+            }
         return rows
 
     def list_rulesets(self):
