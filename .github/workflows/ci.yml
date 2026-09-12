@@ -28,13 +28,50 @@ permissions:
   contents: read
 
 jobs:
+  # The full backend suite (unittest discover) takes ~5-8 minutes running
+  # serially - most of that is the fixed per-test cost of standing up a real
+  # SniffStore/Sniffer against the full builtin monitor catalog, repeated
+  # hundreds of times, not any one slow test. Splitting it across parallel
+  # runners cuts wall-clock time to roughly that of the heaviest shard
+  # instead of the sum of all of them. The shard test lists live in
+  # .github/test-shards.json (balanced by measured per-module duration);
+  # scripts/check_test_shards.py fails the job if a test file exists under
+  # tests/ that no shard references, so a newly added test file can't
+  # silently stop running in CI.
+  #
+  # `name:` intentionally has no shard/index in it - branch protection has a
+  # single required status check called "Backend tests (Python 3.12)".
+  # GitHub treats same-named check runs from a matrix as one requirement
+  # (all of them have to pass), so every shard reports under that identical
+  # name and the required check keeps working unmodified.
+  backend-tests-plan:
+    name: Backend tests plan
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify every test module is assigned to a shard
+        run: python3 scripts/check_test_shards.py
+      - name: Compute shard matrix
+        id: plan
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          data = json.load(open('.github/test-shards.json'))
+          shards = [{'shard': i + 1, 'tests': ' '.join(t)} for i, t in enumerate(data['shards'])]
+          print('shards=' + json.dumps(shards))
+          PY
+
   backend-tests:
     name: Backend tests (Python ${{ matrix.python-version }})
+    needs: backend-tests-plan
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12"]
+        shard: ${{ fromJson(needs.backend-tests-plan.outputs.shards) }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -63,8 +100,8 @@ jobs:
       # actually resolved, or the failure is not reproducible after the fact.
       - name: Report resolved wsbuilder version
         run: python -c "import importlib.metadata as m; print('wsbuilder', m.version('wsbuilder'))"
-      - name: Run unit tests
-        run: python -m unittest discover -t . -s tests -q
+      - name: Run unit tests (shard ${{ matrix.shard.shard }})
+        run: python -m unittest ${{ matrix.shard.tests }} -q
 
   frontend-checks:
     name: Frontend lint + build

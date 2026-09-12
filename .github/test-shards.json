@@ -1,0 +1,57 @@
+{
+  "_comment": "Backend test suite split into balanced shards for CI. Each shard is a list of unittest-style dotted targets (module or module.ClassName). scripts/check_test_shards.py fails CI if a tests/test_*.py module isn't covered by any shard, so a newly added test file can't silently be skipped.",
+  "shards": [
+    [
+      "tests.test_monitors.TestSnifferGatedPersistence",
+      "tests.test_store_recovery",
+      "tests.test_map_country_stats",
+      "tests.test_capture_service",
+      "tests.test_ws_snapshot_channel"
+    ],
+    [
+      "tests.test_monitors.TestLoadBuiltinMonitors",
+      "tests.test_monitors.TestNormalizeMonitor",
+      "tests.test_monitors.TestNormalizeRuleset",
+      "tests.test_monitors.TestEvaluatePacket",
+      "tests.test_monitors.TestDescribeMatch",
+      "tests.test_monitors.TestStoreMonitors",
+      "tests.test_blacklist",
+      "tests.test_detection_scopes",
+      "tests.test_protocol_facets",
+      "tests.test_soc_qa",
+      "tests.test_ai_learning",
+      "tests.test_packet_review",
+      "tests.test_ip_registry",
+      "tests.test_new_protocols",
+      "tests.test_auth_hardening",
+      "tests.test_ahocorasick",
+      "tests.test_terminal"
+    ],
+    [
+      "tests.test_comprehensive",
+      "tests.test_honeypot_listeners",
+      "tests.test_smoke",
+      "tests.test_declared_location",
+      "tests.test_app_protocols",
+      "tests.test_purge_preserves_config",
+      "tests.test_app_decoders",
+      "tests.test_ipc",
+      "tests.test_console",
+      "tests.test_protocol_catalog_ui",
+      "tests.test_access_log",
+      "tests.test_concurrent_engines",
+      "tests.test_web_console"
+    ],
+    [
+      "tests.test_intel",
+      "tests.test_ics_and_infra_protocols",
+      "tests.test_api_hardening",
+      "tests.test_packet_ai",
+      "tests.test_llc_frames",
+      "tests.test_ip_scope_filter",
+      "tests.test_anomaly",
+      "tests.test_device_profiles",
+      "tests.test_blueteam_monitors"
+    ]
+  ]
+}

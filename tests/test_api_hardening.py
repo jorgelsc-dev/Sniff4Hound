@@ -35,22 +35,39 @@ def _close_app_store(module):
         pass
 
 
-def _reload_app_stack(require_auth: str = "1"):
+def _reload_app_stack(test_case, require_auth: str = "1"):
+    """Reload sniff4hound.app/.auth with SNIFF4HOUND_REQUIRE_AUTH pinned to
+    require_auth for the duration of test_case. Reloading is process-global
+    (it replaces sys.modules["sniff4hound.app"] etc.), so without undoing it
+    afterwards the module would stay in this test's auth state for every
+    later test in the process - including ones in a different file that
+    never touch this env var, which only surfaces once something shards or
+    reorders the suite. test_case.addCleanup reloads back to the prior env
+    value once this test is done, regardless of how it exits."""
     previous = os.environ.get("SNIFF4HOUND_REQUIRE_AUTH")
-    os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = require_auth
-    try:
-        import sniff4hound.app as app_module
-        import sniff4hound.auth as auth_module
 
-        _close_app_store(sys.modules.get("sniff4hound.app"))
-        auth_module = importlib.reload(auth_module)
-        app_module = importlib.reload(app_module)
-        return auth_module, app_module
-    finally:
+    def _restore():
         if previous is None:
             os.environ.pop("SNIFF4HOUND_REQUIRE_AUTH", None)
         else:
             os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = previous
+        import sniff4hound.app as app_module
+        import sniff4hound.auth as auth_module
+
+        _close_app_store(sys.modules.get("sniff4hound.app"))
+        importlib.reload(auth_module)
+        importlib.reload(app_module)
+
+    test_case.addCleanup(_restore)
+
+    os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = require_auth
+    import sniff4hound.app as app_module
+    import sniff4hound.auth as auth_module
+
+    _close_app_store(sys.modules.get("sniff4hound.app"))
+    auth_module = importlib.reload(auth_module)
+    app_module = importlib.reload(app_module)
+    return auth_module, app_module
 
 
 def _request(path, *, query="", headers=None, client=("203.0.113.10", 4444), method="GET", body=b""):
@@ -63,7 +80,7 @@ class AuthGuardHardeningTests(unittest.TestCase):
     """Failed authentication is counted, logged and eventually refused."""
 
     def setUp(self):
-        self.auth, self.app = _reload_app_stack("1")
+        self.auth, self.app = _reload_app_stack(self, "1")
         self.auth._SESSION_TOKEN = "Ab12Cd34"
         self.auth.RATE_LIMITER.reset()
         self.addCleanup(self.auth.RATE_LIMITER.reset)
@@ -127,7 +144,7 @@ class ExportEndpointTests(unittest.TestCase):
     """M-03: IOC export, inside the auth guard."""
 
     def setUp(self):
-        self.auth, self.app = _reload_app_stack("1")
+        self.auth, self.app = _reload_app_stack(self, "1")
         self.auth._SESSION_TOKEN = "Ab12Cd34"
         self.auth.RATE_LIMITER.reset()
         self.addCleanup(self.auth.RATE_LIMITER.reset)
@@ -257,7 +274,7 @@ class ApiInputCoercionTests(unittest.TestCase):
     scripts that send booleans as strings."""
 
     def setUp(self):
-        self.auth, self.app = _reload_app_stack("0")
+        self.auth, self.app = _reload_app_stack(self, "0")
 
     def _store_with_captured_favicon(self, tmp_dir):
         replacement_store = SniffStore(Path(tmp_dir) / "api.db")
@@ -445,7 +462,7 @@ class ApiInputCoercionTests(unittest.TestCase):
                 replacement_store.close()
 
     def test_favicon_raw_accepts_query_security_code_for_image_tags(self):
-        self.auth, self.app = _reload_app_stack("1")
+        self.auth, self.app = _reload_app_stack(self, "1")
         self.auth._SESSION_TOKEN = "Ab12Cd34"
         self.auth.RATE_LIMITER.reset()
         self.addCleanup(self.auth.RATE_LIMITER.reset)
