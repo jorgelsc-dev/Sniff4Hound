@@ -285,40 +285,47 @@
       </v-col>
     </v-row>
 
+    <!-- Nested inside the single root <div> above, not a sibling of it: this
+         view is rendered through App.vue's <transition mode="out-in">, which
+         requires the transitioned component to have exactly one root DOM
+         node. A second root here (even a <teleport>, whose own content
+         renders elsewhere) turns this into a two-root fragment, and Vue's
+         transition can no longer track the outgoing/incoming view correctly
+         - route changes then leave the new view unmounted with a blank
+         <router-view> until a full page reload. -->
+    <teleport to="body">
+      <div v-if="toolsMenuOpen" class="tools-fab-backdrop" @click="closeToolsMenu"></div>
+      <div class="tools-fab">
+        <transition name="tools-fab-menu">
+          <div v-if="toolsMenuOpen" class="tools-fab-menu" role="menu" aria-label="Herramientas del dashboard">
+            <router-link
+              v-for="tool in toolLinks"
+              :key="tool.to"
+              class="tools-fab-item"
+              role="menuitem"
+              :to="tool.to"
+              @click="closeToolsMenu"
+            >
+              <span class="tools-fab-item-label">{{ tool.label }}</span>
+              <span class="tools-fab-item-icon">
+                <v-icon :icon="tool.icon" :color="tool.color" size="20" />
+              </span>
+            </router-link>
+          </div>
+        </transition>
+
+        <button
+          type="button"
+          class="tools-fab-trigger"
+          :aria-expanded="toolsMenuOpen ? 'true' : 'false'"
+          aria-label="Herramientas del dashboard"
+          @click="toggleToolsMenu"
+        >
+          <v-icon :icon="toolsMenuOpen ? 'mdi-close' : 'mdi-paw'" size="26" />
+        </button>
+      </div>
+    </teleport>
   </div>
-
-  <teleport to="body">
-    <div v-if="toolsMenuOpen" class="tools-fab-backdrop" @click="closeToolsMenu"></div>
-    <div class="tools-fab">
-      <transition name="tools-fab-menu">
-        <div v-if="toolsMenuOpen" class="tools-fab-menu" role="menu" aria-label="Herramientas del dashboard">
-          <router-link
-            v-for="tool in toolLinks"
-            :key="tool.to"
-            class="tools-fab-item"
-            role="menuitem"
-            :to="tool.to"
-            @click="closeToolsMenu"
-          >
-            <span class="tools-fab-item-label">{{ tool.label }}</span>
-            <span class="tools-fab-item-icon">
-              <v-icon :icon="tool.icon" :color="tool.color" size="20" />
-            </span>
-          </router-link>
-        </div>
-      </transition>
-
-      <button
-        type="button"
-        class="tools-fab-trigger"
-        :aria-expanded="toolsMenuOpen ? 'true' : 'false'"
-        aria-label="Herramientas del dashboard"
-        @click="toggleToolsMenu"
-      >
-        <v-icon :icon="toolsMenuOpen ? 'mdi-close' : 'mdi-view-grid'" size="26" />
-      </button>
-    </div>
-  </teleport>
 </template>
 
 <script>
