@@ -14,6 +14,7 @@ from sniff4hound.ai_learning import (
     hidden_sizes_of,
     import_model,
     initial_model,
+    is_current_model_shape,
     model_effectiveness,
     rebuild_for_hidden_sizes,
     train,
@@ -166,6 +167,44 @@ class LearningTests(unittest.TestCase):
         rebuilt = rebuild_for_hidden_sizes({}, hidden_sizes=[5])
         self.assertEqual(rebuilt['model'], initial_model([5]))
         self.assertEqual(rebuilt['examples'], [])
+
+    def test_is_current_model_shape_rejects_pre_multilayer_dicts(self):
+        self.assertTrue(is_current_model_shape(initial_model()))
+        self.assertFalse(is_current_model_shape(None))
+        self.assertFalse(is_current_model_shape({}))
+        self.assertFalse(is_current_model_shape({'w1': [], 'b1': [], 'w2': [], 'b2': 0.0}))
+        self.assertFalse(is_current_model_shape({'layers': []}))
+
+    def test_legacy_pre_multilayer_model_does_not_crash_read_paths(self):
+        # Regression: a real install with AI feedback from before the
+        # multi-layer rewrite has "model": {"w1":..,"b1":..,"w2":..,"b2":..}
+        # persisted (no "layers" key at all) in its ai_learning_state -
+        # every read path used to call model['layers'] unconditionally and
+        # crashed the whole /api/ai/packets/ endpoint with KeyError('layers').
+        legacy_state = {
+            'revision': 3,
+            'examples': [dict(key='k1', features=[0.0] * 8, label='benign', confidence=2, note='')],
+            'model': {'w1': [[0.0] * 8] * 6, 'b1': [0.0] * 6, 'w2': [0.0] * 6, 'b2': 0.0},
+            'history': [], 'audit': [], 'training': {},
+        }
+        self.assertEqual(model_effectiveness(legacy_state), {'ready': False, 'accuracy': None, 'correct': 0, 'total': 1})
+        exported = export_model(legacy_state)
+        self.assertEqual(exported['hidden_sizes'], [6])
+        rows = [packet()]
+        snapshot = learning_snapshot(legacy_state, rows, analyze_packets(rows))
+        self.assertIsNotNone(snapshot['rows'][0]['activations']['output'])
+
+    def test_legacy_model_triggers_a_full_retrain_on_the_next_feedback(self):
+        legacy_state = {
+            'revision': 1,
+            'examples': [dict(key='k1', features=[0.0] * 8, label='benign', confidence=2, note='')],
+            'model': {'w1': [[0.0] * 8] * 6, 'b1': [0.0] * 6, 'w2': [0.0] * 6, 'b2': 0.0},
+            'history': [], 'audit': [], 'training': {},
+        }
+        state = update_feedback(legacy_state, packet(2, bytes([9]) * 256), 'malicious', 2, '')
+        self.assertTrue(hidden_sizes_of(state['model']))  # doesn't crash, has the new shape
+        self.assertEqual(state['training']['mode'], 'full_retrain_on_config_change')
+        self.assertEqual(len(state['examples']), 2)  # the old example wasn't discarded
 
     def test_export_and_import_model_round_trips_architecture_and_weights(self):
         state = update_feedback({}, packet(1), 'malicious', 2, '', hidden_sizes=[7, 4])
