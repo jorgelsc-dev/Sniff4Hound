@@ -13,6 +13,66 @@
       </template>
     </ViewHeader>
 
+    <EntityTablePanel
+      title="Alertas y detecciones IA"
+      subtitle="Paquetes puntuados por el motor de IA local (LOF + red neuronal), más recientes primero."
+      class="mb-4"
+      :rows="aiRows"
+      :columns="aiColumns"
+      :search-enabled="true"
+      search-label="Buscar"
+      search-placeholder="IP, puerto, protocolo, estado..."
+      :search-fields="aiSearchFields"
+      :filter-definitions="aiFilterDefinitions"
+      :loading="loading"
+      :error="''"
+      :last-updated="lastUpdated"
+      empty-text="Todavía no hay paquetes puntuados por la IA."
+      :page-size="8"
+      @refresh="load"
+    >
+      <template #header-actions>
+        <v-chip size="small" color="primary">{{ aiSummary.analyzed }} analizados</v-chip>
+        <v-chip size="small" color="warning">{{ aiSummary.candidates }} posibles falsos negativos</v-chip>
+        <v-chip size="small" :color="aiSamplingEnabled ? 'success' : 'secondary'" variant="tonal">
+          {{ aiSamplingEnabled ? "Muestreo activo" : "Muestreo detenido" }}
+        </v-chip>
+      </template>
+      <template #cell-created_at="{ value }">
+        {{ formatTimestamp(value) }}
+      </template>
+      <template #cell-proto="{ value }">
+        <v-chip size="x-small" color="primary" variant="tonal">{{ String(value || "unknown").toUpperCase() }}</v-chip>
+      </template>
+      <template #cell-src_ip="{ value }">
+        <span class="mono">{{ value || "-" }}</span>
+      </template>
+      <template #cell-dst_ip="{ value }">
+        <span class="mono">{{ value || "-" }}</span>
+      </template>
+      <template #cell-score="{ value }">
+        <span v-if="value === null || value === undefined" class="text-medium-emphasis">—</span>
+        <v-chip v-else size="x-small" :color="aiScoreColor(value)" variant="tonal">{{ value }}</v-chip>
+      </template>
+      <template #cell-candidate="{ value }">
+        <v-chip v-if="value" size="x-small" color="warning" variant="tonal">Posible falso negativo</v-chip>
+        <span v-else class="text-medium-emphasis">—</span>
+      </template>
+      <template #cell-detection_status="{ value }">
+        <v-chip size="x-small" variant="tonal">{{ value || "unknown" }}</v-chip>
+      </template>
+      <template #cell-actions="{ item }">
+        <v-btn
+          size="x-small"
+          variant="text"
+          :to="item.src_ip ? { path: '/investigate', query: { ip: item.src_ip } } : { path: '/ai' }"
+          @click.stop
+        >
+          Investigar
+        </v-btn>
+      </template>
+    </EntityTablePanel>
+
     <v-row density="compact" class="metric-row">
       <v-col v-for="metric in metricCards" :key="metric.key" cols="6" sm="4" lg="2">
         <v-card variant="tonal" class="pa-2 metric-card">
@@ -119,6 +179,43 @@
                 <div class="runtime-stat">
                   <span class="runtime-stat__label">Listeners</span>
                   <span class="runtime-stat__value">{{ honeypotListenersLabel }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="runtime-state-card runtime-state-card--ai">
+              <div class="runtime-state-card__topline">
+                <div>
+                  <div class="text-subtitle-2">IA</div>
+                  <div class="text-caption text-medium-emphasis">
+                    {{ aiSamplingSummary }}
+                  </div>
+                </div>
+                <div class="d-flex align-center ga-2">
+                  <v-chip size="small" :color="aiSamplingEnabled ? 'success' : 'secondary'" variant="tonal" :prepend-icon="aiSamplingEnabled ? 'mdi-play-circle-outline' : 'mdi-stop-circle-outline'">
+                    {{ aiSamplingEnabled ? "Running" : "Stopped" }}
+                  </v-chip>
+                  <v-switch
+                    :model-value="aiSamplingEnabled"
+                    color="secondary"
+                    density="compact"
+                    hide-details
+                    inset
+                    :loading="aiSamplingBusy"
+                    :disabled="aiSamplingBusy"
+                    aria-label="Run the AI engine"
+                    @update:model-value="toggleAiSampling"
+                  />
+                </div>
+              </div>
+              <div class="runtime-state-card__body">
+                <div class="runtime-stat">
+                  <span class="runtime-stat__label">Analizados</span>
+                  <span class="runtime-stat__value">{{ aiSummary.analyzed }}</span>
+                </div>
+                <div class="runtime-stat">
+                  <span class="runtime-stat__label">Posibles falsos negativos</span>
+                  <span class="runtime-stat__value">{{ aiSummary.candidates }}</span>
                 </div>
               </div>
             </div>
@@ -323,6 +420,36 @@ export default {
       engineError: "",
       dashboard: {},
       analytics: {},
+      aiRows: [],
+      aiSummary: { analyzed: 0, candidates: 0 },
+      aiSamplingEnabled: false,
+      aiSamplingBusy: false,
+      aiColumns: [
+        { key: "created_at", label: "Seen" },
+        { key: "proto", label: "Proto" },
+        { key: "src_ip", label: "Src IP" },
+        { key: "src_port", label: "Src Port" },
+        { key: "dst_ip", label: "Dst IP" },
+        { key: "dst_port", label: "Dst Port" },
+        { key: "score", label: "Score" },
+        { key: "candidate", label: "Flag" },
+        { key: "detection_status", label: "Status" },
+        { key: "actions", label: "", sortable: false },
+      ],
+      aiSearchFields: ["proto", "src_ip", "src_port", "dst_ip", "dst_port", "detection_status"],
+      aiFilterDefinitions: [
+        {
+          key: "proto",
+          label: "Proto",
+          field: "proto",
+          optionLabel: (value) => String(value || "").toUpperCase(),
+        },
+        {
+          key: "detection_status",
+          label: "Status",
+          field: "detection_status",
+        },
+      ],
       packets: [],
       packetLimit: 12,
       packetsMeta: { totalAvailable: null, returned: null, truncated: null },
@@ -581,6 +708,10 @@ export default {
       if (this.honeypotRuntime.running) return "Honeypot is accepting inbound traffic.";
       return "Stopped until you start the honeypot.";
     },
+    aiSamplingSummary() {
+      if (this.aiSamplingEnabled) return "Conservando una muestra de tráfico sin alertas para el análisis.";
+      return "Detenido. Solo se puntúa el tráfico que ya generó una alerta.";
+    },
   },
   watch: {
     apiBase() {
@@ -626,6 +757,36 @@ export default {
           this.engineBusy[engine] = false;
           this.load({ silent: true }).catch(() => null);
         });
+    },
+    // Unlike sniffer/honeypot, the AI engine has no separate running process
+    // to start/stop - "sampling" (keeping alert-free traffic for analysis)
+    // is the one persistent on/off state it actually has, so that is what
+    // this switch controls, same endpoint AiView's own toggle uses.
+    toggleAiSampling(enabled) {
+      if (this.aiSamplingBusy) return;
+      this.aiSamplingBusy = true;
+      this.engineError = "";
+      this.store
+        .fetchJsonPromise("/api/ai/config", {
+          method: "POST",
+          body: JSON.stringify({ sampling_enabled: Boolean(enabled) }),
+        })
+        .then((config) => {
+          this.aiSamplingEnabled = Boolean(config.sampling_enabled);
+        })
+        .catch((err) => {
+          this.engineError = (err && err.message) || "Failed to update the AI engine";
+        })
+        .finally(() => {
+          this.aiSamplingBusy = false;
+        });
+    },
+    aiScoreColor(value) {
+      const score = Number(value);
+      if (!Number.isFinite(score)) return "secondary";
+      if (score >= 75) return "error";
+      if (score >= 50) return "warning";
+      return "secondary";
     },
     buildPacketSizeSummary,
     buildPacketSummary,
@@ -680,8 +841,9 @@ export default {
         this.store.fetchJsonPromise(`/api/dashboard/${dashboardQuery}`),
         this.store.fetchJsonPromise(`/api/charts/analytics${dashboardQuery}`),
         this.store.fetchListPromise("/ports/", { limit: this.packetLimit }),
+        this.store.fetchJsonPromise("/api/ai/packets/?threshold=50"),
       ])
-        .then(([dashboardRes, analyticsRes, packetsRes]) => {
+        .then(([dashboardRes, analyticsRes, packetsRes, aiRes]) => {
           const errors = [];
           if (dashboardRes.status === "fulfilled") {
             this.dashboard = dashboardRes.value || {};
@@ -702,6 +864,16 @@ export default {
             this.packets = [];
             this.packetsMeta = { totalAvailable: null, returned: null, truncated: null };
             errors.push((packetsRes.reason && packetsRes.reason.message) || "Failed to load packets");
+          }
+          if (aiRes.status === "fulfilled") {
+            const data = aiRes.value || {};
+            this.aiRows = Array.isArray(data.rows) ? data.rows : [];
+            this.aiSummary = { analyzed: Number(data.analyzed || 0), candidates: Number(data.candidates || 0) };
+            this.aiSamplingEnabled = Boolean(data.sampling_enabled);
+          } else {
+            this.aiRows = [];
+            this.aiSummary = { analyzed: 0, candidates: 0 };
+            errors.push((aiRes.reason && aiRes.reason.message) || "Failed to load AI detections");
           }
           this.lastUpdated = new Date().toLocaleTimeString();
           this.error = errors.join(" | ");
@@ -751,7 +923,11 @@ export default {
 
 .runtime-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* 3 cards now (Sniffer/Honeypot/IA) - a fixed 2-column grid left the
+     3rd card alone on its own row with an empty cell beside it. Auto-fit
+     lets it settle into 3 columns on wide layouts and wrap down as space
+     shrinks, same as the media-query fallback below already does. */
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 8px;
 }
 
@@ -765,6 +941,11 @@ export default {
 .runtime-state-card--warm {
   border-color: rgba(246, 179, 87, 0.16);
   background: linear-gradient(180deg, rgba(32, 22, 11, 0.76), rgba(15, 13, 10, 0.82));
+}
+
+.runtime-state-card--ai {
+  border-color: rgba(166, 133, 246, 0.18);
+  background: linear-gradient(180deg, rgba(24, 16, 34, 0.8), rgba(13, 10, 20, 0.84));
 }
 
 .runtime-state-card__topline {
@@ -842,9 +1023,9 @@ export default {
 }
 
 /* The panel is now only ~50% of the viewport from md up (it used to be
-   full-width until xl), so the two-column sniffer/honeypot grid needs to
-   collapse to one column across that whole md-to-xl range or its cards get
-   cramped - not just below the old single 1264px cutoff. */
+   full-width until xl), so the sniffer/honeypot/IA grid needs to collapse
+   to one column across that whole md-to-xl range or its cards get cramped -
+   not just below the old single 1264px cutoff. */
 @media (max-width: 1900px) and (min-width: 600px) {
   .runtime-grid {
     grid-template-columns: 1fr;
