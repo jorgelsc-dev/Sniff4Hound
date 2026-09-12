@@ -541,6 +541,13 @@ function listIpCatalogWithScopes(options) {
   });
 }
 
+// Nodes (same shape as listIpCatalogWithScopes rows, device type included)
+// plus edges (src_ip, dst_ip, weight, flow_count) for the IP relationship
+// graph - a plain object body, unlike /api/intel/ips/'s bare-array contract.
+function fetchIpRelationshipGraph(options) {
+  return fetchJsonPromise(`/api/intel/ips/graph${buildIntelQuery(options)}`);
+}
+
 function clearDetections(scope) {
   return fetchJsonPromise("/api/data/clear/", {
     method: "POST",
@@ -2006,6 +2013,7 @@ export default {
   listPaths,
   fetchProtocolSnapshot,
   listIpCatalogWithScopes,
+  fetchIpRelationshipGraph,
   listMonitorPackets,
   clearDetections,
   downloadIocExport,

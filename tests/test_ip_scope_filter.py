@@ -200,6 +200,56 @@ class ScopeHeaderContractTests(unittest.TestCase):
         # A browser can only read a custom header that is explicitly exposed.
         self.assertIn("X-Scope-Counts", response.headers["Access-Control-Expose-Headers"])
 
+    def test_graph_endpoint_returns_nodes_and_edges_for_the_relationship(self):
+        from wsbuilder import Request
+
+        self.app_module.store._conn.execute(
+            "INSERT INTO flows (flow_key, proto, src_ip, dst_ip, src_port, dst_port, "
+            "packet_count, byte_count, state, scan_state, banner_text, tags_json, "
+            "first_seen, last_seen, created_at, updated_at) VALUES "
+            "('graph-test','udp','1.1.1.1','192.168.1.5',5353,5353,3,300,"
+            "'open','active','','[]','t','t','t','t')"
+        )
+        self.app_module.store._conn.commit()
+
+        request = Request("GET", "/api/intel/ips/graph", "", {}, b"", ("127.0.0.1", 0))
+        response = self.app_module.app.dispatch(request)
+
+        self.assertEqual(response.status, 200)
+        payload = json.loads(response.body if isinstance(response.body, str) else response.body.decode())
+        self.assertIn("nodes", payload)
+        self.assertIn("edges", payload)
+        node_ips = {node["ip"] for node in payload["nodes"]}
+        self.assertIn("1.1.1.1", node_ips)
+        self.assertIn("192.168.1.5", node_ips)
+        # setUp() already registered one 1.1.1.1 -> 192.168.1.5 packet, which
+        # writes its own flow row - this inserts a second, so the aggregate
+        # sums both.
+        edge = next(e for e in payload["edges"] if e["src_ip"] == "1.1.1.1" and e["dst_ip"] == "192.168.1.5")
+        self.assertEqual(edge["weight"], 4)
+        self.assertEqual(edge["flow_count"], 2)
+
+    def test_graph_endpoint_drops_edges_to_a_node_outside_the_returned_set(self):
+        from wsbuilder import Request
+
+        # Only 1.1.1.1/192.168.1.5 exist as packets (see setUp); this flow's
+        # counterpart, 10.0.0.9, never appears in the node list, so its edge
+        # should not dangle in the response.
+        self.app_module.store._conn.execute(
+            "INSERT INTO flows (flow_key, proto, src_ip, dst_ip, src_port, dst_port, "
+            "packet_count, byte_count, state, scan_state, banner_text, tags_json, "
+            "first_seen, last_seen, created_at, updated_at) VALUES "
+            "('ghost-flow','tcp','1.1.1.1','10.0.0.9',1,2,9,900,"
+            "'open','active','','[]','t','t','t','t')"
+        )
+        self.app_module.store._conn.commit()
+
+        request = Request("GET", "/api/intel/ips/graph", "", {}, b"", ("127.0.0.1", 0))
+        response = self.app_module.app.dispatch(request)
+
+        payload = json.loads(response.body if isinstance(response.body, str) else response.body.decode())
+        self.assertFalse(any(e["dst_ip"] == "10.0.0.9" or e["src_ip"] == "10.0.0.9" for e in payload["edges"]))
+
 
 if __name__ == "__main__":
     unittest.main()

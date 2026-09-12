@@ -2621,6 +2621,38 @@ class SniffStore:
             }
         return rows
 
+    def list_ip_relationships(self, *, since="", limit=1500):
+        """Aggregate the flows table down to one row per (src_ip, dst_ip) pair.
+
+        A flow is per 5-tuple (ports included), so a single pair of hosts
+        talking over several ports/protocols is several flow rows - this
+        collapses that back down to the host-to-host relationship the IP
+        graph actually wants to draw one edge for, with `weight` as the
+        total packets exchanged and `flow_count` as how many distinct flows
+        made up that relationship.
+        """
+        clauses = ["src_ip != '' AND dst_ip != ''"]
+        params = []
+        if since:
+            clauses.append("last_seen >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        params.append(int(limit))
+        return self._fetchall(
+            f"""
+            SELECT src_ip, dst_ip,
+                   SUM(packet_count) AS weight,
+                   COUNT(*) AS flow_count,
+                   MAX(last_seen) AS last_seen
+            FROM flows
+            {where}
+            GROUP BY src_ip, dst_ip
+            ORDER BY weight DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+
     def list_rulesets(self):
         rows = self._fetchall("SELECT * FROM rulesets ORDER BY priority ASC, name ASC")
         for row in rows:

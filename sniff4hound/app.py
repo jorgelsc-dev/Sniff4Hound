@@ -659,6 +659,7 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/domains/", "desc": "Searchable catalog of domains seen in DNS/HTTP/TLS traffic."},
     {"method": "GET", "path": "/api/paths/", "desc": "Searchable catalog of HTTP request paths."},
     {"method": "GET", "path": "/api/intel/ips/", "desc": "Searchable catalog of IPs seen in stored traffic. ?scope=public|private|local|multicast|reserved|unknown (comma separated) filters by address scope; the full vocabulary and per-scope counts come back in the X-Scope-Counts header."},
+    {"method": "GET", "path": "/api/intel/ips/graph", "desc": "IP relationship graph: `nodes` (same shape as /api/intel/ips/, device type included) and `edges` (src_ip, dst_ip, weight = total packets, flow_count), one edge per host pair, both ends restricted to the returned node set."},
     {"method": "GET", "path": "/api/monitors/packets/", "desc": "Packets that matched a given monitor."},
     {"method": "GET", "path": "/api/alerts/recent", "desc": "Lean recent monitor-hit feed (src/dst IP + severity only, no packet bodies)."},
     {"method": "POST", "path": "/api/data/clear/", "desc": "Clear stored data for a scope: 'monitors', 'honeypot', 'all' (detection history), or 'everything' (also flows/domains/paths/sessions). Never deletes monitor/listener definitions."},
@@ -2868,6 +2869,25 @@ def ip_catalog_collection(request):
         # that indexes into the response.
         extra_headers={"X-Scope-Counts": _json_text(store.ip_catalog_scope_counts(search=search, since=since))},
     )
+
+
+@app.api("/api/intel/ips/graph", methods=("GET",))
+def ip_catalog_graph(request):
+    limit = _normalize_limit(request.query.get("limit"), default=250, maximum=1000)
+    since = _normalize_since(request)
+    scope = str(request.query.get("scope") or "").strip()
+    nodes = store.list_ip_catalog(limit=limit, since=since, scope=scope)
+    node_ips = {str(node.get("ip") or "") for node in nodes}
+    edges = [
+        edge
+        for edge in store.list_ip_relationships(since=since, limit=limit * 4)
+        # Only draw a relationship between two hosts that are both actually
+        # on the graph - the node list is scope-filtered/limited, and an
+        # edge to a host that was filtered out would dangle with nothing to
+        # connect to.
+        if str(edge.get("src_ip") or "") in node_ips and str(edge.get("dst_ip") or "") in node_ips
+    ]
+    return {"nodes": nodes, "edges": edges}
 
 
 @app.api("/api/alerts/recent", methods=("GET",))
