@@ -1932,52 +1932,84 @@ class SniffStore:
         return json.loads(self.get_runtime_config("ai_learning_state", "{}"))
 
     def get_ai_learning_config(self):
-        """The real, literal tuning knobs the AI features have - a hidden-
-        layer neuron count for the feedback-trained classifier
-        (ai_learning.py) and a minimum-cohort size for the LOF outlier
-        detector (packet_ai.py). Both are clamped to a sane range regardless
-        of what's stored, so a hand-edited or stale value can't produce a
-        degenerate model or a scan that never has enough packets to score."""
-        from .ai_learning import DEFAULT_HIDDEN_NEURONS, MAX_HIDDEN_NEURONS, MIN_HIDDEN_NEURONS
+        """The real, literal tuning knobs the AI features have - the
+        feedback-trained classifier's hidden-layer shape (a list of widths,
+        one entry per layer - ai_learning.py) and a minimum-cohort size for
+        the LOF outlier detector (packet_ai.py). Both are clamped to a sane
+        range regardless of what's stored, so a hand-edited or stale value
+        can't produce a degenerate model or a scan that never has enough
+        packets to score."""
+        from .ai_learning import normalize_hidden_sizes
         from .packet_ai import MIN_COHORT, MIN_COHORT_CEILING, MIN_COHORT_FLOOR
 
         data = json_loads(self.get_runtime_config("ai_learning_config", ""), default={})
         if not isinstance(data, dict):
             data = {}
-        hidden_neurons = safe_int(data.get("hidden_neurons"), DEFAULT_HIDDEN_NEURONS)
-        hidden_neurons = min(MAX_HIDDEN_NEURONS, max(MIN_HIDDEN_NEURONS, hidden_neurons))
+        hidden_sizes = normalize_hidden_sizes(data.get("hidden_sizes"))
         min_cohort = safe_int(data.get("min_cohort"), MIN_COHORT)
         min_cohort = min(MIN_COHORT_CEILING, max(MIN_COHORT_FLOOR, min_cohort))
-        return {"hidden_neurons": hidden_neurons, "min_cohort": min_cohort}
+        return {"hidden_sizes": hidden_sizes, "min_cohort": min_cohort}
 
     def set_ai_learning_config(self, config):
-        from .ai_learning import MAX_HIDDEN_NEURONS, MIN_HIDDEN_NEURONS, rebuild_for_hidden_size
+        from .ai_learning import (
+            MAX_HIDDEN_LAYERS,
+            MAX_HIDDEN_NEURONS,
+            MIN_HIDDEN_LAYERS,
+            MIN_HIDDEN_NEURONS,
+            rebuild_for_hidden_sizes,
+        )
         from .packet_ai import MIN_COHORT_CEILING, MIN_COHORT_FLOOR
 
         data = config if isinstance(config, dict) else {}
         current = self.get_ai_learning_config()
-        hidden_neurons = current["hidden_neurons"]
-        if "hidden_neurons" in data:
-            hidden_neurons = safe_int(data.get("hidden_neurons"), -1)
-            if not (MIN_HIDDEN_NEURONS <= hidden_neurons <= MAX_HIDDEN_NEURONS):
-                raise ValueError(f"hidden_neurons debe estar entre {MIN_HIDDEN_NEURONS} y {MAX_HIDDEN_NEURONS}.")
+        hidden_sizes = current["hidden_sizes"]
+        if "hidden_sizes" in data:
+            raw = data.get("hidden_sizes")
+            if not isinstance(raw, (list, tuple)) or not raw:
+                raise ValueError("hidden_sizes debe ser una lista con al menos una capa.")
+            if len(raw) > MAX_HIDDEN_LAYERS:
+                raise ValueError(f"Máximo {MAX_HIDDEN_LAYERS} capas ocultas.")
+            if len(raw) < MIN_HIDDEN_LAYERS:
+                raise ValueError("Se necesita al menos una capa oculta.")
+            hidden_sizes = []
+            for item in raw:
+                size = safe_int(item, -1)
+                if not (MIN_HIDDEN_NEURONS <= size <= MAX_HIDDEN_NEURONS):
+                    raise ValueError(f"Cada capa debe tener entre {MIN_HIDDEN_NEURONS} y {MAX_HIDDEN_NEURONS} neuronas.")
+                hidden_sizes.append(size)
         min_cohort = current["min_cohort"]
         if "min_cohort" in data:
             min_cohort = safe_int(data.get("min_cohort"), -1)
             if not (MIN_COHORT_FLOOR <= min_cohort <= MIN_COHORT_CEILING):
                 raise ValueError(f"min_cohort debe estar entre {MIN_COHORT_FLOOR} y {MIN_COHORT_CEILING}.")
-        normalized = {"hidden_neurons": hidden_neurons, "min_cohort": min_cohort}
+        normalized = {"hidden_sizes": hidden_sizes, "min_cohort": min_cohort}
         with self._lock:
-            if hidden_neurons != current["hidden_neurons"]:
-                # Persisted weights are shape-bound to the old neuron count -
+            if hidden_sizes != current["hidden_sizes"]:
+                # Persisted weights are shape-bound to the old layer shape -
                 # rebuild right away rather than waiting for the next
                 # feedback event to notice the mismatch, so the
                 # effectiveness score reflects the new architecture
                 # immediately instead of silently serving stale predictions.
-                state = rebuild_for_hidden_size(self.ai_learning_state(), hidden_neurons)
+                state = rebuild_for_hidden_sizes(self.ai_learning_state(), hidden_sizes)
                 self.set_runtime_config("ai_learning_state", json_dumps(state))
             self.set_runtime_config("ai_learning_config", json_dumps(normalized))
         return normalized
+
+    def export_ai_model(self):
+        from .ai_learning import export_model
+
+        return export_model(self.ai_learning_state())
+
+    def import_ai_model(self, payload):
+        from .ai_learning import import_model
+
+        with self._lock:
+            state, hidden_sizes = import_model(self.ai_learning_state(), payload)
+            self.set_runtime_config("ai_learning_state", json_dumps(state))
+            config = self.get_ai_learning_config()
+            config["hidden_sizes"] = hidden_sizes
+            self.set_runtime_config("ai_learning_config", json_dumps(config))
+            return {"revision": state.get("revision", 0), "hidden_sizes": hidden_sizes}
 
     def save_ai_feedback(self, packet_id, label, confidence, note):
         from .ai_learning import update_feedback
@@ -1988,9 +2020,9 @@ class SniffStore:
             packets = self.list_ai_packets(packet_id)
             if not packets:
                 raise ValueError("El paquete ya no está disponible.")
-            hidden_neurons = self.get_ai_learning_config()["hidden_neurons"]
+            hidden_sizes = self.get_ai_learning_config()["hidden_sizes"]
             state = update_feedback(
-                self.ai_learning_state(), packets[0], label, confidence, note, hidden_size=hidden_neurons
+                self.ai_learning_state(), packets[0], label, confidence, note, hidden_sizes=hidden_sizes
             )
             self.set_runtime_config("ai_learning_state", json.dumps(state))
             return {"revision": state.get("revision", 0)}

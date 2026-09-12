@@ -149,16 +149,32 @@ class AiApiTests(unittest.TestCase):
         request = lambda method, body=b'': Request(method, '/api/ai/config', '', {}, body, ('203.0.113.10', 1234))
         with patch.object(module, 'store', self.store):
             result = module.ai_config(request('GET'))
-            self.assertEqual(result['learning_config'], {'hidden_neurons': 6, 'min_cohort': 20})
-            result = module.ai_config(request('POST', b'{"learning_config":{"hidden_neurons":9,"min_cohort":30}}'))
-            self.assertEqual(result['learning_config'], {'hidden_neurons': 9, 'min_cohort': 30})
-            self.assertEqual(self.store.get_ai_learning_config(), {'hidden_neurons': 9, 'min_cohort': 30})
+            self.assertEqual(result['learning_config'], {'hidden_sizes': [6], 'min_cohort': 20})
+            result = module.ai_config(request('POST', b'{"learning_config":{"hidden_sizes":[9,5],"min_cohort":30}}'))
+            self.assertEqual(result['learning_config'], {'hidden_sizes': [9, 5], 'min_cohort': 30})
+            self.assertEqual(self.store.get_ai_learning_config(), {'hidden_sizes': [9, 5], 'min_cohort': 30})
             with self.assertRaises(ValueError):
-                module.ai_config(request('POST', b'{"learning_config":{"hidden_neurons":100}}'))
+                module.ai_config(request('POST', b'{"learning_config":{"hidden_sizes":[100]}}'))
+            with self.assertRaises(ValueError):
+                module.ai_config(request('POST', b'{"learning_config":{"hidden_sizes":[]}}'))
             with self.assertRaises(ValueError):
                 module.ai_config(request('POST', b'{"learning_config":{"min_cohort":1}}'))
             with self.assertRaises(ValueError):
                 module.ai_config(request('POST', b'{}'))
+
+    def test_ai_model_export_import_endpoint(self):
+        from wsbuilder import Request
+        from sniff4hound import app as module
+        request = lambda method, body=b'': Request(method, '/api/ai/model', '', {}, body, ('203.0.113.10', 1234))
+        with patch.object(module, 'store', self.store):
+            row = self.store.register_packet(packet())
+            self.store.save_ai_feedback(row['id'], 'malicious', 3, 'evidence')
+            exported = module.ai_model(request('GET'))
+            self.assertEqual(exported['hidden_sizes'], [6])
+            imported = module.ai_model(request('POST', json.dumps(exported).encode()))
+            self.assertEqual(imported['hidden_sizes'], [6])
+            with self.assertRaises(ValueError):
+                module.ai_model(request('POST', b'{}'))
 
     def test_detection_exclusions_endpoint(self):
         from wsbuilder import Request

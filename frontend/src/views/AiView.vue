@@ -38,26 +38,62 @@
     <v-card class="pa-5 mb-4" variant="tonal">
       <div class="d-flex align-center flex-wrap ga-3 mb-2">
         <h2 class="text-h6 mb-0">Ajustes del motor</h2>
-        <v-chip v-if="learningConfig" size="small" color="primary">{{ learningConfig.hidden_neurons }} neuronas ocultas</v-chip>
+        <v-chip v-if="learningConfig" size="small" color="primary">
+          {{ learningConfig.hidden_sizes.length }} capa(s) oculta(s) · {{ learningConfig.hidden_sizes.join('-') }}
+        </v-chip>
         <v-chip v-if="effectiveness.ready" size="small" :color="effectivenessColor">
           Efectividad {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
         </v-chip>
         <v-chip v-else size="small" color="warning">Efectividad: faltan revisiones (mín. 3 benignos y 3 maliciosos)</v-chip>
       </div>
       <p class="text-body-2 text-medium-emphasis mb-3">
-        La red neuronal aprende de tus revisiones (arriba); el detector LOF agrupa paquetes del mismo
-        protocolo para medir cuáles son atípicos. Ambos motores tienen un parámetro real que puedes
-        ajustar - no hay nada más que "aumentar neuronas" en el sentido literal, salvo esto.
+        La red neuronal aprende de tus revisiones (abajo); el detector LOF agrupa paquetes del mismo
+        protocolo para medir cuáles son atípicos. Ambos motores tienen parámetros reales que puedes
+        ajustar - capas y neuronas por capa para la red, tamaño mínimo de grupo para el LOF.
       </p>
       <v-alert v-if="learningConfigError" type="error" density="comfortable" class="mb-3">{{ learningConfigError }}</v-alert>
       <v-row dense v-if="learningConfigDraft">
         <v-col cols="12" md="6">
-          <div class="text-caption text-medium-emphasis">Neuronas en la capa oculta (red de aprendizaje)</div>
-          <v-slider v-model="learningConfigDraft.hidden_neurons" :min="hiddenNeuronsMin" :max="hiddenNeuronsMax" :step="1"
-            thumb-label="always" hide-details />
+          <div class="d-flex align-center justify-space-between">
+            <div class="text-caption text-medium-emphasis">Capas ocultas y neuronas por capa</div>
+            <v-btn
+              size="x-small"
+              variant="tonal"
+              color="primary"
+              prepend-icon="mdi-plus"
+              :disabled="learningConfigDraft.hidden_sizes.length >= maxHiddenLayers"
+              @click="addHiddenLayer"
+            >
+              Añadir capa
+            </v-btn>
+          </div>
+          <div v-for="(size, index) in learningConfigDraft.hidden_sizes" :key="index" class="hidden-layer-row">
+            <span class="hidden-layer-row__label">Capa {{ index + 1 }}</span>
+            <v-slider
+              :model-value="size"
+              :min="hiddenNeuronsMin"
+              :max="hiddenNeuronsMax"
+              :step="1"
+              thumb-label="always"
+              hide-details
+              density="compact"
+              @update:model-value="(value) => setHiddenLayerSize(index, value)"
+            />
+            <v-btn
+              icon
+              size="x-small"
+              variant="text"
+              color="error"
+              :disabled="learningConfigDraft.hidden_sizes.length <= 1"
+              aria-label="Quitar capa"
+              @click="removeHiddenLayer(index)"
+            >
+              <v-icon icon="mdi-close" size="16" />
+            </v-btn>
+          </div>
           <p class="text-caption text-medium-emphasis mt-1">
-            Más neuronas: puede aprender patrones más complejos con más ejemplos, pero requiere más revisiones
-            para no sobreajustar. Cambiar este valor reentrena el modelo desde tus ejemplos guardados.
+            Más capas/neuronas: puede aprender patrones más complejos con más ejemplos, pero requiere más
+            revisiones para no sobreajustar. Cambiar la forma reentrena el modelo desde tus ejemplos guardados.
           </p>
         </v-col>
         <v-col cols="12" md="6">
@@ -70,10 +106,21 @@
           </p>
         </v-col>
       </v-row>
-      <div class="d-flex ga-2 mt-3">
+      <div class="d-flex flex-wrap ga-2 mt-3">
         <v-btn color="primary" :loading="savingLearningConfig" @click="saveLearningConfig">Guardar y reentrenar</v-btn>
         <v-btn variant="text" :disabled="savingLearningConfig" @click="resetLearningConfigDraft">Descartar cambios</v-btn>
+        <v-spacer />
+        <v-btn variant="outlined" color="secondary" prepend-icon="mdi-tray-arrow-down" :loading="exportingModel" @click="exportModel">
+          Exportar modelo
+        </v-btn>
+        <v-btn variant="outlined" color="secondary" prepend-icon="mdi-tray-arrow-up" :loading="importingModel" @click="triggerImport">
+          Importar modelo
+        </v-btn>
+        <input ref="importInput" type="file" accept="application/json" class="d-none" @change="importModel" />
       </div>
+      <v-alert v-if="modelIoMessage" :type="modelIoError ? 'error' : 'success'" density="comfortable" class="mt-3">
+        {{ modelIoMessage }}
+      </v-alert>
     </v-card>
     <template v-if="result.learning">
       <NeuralGraph ref="graph" :learning="result.learning" :packet="selectedPacket" />
@@ -188,6 +235,7 @@ const labels = [{ title: "Benigno", value: "benign" }, { title: "Malicioso", val
 // mirrored here only for the slider range; the backend re-validates on save.
 const hiddenNeuronsMin = 3;
 const hiddenNeuronsMax = 16;
+const maxHiddenLayers = 4;
 const minCohortMin = 5;
 const minCohortMax = 200;
 
@@ -206,9 +254,81 @@ const effectivenessColor = computed(() => {
 });
 
 function resetLearningConfigDraft() {
-  const source = learningConfig.value || { hidden_neurons: 6, min_cohort: 20 };
-  learningConfigDraft.value = { hidden_neurons: source.hidden_neurons, min_cohort: source.min_cohort };
+  const source = learningConfig.value || { hidden_sizes: [6], min_cohort: 20 };
+  learningConfigDraft.value = { hidden_sizes: [...source.hidden_sizes], min_cohort: source.min_cohort };
   learningConfigError.value = "";
+}
+
+function addHiddenLayer() {
+  if (learningConfigDraft.value.hidden_sizes.length >= maxHiddenLayers) return;
+  learningConfigDraft.value.hidden_sizes.push(6);
+}
+
+function removeHiddenLayer(index) {
+  if (learningConfigDraft.value.hidden_sizes.length <= 1) return;
+  learningConfigDraft.value.hidden_sizes.splice(index, 1);
+}
+
+function setHiddenLayerSize(index, value) {
+  learningConfigDraft.value.hidden_sizes.splice(index, 1, value);
+}
+
+const importInput = ref(null);
+const exportingModel = ref(false);
+const importingModel = ref(false);
+const modelIoMessage = ref("");
+const modelIoError = ref(false);
+
+async function exportModel() {
+  exportingModel.value = true;
+  modelIoMessage.value = "";
+  modelIoError.value = false;
+  try {
+    const payload = await store.fetchJsonPromise("/api/ai/model");
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `sniff4hound-ai-model-${payload.hidden_sizes.join("-")}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    modelIoMessage.value = "Modelo exportado.";
+  } catch (err) {
+    modelIoError.value = true;
+    modelIoMessage.value = err.message || "No se pudo exportar el modelo.";
+  } finally {
+    exportingModel.value = false;
+  }
+}
+
+function triggerImport() {
+  importInput.value?.click();
+}
+
+async function importModel(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  importingModel.value = true;
+  modelIoMessage.value = "";
+  modelIoError.value = false;
+  try {
+    const text = await file.text();
+    const payload = JSON.parse(text);
+    const config = await store.fetchJsonPromise("/api/ai/model", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    modelIoMessage.value = `Modelo importado: ${config.hidden_sizes.join("-")}.`;
+    await load();
+  } catch (err) {
+    modelIoError.value = true;
+    modelIoMessage.value = err.message || "No se pudo importar el modelo.";
+  } finally {
+    importingModel.value = false;
+  }
 }
 
 async function saveLearningConfig() {
@@ -217,7 +337,7 @@ async function saveLearningConfig() {
   try {
     const config = await store.fetchJsonPromise("/api/ai/config", {
       method: "POST",
-      body: JSON.stringify({ learning_config: { ...learningConfigDraft.value } }),
+      body: JSON.stringify({ learning_config: { hidden_sizes: learningConfigDraft.value.hidden_sizes, min_cohort: learningConfigDraft.value.min_cohort } }),
     });
     result.value.learning_config = config.learning_config;
     resetLearningConfigDraft();
@@ -335,4 +455,6 @@ onBeforeUnmount(() => { disposed = true; feed?.close(); clearInterval(fallbackTi
 .packet-image { height: 160px; display: flex; align-items: center; justify-content: center; background: #080c13; border: 1px solid #344054; border-radius: 8px; overflow: hidden; }
 .packet-image img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
 .endpoints { overflow-wrap: anywhere; font-family: monospace; }
+.hidden-layer-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.hidden-layer-row__label { flex: 0 0 56px; font-size: 0.76rem; color: var(--text-dim); }
 </style>

@@ -599,8 +599,10 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ai/packets/", "desc": "Local byte-image anomaly analysis of the latest 200 packets."},
     {"method": "POST", "path": "/api/ai/feedback", "desc": "Learn from a reviewed packet: label, confidence and note."},
     {"method": "POST", "path": "/api/packets/review", "desc": "Label any captured packet benign, malicious or unreviewed."},
-    {"method": "GET", "path": "/api/ai/config", "desc": "Current AI sampling flag and learning config (hidden_neurons, min_cohort)."},
-    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable sampling and/or set learning_config: hidden_neurons (classifier hidden-layer size) and/or min_cohort (minimum group size the LOF outlier detector needs before it scores a protocol/source cohort)."},
+    {"method": "GET", "path": "/api/ai/config", "desc": "Current AI sampling flag and learning config (hidden_sizes, min_cohort)."},
+    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable sampling and/or set learning_config: hidden_sizes (classifier hidden-layer widths, one entry per layer, up to 4 layers) and/or min_cohort (minimum group size the LOF outlier detector needs before it scores a protocol/source cohort)."},
+    {"method": "GET", "path": "/api/ai/model", "desc": "Export the classifier's current architecture and weights."},
+    {"method": "POST", "path": "/api/ai/model", "desc": "Import a previously exported classifier architecture and weights."},
     {"method": "GET", "path": "/api/detection/exclusions", "desc": "Shared exclusion filter (IP type, CIDR, port, protocol)."},
     {"method": "POST", "path": "/api/detection/exclusions", "desc": "Set the shared exclusion filter - matching traffic is silenced from Sniffer detection, Monitors and AI sampling (raw capture/storage is unaffected)."},
     {"method": "POST", "path": "/api/console/execute", "desc": "Execute a safe registered Sniff4Hound operation from the dashboard console."},
@@ -2369,7 +2371,7 @@ def _ai_snapshot(threshold=50):
     packets = store.list_ai_packets()
     analysis = analyze_packets(packets, threshold=threshold, min_cohort=learning_config["min_cohort"])
     result = learning_snapshot(
-        store.ai_learning_state(), packets, analysis, hidden_size=learning_config["hidden_neurons"]
+        store.ai_learning_state(), packets, analysis, hidden_sizes=learning_config["hidden_sizes"]
     )
     result["sampling_enabled"] = store.get_runtime_config("ai_sampling_enabled", "0") == "1"
     result["exclusion_filters"] = store.get_exclusion_filters()
@@ -2411,6 +2413,17 @@ def detection_exclusions(request):
         return {"exclusion_filters": store.get_exclusion_filters()}
     payload = _read_json_body(request)
     return {"exclusion_filters": store.set_exclusion_filters(payload.get("exclusion_filters"))}
+
+
+@app.api("/api/ai/model", methods=("GET", "POST"))
+def ai_model(request):
+    """Export (GET) or import (POST) the feedback-trained classifier's
+    architecture and weights - not its labelled examples, which are the
+    operator's own review history rather than part of "the model"."""
+    if request.method.upper() == "GET":
+        return store.export_ai_model()
+    payload = _read_json_body(request)
+    return store.import_ai_model(payload)
 
 
 @app.api("/api/ai/feedback", methods=("POST",))

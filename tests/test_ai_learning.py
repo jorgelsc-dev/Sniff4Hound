@@ -7,12 +7,15 @@ from unittest.mock import patch
 
 from sniff4hound.ai_learning import (
     ONLINE_BATCH_SIZE,
+    export_model,
     features,
     fingerprint,
     forward,
+    hidden_sizes_of,
+    import_model,
     initial_model,
     model_effectiveness,
-    rebuild_for_hidden_size,
+    rebuild_for_hidden_sizes,
     train,
     update_feedback,
     learning_snapshot,
@@ -27,8 +30,9 @@ class LearningTests(unittest.TestCase):
         x = features(bytes(range(256)) * 4)
         self.assertEqual(len(x), 8)
         self.assertTrue(all(0 <= v <= 1 and math.isfinite(v) for v in x))
-        hidden, output = forward(initial_model(), x)
-        self.assertEqual(len(hidden), 6)
+        hidden_layers, output = forward(initial_model(), x)
+        self.assertEqual(len(hidden_layers), 1)
+        self.assertEqual(len(hidden_layers[0]), 6)
         self.assertTrue(0 < output < 1)
         self.assertAlmostEqual(x[2], 1)
 
@@ -108,44 +112,86 @@ class LearningTests(unittest.TestCase):
         for row in snapshot['rows']:
             self.assertEqual(row['neural_score'], round(row['activations']['output'] * 100, 1))
 
-    def test_hidden_size_controls_the_configurable_neuron_count(self):
-        model = initial_model(hidden_size=4)
-        self.assertEqual(len(model['w1']), 4)
-        self.assertEqual(len(model['b1']), 4)
-        self.assertEqual(len(model['w2']), 4)
-        hidden, output = forward(model, [0.5] * 8)
-        self.assertEqual(len(hidden), 4)
+    def test_hidden_sizes_controls_the_configurable_neuron_count(self):
+        model = initial_model(hidden_sizes=[4])
+        self.assertEqual(hidden_sizes_of(model), [4])
+        self.assertEqual(len(model['layers']), 2)  # 1 hidden + 1 output
+        hidden_layers, output = forward(model, [0.5] * 8)
+        self.assertEqual(len(hidden_layers), 1)
+        self.assertEqual(len(hidden_layers[0]), 4)
         self.assertTrue(0 < output < 1)
 
-    def test_train_respects_hidden_size(self):
+    def test_multiple_hidden_layers_build_and_forward_correctly(self):
+        model = initial_model(hidden_sizes=[8, 5, 3])
+        self.assertEqual(hidden_sizes_of(model), [8, 5, 3])
+        self.assertEqual(len(model['layers']), 4)  # 3 hidden + 1 output
+        hidden_layers, output = forward(model, [0.5] * 8)
+        self.assertEqual([len(layer) for layer in hidden_layers], [8, 5, 3])
+        self.assertTrue(0 < output < 1)
+
+    def test_train_respects_hidden_sizes(self):
         examples = [dict(features=[0.0] * 8, label='benign', confidence=3),
                     dict(features=[1.0] * 8, label='malicious', confidence=3)]
-        model, _ = train(examples, hidden_size=10)
-        self.assertEqual(len(model['w1']), 10)
+        model, _ = train(examples, hidden_sizes=[10, 4])
+        self.assertEqual(hidden_sizes_of(model), [10, 4])
 
-    def test_feedback_retrains_from_scratch_when_hidden_size_changes(self):
-        # A hidden_size configured after this state's model was last trained
-        # leaves persisted weights shape-bound to the old size - the next
+    def test_deep_network_still_learns_both_classes(self):
+        examples = [dict(features=[0.0] * 8, label='benign', confidence=3),
+                    dict(features=[1.0] * 8, label='malicious', confidence=3)]
+        model, history = train(examples, hidden_sizes=[6, 4])
+        self.assertLess(history[-1]['loss'], history[0]['loss'])
+        self.assertLess(forward(model, examples[0]['features'])[1], 0.3)
+        self.assertGreater(forward(model, examples[1]['features'])[1], 0.7)
+
+    def test_feedback_retrains_from_scratch_when_hidden_sizes_change(self):
+        # hidden_sizes configured after this state's model was last trained
+        # leaves persisted weights shape-bound to the old shape - the next
         # feedback event has to notice and retrain, not silently keep
         # serving predictions from a stale architecture.
-        state = update_feedback({}, packet(1), 'malicious', 2, '', hidden_size=6)
-        self.assertEqual(len(state['model']['w1']), 6)
-        state = update_feedback(state, packet(2, bytes([9]) * 256), 'benign', 2, '', hidden_size=4)
-        self.assertEqual(len(state['model']['w1']), 4)
+        state = update_feedback({}, packet(1), 'malicious', 2, '', hidden_sizes=[6])
+        self.assertEqual(hidden_sizes_of(state['model']), [6])
+        state = update_feedback(state, packet(2, bytes([9]) * 256), 'benign', 2, '', hidden_sizes=[4, 4])
+        self.assertEqual(hidden_sizes_of(state['model']), [4, 4])
         self.assertEqual(len(state['examples']), 2)
         self.assertEqual(state['training']['mode'], 'full_retrain_on_config_change')
 
-    def test_rebuild_for_hidden_size_keeps_examples_and_resizes(self):
+    def test_rebuild_for_hidden_sizes_keeps_examples_and_resizes(self):
         state = update_feedback({}, packet(), 'malicious', 3, '')
-        rebuilt = rebuild_for_hidden_size(state, hidden_size=8)
-        self.assertEqual(len(rebuilt['model']['w1']), 8)
+        rebuilt = rebuild_for_hidden_sizes(state, hidden_sizes=[8, 3])
+        self.assertEqual(hidden_sizes_of(rebuilt['model']), [8, 3])
         self.assertEqual(rebuilt['examples'], state['examples'])
         self.assertEqual(rebuilt['revision'], state['revision'] + 1)
 
-    def test_rebuild_for_hidden_size_with_no_examples_just_resets(self):
-        rebuilt = rebuild_for_hidden_size({}, hidden_size=5)
-        self.assertEqual(rebuilt['model'], initial_model(5))
+    def test_rebuild_for_hidden_sizes_with_no_examples_just_resets(self):
+        rebuilt = rebuild_for_hidden_sizes({}, hidden_sizes=[5])
+        self.assertEqual(rebuilt['model'], initial_model([5]))
         self.assertEqual(rebuilt['examples'], [])
+
+    def test_export_and_import_model_round_trips_architecture_and_weights(self):
+        state = update_feedback({}, packet(1), 'malicious', 2, '', hidden_sizes=[7, 4])
+        exported = export_model(state)
+        self.assertEqual(exported['hidden_sizes'], [7, 4])
+        self.assertEqual(exported['model'], state['model'])
+
+        fresh_state, hidden_sizes = import_model({}, exported)
+        self.assertEqual(hidden_sizes, [7, 4])
+        self.assertEqual(fresh_state['model'], state['model'])
+        self.assertEqual(fresh_state['training']['mode'], 'imported')
+
+    def test_import_model_rejects_malformed_payloads(self):
+        with self.assertRaises(ValueError):
+            import_model({}, {})
+        with self.assertRaises(ValueError):
+            import_model({}, {'model': {'layers': []}})
+        with self.assertRaises(ValueError):
+            import_model({}, {'model': {'layers': [{'w': [[0.0] * 8], 'b': [0.0, 0.0]}]}})
+        # Output layer must have exactly 1 neuron.
+        bad_output = {'model': {'layers': [
+            {'w': [[0.0] * 8] * 6, 'b': [0.0] * 6},
+            {'w': [[0.0] * 6] * 2, 'b': [0.0] * 2},
+        ]}}
+        with self.assertRaises(ValueError):
+            import_model({}, bad_output)
 
     def test_effectiveness_not_ready_without_both_classes(self):
         state = update_feedback({}, packet(1), 'malicious', 3, '')
@@ -176,22 +222,37 @@ class LearningApiTests(unittest.TestCase):
         self.row = self.store.register_packet(packet())
 
     def test_ai_learning_config_defaults_bounds_and_immediate_rebuild(self):
-        self.assertEqual(self.store.get_ai_learning_config(), {'hidden_neurons': 6, 'min_cohort': 20})
+        from sniff4hound.ai_learning import hidden_sizes_of
+
+        self.assertEqual(self.store.get_ai_learning_config(), {'hidden_sizes': [6], 'min_cohort': 20})
         self.store.save_ai_feedback(self.row['id'], 'malicious', 3, 'evidence')
-        self.assertEqual(len(self.store.ai_learning_state()['model']['w1']), 6)
+        self.assertEqual(hidden_sizes_of(self.store.ai_learning_state()['model']), [6])
 
         with self.assertRaises(ValueError):
-            self.store.set_ai_learning_config({'hidden_neurons': 2})
+            self.store.set_ai_learning_config({'hidden_sizes': [2]})
+        with self.assertRaises(ValueError):
+            self.store.set_ai_learning_config({'hidden_sizes': []})
+        with self.assertRaises(ValueError):
+            self.store.set_ai_learning_config({'hidden_sizes': [6, 6, 6, 6, 6]})
         with self.assertRaises(ValueError):
             self.store.set_ai_learning_config({'min_cohort': 1000})
 
-        updated = self.store.set_ai_learning_config({'hidden_neurons': 9})
-        self.assertEqual(updated, {'hidden_neurons': 9, 'min_cohort': 20})
+        updated = self.store.set_ai_learning_config({'hidden_sizes': [9, 5]})
+        self.assertEqual(updated, {'hidden_sizes': [9, 5], 'min_cohort': 20})
         # Rebuilt immediately - not only on the next feedback event - so an
         # existing example's weights are never silently shape-mismatched.
         state = self.store.ai_learning_state()
-        self.assertEqual(len(state['model']['w1']), 9)
+        self.assertEqual(hidden_sizes_of(state['model']), [9, 5])
         self.assertEqual(len(state['examples']), 1)
+
+    def test_export_and_import_ai_model_via_store(self):
+        self.store.save_ai_feedback(self.row['id'], 'malicious', 3, 'evidence')
+        exported = self.store.export_ai_model()
+        self.assertEqual(exported['hidden_sizes'], [6])
+
+        result = self.store.import_ai_model(exported)
+        self.assertEqual(result['hidden_sizes'], [6])
+        self.assertEqual(self.store.get_ai_learning_config()['hidden_sizes'], [6])
 
     def test_feedback_persists_across_store_restart(self):
         self.store.save_ai_feedback(self.row['id'], 'malicious', 3, 'investigated')

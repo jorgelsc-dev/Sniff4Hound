@@ -574,8 +574,8 @@ export default {
      making the whole page scroll instead of just the message log. Capping
      it keeps the toolbar/shortcuts/composer put and leaves .chat-log's own
      overflow-y (below) as the only thing that scrolls. */
-  height: calc(100vh - 206px);
-  max-height: calc(100vh - 206px);
+  height: calc(100vh - 186px);
+  max-height: calc(100vh - 186px);
   display: flex;
   flex-direction: column;
 }
@@ -743,8 +743,8 @@ export default {
   /* v-row's align-items: stretch matches this column's height to
      .chat-workspace, now fixed (see above) - scroll internally instead of
      overflowing that fixed box and dragging the page down with it. */
-  height: calc(100vh - 206px);
-  max-height: calc(100vh - 206px);
+  height: calc(100vh - 186px);
+  max-height: calc(100vh - 186px);
   overflow-y: auto;
 }
 

@@ -3,6 +3,16 @@
 Normal feedback uses a tiny online mini-batch and starts from the weights saved
 by the previous update.  The full labelled set is never replayed for each click.
 Training loss is not an estimate of production detection accuracy.
+
+Architecture: FEATURES inputs -> zero or more tanh hidden layers (each an
+operator-configured width) -> one sigmoid output neuron. A model is
+``{"layers": [{"w": [[...]], "b": [...]}, ...]}`` - one entry per weight
+matrix, the last one always being the 1-neuron output layer. Persisted
+weights are shape-bound to whatever hidden_sizes they were last (re)trained
+with; forward() infers shape from the model itself so it never errors on a
+mismatch, but callers that change hidden_sizes (update_feedback,
+rebuild_for_hidden_sizes) have to retrain from scratch rather than pretend
+mismatched weights are still meaningful.
 """
 import copy
 import hashlib
@@ -22,6 +32,9 @@ ONLINE_LEARNING_RATE = 0.04
 DEFAULT_HIDDEN_NEURONS = 6
 MIN_HIDDEN_NEURONS = 3
 MAX_HIDDEN_NEURONS = 16
+MIN_HIDDEN_LAYERS = 1
+MAX_HIDDEN_LAYERS = 4
+DEFAULT_HIDDEN_SIZES = [DEFAULT_HIDDEN_NEURONS]
 
 
 def features(data):
@@ -41,72 +54,125 @@ def fingerprint(packet):
     return hashlib.sha256(str((packet.get('proto'), source, partial)).encode() + data).hexdigest()
 
 
-def initial_model(hidden_size=DEFAULT_HIDDEN_NEURONS):
+def normalize_hidden_sizes(hidden_sizes):
+    """Coerce to a valid, bounded list of layer widths - never empty (an
+    all-linear network with no hidden layer isn't what "capar neuronas" was
+    asking for), never absurdly deep or wide."""
+    sizes = list(hidden_sizes) if hidden_sizes else list(DEFAULT_HIDDEN_SIZES)
+    sizes = [max(MIN_HIDDEN_NEURONS, min(MAX_HIDDEN_NEURONS, int(size))) for size in sizes]
+    sizes = sizes[:MAX_HIDDEN_LAYERS] or list(DEFAULT_HIDDEN_SIZES)
+    return sizes
+
+
+def initial_model(hidden_sizes=None):
+    hidden_sizes = normalize_hidden_sizes(hidden_sizes)
     rng = random.Random(41)
-    return dict(w1=[[rng.uniform(-0.6, 0.6) for _ in FEATURES] for _ in range(hidden_size)],
-                b1=[0.0] * hidden_size, w2=[rng.uniform(-0.6, 0.6) for _ in range(hidden_size)], b2=0.0)
+    sizes = [len(FEATURES)] + hidden_sizes + [1]
+    layers = []
+    for n_in, n_out in zip(sizes, sizes[1:]):
+        layers.append({
+            'w': [[rng.uniform(-0.6, 0.6) for _ in range(n_in)] for _ in range(n_out)],
+            'b': [0.0] * n_out,
+        })
+    return {'layers': layers}
+
+
+def hidden_sizes_of(model):
+    """The configured widths a persisted model was actually built with -
+    read from the model itself (every layer but the last, which is always
+    the 1-neuron output), not from whatever is currently configured."""
+    return [len(layer['b']) for layer in model['layers'][:-1]]
+
+
+def _forward_full(model, x):
+    """forward() plus the intermediate activations backprop needs. Returns
+    ``activations`` (input, then one entry per layer's output, tanh for
+    every hidden layer and sigmoid for the last) - never empty since a model
+    always has at least the output layer."""
+    activations = [x]
+    layers = model['layers']
+    for idx, layer in enumerate(layers):
+        current = activations[-1]
+        z = [sum(w * v for w, v in zip(row, current)) + b for row, b in zip(layer['w'], layer['b'])]
+        if idx == len(layers) - 1:
+            activations.append([1 / (1 + math.exp(-max(-30, min(30, z[0]))))])
+        else:
+            activations.append([math.tanh(v) for v in z])
+    return activations
 
 
 def forward(model, x):
-    # Hidden-layer size lives in the model itself (len(w1)/len(b1)/len(w2)),
-    # not a constant here, so a persisted model keeps working regardless of
-    # what DEFAULT_HIDDEN_NEURONS/the operator's configured size is right now.
-    hidden = [math.tanh(sum(w * v for w, v in zip(weights, x)) + bias)
-              for weights, bias in zip(model['w1'], model['b1'])]
-    logit = sum(w * h for w, h in zip(model['w2'], hidden)) + model['b2']
-    output = 1 / (1 + math.exp(-max(-30, min(30, logit))))
-    return hidden, output
+    activations = _forward_full(model, x)
+    hidden_layers = activations[1:-1]
+    output = activations[-1][0]
+    return hidden_layers, output
 
 
-def train(examples, hidden_size=DEFAULT_HIDDEN_NEURONS):
-    model = initial_model(hidden_size)
+def _backprop_step(model, x, y, confidence, learning_rate):
+    """One gradient-descent step for one labelled example, arbitrary depth.
+
+    Standard backprop: sigmoid output + cross-entropy loss gives a delta of
+    (output - y) at the output layer; each hidden layer's delta is the next
+    layer's delta projected back through its weights and scaled by the tanh
+    derivative (1 - a^2). Returns the output activation from *before* this
+    step's update, for loss reporting."""
+    activations = _forward_full(model, x)
+    layers = model['layers']
+    output = activations[-1][0]
+    deltas = [None] * len(layers)
+    deltas[-1] = [(output - y) * confidence / 3]
+    for idx in range(len(layers) - 2, -1, -1):
+        next_layer = layers[idx + 1]
+        next_delta = deltas[idx + 1]
+        a = activations[idx + 1]
+        deltas[idx] = [
+            sum(next_delta[k] * next_layer['w'][k][j] for k in range(len(next_delta))) * (1 - a[j] * a[j])
+            for j in range(len(a))
+        ]
+    for idx, layer in enumerate(layers):
+        a_in = activations[idx]
+        delta = deltas[idx]
+        for j in range(len(layer['b'])):
+            layer['b'][j] -= learning_rate * delta[j]
+            row = layer['w'][j]
+            dj = delta[j]
+            for i in range(len(a_in)):
+                row[i] -= learning_rate * dj * a_in[i]
+    return output
+
+
+def train(examples, hidden_sizes=None):
+    model = initial_model(hidden_sizes)
     history = []
     for epoch in range(80 if examples else 0):
         loss = 0.0
         for example in examples:
             x, y = example['features'], int(example['label'] == 'malicious')
-            hidden, output = forward(model, x)
+            output = _backprop_step(model, x, y, example['confidence'], 0.08)
             loss -= y * math.log(max(output, 1e-12)) + (1 - y) * math.log(max(1 - output, 1e-12))
-            delta = (output - y) * example['confidence'] / 3
-            hidden_delta = [delta * w * (1 - h * h) for w, h in zip(model['w2'], hidden)]
-            for j in range(hidden_size):
-                model['w2'][j] -= 0.08 * delta * hidden[j]
-                model['b1'][j] -= 0.08 * hidden_delta[j]
-                for i in range(8):
-                    model['w1'][j][i] -= 0.08 * hidden_delta[j] * x[i]
-            model['b2'] -= 0.08 * delta
         if epoch % 10 == 0 or epoch == 79:
             history.append({'epoch': epoch + 1, 'loss': round(loss / len(examples), 6)})
     return model, history
 
 
 def train_incremental(model, examples, *, epochs=ONLINE_EPOCHS, learning_rate=ONLINE_LEARNING_RATE, step=0,
-                       hidden_size=DEFAULT_HIDDEN_NEURONS):
+                       hidden_sizes=None):
     """Update persisted weights with one small, bounded mini-batch.
 
     Keeping this separate from ``train`` preserves the deterministic full
     trainer for tests/diagnostics while production feedback stays O(1) as the
     saved example collection grows.
     """
-    updated = copy.deepcopy(model) if model else initial_model(hidden_size)
+    updated = copy.deepcopy(model) if model else initial_model(hidden_sizes)
     if not examples:
         return updated, []
-    hidden_count = len(updated['w2'])
     loss = 0.0
     for _epoch in range(max(1, int(epochs))):
         loss = 0.0
         for example in examples:
             x, y = example['features'], int(example['label'] == 'malicious')
-            hidden, output = forward(updated, x)
+            output = _backprop_step(updated, x, y, example['confidence'], learning_rate)
             loss -= y * math.log(max(output, 1e-12)) + (1 - y) * math.log(max(1 - output, 1e-12))
-            delta = (output - y) * example['confidence'] / 3
-            hidden_delta = [delta * w * (1 - h * h) for w, h in zip(updated['w2'], hidden)]
-            for j in range(hidden_count):
-                updated['w2'][j] -= learning_rate * delta * hidden[j]
-                updated['b1'][j] -= learning_rate * hidden_delta[j]
-                for i in range(8):
-                    updated['w1'][j][i] -= learning_rate * hidden_delta[j] * x[i]
-            updated['b2'] -= learning_rate * delta
     return updated, [{
         'epoch': int(step) + 1,
         'loss': round(loss / len(examples), 6),
@@ -115,23 +181,24 @@ def train_incremental(model, examples, *, epochs=ONLINE_EPOCHS, learning_rate=ON
     }]
 
 
-def rebuild_for_hidden_size(state, hidden_size=DEFAULT_HIDDEN_NEURONS):
-    """Retrain from the retained examples under a new hidden-layer size.
+def rebuild_for_hidden_sizes(state, hidden_sizes=None):
+    """Retrain from the retained examples under a new hidden-layer shape.
 
-    Persisted weights are shape-bound to whatever hidden_size they were last
-    trained with - `forward()` would still run against a mismatched size
-    without erroring (it infers shape from the model itself), but the
+    Persisted weights are shape-bound to whatever hidden_sizes they were
+    last trained with - forward() would still run against a mismatched
+    shape without erroring (it infers shape from the model itself), but the
     resulting predictions would be meaningless carry-over from the old
-    architecture. Called right when an operator changes the neuron count in
-    Settings, rather than waiting for the next feedback event to notice."""
+    architecture. Called right when an operator changes the layer/neuron
+    layout in Settings, rather than waiting for the next feedback event to
+    notice."""
     examples = list(state.get('examples', []))
     revision = int(state.get('revision', 0)) + 1
     now = utc_now()
     if not examples:
-        model = initial_model(hidden_size)
+        model = initial_model(hidden_sizes)
         entry = {'epoch': revision, 'loss': None, 'batch_size': 0, 'epochs': 0}
     else:
-        model, full_history = train(examples, hidden_size=hidden_size)
+        model, full_history = train(examples, hidden_sizes=hidden_sizes)
         entry = dict(full_history[-1]) if full_history else {'loss': None}
         entry.update(epoch=revision, batch_size=len(examples))
     history = (list(state.get('history', [])) + [entry])[-30:]
@@ -171,7 +238,80 @@ def model_effectiveness(state):
     return {'ready': True, 'accuracy': round(correct / len(examples), 4), 'correct': correct, 'total': len(examples)}
 
 
-def update_feedback(state, packet, label, confidence, note, *, hidden_size=DEFAULT_HIDDEN_NEURONS):
+def export_model(state):
+    """Structure + weights only (Settings > IA > Exportar) - not the
+    labelled examples, which are the operator's own review history rather
+    than part of "the model"."""
+    model = state.get('model') or initial_model()
+    return {
+        'format': 'sniff4hound-ai-model-v1',
+        'hidden_sizes': hidden_sizes_of(model),
+        'model': model,
+        'revision': state.get('revision', 0),
+        'exported_at': utc_now(),
+    }
+
+
+def _validate_imported_model(payload):
+    if not isinstance(payload, dict):
+        raise ValueError('El archivo no contiene un modelo válido.')
+    model = payload.get('model')
+    if not isinstance(model, dict) or not isinstance(model.get('layers'), list) or not model['layers']:
+        raise ValueError('El modelo importado no tiene capas.')
+    sizes = [len(FEATURES)]
+    for layer in model['layers']:
+        if not isinstance(layer, dict) or 'w' not in layer or 'b' not in layer:
+            raise ValueError('Cada capa debe tener pesos (w) y sesgos (b).')
+        w, b = layer['w'], layer['b']
+        if not isinstance(w, list) or not isinstance(b, list) or len(w) != len(b):
+            raise ValueError('Las dimensiones de w y b no coinciden en una capa.')
+        for row in w:
+            if not isinstance(row, list) or len(row) != sizes[-1]:
+                raise ValueError(
+                    f'Una capa espera {sizes[-1]} entradas pero encontró {len(row) if isinstance(row, list) else "?"}.'
+                )
+        sizes.append(len(b))
+    if sizes[-1] != 1:
+        raise ValueError('La última capa debe tener exactamente 1 neurona de salida.')
+    hidden_sizes = sizes[1:-1]
+    if not hidden_sizes:
+        raise ValueError('El modelo debe tener al menos una capa oculta.')
+    if len(hidden_sizes) > MAX_HIDDEN_LAYERS:
+        raise ValueError(f'Máximo {MAX_HIDDEN_LAYERS} capas ocultas.')
+    for size in hidden_sizes:
+        if not (MIN_HIDDEN_NEURONS <= size <= MAX_HIDDEN_NEURONS):
+            raise ValueError(f'Cada capa oculta debe tener entre {MIN_HIDDEN_NEURONS} y {MAX_HIDDEN_NEURONS} neuronas.')
+    return model, hidden_sizes
+
+
+def import_model(state, payload):
+    """Adopt an imported model's weights and architecture wholesale. The
+    retained examples (review history) are kept as-is - only the weights
+    (and the hidden_sizes they imply) change; a future feedback event will
+    fine-tune from here rather than the imported weights being immediately
+    overwritten by a stale-architecture retrain, since hidden_sizes_of() on
+    the imported model already matches what gets adopted."""
+    model, hidden_sizes = _validate_imported_model(payload)
+    revision = int(state.get('revision', 0)) + 1
+    now = utc_now()
+    history = (list(state.get('history', [])) + [
+        {'epoch': revision, 'loss': None, 'batch_size': 0, 'epochs': 0}
+    ])[-30:]
+    previous_training = state.get('training', {}) if isinstance(state.get('training'), dict) else {}
+    training = {
+        'mode': 'imported',
+        'updates': int(previous_training.get('updates', state.get('revision', 0))) + 1,
+        'batch_size': 0,
+        'batch_limit': ONLINE_BATCH_SIZE,
+        'epochs_per_update': ONLINE_EPOCHS,
+        'samples_seen': int(previous_training.get('samples_seen', 0)),
+        'weights_persisted': True,
+    }
+    return dict(revision=revision, examples=state.get('examples', []), model=model, history=history,
+                audit=state.get('audit', []), training=training, updated_at=now), hidden_sizes
+
+
+def update_feedback(state, packet, label, confidence, note, *, hidden_sizes=None):
     data, _, _ = packet_bytes(packet)
     if not data:
         raise ValueError('El paquete no contiene bytes para aprender.')
@@ -193,20 +333,21 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_size=DEFAU
     revision = state.get('revision', 0) + 1
     previous_training = state.get('training', {}) if isinstance(state.get('training'), dict) else {}
     existing_model = state.get('model')
-    # A hidden_size configured after this state's model was last (re)trained
-    # leaves persisted weights shape-bound to the old size - forward() would
+    normalized_sizes = normalize_hidden_sizes(hidden_sizes)
+    # A hidden_sizes configured after this state's model was last (re)trained
+    # leaves persisted weights shape-bound to the old shape - forward() would
     # still run without erroring (it infers shape from the model itself) but
     # the predictions would be meaningless carry-over. Force a full retrain
-    # here too, not just from rebuild_for_hidden_size(), in case a feedback
+    # here too, not just from rebuild_for_hidden_sizes(), in case a feedback
     # event races a config change.
-    stale_architecture = bool(existing_model and len(existing_model.get('w1') or []) != hidden_size)
+    stale_architecture = bool(existing_model and hidden_sizes_of(existing_model) != normalized_sizes)
     if not examples:
         # With no remaining evidence there is nothing legitimate to retain.
-        model = initial_model(hidden_size)
+        model = initial_model(normalized_sizes)
         new_history = [{'epoch': revision, 'loss': None, 'batch_size': 0, 'epochs': 0}]
         batch_size = 0
     elif stale_architecture:
-        model, full_history = train(examples, hidden_size=hidden_size)
+        model, full_history = train(examples, hidden_sizes=normalized_sizes)
         entry = dict(full_history[-1]) if full_history else {'loss': None}
         entry.update(epoch=revision, batch_size=len(examples))
         new_history = [entry]
@@ -215,7 +356,7 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_size=DEFAU
         # Retraction removes the example from the replay buffer immediately.
         # Existing weights remain the accumulated online knowledge; future
         # small updates will move them without an expensive full rebuild.
-        model = copy.deepcopy(existing_model or initial_model(hidden_size))
+        model = copy.deepcopy(existing_model or initial_model(normalized_sizes))
         new_history = [{'epoch': revision, 'loss': None, 'batch_size': 0, 'epochs': 0}]
         batch_size = 0
     else:
@@ -226,7 +367,7 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_size=DEFAU
         if all(example['key'] != key for example in batch):
             batch = [*batch[1:], changed_example]
         model, new_history = train_incremental(
-            existing_model or initial_model(hidden_size), batch, step=revision - 1, hidden_size=hidden_size
+            existing_model or initial_model(normalized_sizes), batch, step=revision - 1, hidden_sizes=normalized_sizes
         )
         batch_size = len(batch)
     history = (list(state.get('history', [])) + new_history)[-30:]
@@ -245,8 +386,8 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_size=DEFAU
                 training=training, updated_at=now)
 
 
-def learning_snapshot(state, packets, analysis, hidden_size=DEFAULT_HIDDEN_NEURONS):
-    model = state.get('model') or initial_model(hidden_size)
+def learning_snapshot(state, packets, analysis, hidden_sizes=None):
+    model = state.get('model') or initial_model(hidden_sizes)
     examples = state.get('examples', [])
     counts = Counter(e['label'] for e in examples)
     ready = counts['benign'] >= 3 and counts['malicious'] >= 3
@@ -256,10 +397,10 @@ def learning_snapshot(state, packets, analysis, hidden_size=DEFAULT_HIDDEN_NEURO
         packet = by_id[row['id']]
         data, _, _ = packet_bytes(packet)
         x = features(data) if data else None
-        hidden, output = forward(model, x) if x else ([], None)
+        hidden_layers, output = forward(model, x) if x else ([], None)
         reviewed = by_key.get(fingerprint(packet)) if data else None
         row.update(neural_score=round(output * 100, 1) if ready and output is not None else None,
-                   activations={'input': x, 'hidden': hidden, 'output': output},
+                   activations={'input': x, 'hidden_layers': hidden_layers, 'output': output},
                    feedback={k: reviewed[k] for k in ('label', 'confidence', 'note')} if reviewed else None)
         scores = [v for v in (row['score'], row['neural_score']) if v is not None]
         row['priority_score'] = max(scores) if scores else None
@@ -275,12 +416,13 @@ def learning_snapshot(state, packets, analysis, hidden_size=DEFAULT_HIDDEN_NEURO
         host['max_score'] = max(host['max_score'], row['priority_score'] or 0)
     analysis.update(candidates=sum(r['candidate'] and not r['reviewed'] for r in analysis['rows']),
                     generated_at=utc_now(), hosts=sorted(hosts.values(), key=lambda h: h['max_score'], reverse=True)[:10])
-    analysis['learning'] = dict(model=f'byte-mlp-8x{len(model["w1"])}x1-v1', revision=state.get('revision', 0),
+    model_id = 'x'.join(str(n) for n in ([len(FEATURES)] + hidden_sizes_of(model) + [1]))
+    analysis['learning'] = dict(model=f'byte-mlp-{model_id}-v1', revision=state.get('revision', 0),
                                ready=ready, status='experimental' if ready else 'warming_up', counts=dict(counts),
                                total=len(examples), capacity=MAX_EXAMPLES, updated_at=state.get('updated_at'),
-                               parameters=model, feature_names=FEATURES, history=state.get('history', []),
-                               audit=state.get('audit', [])[-10:], threshold=analysis['threshold'] / 100,
-                               effectiveness=model_effectiveness(state),
+                               parameters=model, hidden_sizes=hidden_sizes_of(model), feature_names=FEATURES,
+                               history=state.get('history', []), audit=state.get('audit', [])[-10:],
+                               threshold=analysis['threshold'] / 100, effectiveness=model_effectiveness(state),
                                training=state.get('training', {
                                    'mode': 'online_mini_batch', 'updates': 0, 'batch_size': 0,
                                    'batch_limit': ONLINE_BATCH_SIZE, 'epochs_per_update': ONLINE_EPOCHS,
