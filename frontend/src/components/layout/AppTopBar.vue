@@ -146,5 +146,10 @@ export default {
 .shutdown-btn {
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  /* Matches NotificationBell's .bell-badge margin-top: that margin pushes
+     the bell button down to keep its floating badge clear of the viewport
+     edge, which otherwise misaligned it against this button. Applying the
+     same offset here keeps both icons level. */
+  margin-top: 10px;
 }
 </style>
