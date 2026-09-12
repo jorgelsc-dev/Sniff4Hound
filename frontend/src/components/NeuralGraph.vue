@@ -6,8 +6,18 @@
       <v-chip :color="learning.ready ? 'success' : 'warning'" size="small">{{ learning.ready ? 'Modelo experimental' : 'Aprendizaje inicial' }}</v-chip>
     </div>
     <p class="mt-2 text-body-2">{{ packet ? `Activaciones reales del paquete #${packet.id}` : 'Selecciona un paquete para ver sus activaciones.' }} · Pesos azules positivos, rojos negativos. Pulsa una neurona para inspeccionarla.</p>
-    <div class="network-scroll">
-      <svg :viewBox="`0 0 ${viewBoxWidth} ${viewBoxHeight}`" role="img" aria-label="Red neuronal con pesos y activaciones reales">
+    <div class="network-zoom-toolbar">
+      <v-btn icon size="x-small" variant="tonal" aria-label="Alejar" :disabled="zoom <= MIN_ZOOM" @click="zoomBy(-ZOOM_STEP)">
+        <v-icon icon="mdi-magnify-minus-outline" size="16" />
+      </v-btn>
+      <span class="network-zoom-level">{{ Math.round(zoom * 100) }}%</span>
+      <v-btn icon size="x-small" variant="tonal" aria-label="Acercar" :disabled="zoom >= MAX_ZOOM" @click="zoomBy(ZOOM_STEP)">
+        <v-icon icon="mdi-magnify-plus-outline" size="16" />
+      </v-btn>
+      <v-btn size="x-small" variant="text" class="ml-1" :disabled="zoom === 1" @click="resetZoom">Restablecer</v-btn>
+    </div>
+    <div class="network-scroll" @wheel="onWheel">
+      <svg :viewBox="`0 0 ${viewBoxWidth} ${viewBoxHeight}`" :style="{ transform: `scale(${zoom})` }" role="img" aria-label="Red neuronal con pesos y activaciones reales">
         <text v-for="(label, i) in columnLabels" :key="label" :x="columnX(i)" y="14" text-anchor="middle" fill="currentColor" font-size="9">{{ label }}</text>
         <line v-for="(edge, i) in edges" :key="i" :x1="edge.from.x" :y1="edge.from.y" :x2="edge.to.x" :y2="edge.to.y"
           :stroke="edge.weight >= 0 ? '#56baff' : '#ff7788'" :stroke-width="Math.min(4, 0.3 + Math.abs(edge.weight))" opacity="0.4">
@@ -42,6 +52,25 @@ const props = defineProps({ learning: { type: Object, required: true }, packet: 
 const selectedId = ref("output");
 const openPanel = ref(null);
 function selectNode(id) { selectedId.value = id; openPanel.value = 0; }
+
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 3;
+const ZOOM_STEP = 0.25;
+const zoom = ref(1);
+function zoomBy(delta) {
+  zoom.value = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round((zoom.value + delta) * 100) / 100));
+}
+function resetZoom() {
+  zoom.value = 1;
+}
+// Plain wheel still scrolls the page/container as normal; only
+// ctrl/cmd+wheel (the same modifier browsers use for page zoom) drives the
+// graph zoom, so scrolling past the graph doesn't accidentally resize it.
+function onWheel(event) {
+  if (!event.ctrlKey && !event.metaKey) return;
+  event.preventDefault();
+  zoomBy(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
+}
 
 // The hidden-layer shape is a configurable knob (Configuración > IA) -
 // anywhere from 1 to MAX_HIDDEN_LAYERS layers, each with its own width -
@@ -138,14 +167,40 @@ const selected = computed(() => nodes.value.find((n) => n.id === selectedId.valu
 const incoming = computed(() => edges.value.filter((e) => e.to.id === selectedId.value));
 </script>
 <style scoped>
+.network-zoom-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 8px 0 -4px;
+}
+
+.network-zoom-level {
+  min-width: 3.2em;
+  text-align: center;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
 .network-scroll { overflow: auto; max-height: 360px; }
 /* The SVG's width:100% with no cap let it grow to fill a wide desktop
    viewport, and since the viewBox's aspect ratio is preserved, everything
    inside - circles, text, the whole layout - scaled up right along with it,
    which is what actually made the font/nodes look oversized. Capping the
    rendered width keeps it close to its designed (viewBox) scale on wide
-   screens; it can still shrink on narrow ones. */
-svg { width: 100%; max-width: 560px; min-width: 300px; display: block; margin: 0 auto; }
+   screens; it can still shrink on narrow ones. Zooming past that base size
+   is a deliberate `transform: scale()` (see the toolbar above), not this
+   layout width - the scroll container picks up the extra visual size for
+   panning. */
+svg {
+  width: 100%;
+  max-width: 560px;
+  min-width: 300px;
+  display: block;
+  margin: 0 auto;
+  transform-origin: top center;
+  transition: transform 0.12s ease;
+}
 .neuron { cursor: pointer; }
 .neuron:focus circle { stroke: white; stroke-width: 4; }
 </style>
