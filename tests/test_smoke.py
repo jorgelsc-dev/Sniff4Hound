@@ -398,6 +398,24 @@ class SmokeTests(unittest.TestCase):
 
         self.assertIn("[http] send error 200: boom", output.getvalue())
 
+    def test_http_send_guard_adds_security_headers(self):
+        import sniff4hound.app as app_module
+
+        class CapturingConn:
+            def __init__(self):
+                self.chunks = []
+
+            def sendall(self, data):
+                self.chunks.append(data)
+
+        conn = CapturingConn()
+        app_module._guarded_send_http_response(conn, Response.text("ok"))
+        response_text = b"".join(conn.chunks).decode("utf-8")
+
+        self.assertIn("X-Content-Type-Options: nosniff\r\n", response_text)
+        self.assertIn("Referrer-Policy: no-referrer\r\n", response_text)
+        self.assertIn("X-Frame-Options: DENY\r\n", response_text)
+
     def test_session_token_is_eight_characters(self):
         import sniff4hound.auth as auth_module
 

@@ -11,6 +11,9 @@
       <template #actions>
         <v-btn to="/ai" prepend-icon="mdi-brain" variant="tonal">IA · Feedback</v-btn>
         <IocExportMenu />
+        <v-btn prepend-icon="mdi-file-download-outline" variant="tonal" :disabled="!lastUpdated || loading || !!error" @click="exportAnalysis">
+          Export assessment
+        </v-btn>
         <v-btn
           icon="mdi-refresh"
           variant="outlined"
@@ -45,6 +48,17 @@
       </v-col>
     </v-row>
 
+    <v-alert v-if="!hasEvidence && !loading && !error" type="info" variant="tonal" class="mt-4">
+      No packet evidence in this window. Check capture status, monitor filters and the selected time range.
+      <v-btn to="/sniffer" size="small" variant="text">Open Sniffer</v-btn>
+    </v-alert>
+    <v-alert v-if="error" type="error" variant="tonal" class="mt-4" role="alert">
+      {{ error }} Previous evidence, if shown, is stale. Refresh to retry.
+    </v-alert>
+    <v-alert v-else-if="!liveRefreshEnabled" type="info" variant="tonal" class="mt-4">
+      Live refresh paused. This assessment stays fixed until you refresh or change its parameters.
+    </v-alert>
+
     <v-card class="soc-hero pa-6 pa-md-7 mt-4" rounded="xl" variant="tonal" :style="heroStyle">
       <v-row dense class="align-center">
         <v-col cols="12" lg="8">
@@ -56,7 +70,7 @@
 
           <div class="soc-hero__chips">
             <v-chip size="small" color="primary" variant="tonal">
-              Risk: {{ formatNumber(riskScore) }}/100
+              Risk: {{ riskLabel }}
             </v-chip>
             <v-chip size="small" :color="verdictColor" variant="tonal">
               Verdict: {{ verdictLabel }}
@@ -78,9 +92,10 @@
           <div class="soc-hero__progress">
             <div class="soc-hero__progress-label">
               <span>Risk score</span>
-              <strong>{{ formatNumber(riskScore) }}/100</strong>
+              <strong>{{ riskLabel }}</strong>
             </div>
             <v-progress-linear
+              v-if="hasEvidence"
               :model-value="riskScore"
               height="10"
               rounded
@@ -144,13 +159,20 @@
       </v-row>
     </v-card>
 
-    <v-alert v-if="error" type="error" variant="tonal" class="mt-6">
-      {{ error }}
-    </v-alert>
-
-    <v-alert v-if="!loading && !cycles.length" type="info" variant="tonal" class="mt-6">
-      No SOC evidence is available yet. Capture traffic first, then rerun the triage loop.
-    </v-alert>
+    <v-card variant="outlined" class="pa-4 mt-4">
+      <div class="text-subtitle-2">Evidence coverage · {{ store.timeRangeLabel() || "all retained traffic" }}</div>
+      <div class="d-flex flex-wrap ga-2 my-2">
+        <v-chip size="small">{{ formatNumber(summary.sampled_packets) }} sampled / {{ formatNumber(analysisContext.available_packets) }} retained packets</v-chip>
+        <v-chip size="small">Limit: {{ formatNumber(analysisContext.sample_limit || 2000) }}</v-chip>
+        <v-chip v-if="analysisContext.sample_truncated" color="warning" size="small">Sample truncated</v-chip>
+      </div>
+      <div class="text-body-2 text-medium-emphasis">
+        Heuristic assessment of retained traffic. Risk and confidence are not calibrated attack probabilities.
+        Rules, exclusions and sampling affect visibility. Flow counters are lifetime totals for flows active in this window.
+        A low score does not establish that traffic is benign.
+      </div>
+      <div v-if="analysisContext.since" class="text-caption mt-2">Cutoff (UTC): {{ analysisContext.since }}</div>
+    </v-card>
 
     <v-tabs v-if="cycles.length" v-model="activeCycleId" color="primary" class="mt-6 soc-tabs">
       <v-tab v-for="cycle in cycles" :key="cycle.id" :value="cycle.id" :disabled="loading">
@@ -414,7 +436,7 @@
         <EntityTablePanel
           title="Top Hosts"
           subtitle="Hosts that need ownership and exposure validation."
-          :rows="topHostRows"
+          :rows="hostRows"
           :columns="hostColumns"
           row-key="row_key"
           :search-enabled="true"
@@ -454,7 +476,7 @@
         <EntityTablePanel
           title="Top Conversations"
           subtitle="Directed flows and their peer scopes."
-          :rows="topConversationRows"
+          :rows="conversationRows"
           :columns="conversationColumns"
           row-key="row_key"
           :search-enabled="true"
@@ -496,7 +518,7 @@
         <EntityTablePanel
           title="Top Ports"
           subtitle="Ports that deserve service-owner validation."
-          :rows="topPortRows"
+          :rows="portRows"
           :columns="portColumns"
           row-key="row_key"
           :search-enabled="true"
@@ -574,11 +596,13 @@ import IocExportMenu from "../components/ui/IocExportMenu.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import { formatTimestamp } from "../utils/traffic";
+import { buildExportFilename, downloadTextFile } from "../utils/exporters.js";
 
 // Cadence for the stream, in milliseconds.
-const FEED_REFRESH_MS = 1000;
+const FEED_REFRESH_MS = 5000;
 const FEED_LIMIT = 2000;
 const SEVERITY_ORDER = new Map([
+  ["critical", -1],
   ["high", 0],
   ["medium", 1],
   ["low", 2],
@@ -639,6 +663,7 @@ export default {
       activeCycleId: 4,
       analysis: {},
       loadSequence: 0,
+      feedSequence: 0,
       feedHandle: null,
       cycleOptions: [
         { value: 1, label: "1 pass" },
@@ -690,6 +715,18 @@ export default {
     summary() {
       return this.analysis.soc_summary || {};
     },
+    analysisContext() {
+      return this.analysis.analysis_context || {};
+    },
+    hasEvidence() {
+      return Number(this.summary.sampled_packets || 0) > 0;
+    },
+    riskLabel() {
+      return this.hasEvidence ? `${this.formatNumber(this.riskScore)}/100` : "Not assessed";
+    },
+    timeRange() {
+      return this.store.state.timeRange;
+    },
     cycles() {
       return Array.isArray(this.analysis.cycles) ? this.analysis.cycles : [];
     },
@@ -706,10 +743,11 @@ export default {
       return Array.isArray(this.analysis.questions) ? this.analysis.questions : [];
     },
     verdictLabel() {
+      if (!this.hasEvidence) return "insufficient-evidence";
       return String(this.summary.verdict || "observe").trim() || "observe";
     },
     priorityLabel() {
-      return String(this.summary.priority || this.summary.verdict || "observe").trim() || "observe";
+      return this.hasEvidence ? String(this.summary.priority || this.verdictLabel) : "collect evidence";
     },
     riskScore() {
       const numeric = Number(this.summary.risk_score || 0);
@@ -745,24 +783,17 @@ export default {
       return "rgba(140, 156, 176, 0.16)";
     },
     verdictTitle() {
+      if (this.error) return "Assessment unavailable · last evidence may be stale";
+      if (!this.hasEvidence) return this.loading ? "Loading evidence" : "Insufficient evidence to assess risk";
       const verdict = this.verdictLabel.toLowerCase();
       if (verdict === "investigate") return "Immediate investigation recommended";
       if (verdict === "review") return "Review this slice before promoting it";
       if (verdict === "monitor") return "Monitor the slice and keep validating";
-      return "Observation mode is sufficient for now";
+      return "No escalation threshold reached in this sample";
     },
     verdictCopy() {
-      const verdict = this.verdictLabel.toLowerCase();
-      if (verdict === "investigate") {
-        return "The pass surfaced public exposure, cross-scope traffic, and enough uncertainty to justify immediate follow-up on ownership and remote access paths.";
-      }
-      if (verdict === "review") {
-        return "This slice is not clean enough to dismiss. Validate the public hosts, tunnel-like ports, and any loopback telemetry owners before moving on.";
-      }
-      if (verdict === "monitor") {
-        return "The evidence points to expected traffic with a few items worth keeping on the radar. Recheck ownership and protocol drift on the next pass.";
-      }
-      return "The current slice is mostly local or low-risk evidence. Keep the loop available, but there is no strong escalation signal yet.";
+      if (!this.hasEvidence) return "Capture and retain packet evidence before drawing a security conclusion.";
+      return "Review the findings and their evidence, validate host ownership and expected services, and record follow-up decisions. The score summarizes this sample only.";
     },
     metricCards() {
       return [
@@ -785,7 +816,7 @@ export default {
         {
           key: "risk",
           label: "Risk",
-          value: this.formatNumber(this.riskScore),
+          value: this.hasEvidence ? this.formatNumber(this.riskScore) : "—",
           caption: "Aggregate risk score for the selected cycle depth.",
           icon: "mdi-shield-alert-outline",
           colorClass: `text-${this.verdictColor}`,
@@ -922,6 +953,9 @@ export default {
     cyclesRequested() {
       this.openFeed();
     },
+    timeRange() {
+      this.openFeed();
+    },
     apiBase() {
       this.openFeed();
     },
@@ -933,6 +967,9 @@ export default {
     this.closeFeed();
   },
   methods: {
+    exportAnalysis() {
+      downloadTextFile(buildExportFilename("soc-assessment", "json"), JSON.stringify(this.analysis, null, 2), "application/json");
+    },
     formatTimestamp,
     formatNumber(value) {
       const numeric = Number(value || 0);
@@ -947,7 +984,7 @@ export default {
     },
     severityColor(value) {
       const severity = normalizeSeverity(value);
-      if (severity === "high") return "error";
+      if (severity === "critical" || severity === "high") return "error";
       if (severity === "medium") return "warning";
       if (severity === "low") return "info";
       return "secondary";
@@ -1000,6 +1037,14 @@ export default {
     // the interval in its URL.
     openFeed() {
       this.closeFeed();
+      this.analysis = {};
+      this.lastUpdated = "";
+      this.error = "";
+      if (!this.liveRefreshEnabled) {
+        this.load();
+        return;
+      }
+      const sequence = this.feedSequence;
       this.loading = true;
       this.feedHandle = this.store.openDataFeed(
         "soc",
@@ -1007,14 +1052,18 @@ export default {
           cycles: Number.parseInt(this.cyclesRequested, 10) || 4,
           limit: FEED_LIMIT,
           refresh: FEED_REFRESH_MS,
+          since: this.timeRange,
         },
-        (payload) => this.applyFeed(payload),
+        (payload) => { if (sequence === this.feedSequence) this.applyFeed(payload); },
         () => {
-          this.load({ silent: true }).catch(() => null);
+          if (sequence === this.feedSequence) this.load({ silent: true }).catch(() => null);
         },
       );
     },
     closeFeed() {
+      this.feedSequence += 1;
+      this.loadSequence += 1;
+      this.loading = false;
       if (this.feedHandle) {
         this.feedHandle.close();
         this.feedHandle = null;
@@ -1027,6 +1076,7 @@ export default {
         return;
       }
       if (!payload || payload.type !== "feed_data") return;
+      this.loadSequence += 1;
       this.analysis = payload.data || {};
       this.lastUpdated = this.analysis.generated_at
         ? formatTimestamp(this.analysis.generated_at)
@@ -1064,8 +1114,6 @@ export default {
         }
       } catch (err) {
         if (loadSeq !== this.loadSequence) return;
-        this.analysis = {};
-        this.lastUpdated = "";
         this.error = (err && err.message) || "Failed to load SOC analysis";
       } finally {
         if (loadSeq === this.loadSequence) {

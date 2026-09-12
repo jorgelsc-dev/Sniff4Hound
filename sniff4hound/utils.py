@@ -128,6 +128,31 @@ def safe_float(value, default=0.0):
             return default
 
 
+_BOOL_TRUE = {"1", "true", "yes", "on"}
+_BOOL_FALSE = {"0", "false", "no", "off"}
+
+
+def coerce_bool(value, field_name: str = "value") -> bool:
+    """Parse booleans from JSON/API/config-shaped input.
+
+    Python's `bool("false")` is True, which is exactly the wrong behaviour
+    for user-facing toggles. Accept native booleans, 0/1, and common textual
+    spellings; reject ambiguous values so callers can answer with a clean
+    validation error.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _BOOL_TRUE:
+            return True
+        if normalized in _BOOL_FALSE:
+            return False
+    raise ValueError(f"{field_name} must be a boolean")
+
+
 def json_dumps(value) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 

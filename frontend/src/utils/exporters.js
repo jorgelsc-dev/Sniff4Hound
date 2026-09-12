@@ -16,7 +16,9 @@ function stringifyCell(value) {
 }
 
 function escapeCsvCell(value) {
-  const text = stringifyCell(value);
+  const raw = stringifyCell(value);
+  const formula = /^[ \t\r\n]*[=+@-]|^[\t\r\n]/.test(raw);
+  const text = formula && typeof value !== "number" ? `'${raw}` : raw;
   if (/["\n\r,]/.test(text)) {
     return `"${text.replace(/"/g, '""')}"`;
   }

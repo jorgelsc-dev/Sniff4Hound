@@ -32,6 +32,8 @@
       {{ error }}
     </v-alert>
 
+    <OperationsCenter />
+
     <v-row class="mt-4" dense>
       <v-col cols="12" xl="7">
         <DataPanel
@@ -294,6 +296,7 @@ import ViewHeader from "../components/ui/ViewHeader.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import ClearDataButton from "../components/ui/ClearDataButton.vue";
+import OperationsCenter from "../components/operations/OperationsCenter.vue";
 import {
   buildPacketSizeSummary,
   buildPacketSummary,
@@ -310,6 +313,7 @@ export default {
     DataPanel,
     EntityTablePanel,
     ClearDataButton,
+    OperationsCenter,
   },
   data() {
     return {

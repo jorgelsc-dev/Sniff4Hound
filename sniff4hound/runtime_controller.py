@@ -13,7 +13,7 @@ import json
 import threading
 
 from .settings import RUNTIME_MODE
-from .utils import utc_now
+from .utils import coerce_bool, utc_now
 
 
 ENGINE_NAMES = ("sniffer", "honeypot")
@@ -163,7 +163,11 @@ class RuntimeController:
         including none at all.
         """
         if isinstance(selection, dict):
-            wanted = {name: bool(selection.get(name)) for name in ENGINE_NAMES if name in selection}
+            wanted = {
+                name: coerce_bool(selection.get(name), f"engines.{name}")
+                for name in ENGINE_NAMES
+                if name in selection
+            }
         else:
             names = {normalize_runtime_mode(item) for item in (selection or [])}
             wanted = {name: name in names for name in ENGINE_NAMES}
