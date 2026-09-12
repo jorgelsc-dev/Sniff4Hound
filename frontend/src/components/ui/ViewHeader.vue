@@ -1,8 +1,8 @@
 <template>
-  <div class="view-header d-flex align-center justify-space-between flex-wrap mb-6 ga-3">
+  <div class="view-header d-flex align-center justify-space-between flex-wrap mb-4 ga-3">
     <div>
       <div class="text-overline text-primary">{{ overline }}</div>
-      <div class="text-h4 font-weight-bold">{{ title }}</div>
+      <div class="text-h5 font-weight-bold">{{ title }}</div>
       <div v-if="description" class="text-body-2 text-medium-emphasis">
         {{ description }}
       </div>
@@ -125,7 +125,7 @@ export default {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: -8px;
+  bottom: -6px;
   height: 1px;
   background: linear-gradient(
     90deg,
@@ -136,12 +136,12 @@ export default {
 }
 
 .header-actions {
-  min-height: 40px;
+  min-height: 34px;
 }
 
 .time-range-toggle {
-  height: 34px;
-  border-radius: 10px;
+  height: 32px;
+  border-radius: 8px;
 }
 
 .time-range-toggle :deep(.v-btn) {

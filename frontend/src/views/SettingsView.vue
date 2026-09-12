@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="settings-view">
     <ViewHeader
       overline="Configuration"
       title="Settings"
@@ -7,7 +7,7 @@
       :show-refresh="false"
     />
 
-    <v-tabs v-model="activeTab" color="primary" class="settings-tabs mb-6" grow>
+    <v-tabs v-model="activeTab" color="primary" density="compact" class="settings-tabs mb-4" grow>
       <v-tab value="capture">
         <v-icon icon="mdi-lan" start />
         Capture
@@ -55,7 +55,7 @@
             </v-chip>
           </template>
 
-          <v-row dense class="mt-2">
+          <v-row density="compact" class="mt-2">
             <v-col cols="12" md="8">
               <v-select
                 :model-value="selectedSnifferInterfaces"
@@ -104,7 +104,7 @@
             </v-chip>
           </template>
 
-          <v-row dense class="mt-1" align="start">
+          <v-row density="compact" class="mt-1" align="start">
             <v-col cols="12" md="7">
               <div class="d-flex flex-wrap ga-2">
                 <v-checkbox
@@ -201,7 +201,7 @@
           variant="tonal"
           class="mb-4 purge-card"
         >
-          <v-row dense align="center">
+          <v-row density="compact" align="center">
             <v-col cols="12" md="8">
               <div class="text-body-2">
                 <strong>Detection history</strong> removes stored packets, tags and payloads.
@@ -408,7 +408,7 @@
               @update:model-value="toggleFilter"
             />
           </div>
-          <v-row dense class="mt-3">
+          <v-row density="compact" class="mt-3">
             <v-col cols="12" md="6">
               <v-select
                 :model-value="monitorMinSeverity"
@@ -547,7 +547,7 @@
                 {{ formError }}
               </v-alert>
 
-              <v-row dense>
+              <v-row density="compact">
                 <v-col cols="12" md="8">
                   <v-text-field v-model.trim="form.name" label="Name" variant="outlined" density="comfortable" />
                 </v-col>
@@ -601,7 +601,7 @@
                 <v-expansion-panel value="include">
                   <v-expansion-panel-title>Include</v-expansion-panel-title>
                   <v-expansion-panel-text>
-                    <v-row dense>
+                    <v-row density="compact">
                       <v-col cols="12" sm="6">
                         <v-select
                           v-model="form.protocols"
@@ -745,7 +745,7 @@
                 <v-expansion-panel value="exclude">
                   <v-expansion-panel-title>Exclude</v-expansion-panel-title>
                   <v-expansion-panel-text>
-                    <v-row dense>
+                    <v-row density="compact">
                       <v-col cols="12" sm="6">
                         <v-select
                           v-model="form.excludeProtocols"
@@ -863,7 +863,7 @@
                 <v-expansion-panel value="advanced">
                   <v-expansion-panel-title>Advanced</v-expansion-panel-title>
                   <v-expansion-panel-text>
-                    <v-row dense>
+                    <v-row density="compact">
                       <v-col cols="12" sm="6">
                         <v-text-field
                           v-model.number="form.minLength"
@@ -1929,8 +1929,13 @@ export default {
 
 <style scoped>
 .settings-tabs {
-  border-radius: 16px;
+  border-radius: 8px;
   overflow: hidden;
+}
+
+.settings-tabs :deep(.v-tab) {
+  min-height: 38px;
+  font-size: 0.78rem;
 }
 
 .interface-card,
@@ -1940,7 +1945,7 @@ export default {
 .listeners-card,
 .filter-card,
 .notify-card {
-  border-radius: 16px;
+  border-radius: 8px;
 }
 
 .mono {
@@ -1978,13 +1983,17 @@ export default {
 }
 
 .interface-status {
-  min-height: 44px;
-  padding: 12px 14px;
-  border-radius: 14px;
+  min-height: 38px;
+  padding: 9px 11px;
+  border-radius: 8px;
   border: 1px solid rgba(118, 191, 232, 0.16);
   background: linear-gradient(180deg, rgba(10, 18, 29, 0.82), rgba(9, 15, 24, 0.76));
   color: rgba(229, 239, 249, 0.88);
-  font-size: 0.92rem;
+  font-size: 0.86rem;
   line-height: 1.45;
+}
+
+.settings-view :deep(.v-field) {
+  border-radius: 8px;
 }
 </style>

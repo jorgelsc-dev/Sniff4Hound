@@ -85,6 +85,7 @@ body::before {
 }
 
 .v-card {
+  border-radius: 8px;
   border-color: var(--stroke);
   background: linear-gradient(180deg, var(--surface-1), var(--surface-0));
   box-shadow: 0 14px 28px rgba(3, 8, 15, 0.32);
@@ -127,7 +128,7 @@ body::before {
 
 .v-table {
   border: 1px solid var(--stroke);
-  border-radius: 16px;
+  border-radius: 8px;
   overflow: hidden;
   background: rgba(7, 12, 19, 0.78);
 }
@@ -145,8 +146,8 @@ body::before {
 .v-table tbody td {
   color: var(--text-soft);
   letter-spacing: 0.002em;
-  line-height: 1.34;
-  font-size: 0.91rem;
+  line-height: 1.28;
+  font-size: 0.86rem;
 }
 
 .v-table tbody tr:nth-child(even) {
@@ -187,7 +188,7 @@ body::before {
 }
 
 .v-field {
-  border-radius: 12px;
+  border-radius: 8px;
   color: rgba(233, 243, 255, 0.96);
 }
 
@@ -195,7 +196,7 @@ body::before {
 .v-field textarea,
 .v-field .v-field__input {
   letter-spacing: 0.002em;
-  font-size: 0.94rem;
+  font-size: 0.88rem;
   color: rgba(233, 243, 255, 0.96) !important;
   caret-color: rgba(var(--brand-cyan-rgb), 0.94);
 }

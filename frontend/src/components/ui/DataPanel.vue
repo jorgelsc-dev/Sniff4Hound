@@ -1,5 +1,5 @@
 <template>
-  <v-card :variant="variant" class="pa-6 data-panel">
+  <v-card :variant="variant" class="pa-4 data-panel">
     <div
       v-if="showHeader"
       class="d-flex align-center justify-space-between flex-wrap ga-2 mb-4 panel-head"
@@ -271,12 +271,12 @@ export default {
 
 <style scoped>
 .data-panel {
-  border-radius: 18px;
+  border-radius: 8px;
   overflow: hidden;
 }
 
 .panel-head {
-  padding-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 1px solid rgba(104, 178, 221, 0.14);
 }
 
@@ -317,10 +317,10 @@ export default {
 .panel-loader-shell {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 16px;
-  padding: 14px 16px;
-  border-radius: 16px;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
   border: 1px solid rgba(var(--brand-sky-rgb), 0.16);
   background:
     radial-gradient(circle at 14% 26%, rgba(var(--brand-cyan-rgb), 0.13), transparent 38%),
@@ -351,7 +351,7 @@ export default {
 
 .panel-body {
   position: relative;
-  min-height: 78px;
+  min-height: 58px;
 }
 
 .panel-content {
