@@ -13,6 +13,7 @@ from .anomaly import AnomalyEngine
 from .logger import get_capture_logger
 from .monitors import RuleAlertThrottle, ensure_monitor_index, evaluate_packet, indexed_monitors_by_id
 from .rulesets import build_packet_text, classify_packet, literal_packet_text_pattern
+from .store import compile_exclusion_networks, packet_matches_exclusion_filter
 from .settings import (
     CAPTURE_BUFFER_BYTES,
     CAPTURE_POLL_TIMEOUT,
@@ -602,6 +603,8 @@ class Sniffer:
         self._monitor_min_severity = MONITOR_MIN_SEVERITY_DEFAULT
         self._monitor_suppress_generated_info = MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT
         self._detection_exclude_scopes: frozenset[str] = frozenset()
+        self._exclusion_filters: dict = {"ip_types": [], "cidrs": [], "protocols": [], "ports": []}
+        self._exclusion_networks: list = []
         self._monitor_cache_at = 0.0
         self._monitor_refresh_lock = threading.Lock()
         self._monitor_refresh_in_flight = False
@@ -899,6 +902,19 @@ class Sniffer:
             return False
         return src in scopes and dst in scopes
 
+    def _exclusion_filtered(self, packet: dict) -> bool:
+        """True when this packet matches the shared detection-exclusion
+        filter (Settings > Exclusiones - IP type/CIDR/port/protocol). Same
+        filter data the AI packet-image view already used to skip traffic
+        from its own analysis (store.get_exclusion_filters); applying it
+        here too mutes it from Monitors/classification/anomaly detection the
+        same way whitelist entries and excluded IP scopes do. Raw capture
+        and storage are unaffected - this only silences detection."""
+        filters = self._exclusion_filters
+        if not filters or not any(filters.values()):
+            return False
+        return packet_matches_exclusion_filter(packet, filters, self._exclusion_networks)
+
     def _whitelist_entry_matches_packet(self, entry: dict, packet: dict, *, packet_text: str | None = None) -> bool:
         if not entry or not entry.get("enabled", True):
             return False
@@ -983,6 +999,9 @@ class Sniffer:
                 else MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT
             )
             exclude_scopes = frozenset(self.store.get_detection_exclude_scopes())
+            get_exclusion_filters = getattr(self.store, "get_exclusion_filters", None)
+            exclusion_filters = get_exclusion_filters() if callable(get_exclusion_filters) else None
+            exclusion_networks = compile_exclusion_networks(exclusion_filters) if exclusion_filters else []
             # Builds/refreshes monitors.evaluate_packet()'s content index
             # for this exact list object; its own expensive part (the
             # multi-pattern automaton) is itself built in a further
@@ -994,6 +1013,9 @@ class Sniffer:
             self._monitor_min_severity = min_severity
             self._monitor_suppress_generated_info = suppress_generated_info
             self._detection_exclude_scopes = exclude_scopes
+            if exclusion_filters is not None:
+                self._exclusion_filters = exclusion_filters
+                self._exclusion_networks = exclusion_networks
         except sqlite3.ProgrammingError as exc:
             if "closed database" in str(exc).lower():
                 LOGGER.debug("Skipped monitor refresh after store close")
@@ -1132,7 +1154,7 @@ class Sniffer:
             self._touch_packet(packet, stored=False)
             return
         monitors, filter_enabled = self._get_monitor_context()
-        detection_muted = self._detection_muted(packet) or self._whitelisted(packet)
+        detection_muted = self._detection_muted(packet) or self._whitelisted(packet) or self._exclusion_filtered(packet)
         monitor_matched = False
         if detection_muted:
             matches = []

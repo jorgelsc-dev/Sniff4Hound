@@ -28,33 +28,51 @@
         </v-col>
       </v-row>
       <p class="text-caption mt-3">Umbral aplicado: {{ result.threshold ?? 50 }}. Pulsa Analizar paquetes para aplicar cambios. Actualización en vivo cada 5 segundos. La muestra comparte la retención y el borrado del sniffer.</p>
+      <v-alert type="info" variant="tonal" density="comfortable" class="mt-3">
+        Los filtros de exclusión (IP, CIDR, puerto, protocolo) ahora se configuran en un solo lugar para
+        todo el motor de detección - Sniffer, Monitores e IA.
+        <router-link to="/settings">Ir a Configuración → Exclusiones</router-link>.
+      </v-alert>
     </v-card>
 
     <v-card class="pa-5 mb-4" variant="tonal">
-      <div class="d-flex align-center flex-wrap ga-2 mb-2">
-        <h2 class="text-h6 mb-0">Excluir tráfico del análisis</h2>
-        <v-chip v-if="activeFilterCount" size="small" color="warning">{{ activeFilterCount }} filtro(s) activo(s)</v-chip>
+      <div class="d-flex align-center flex-wrap ga-3 mb-2">
+        <h2 class="text-h6 mb-0">Ajustes del motor</h2>
+        <v-chip v-if="learningConfig" size="small" color="primary">{{ learningConfig.hidden_neurons }} neuronas ocultas</v-chip>
+        <v-chip v-if="effectiveness.ready" size="small" :color="effectivenessColor">
+          Efectividad {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
+        </v-chip>
+        <v-chip v-else size="small" color="warning">Efectividad: faltan revisiones (mín. 3 benignos y 3 maliciosos)</v-chip>
       </div>
       <p class="text-body-2 text-medium-emphasis mb-3">
-        El tráfico que coincida con alguno de estos criterios se ignora al analizar paquetes (no
-        afecta a la captura ni a los monitores). Útil para excluir loopback/salud del propio panel,
-        redes internas conocidas, o protocolos/puertos ruidosos que no aportan al análisis de imagen.
+        La red neuronal aprende de tus revisiones (arriba); el detector LOF agrupa paquetes del mismo
+        protocolo para medir cuáles son atípicos. Ambos motores tienen un parámetro real que puedes
+        ajustar - no hay nada más que "aumentar neuronas" en el sentido literal, salvo esto.
       </p>
-      <v-alert v-if="filtersError" type="error" density="comfortable" class="mb-3">{{ filtersError }}</v-alert>
-      <v-row dense>
-        <v-col cols="12" md="4">
-          <div class="text-caption text-medium-emphasis mb-1">Tipo de IP</div>
-          <v-checkbox v-for="opt in ipTypeOptions" :key="opt.value" v-model="filtersDraft.ip_types" :value="opt.value" :label="opt.label" density="compact" hide-details />
+      <v-alert v-if="learningConfigError" type="error" density="comfortable" class="mb-3">{{ learningConfigError }}</v-alert>
+      <v-row dense v-if="learningConfigDraft">
+        <v-col cols="12" md="6">
+          <div class="text-caption text-medium-emphasis">Neuronas en la capa oculta (red de aprendizaje)</div>
+          <v-slider v-model="learningConfigDraft.hidden_neurons" :min="hiddenNeuronsMin" :max="hiddenNeuronsMax" :step="1"
+            thumb-label="always" hide-details />
+          <p class="text-caption text-medium-emphasis mt-1">
+            Más neuronas: puede aprender patrones más complejos con más ejemplos, pero requiere más revisiones
+            para no sobreajustar. Cambiar este valor reentrena el modelo desde tus ejemplos guardados.
+          </p>
         </v-col>
-        <v-col cols="12" md="8">
-          <v-combobox v-model="filtersDraft.cidrs" label="IPs o bloques CIDR excluidos" hint="Ej: 127.0.0.1, 10.0.0.0/8, 203.0.113.5" persistent-hint multiple chips closable-chips clearable variant="outlined" density="comfortable" class="mb-4" />
-          <v-combobox v-model="filtersDraft.protocols" label="Protocolos excluidos" hint="Ej: dns, icmp, ntp" persistent-hint multiple chips closable-chips clearable variant="outlined" density="comfortable" class="mb-4" />
-          <v-combobox v-model="filtersDraft.ports" label="Puertos excluidos" hint="Coincide con puerto origen o destino" persistent-hint multiple chips closable-chips clearable variant="outlined" density="comfortable" />
+        <v-col cols="12" md="6">
+          <div class="text-caption text-medium-emphasis">Tamaño mínimo de grupo (detector LOF)</div>
+          <v-slider v-model="learningConfigDraft.min_cohort" :min="minCohortMin" :max="minCohortMax" :step="1"
+            thumb-label="always" hide-details />
+          <p class="text-caption text-medium-emphasis mt-1">
+            Cuántos paquetes del mismo protocolo hacen falta antes de que el LOF empiece a puntuar ese grupo.
+            Más bajo: cubre protocolos poco frecuentes antes, pero con puntuaciones menos estables.
+          </p>
         </v-col>
       </v-row>
-      <div class="d-flex ga-2 mt-2">
-        <v-btn color="primary" :loading="savingFilters" @click="saveFilters">Guardar filtros</v-btn>
-        <v-btn variant="text" :disabled="savingFilters" @click="resetFiltersDraft">Descartar cambios</v-btn>
+      <div class="d-flex ga-2 mt-3">
+        <v-btn color="primary" :loading="savingLearningConfig" @click="saveLearningConfig">Guardar y reentrenar</v-btn>
+        <v-btn variant="text" :disabled="savingLearningConfig" @click="resetLearningConfigDraft">Descartar cambios</v-btn>
       </div>
     </v-card>
     <template v-if="result.learning">
@@ -140,7 +158,7 @@ import ViewHeader from "../components/ui/ViewHeader.vue";
 import NeuralGraph from "../components/NeuralGraph.vue";
 import store from "../state/appStore";
 
-const result = ref({ rows: [], sampling_enabled: false, exclusion_filters: null });
+const result = ref({ rows: [], sampling_enabled: false, learning_config: null });
 const threshold = ref(50);
 const selectedId = ref(null);
 const graph = ref(null);
@@ -166,58 +184,48 @@ const savingFeedback = ref(false);
 const feedbackError = ref("");
 const labels = [{ title: "Benigno", value: "benign" }, { title: "Malicioso", value: "malicious" }, { title: "Retirar etiqueta", value: "unreviewed" }];
 
-const ipTypeOptions = [
-  { value: "loopback", label: "Loopback (127.0.0.1, ::1)" },
-  { value: "private", label: "Privada (RFC1918, link-local)" },
-  { value: "public", label: "Pública" },
-  { value: "multicast", label: "Multicast / broadcast" },
-];
-const emptyFilters = () => ({ ip_types: [], cidrs: [], protocols: [], ports: [] });
-const filtersDraft = ref(emptyFilters());
-const filtersLoaded = ref(false);
-const savingFilters = ref(false);
-const filtersError = ref("");
-const activeFilterCount = computed(() =>
-  filtersDraft.value.ip_types.length + filtersDraft.value.cidrs.length +
-  filtersDraft.value.protocols.length + filtersDraft.value.ports.length
-);
+// Server-clamped bounds (sniff4hound.ai_learning / sniff4hound.packet_ai) -
+// mirrored here only for the slider range; the backend re-validates on save.
+const hiddenNeuronsMin = 3;
+const hiddenNeuronsMax = 16;
+const minCohortMin = 5;
+const minCohortMax = 200;
 
-function resetFiltersDraft() {
-  const source = result.value.exclusion_filters || emptyFilters();
-  filtersDraft.value = {
-    ip_types: [...(source.ip_types || [])],
-    cidrs: [...(source.cidrs || [])],
-    protocols: [...(source.protocols || [])],
-    ports: (source.ports || []).map(String),
-  };
-  filtersError.value = "";
+const learningConfig = computed(() => result.value.learning_config);
+const learningConfigDraft = ref(null);
+const learningConfigLoaded = ref(false);
+const savingLearningConfig = ref(false);
+const learningConfigError = ref("");
+const effectiveness = computed(() => result.value.learning?.effectiveness || { ready: false, accuracy: null, correct: 0, total: 0 });
+const effectivenessColor = computed(() => {
+  const accuracy = effectiveness.value.accuracy;
+  if (accuracy === null) return "warning";
+  if (accuracy >= 0.8) return "success";
+  if (accuracy >= 0.5) return "warning";
+  return "error";
+});
+
+function resetLearningConfigDraft() {
+  const source = learningConfig.value || { hidden_neurons: 6, min_cohort: 20 };
+  learningConfigDraft.value = { hidden_neurons: source.hidden_neurons, min_cohort: source.min_cohort };
+  learningConfigError.value = "";
 }
 
-async function saveFilters() {
-  savingFilters.value = true;
-  filtersError.value = "";
+async function saveLearningConfig() {
+  savingLearningConfig.value = true;
+  learningConfigError.value = "";
   try {
-    const ports = filtersDraft.value.ports
-      .map((value) => Number(value))
-      .filter((value) => Number.isInteger(value) && value >= 0 && value <= 65535);
     const config = await store.fetchJsonPromise("/api/ai/config", {
       method: "POST",
-      body: JSON.stringify({
-        exclusion_filters: {
-          ip_types: filtersDraft.value.ip_types,
-          cidrs: filtersDraft.value.cidrs,
-          protocols: filtersDraft.value.protocols,
-          ports,
-        },
-      }),
+      body: JSON.stringify({ learning_config: { ...learningConfigDraft.value } }),
     });
-    result.value.exclusion_filters = config.exclusion_filters;
-    resetFiltersDraft();
+    result.value.learning_config = config.learning_config;
+    resetLearningConfigDraft();
     await load();
   } catch (err) {
-    filtersError.value = err.message || "No se pudieron guardar los filtros.";
+    learningConfigError.value = err.message || "No se pudo guardar la configuración.";
   } finally {
-    savingFilters.value = false;
+    savingLearningConfig.value = false;
   }
 }
 
@@ -228,9 +236,9 @@ function applySnapshot(snapshot) {
   lastReceived = Date.now();
   lastUpdate.value = new Date(snapshot.generated_at).toLocaleTimeString();
   error.value = "";
-  if (!filtersLoaded.value && snapshot.exclusion_filters) {
-    filtersLoaded.value = true;
-    resetFiltersDraft();
+  if (!learningConfigLoaded.value && snapshot.learning_config) {
+    learningConfigLoaded.value = true;
+    resetLearningConfigDraft();
   }
 }
 

@@ -599,8 +599,10 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ai/packets/", "desc": "Local byte-image anomaly analysis of the latest 200 packets."},
     {"method": "POST", "path": "/api/ai/feedback", "desc": "Learn from a reviewed packet: label, confidence and note."},
     {"method": "POST", "path": "/api/packets/review", "desc": "Label any captured packet benign, malicious or unreviewed."},
-    {"method": "GET", "path": "/api/ai/config", "desc": "Current AI sampling flag and exclusion filters."},
-    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable sampling and/or set AI exclusion filters (IP type, CIDR, protocol, port) - excluded traffic is skipped by the packet-image analysis."},
+    {"method": "GET", "path": "/api/ai/config", "desc": "Current AI sampling flag and learning config (hidden_neurons, min_cohort)."},
+    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable sampling and/or set learning_config: hidden_neurons (classifier hidden-layer size) and/or min_cohort (minimum group size the LOF outlier detector needs before it scores a protocol/source cohort)."},
+    {"method": "GET", "path": "/api/detection/exclusions", "desc": "Shared exclusion filter (IP type, CIDR, port, protocol)."},
+    {"method": "POST", "path": "/api/detection/exclusions", "desc": "Set the shared exclusion filter - matching traffic is silenced from Sniffer detection, Monitors and AI sampling (raw capture/storage is unaffected)."},
     {"method": "POST", "path": "/api/console/execute", "desc": "Execute a safe registered Sniff4Hound operation from the dashboard console."},
     {"method": "GET", "path": "/api/runtime/", "desc": "Runtime mode and engine snapshot."},
     {"method": "POST", "path": "/api/runtime/", "desc": "Start/stop engines and update the sniffer interface. Sniffer and honeypot are independent: {\"engines\": {\"sniffer\": true, \"honeypot\": true}} runs both, {\"engine\": \"honeypot\", \"action\": \"stop\"} stops one."},
@@ -2363,10 +2365,15 @@ def _ai_snapshot(threshold=50):
     from .packet_ai import analyze_packets
     from .ai_learning import learning_snapshot
 
+    learning_config = store.get_ai_learning_config()
     packets = store.list_ai_packets()
-    result = learning_snapshot(store.ai_learning_state(), packets, analyze_packets(packets, threshold=threshold))
+    analysis = analyze_packets(packets, threshold=threshold, min_cohort=learning_config["min_cohort"])
+    result = learning_snapshot(
+        store.ai_learning_state(), packets, analysis, hidden_size=learning_config["hidden_neurons"]
+    )
     result["sampling_enabled"] = store.get_runtime_config("ai_sampling_enabled", "0") == "1"
-    result["exclusion_filters"] = store.get_ai_exclusion_filters()
+    result["exclusion_filters"] = store.get_exclusion_filters()
+    result["learning_config"] = learning_config
     return result
 
 
@@ -2375,13 +2382,13 @@ def ai_config(request):
     if request.method.upper() == "GET":
         return {
             "sampling_enabled": store.get_runtime_config("ai_sampling_enabled", "0") == "1",
-            "exclusion_filters": store.get_ai_exclusion_filters(),
+            "learning_config": store.get_ai_learning_config(),
         }
     payload = _read_json_body(request)
     has_sampling = "sampling_enabled" in payload
-    has_filters = "exclusion_filters" in payload
-    if not has_sampling and not has_filters:
-        raise ValueError("sampling_enabled or exclusion_filters is required")
+    has_learning_config = "learning_config" in payload
+    if not has_sampling and not has_learning_config:
+        raise ValueError("sampling_enabled or learning_config is required")
     response = {}
     if has_sampling:
         enabled = payload.get("sampling_enabled")
@@ -2389,9 +2396,21 @@ def ai_config(request):
             raise ValueError("sampling_enabled must be a boolean")
         store.set_runtime_config("ai_sampling_enabled", "1" if enabled else "0")
         response["sampling_enabled"] = enabled
-    if has_filters:
-        response["exclusion_filters"] = store.set_ai_exclusion_filters(payload.get("exclusion_filters"))
+    if has_learning_config:
+        response["learning_config"] = store.set_ai_learning_config(payload.get("learning_config"))
     return response
+
+
+@app.api("/api/detection/exclusions", methods=("GET", "POST"))
+def detection_exclusions(request):
+    """Shared exclusion filter (IP type/CIDR/port/protocol) that silences
+    Sniffer detection, Monitors and AI sampling for matching traffic - see
+    sniffer.Sniffer._exclusion_filtered and store.get_exclusion_filters.
+    Raw capture/storage is unaffected; this only mutes detection."""
+    if request.method.upper() == "GET":
+        return {"exclusion_filters": store.get_exclusion_filters()}
+    payload = _read_json_body(request)
+    return {"exclusion_filters": store.set_exclusion_filters(payload.get("exclusion_filters"))}
 
 
 @app.api("/api/ai/feedback", methods=("POST",))

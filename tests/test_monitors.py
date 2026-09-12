@@ -802,6 +802,37 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.assertEqual(self.store.list_count("packets"), 1)
         self.assertEqual(self.sniffer.state.packets_stored, 1)
 
+    def test_exclusion_filter_mutes_detection_by_port(self):
+        # The shared exclusion filter (Settings > Exclusions) is the same
+        # data store.get_exclusion_filters() already fed to the AI view;
+        # this pins that it also silences Monitors/detection through the
+        # sniffer now, not just the AI packet-image analysis. Like the other
+        # members of this mute family (whitelist, excluded IP scope), it
+        # mutes detection without hiding capture - the packet is still
+        # stored, just untagged (see test_detection_scopes.py's
+        # ExcludedTrafficPipelineTests for the same contract).
+        self.store.set_exclusion_filters({"ports": [3389]})
+        packet = self._base_packet(dst_port=3389)
+        self.sniffer._store_packet(packet)
+        self.assertEqual(self.store.list_count("packets"), 1)
+        self.assertEqual(packet.get("monitor_hits") or [], [])
+        self.assertEqual(packet.get("ai_detection_status"), "muted")
+
+    def test_exclusion_filter_mutes_detection_by_cidr(self):
+        self.store.set_exclusion_filters({"cidrs": ["10.0.0.0/24"]})
+        packet = self._base_packet(dst_port=3389, src_ip="10.0.0.5", dst_ip="10.0.0.9")
+        self.sniffer._store_packet(packet)
+        self.assertEqual(packet.get("monitor_hits") or [], [])
+        self.assertEqual(packet.get("ai_detection_status"), "muted")
+
+    def test_exclusion_filter_only_mutes_matching_traffic(self):
+        self.store.set_exclusion_filters({"ports": [3389]})
+        packet = self._base_packet(dst_port=80, payload_len=56,
+                                    payload_text="POST /login HTTP/1.1\r\nusername=admin&password=hunter2")
+        self.sniffer._store_packet(packet)
+        self.assertEqual(self.store.list_count("packets"), 1)
+        self.assertNotEqual(packet.get("ai_detection_status"), "muted")
+
     def test_minimum_monitor_severity_filters_stored_hits(self):
         self.store.set_monitor_min_severity("high")
         self.sniffer._store_packet(self._base_packet(dst_port=3389))

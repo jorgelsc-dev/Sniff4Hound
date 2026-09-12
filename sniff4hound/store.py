@@ -164,14 +164,19 @@ def _ip_scope(ip: str) -> str:
 
 IP_SCOPES = ("local", "private", "public", "multicast", "reserved", "unknown")
 
-# The AI packet-image view's exclusion filter uses its own 4-bucket vocabulary
-# (loopback kept separate from private, unlike `_ip_scope`'s "local") because
-# an operator excluding "loopback" (their own dashboard's health checks) does
-# not necessarily want to exclude all of RFC1918 too.
-AI_EXCLUSION_IP_TYPES = ("loopback", "private", "public", "multicast")
+# The shared detection-exclusion filter (Settings > Exclusiones - silences
+# Sniffer detection/Monitors/AI sampling for matching traffic, without
+# touching raw capture/storage) uses its own 4-bucket vocabulary (loopback
+# kept separate from private, unlike `_ip_scope`'s "local") because an
+# operator excluding "loopback" (their own dashboard's health checks) does
+# not necessarily want to exclude all of RFC1918 too. Originally scoped to
+# just the AI packet-image view; kept the same vocabulary when it was
+# generalized so existing filters an operator had already configured for AI
+# keep meaning the same thing now that they apply more broadly.
+EXCLUSION_IP_TYPES = ("loopback", "private", "public", "multicast")
 
 
-def _ai_ip_type(ip: str) -> str:
+def _exclusion_ip_type(ip: str) -> str:
     text = str(ip or "").strip()
     if not text:
         return "unknown"
@@ -201,7 +206,17 @@ def _ip_in_any_network(ip: str, networks: list) -> bool:
     return any(ip_obj in network for network in networks)
 
 
-def _packet_matches_ai_exclusion(row: dict, filters: dict, networks: list) -> bool:
+def compile_exclusion_networks(filters: dict) -> list:
+    networks = []
+    for cidr in filters.get("cidrs") or ():
+        try:
+            networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            continue
+    return networks
+
+
+def packet_matches_exclusion_filter(row: dict, filters: dict, networks: list) -> bool:
     if filters["protocols"]:
         if normalize_protocol_name(row.get("proto")) in filters["protocols"]:
             return True
@@ -215,7 +230,7 @@ def _packet_matches_ai_exclusion(row: dict, filters: dict, networks: list) -> bo
         for ip_value in (row.get("src_ip"), row.get("dst_ip")):
             if not ip_value:
                 continue
-            if filters["ip_types"] and _ai_ip_type(ip_value) in filters["ip_types"]:
+            if filters["ip_types"] and _exclusion_ip_type(ip_value) in filters["ip_types"]:
                 return True
             if networks and _ip_in_any_network(ip_value, networks):
                 return True
@@ -1826,7 +1841,7 @@ class SniffStore:
             return self._fetchall(
                 f"SELECT {self._AI_PACKET_COLUMNS} FROM packets WHERE id = ?", (packet_id,)
             )
-        filters = self.get_ai_exclusion_filters()
+        filters = self.get_exclusion_filters()
         has_filters = any(filters.values())
         # No filters: keep the cheap, direct 200-row fetch. With filters,
         # over-fetch a bounded window so excluded traffic doesn't just shrink
@@ -1839,19 +1854,19 @@ class SniffStore:
         )
         if not has_filters:
             return rows
-        networks = []
-        for cidr in filters["cidrs"]:
-            try:
-                networks.append(ipaddress.ip_network(cidr, strict=False))
-            except ValueError:
-                continue
-        return [row for row in rows if not _packet_matches_ai_exclusion(row, filters, networks)][:200]
+        networks = compile_exclusion_networks(filters)
+        return [row for row in rows if not packet_matches_exclusion_filter(row, filters, networks)][:200]
 
-    def get_ai_exclusion_filters(self):
+    def get_exclusion_filters(self):
+        # Runtime-config key kept as "ai_exclusion_filters" (its original,
+        # AI-only-scoped name) even though this filter now also silences
+        # Sniffer detection and Monitors (see sniffer.py's
+        # _exclusion_filtered) - renaming the storage key would silently
+        # drop any filter an operator already had configured.
         data = json_loads(self.get_runtime_config("ai_exclusion_filters", ""), default={})
         if not isinstance(data, dict):
             data = {}
-        ip_types = [str(v) for v in data.get("ip_types", []) if str(v) in AI_EXCLUSION_IP_TYPES]
+        ip_types = [str(v) for v in data.get("ip_types", []) if str(v) in EXCLUSION_IP_TYPES]
         cidrs = [str(v).strip() for v in data.get("cidrs", []) if str(v).strip()]
         protocols = [normalize_protocol_name(v) for v in data.get("protocols", []) if str(v).strip()]
         ports = []
@@ -1866,12 +1881,12 @@ class SniffStore:
             "ports": unique_ordered(ports),
         }
 
-    def set_ai_exclusion_filters(self, filters):
+    def set_exclusion_filters(self, filters):
         data = filters if isinstance(filters, dict) else {}
         ip_types_raw = data.get("ip_types", [])
         if not isinstance(ip_types_raw, (list, tuple)):
             raise ValueError("ip_types debe ser una lista.")
-        invalid_types = unique_ordered(str(v) for v in ip_types_raw if str(v) not in AI_EXCLUSION_IP_TYPES)
+        invalid_types = unique_ordered(str(v) for v in ip_types_raw if str(v) not in EXCLUSION_IP_TYPES)
         if invalid_types:
             raise ValueError(f"Tipo de IP inválido: {', '.join(invalid_types)}")
 
@@ -1916,6 +1931,54 @@ class SniffStore:
     def ai_learning_state(self):
         return json.loads(self.get_runtime_config("ai_learning_state", "{}"))
 
+    def get_ai_learning_config(self):
+        """The real, literal tuning knobs the AI features have - a hidden-
+        layer neuron count for the feedback-trained classifier
+        (ai_learning.py) and a minimum-cohort size for the LOF outlier
+        detector (packet_ai.py). Both are clamped to a sane range regardless
+        of what's stored, so a hand-edited or stale value can't produce a
+        degenerate model or a scan that never has enough packets to score."""
+        from .ai_learning import DEFAULT_HIDDEN_NEURONS, MAX_HIDDEN_NEURONS, MIN_HIDDEN_NEURONS
+        from .packet_ai import MIN_COHORT, MIN_COHORT_CEILING, MIN_COHORT_FLOOR
+
+        data = json_loads(self.get_runtime_config("ai_learning_config", ""), default={})
+        if not isinstance(data, dict):
+            data = {}
+        hidden_neurons = safe_int(data.get("hidden_neurons"), DEFAULT_HIDDEN_NEURONS)
+        hidden_neurons = min(MAX_HIDDEN_NEURONS, max(MIN_HIDDEN_NEURONS, hidden_neurons))
+        min_cohort = safe_int(data.get("min_cohort"), MIN_COHORT)
+        min_cohort = min(MIN_COHORT_CEILING, max(MIN_COHORT_FLOOR, min_cohort))
+        return {"hidden_neurons": hidden_neurons, "min_cohort": min_cohort}
+
+    def set_ai_learning_config(self, config):
+        from .ai_learning import MAX_HIDDEN_NEURONS, MIN_HIDDEN_NEURONS, rebuild_for_hidden_size
+        from .packet_ai import MIN_COHORT_CEILING, MIN_COHORT_FLOOR
+
+        data = config if isinstance(config, dict) else {}
+        current = self.get_ai_learning_config()
+        hidden_neurons = current["hidden_neurons"]
+        if "hidden_neurons" in data:
+            hidden_neurons = safe_int(data.get("hidden_neurons"), -1)
+            if not (MIN_HIDDEN_NEURONS <= hidden_neurons <= MAX_HIDDEN_NEURONS):
+                raise ValueError(f"hidden_neurons debe estar entre {MIN_HIDDEN_NEURONS} y {MAX_HIDDEN_NEURONS}.")
+        min_cohort = current["min_cohort"]
+        if "min_cohort" in data:
+            min_cohort = safe_int(data.get("min_cohort"), -1)
+            if not (MIN_COHORT_FLOOR <= min_cohort <= MIN_COHORT_CEILING):
+                raise ValueError(f"min_cohort debe estar entre {MIN_COHORT_FLOOR} y {MIN_COHORT_CEILING}.")
+        normalized = {"hidden_neurons": hidden_neurons, "min_cohort": min_cohort}
+        with self._lock:
+            if hidden_neurons != current["hidden_neurons"]:
+                # Persisted weights are shape-bound to the old neuron count -
+                # rebuild right away rather than waiting for the next
+                # feedback event to notice the mismatch, so the
+                # effectiveness score reflects the new architecture
+                # immediately instead of silently serving stale predictions.
+                state = rebuild_for_hidden_size(self.ai_learning_state(), hidden_neurons)
+                self.set_runtime_config("ai_learning_state", json_dumps(state))
+            self.set_runtime_config("ai_learning_config", json_dumps(normalized))
+        return normalized
+
     def save_ai_feedback(self, packet_id, label, confidence, note):
         from .ai_learning import update_feedback
 
@@ -1925,7 +1988,10 @@ class SniffStore:
             packets = self.list_ai_packets(packet_id)
             if not packets:
                 raise ValueError("El paquete ya no está disponible.")
-            state = update_feedback(self.ai_learning_state(), packets[0], label, confidence, note)
+            hidden_neurons = self.get_ai_learning_config()["hidden_neurons"]
+            state = update_feedback(
+                self.ai_learning_state(), packets[0], label, confidence, note, hidden_size=hidden_neurons
+            )
             self.set_runtime_config("ai_learning_state", json.dumps(state))
             return {"revision": state.get("revision", 0)}
 

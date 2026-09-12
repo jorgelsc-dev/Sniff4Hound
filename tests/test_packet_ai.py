@@ -55,6 +55,18 @@ class PacketImageTests(unittest.TestCase):
         rows = [packet(i) for i in range(19)] + [packet(99, proto='udp')]
         self.assertEqual(analyze_packets(rows)['analyzed'], 0)
 
+    def test_min_cohort_is_a_real_configurable_floor(self):
+        # A cohort of 19 is below the default MIN_COHORT (20) but above a
+        # lowered min_cohort - the setting has to actually reach lof_scores,
+        # not just be echoed back in the result.
+        rows = [packet(i) for i in range(19)]
+        default_result = analyze_packets(rows)
+        self.assertEqual(default_result['analyzed'], 0)
+        self.assertEqual(default_result['minimum_cohort'], 20)
+        lowered_result = analyze_packets(rows, min_cohort=10)
+        self.assertEqual(lowered_result['analyzed'], 19)
+        self.assertEqual(lowered_result['minimum_cohort'], 10)
+
     def test_alerted_muted_disabled_and_legacy_are_not_candidates(self):
         for extra in ({'tags_json': '[{"key":"monitor_id"}]'},
                       {'rule_hits_json': '[{"id":"rule"}]'},
@@ -130,3 +142,38 @@ class AiApiTests(unittest.TestCase):
                     response = module.app.dispatch(request(method, path, b'{"sampling_enabled":false}'))
                     self.assertEqual(response.status, 401)
                 self.assertEqual(self.store.get_runtime_config('ai_sampling_enabled'), '1')
+
+    def test_ai_config_learning_config_validation(self):
+        from wsbuilder import Request
+        from sniff4hound import app as module
+        request = lambda method, body=b'': Request(method, '/api/ai/config', '', {}, body, ('203.0.113.10', 1234))
+        with patch.object(module, 'store', self.store):
+            result = module.ai_config(request('GET'))
+            self.assertEqual(result['learning_config'], {'hidden_neurons': 6, 'min_cohort': 20})
+            result = module.ai_config(request('POST', b'{"learning_config":{"hidden_neurons":9,"min_cohort":30}}'))
+            self.assertEqual(result['learning_config'], {'hidden_neurons': 9, 'min_cohort': 30})
+            self.assertEqual(self.store.get_ai_learning_config(), {'hidden_neurons': 9, 'min_cohort': 30})
+            with self.assertRaises(ValueError):
+                module.ai_config(request('POST', b'{"learning_config":{"hidden_neurons":100}}'))
+            with self.assertRaises(ValueError):
+                module.ai_config(request('POST', b'{"learning_config":{"min_cohort":1}}'))
+            with self.assertRaises(ValueError):
+                module.ai_config(request('POST', b'{}'))
+
+    def test_detection_exclusions_endpoint(self):
+        from wsbuilder import Request
+        from sniff4hound import app as module
+        request = lambda method, body=b'': Request(
+            method, '/api/detection/exclusions', '', {}, body, ('203.0.113.10', 1234)
+        )
+        with patch.object(module, 'store', self.store):
+            result = module.detection_exclusions(request('GET'))
+            self.assertEqual(result['exclusion_filters'], {'ip_types': [], 'cidrs': [], 'protocols': [], 'ports': []})
+            result = module.detection_exclusions(
+                request('POST', b'{"exclusion_filters":{"ports":[3389],"cidrs":["10.0.0.0/8"]}}')
+            )
+            self.assertEqual(result['exclusion_filters']['ports'], [3389])
+            self.assertEqual(result['exclusion_filters']['cidrs'], ['10.0.0.0/8'])
+            self.assertEqual(self.store.get_exclusion_filters()['ports'], [3389])
+            with self.assertRaises(ValueError):
+                module.detection_exclusions(request('POST', b'{"exclusion_filters":{"cidrs":["not-a-cidr"]}}'))

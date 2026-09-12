@@ -12,6 +12,8 @@ from collections import defaultdict
 
 MAX_BYTES = 4096
 MIN_COHORT = 20
+MIN_COHORT_FLOOR = 5
+MIN_COHORT_CEILING = 200
 
 
 def packet_bytes(packet):
@@ -58,10 +60,10 @@ def image_features(data):
     return histogram + [sum(pool) / len(pool) if pool else 0.0 for pool in pools]
 
 
-def lof_scores(vectors, k=10):
+def lof_scores(vectors, k=10, min_cohort=MIN_COHORT):
     """LOF with fixed k nearest neighbours, excluding each sample itself."""
     n = len(vectors)
-    if n < MIN_COHORT:
+    if n < min_cohort:
         return [None] * n
     k = min(k, n - 1)
     distances = [[0.0] * n for _ in vectors]
@@ -82,7 +84,7 @@ def _json(value, fallback):
         return fallback
 
 
-def analyze_packets(packets, threshold=50):
+def analyze_packets(packets, threshold=50, min_cohort=MIN_COHORT):
     rows, groups = [], defaultdict(list)
     for packet in packets:
         data, source, partial = packet_bytes(packet)
@@ -102,7 +104,7 @@ def analyze_packets(packets, threshold=50):
         if data:
             groups[(packet.get("proto"), source, partial)].append((row, image_features(data)))
     for group in groups.values():
-        factors = lof_scores([features for _, features in group])
+        factors = lof_scores([features for _, features in group], min_cohort=min_cohort)
         for (row, _), factor in zip(group, factors):
             row["cohort_size"] = len(group)
             if factor is None:
@@ -111,6 +113,6 @@ def analyze_packets(packets, threshold=50):
             row.update(score=score, lof=round(factor, 4), status="analyzed",
                        candidate=score >= threshold and not row["alerted"] and row["detection_status"] == "evaluated")
     rows.sort(key=lambda row: (row["score"] is not None, row["score"] or 0, row["id"] or 0), reverse=True)
-    return {"model": "byte-image-lof-v1", "threshold": threshold, "minimum_cohort": MIN_COHORT,
+    return {"model": "byte-image-lof-v1", "threshold": threshold, "minimum_cohort": min_cohort,
             "analyzed": sum(row["score"] is not None for row in rows),
             "candidates": sum(row["candidate"] for row in rows), "rows": rows}
