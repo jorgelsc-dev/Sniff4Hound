@@ -564,6 +564,14 @@ export default {
 .chat-workspace,
 .side-panel {
   border-radius: 8px;
+}
+
+.chat-workspace {
+  /* Needed here: .chat-log is the internal scroller and the card's rounded
+     corners must clip it. A side-panel has no internal scroller of its own
+     (.chat-side-stack scrolls the whole column instead) - overflow:hidden
+     here was clipping any panel content taller than the card's own
+     content-based height, cutting off the bottom of the command list. */
   overflow: hidden;
 }
 
