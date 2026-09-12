@@ -2351,7 +2351,7 @@ def _host_application_profile(payload: dict) -> dict:
 def soc_analysis(request):
     cycles = clamp_int(request.query.get("cycles"), 1, 4, default=4) or 4
     limit = _normalize_limit(request.query.get("limit"), default=500, maximum=2000)
-    return store.soc_analysis_snapshot(cycles=cycles, limit=limit)
+    return store.soc_analysis_snapshot(cycles=cycles, limit=limit, since=_normalize_since(request))
 
 
 @app.api("/api/ai/packets/", methods=("GET",))
@@ -3127,7 +3127,7 @@ def _feed_ip_catalog(p: dict):
 
 
 def _feed_soc(p: dict):
-    return store.soc_analysis_snapshot(cycles=p["cycles"], limit=p["limit"])
+    return store.soc_analysis_snapshot(cycles=p["cycles"], limit=p["limit"], since=p.get("since", ""))
 
 
 # Only telemetry gets a stream. Two candidates were deliberately left out:
@@ -3163,7 +3163,7 @@ def _feed_payload(feed: str, params: dict) -> dict:
         "feed": feed,
         "protocol": params.get("proto") or "all",
         "params": dict(params),
-        "data": builder(params),
+        "data": builder({**params, "since": parse_since_window(params.get("since"))}),
         "generated_at": utc_now(),
     }
 
@@ -3178,7 +3178,7 @@ def _protocol_snapshot_payload(params: dict) -> dict:
     return {
         "type": "protocol_snapshot",
         "protocol": params.get("proto") or "all",
-        "snapshot": _feed_protocols(params),
+        "snapshot": _feed_protocols({**params, "since": parse_since_window(params.get("since"))}),
         "generated_at": utc_now(),
     }
 
