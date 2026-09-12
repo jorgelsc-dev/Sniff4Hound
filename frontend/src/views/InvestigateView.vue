@@ -121,7 +121,7 @@
         variant="tonal"
         color="info"
         class="suggestion-chip"
-        @click="queryIp = item.ip; load()"
+        @click="selectHost(item.ip)"
       >
         {{ item.ip }} · {{ item.value }} open
       </v-chip>
@@ -331,6 +331,7 @@ export default {
     return {
       store,
       loading: false,
+      loadSequence: 0,
       error: "",
       lastUpdated: "",
       queryIp: "",
@@ -389,6 +390,7 @@ export default {
         return this.targetKind === "domain" ? this.queryDomain : this.queryIp;
       },
       set(value) {
+        this.invalidateEvidence();
         if (this.targetKind === "domain") {
           this.queryDomain = String(value || "").trim();
         } else {
@@ -574,6 +576,9 @@ export default {
     },
   },
   watch: {
+    targetKind() {
+      this.load();
+    },
     apiBase() {
       this.load();
     },
@@ -589,15 +594,16 @@ export default {
         // in the current query is what lets clicking an IP inside monitor
         // mode (or a monitor link from anywhere) actually switch modes
         // instead of getting stuck showing whichever was set first.
+        this.invalidateEvidence();
         this.queryMonitor = monitor;
         if (monitor && !this.monitors.length) {
           this.loadMonitors();
         }
-        if (ip && ip !== this.queryIp) {
+        if (ip) {
           this.targetKind = "ip";
           this.queryIp = ip;
           this.load();
-        } else if (domain && domain !== this.queryDomain) {
+        } else if (domain) {
           this.targetKind = "domain";
           this.queryDomain = domain;
           this.load();
@@ -609,11 +615,27 @@ export default {
     },
   },
   mounted() {
-    if (!this.queryIp && !this.queryMonitor) {
+    if (!this.queryIp && !this.queryDomain && !this.queryMonitor) {
       this.loadSeed();
     }
   },
+  beforeUnmount() {
+    this.invalidateEvidence();
+  },
   methods: {
+    invalidateEvidence() {
+      this.loadSequence += 1;
+      this.intel = {};
+      this.lastUpdated = "";
+      this.error = "";
+      this.listActionMessage = "";
+      this.loading = false;
+    },
+    selectHost(ip) {
+      this.targetKind = "ip";
+      this.queryIp = ip;
+      return this.load();
+    },
     refresh() {
       if (this.mode === "monitor") {
         if (this.$refs.matchesPanel && typeof this.$refs.matchesPanel.load === "function") {
@@ -642,31 +664,28 @@ export default {
         });
     },
     loadSeed() {
+      const sequence = this.loadSequence;
       return this.store.fetchJsonPromise("/api/charts/analytics").then((payload) => {
+        if (sequence !== this.loadSequence || this.targetValue || this.queryMonitor) return;
         this.analytics = payload || {};
-        const top = Array.isArray(this.analytics.top_ips_by_open_ports) ? this.analytics.top_ips_by_open_ports[0] : null;
-        if (top && top.ip) {
-          this.queryIp = top.ip;
-          return this.load();
-        }
-        return this.load();
+      }).catch((err) => {
+        if (sequence === this.loadSequence) this.error = err.message || "Failed to load host suggestions";
       });
     },
     setTopSuggestion() {
       const top = this.suggestedHosts[0];
-      if (!top || !top.ip) return;
-      this.targetKind = "ip";
-      this.queryIp = top.ip;
-      this.load();
+      if (top && top.ip) this.selectHost(top.ip);
     },
     load() {
-      this.listActionMessage = "";
+      this.invalidateEvidence();
+      if (this.queryMonitor) return Promise.resolve();
       if (this.targetKind === "domain") {
         return this.loadDomain();
       }
+      const sequence = this.loadSequence;
       const ip = String(this.queryIp || "").trim();
       if (!ip) {
-        this.error = "Enter an IP to investigate.";
+        this.error = "";
         this.intel = {};
         return Promise.resolve();
       }
@@ -677,6 +696,7 @@ export default {
         this.store.fetchJsonPromise(`/api/ip/intel/?ip=${encodeURIComponent(ip)}`),
       ])
         .then(([analyticsRes, intelRes]) => {
+          if (sequence !== this.loadSequence || this.targetKind !== "ip" || this.queryIp !== ip) return;
           if (analyticsRes.status === "fulfilled") {
             this.analytics = analyticsRes.value || {};
           }
@@ -689,13 +709,14 @@ export default {
           this.lastUpdated = new Date().toLocaleTimeString();
         })
         .finally(() => {
-          this.loading = false;
+          if (sequence === this.loadSequence) this.loading = false;
         });
     },
     loadDomain() {
+      const sequence = this.loadSequence;
       const domain = String(this.queryDomain || "").trim().toLowerCase();
       if (!domain) {
-        this.error = "Enter a domain to investigate.";
+        this.error = "";
         this.intel = {};
         return Promise.resolve();
       }
@@ -710,6 +731,7 @@ export default {
         this.store.fetchJsonPromise(`/tags/?search=${search}&limit=400`),
       ])
         .then(([analyticsRes, domainsRes, packetsRes, bannersRes, tagsRes]) => {
+          if (sequence !== this.loadSequence || this.targetKind !== "domain" || this.queryDomain.toLowerCase() !== domain) return;
           if (analyticsRes.status === "fulfilled") {
             this.analytics = analyticsRes.value || {};
           }
@@ -748,7 +770,7 @@ export default {
           this.lastUpdated = new Date().toLocaleTimeString();
         })
         .finally(() => {
-          this.loading = false;
+          if (sequence === this.loadSequence) this.loading = false;
         });
     },
     addListEntry(kind) {

@@ -241,9 +241,9 @@ def _endpoint_rows(store, *, limit: int, offset: int, since: str, search: str) -
     return rows
 
 
-def _flow_rows(store, *, limit: int, offset: int, search: str, proto: str) -> list[dict[str, Any]]:
+def _flow_rows(store, *, limit: int, offset: int, search: str, proto: str, since: str) -> list[dict[str, Any]]:
     rows = []
-    for row in store.list_flows(proto=proto, search=search, limit=limit, offset=offset):
+    for row in store.list_flows(proto=proto, search=search, limit=limit, offset=offset, since=since):
         rows.append(
             {
                 "flow_key": _text(row.get("flow_key")),
@@ -301,17 +301,29 @@ def build_export(
     elif name == "endpoints":
         rows = _endpoint_rows(store, limit=limit, offset=offset, since=since, search=search)
     elif name == "flows":
-        rows = _flow_rows(store, limit=limit, offset=offset, search=search, proto=proto)
+        rows = _flow_rows(store, limit=limit, offset=offset, search=search, proto=proto, since=since)
     else:
         rows = _domain_rows(store, limit=limit, offset=offset, since=since, search=search)
     return {
         "dataset": name,
         "generated_at": utc_now(),
         "since": str(since or ""),
+        "limit": limit,
+        "offset": offset,
+        "counter_scope": "lifetime totals for flows active since cutoff" if name == "flows" else "retained evidence",
         "fields": list(EXPORT_FIELDS[name]),
         "count": len(rows),
         "rows": rows,
     }
+
+
+def _csv_safe_cell(value):
+    # Quoting alone does not stop spreadsheet formula interpretation.
+    if isinstance(value, str) and value.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")):
+        return "'" + value
+    if isinstance(value, str) and value.startswith(("\t", "\r", "\n")):
+        return "'" + value
+    return value
 
 
 def rows_to_csv(fields, rows) -> str:
@@ -323,7 +335,7 @@ def rows_to_csv(fields, rows) -> str:
     writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore", lineterminator="\r\n")
     writer.writeheader()
     for row in rows:
-        writer.writerow({column: row.get(column, "") for column in columns})
+        writer.writerow({column: _csv_safe_cell(row.get(column, "")) for column in columns})
     return buffer.getvalue()
 
 

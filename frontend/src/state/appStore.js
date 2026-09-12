@@ -1,6 +1,6 @@
 import { reactive } from "vue";
-import { apiBaseEnv } from "../utils/runtimeEnv";
-import { buildExportFilename, downloadTextFile } from "../utils/exporters";
+import { apiBaseEnv } from "../utils/runtimeEnv.js";
+import { buildExportFilename, downloadTextFile } from "../utils/exporters.js";
 
 const AUTH_SESSION_PATH = "/api/auth/session";
 const STORAGE_KEY_API = "sniff4hound.apiBase";
@@ -1603,8 +1603,10 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
     // same feed would both be pushed to, and the view would render whichever
     // frame happened to arrive last.
     if (socket) {
+      const previousSocket = socket;
+      socket = null;
       try {
-        socket.close(1000, "reconfigured");
+        previousSocket.close(1000, "reconfigured");
       } catch {
         // Already closing; the new socket is what matters.
       }
@@ -1618,16 +1620,20 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
       giveUp();
       return false;
     }
+    const connectedSocket = socket;
+    const isCurrent = () => !closedByCaller && socket === connectedSocket;
     clearFirstFrameTimer();
     firstFrameTimer = setTimeout(() => {
       firstFrameTimer = null;
-      if (!closedByCaller) giveUp();
+      if (isCurrent()) giveUp();
     }, FEED_FIRST_FRAME_TIMEOUT_MS);
     socket.addEventListener("error", () => {
+      if (!isCurrent()) return;
       clearFirstFrameTimer();
       if (!closedByCaller) giveUp();
     });
     socket.addEventListener("close", () => {
+      if (!isCurrent()) return;
       clearFirstFrameTimer();
       if (closedByCaller) return;
       // Keep retrying the connection so a view that already fell back to HTTP
@@ -1649,6 +1655,7 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
       }, delay);
     });
     socket.addEventListener("message", (event) => {
+      if (!isCurrent()) return;
       const payload = parseJsonSafe(event.data);
       if (!payload || typeof payload !== "object") return;
       if (String(payload.type || "") === "auth_required") {
