@@ -47,6 +47,8 @@
       </div>
     </v-card>
 
+    <IpRelationshipGraph :scopes="selectedScopes" />
+
     <v-row dense>
       <v-col v-for="chart in chartPanels" :key="chart.key" cols="12" md="6">
         <ChartCard
@@ -120,6 +122,8 @@ import ViewHeader from "../components/ui/ViewHeader.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import ChartCard from "../components/ui/ChartCard.vue";
 import { formatTimestamp, topSeriesByValue } from "../utils/traffic";
+import { deviceIcon, deviceColor } from "../utils/devices";
+import IpRelationshipGraph from "../components/IpRelationshipGraph.vue";
 
 // Cadence for the stream, in milliseconds.
 const FEED_REFRESH_MS = 1000;
@@ -137,21 +141,6 @@ const SCOPE_OPTIONS = [
 ];
 const SCOPE_LABELS = new Map(SCOPE_OPTIONS.map((option) => [option.value, option.label]));
 const SCOPE_COLORS = new Map(SCOPE_OPTIONS.map((option) => [option.value, option.color]));
-const DEVICE_ICONS = {
-  Router: "mdi-router-network",
-  Switch: "mdi-access-point-network",
-  Phone: "mdi-cellphone",
-  PC: "mdi-monitor",
-  Server: "mdi-server",
-  Printer: "mdi-printer",
-  Camera: "mdi-cctv",
-  IoT: "mdi-devices",
-  Unknown: "mdi-help-network-outline",
-};
-const DEVICE_COLORS = {
-  Router: "deep-purple", Switch: "indigo", Phone: "cyan", PC: "blue",
-  Server: "green", Printer: "orange", Camera: "red", IoT: "teal", Unknown: "grey",
-};
 
 export default {
   name: "IpsView",
@@ -159,6 +148,7 @@ export default {
     ViewHeader,
     EntityTablePanel,
     ChartCard,
+    IpRelationshipGraph,
   },
   data() {
     return {
@@ -241,12 +231,8 @@ export default {
     scopeColor(value) {
       return SCOPE_COLORS.get(String(value || "").trim().toLowerCase()) || "grey";
     },
-    deviceIcon(value) {
-      return DEVICE_ICONS[value] || DEVICE_ICONS.Unknown;
-    },
-    deviceColor(value) {
-      return DEVICE_COLORS[value] || DEVICE_COLORS.Unknown;
-    },
+    deviceIcon,
+    deviceColor,
     confidenceLabel(value) {
       return ({ high: "alta confianza", medium: "confianza media", low: "baja confianza" })[value] || "sin clasificar";
     },
