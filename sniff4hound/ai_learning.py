@@ -84,6 +84,17 @@ def hidden_sizes_of(model):
     return [len(layer['b']) for layer in model['layers'][:-1]]
 
 
+def is_current_model_shape(model):
+    """False for a model saved before the multi-layer rewrite - the old
+    shape was a hardcoded two-layer {"w1","b1","w2","b2"} dict, with no
+    "layers" key at all. A store predating this change can have exactly
+    that sitting in its persisted ai_learning_state; treating it as "no
+    model" (rather than crashing on model['layers']) is what lets an
+    existing install self-heal on its next feedback event or read instead
+    of leaving the AI view permanently broken."""
+    return isinstance(model, dict) and isinstance(model.get('layers'), list) and bool(model['layers'])
+
+
 def _forward_full(model, x):
     """forward() plus the intermediate activations backprop needs. Returns
     ``activations`` (input, then one entry per layer's output, tanh for
@@ -230,7 +241,9 @@ def model_effectiveness(state):
     ready = counts['benign'] >= 3 and counts['malicious'] >= 3
     if not ready or not examples:
         return {'ready': False, 'accuracy': None, 'correct': 0, 'total': len(examples)}
-    model = state.get('model') or initial_model()
+    model = state.get('model')
+    if not is_current_model_shape(model):
+        model = initial_model()
     correct = sum(
         1 for example in examples
         if ('malicious' if forward(model, example['features'])[1] >= 0.5 else 'benign') == example['label']
@@ -242,7 +255,9 @@ def export_model(state):
     """Structure + weights only (Settings > IA > Exportar) - not the
     labelled examples, which are the operator's own review history rather
     than part of "the model"."""
-    model = state.get('model') or initial_model()
+    model = state.get('model')
+    if not is_current_model_shape(model):
+        model = initial_model()
     return {
         'format': 'sniff4hound-ai-model-v1',
         'hidden_sizes': hidden_sizes_of(model),
@@ -339,8 +354,16 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_sizes=None
     # still run without erroring (it infers shape from the model itself) but
     # the predictions would be meaningless carry-over. Force a full retrain
     # here too, not just from rebuild_for_hidden_sizes(), in case a feedback
-    # event races a config change.
-    stale_architecture = bool(existing_model and hidden_sizes_of(existing_model) != normalized_sizes)
+    # event races a config change. A model saved before the multi-layer
+    # rewrite (no "layers" key at all - see is_current_model_shape) gets the
+    # same treatment: hidden_sizes_of() cannot even be computed for it, so
+    # treat "existing but incompatible shape" as equivalent to "stale size" -
+    # both need the same full retrain from the retained examples. A model
+    # that simply doesn't exist yet (fresh state) is not stale, just new.
+    existing_model_current = bool(existing_model) and is_current_model_shape(existing_model)
+    stale_architecture = bool(existing_model) and (
+        not existing_model_current or hidden_sizes_of(existing_model) != normalized_sizes
+    )
     if not examples:
         # With no remaining evidence there is nothing legitimate to retain.
         model = initial_model(normalized_sizes)
@@ -387,7 +410,9 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_sizes=None
 
 
 def learning_snapshot(state, packets, analysis, hidden_sizes=None):
-    model = state.get('model') or initial_model(hidden_sizes)
+    model = state.get('model')
+    if not is_current_model_shape(model):
+        model = initial_model(hidden_sizes)
     examples = state.get('examples', [])
     counts = Counter(e['label'] for e in examples)
     ready = counts['benign'] >= 3 and counts['malicious'] >= 3
