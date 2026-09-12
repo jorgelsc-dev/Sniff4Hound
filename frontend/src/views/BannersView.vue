@@ -339,11 +339,23 @@ export default {
       return this.bannerActionLoading.id === id && this.bannerActionLoading.action === action;
     },
     faviconSrc(item) {
-      return this.store.apiUrl(`/favicons/raw/?id=${item.id}`);
+      const params = new URLSearchParams();
+      params.set("id", String(item.id || ""));
+      if (this.store.state.authToken) params.set("security_code", this.store.state.authToken);
+      return this.store.apiUrl(`/favicons/raw/?${params.toString()}`);
     },
     openFavicon(item) {
       if (typeof window === "undefined") return;
       window.open(this.faviconSrc(item), "_blank", "noopener,noreferrer");
+    },
+    load() {
+      this.loading = true;
+      return Promise.all([
+        this.loadFavicons(),
+        this.loadBannersOnce(),
+      ]).finally(() => {
+        this.loading = false;
+      });
     },
     // /ws/banners carries the same rows /banners/ returned, pushed at the
     // interval in its URL, replacing the HTTP re-read this view used to issue

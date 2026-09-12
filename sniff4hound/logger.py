@@ -24,6 +24,31 @@ from typing import Any
 from .utils import json_dumps
 
 
+_LOG_RECORD_BUILTINS = set(
+    logging.LogRecord(
+        name="",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="",
+        args=(),
+        exc_info=None,
+    ).__dict__
+) | {"asctime", "message"}
+
+
+def _jsonable_log_value(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).hex()
+    if isinstance(value, dict):
+        return {str(key): _jsonable_log_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable_log_value(item) for item in value]
+    return str(value)
+
+
 class NDJsonFormatter(logging.Formatter):
     """Formatter that outputs structured logs as newline-delimited JSON."""
 
@@ -43,9 +68,18 @@ class NDJsonFormatter(logging.Formatter):
         if record.exc_info:
             log_entry["exception"] = self.formatException(record.exc_info)
 
-        # Add any extra fields passed via logger.info(..., extra={...})
-        if hasattr(record, "extra_fields"):
-            log_entry.update(record.extra_fields)
+        # Add fields passed as either `extra={"field": ...}` or
+        # `extra={"extra_fields": {...}}`.
+        extras = {}
+        extra_fields = getattr(record, "extra_fields", None)
+        if isinstance(extra_fields, dict):
+            extras.update(extra_fields)
+        for key, value in record.__dict__.items():
+            if key in _LOG_RECORD_BUILTINS or key == "extra_fields" or key.startswith("_"):
+                continue
+            extras[key] = value
+        if extras:
+            log_entry.update({key: _jsonable_log_value(value) for key, value in extras.items()})
 
         return json_dumps(log_entry)
 
@@ -107,8 +141,14 @@ def get_logger(name: str, log_file: Path | str | None = None, level: int = loggi
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
-    # Remove any existing handlers to prevent duplicates
-    logger.handlers.clear()
+    # Remove any existing handlers to prevent duplicates and close file
+    # descriptors from an earlier configuration.
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
     logger.propagate = False
 
     # Console handler (stderr)

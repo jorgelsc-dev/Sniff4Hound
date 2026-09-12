@@ -2,8 +2,8 @@
   <div>
     <ViewHeader
       overline="Detection"
-      title="IPs"
-      description="Distinct source/destination IPs seen in stored (detected) traffic."
+      title="Dispositivos e IPs"
+      description="Inventario pasivo de direcciones observadas. El tipo se infiere únicamente de metadatos de red y muestra su nivel de confianza."
       :refresh-loading="loading"
       @refresh="load"
     />
@@ -90,6 +90,20 @@
           {{ scopeLabel(item.scope) }}
         </v-chip>
       </template>
+      <template #cell-device_type="{ item }">
+        <div class="device-cell">
+          <v-avatar size="30" :color="deviceColor(item.device_type)" variant="tonal">
+            <v-icon :icon="deviceIcon(item.device_type)" size="18" />
+          </v-avatar>
+          <div>
+            <div class="device-cell__label">{{ item.device_type || "Unknown" }}</div>
+            <div class="device-cell__confidence">{{ confidenceLabel(item.device_confidence) }}</div>
+          </div>
+          <v-tooltip v-if="item.device_evidence?.length" activator="parent" location="top">
+            Evidencia: {{ item.device_evidence.join(" · ") }}
+          </v-tooltip>
+        </div>
+      </template>
       <template #cell-first_seen="{ value }">
         {{ formatTimestamp(value) }}
       </template>
@@ -123,6 +137,21 @@ const SCOPE_OPTIONS = [
 ];
 const SCOPE_LABELS = new Map(SCOPE_OPTIONS.map((option) => [option.value, option.label]));
 const SCOPE_COLORS = new Map(SCOPE_OPTIONS.map((option) => [option.value, option.color]));
+const DEVICE_ICONS = {
+  Router: "mdi-router-network",
+  Switch: "mdi-access-point-network",
+  Phone: "mdi-cellphone",
+  PC: "mdi-monitor",
+  Server: "mdi-server",
+  Printer: "mdi-printer",
+  Camera: "mdi-cctv",
+  IoT: "mdi-devices",
+  Unknown: "mdi-help-network-outline",
+};
+const DEVICE_COLORS = {
+  Router: "deep-purple", Switch: "indigo", Phone: "cyan", PC: "blue",
+  Server: "green", Printer: "orange", Camera: "red", IoT: "teal", Unknown: "grey",
+};
 
 export default {
   name: "IpsView",
@@ -147,6 +176,7 @@ export default {
       meta: { totalAvailable: null, returned: null, truncated: null },
       columns: [
         { key: "ip", label: "IP" },
+        { key: "device_type", label: "Device", sortable: false },
         { key: "scope", label: "Scope", sortable: false },
         { key: "hit_count", label: "Hits" },
         { key: "first_seen", label: "First seen" },
@@ -210,6 +240,15 @@ export default {
     },
     scopeColor(value) {
       return SCOPE_COLORS.get(String(value || "").trim().toLowerCase()) || "grey";
+    },
+    deviceIcon(value) {
+      return DEVICE_ICONS[value] || DEVICE_ICONS.Unknown;
+    },
+    deviceColor(value) {
+      return DEVICE_COLORS[value] || DEVICE_COLORS.Unknown;
+    },
+    confidenceLabel(value) {
+      return ({ high: "alta confianza", medium: "confianza media", low: "baja confianza" })[value] || "sin clasificar";
     },
     formatCount(value) {
       return Number(value || 0).toLocaleString();
@@ -315,5 +354,23 @@ export default {
 
 .ip-link:hover {
   text-decoration: underline;
+}
+
+.device-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 150px;
+}
+
+.device-cell__label {
+  font-weight: 650;
+  line-height: 1.1;
+}
+
+.device-cell__confidence {
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-size: 0.68rem;
 }
 </style>
