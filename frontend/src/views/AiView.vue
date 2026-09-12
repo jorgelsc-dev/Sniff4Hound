@@ -62,12 +62,18 @@
       <v-card class="pa-5 mb-4" variant="tonal">
         <h2 class="text-h6">Aprendizaje de los operadores</h2>
         <p class="mt-2">{{ result.learning.total }}/{{ result.learning.capacity }} ejemplos · {{ result.learning.counts.benign || 0 }} benignos · {{ result.learning.counts.malicious || 0 }} maliciosos · revisión {{ result.learning.revision }}</p>
-        <p class="text-body-2 mt-2">Cada revisión enseña al modelo. La confianza (1–3) pondera el aprendizaje. Repetir una etiqueta no multiplica su recompensa; corregirla o retirarla reconstruye el modelo. Los ejemplos de aprendizaje se conservan al borrar capturas.</p>
+        <p class="text-body-2 mt-2">Cada revisión enseña al modelo paso a paso con un minibatch de hasta {{ result.learning.training?.batch_limit || 8 }} ejemplos. Los pesos se guardan y se reutilizan en la siguiente actualización; nunca se recorre el dataset completo por cada etiqueta.</p>
+        <div class="d-flex flex-wrap ga-2 mt-3">
+          <v-chip size="small" color="success" prepend-icon="mdi-content-save-check-outline">Pesos persistentes</v-chip>
+          <v-chip size="small">{{ result.learning.training?.updates || 0 }} actualizaciones</v-chip>
+          <v-chip size="small">Último lote: {{ result.learning.training?.batch_size || 0 }}</v-chip>
+          <v-chip size="small">{{ result.learning.training?.samples_seen || 0 }} muestras procesadas</v-chip>
+        </div>
         <p class="text-caption mt-2">Pérdida de entrenamiento: {{ result.learning.history.at(-1)?.loss ?? 'sin entrenamiento' }}. No mide precisión fuera de las muestras revisadas. La red requiere validación con tráfico etiquetado independiente.</p>
         <v-expansion-panels class="mt-3">
           <v-expansion-panel title="Últimas revisiones y curva de entrenamiento">
             <v-expansion-panel-text>
-              <div class="d-flex flex-wrap ga-2 mb-3"><v-chip v-for="point in result.learning.history" :key="point.epoch" size="small">Época {{ point.epoch }} · pérdida {{ point.loss }}</v-chip></div>
+              <div class="d-flex flex-wrap ga-2 mb-3"><v-chip v-for="point in result.learning.history" :key="point.epoch" size="small">Paso {{ point.epoch }} · pérdida {{ point.loss ?? '—' }} · lote {{ point.batch_size ?? 'completo' }}</v-chip></div>
               <p v-for="entry in [...result.learning.audit].reverse()" :key="entry.revision" class="text-body-2 mb-2">r{{ entry.revision }} · #{{ entry.packet_id }} · {{ entry.label }} · confianza {{ entry.confidence }} · {{ entry.at }} — {{ entry.note }}</p>
             </v-expansion-panel-text>
           </v-expansion-panel>

@@ -182,6 +182,10 @@ La SPA:
 - consulta `/api/auth/session` para validar el token;
 - lee `/api/runtime/` para modo e interfaces;
 - consume `/api/dashboard/`, `/api/charts/analytics`, `/api/map/scan` y `/api/endpoints/`;
+- integra el chat, comandos operativos registrados, alertas de monitores y
+  candidatos de IA en el centro de mando del dashboard;
+- muestra perfiles de dispositivo pasivos en el catálogo de IPs y concentra
+  captura, honeypot, detección, listas, notificaciones e IA en Settings;
 - abre `WS /ws/?access_token=...` para eventos live;
 - actualiza tablas y vistas en respuesta a `packet`, `stats_update`, `runtime_mode` y `chat_message`.
 

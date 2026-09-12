@@ -12,7 +12,7 @@ from . import settings
 from .ahocorasick import AhoCorasick
 from .runtime_paths import resolve_data_file
 from .rulesets import build_packet_text, normalize_action, normalize_match, rule_matches_packet
-from .utils import json_dumps, normalize_protocol_name, safe_int
+from .utils import coerce_bool, json_dumps, normalize_protocol_name, safe_int
 
 NOISY_GENERATED_SIGNAL_LITERALS = frozenset(
     {
@@ -2670,7 +2670,7 @@ def normalize_monitor(item: dict, allow_source: bool = False, *, validate_regex:
         rule_id = "custom-monitor"
     name = str(data.get("name") or rule_id).strip() or rule_id
     description = str(data.get("description") or "").strip()
-    enabled = bool(data.get("enabled", True))
+    enabled = coerce_bool(data["enabled"], "enabled") if "enabled" in data else True
     priority = safe_int(data.get("priority", 100), 100)
     match = normalize_match(data.get("match") if isinstance(data.get("match"), dict) else {})
     mode = str(data.get("mode") or "").strip().lower()
