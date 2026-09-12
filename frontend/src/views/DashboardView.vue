@@ -15,20 +15,20 @@
 
     <v-row density="compact" class="metric-row">
       <v-col v-for="metric in metricCards" :key="metric.key" cols="6" sm="4" lg="2">
-        <v-card variant="tonal" class="pa-3 metric-card">
-          <div class="d-flex align-center justify-space-between ga-3">
+        <v-card variant="tonal" class="pa-2 metric-card">
+          <div class="d-flex align-center justify-space-between ga-2">
             <div>
-              <div class="text-caption text-medium-emphasis">{{ metric.label }}</div>
-              <div class="text-h6 font-weight-bold" :class="metric.colorClass">{{ metric.value }}</div>
+              <div class="text-caption metric-label text-medium-emphasis">{{ metric.label }}</div>
+              <div class="text-subtitle-1 font-weight-bold metric-value" :class="metric.colorClass">{{ metric.value }}</div>
             </div>
-            <v-icon :icon="metric.icon" class="metric-icon" :class="metric.colorClass" />
+            <v-icon :icon="metric.icon" class="metric-icon" size="18" :class="metric.colorClass" />
           </div>
-          <div class="text-caption text-medium-emphasis mt-1 metric-caption">{{ metric.caption }}</div>
+          <div class="text-caption text-medium-emphasis metric-caption">{{ metric.caption }}</div>
         </v-card>
       </v-col>
     </v-row>
 
-    <v-alert v-if="error" type="error" variant="tonal" class="my-6">
+    <v-alert v-if="error" type="error" variant="tonal" class="my-3">
       {{ error }}
     </v-alert>
 
@@ -321,7 +321,7 @@
           aria-label="Herramientas del dashboard"
           @click="toggleToolsMenu"
         >
-          <v-icon :icon="toolsMenuOpen ? 'mdi-close' : 'mdi-paw'" size="26" />
+          <v-icon :icon="toolsMenuOpen ? 'mdi-close' : 'mdi-toolbox-outline'" size="26" />
         </button>
       </div>
     </teleport>
@@ -790,8 +790,17 @@ export default {
 }
 
 .metric-card {
-  min-height: 96px;
+  min-height: 68px;
   border-radius: 8px;
+}
+
+.metric-label {
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.metric-value {
+  line-height: 1.25;
 }
 
 .metric-icon {
@@ -799,6 +808,9 @@ export default {
 }
 
 .metric-caption {
+  margin-top: 2px;
+  font-size: 0.72rem;
+  line-height: 1.25;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -922,11 +934,11 @@ export default {
 .runtime-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .runtime-state-card {
-  padding: 12px;
+  padding: 10px;
   border-radius: 8px;
   border: 1px solid rgba(104, 184, 229, 0.16);
   background: linear-gradient(180deg, rgba(12, 21, 33, 0.88), rgba(8, 14, 23, 0.84));
@@ -941,13 +953,13 @@ export default {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .runtime-state-card__body {
   display: grid;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 .runtime-stat {
@@ -955,18 +967,19 @@ export default {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
   background: rgba(4, 10, 18, 0.44);
 }
 
 .runtime-stat__label {
   color: rgba(176, 199, 220, 0.76);
-  font-size: 0.8rem;
+  font-size: 0.76rem;
 }
 
 .runtime-stat__value {
   font-weight: 700;
+  font-size: 0.86rem;
 }
 
 .flow-cell {

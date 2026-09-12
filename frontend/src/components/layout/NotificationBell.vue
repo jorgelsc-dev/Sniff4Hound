@@ -5,6 +5,7 @@
         icon
         variant="text"
         size="small"
+        density="comfortable"
         class="bell-trigger"
         aria-label="Notifications"
         v-bind="menuProps"
@@ -16,8 +17,9 @@
           floating
           offset-x="2"
           offset-y="2"
+          class="bell-badge"
         >
-          <v-icon icon="mdi-bell-outline" size="22" />
+          <v-icon icon="mdi-bell-outline" size="20" />
         </v-badge>
       </v-btn>
     </template>
@@ -147,6 +149,14 @@ export default {
 <style scoped>
 .bell-trigger {
   color: rgba(210, 223, 238, 0.85);
+}
+
+/* Matches AppTopBar's .runtime-badge treatment - without the ring the red
+   badge dot reads as overlapping/cutting into the bell icon instead of
+   sitting on top of it, inconsistent with every other badged icon in the
+   top bar. */
+.bell-badge :deep(.v-badge__badge) {
+  border: 2px solid rgba(5, 10, 18, 0.9);
 }
 
 .bell-menu {
