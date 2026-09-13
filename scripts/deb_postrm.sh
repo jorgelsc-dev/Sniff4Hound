@@ -1,6 +1,21 @@
 #!/bin/sh
 set -e
 
+# Every module under /usr/lib/sniff4hound/vendor picks up a __pycache__
+# directory the first time it's imported (nothing here passes
+# PYTHONDONTWRITEBYTECODE, and the capture child runs as root so it can
+# always write one). dpkg never tracked those .pyc files - it only shipped
+# the .py sources - so it refuses to remove the now-nonempty
+# __pycache__ directories on its own, leaving them behind after both
+# `apt remove` and `apt purge`. They're disposable bytecode cache, not
+# configuration or user data, so it's safe to clear the whole install root
+# on either operation once dpkg is done removing what it does track.
+case "$1" in
+  remove|purge)
+    rm -rf /usr/lib/sniff4hound
+    ;;
+esac
+
 # Sniff4Hound stores its runtime data (SQLite DB, honeypot log/events,
 # TLS certs) under each user's $XDG_DATA_HOME/sniff4hound (default
 # ~/.local/share/sniff4hound - see sniff4hound/settings.py:DATA_DIR).
