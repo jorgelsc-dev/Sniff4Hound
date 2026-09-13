@@ -94,11 +94,14 @@
       </template>
       <template #cell-device_type="{ item }">
         <div class="device-cell">
-          <v-avatar size="30" :color="deviceColor(item.device_type)" variant="tonal">
-            <v-icon :icon="deviceIcon(item.device_type)" size="18" />
+          <v-avatar size="30" :color="deviceDisplay(item).color" variant="tonal">
+            <v-icon :icon="deviceDisplay(item).icon" size="18" />
           </v-avatar>
           <div>
-            <div class="device-cell__label">{{ item.device_type || "Unknown" }}</div>
+            <div class="device-cell__label">
+              {{ item.device_type || "Unknown" }}
+              <span v-if="deviceDisplay(item).detail" class="device-cell__detail">· {{ deviceDisplay(item).detail }}</span>
+            </div>
             <div class="device-cell__confidence">{{ confidenceLabel(item.device_confidence) }}</div>
           </div>
           <v-tooltip v-if="item.device_evidence?.length" activator="parent" location="top">
@@ -122,7 +125,7 @@ import ViewHeader from "../components/ui/ViewHeader.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import ChartCard from "../components/ui/ChartCard.vue";
 import { formatTimestamp, topSeriesByValue } from "../utils/traffic";
-import { deviceIcon, deviceColor } from "../utils/devices";
+import { deviceIcon, deviceColor, deviceDisplay } from "../utils/devices";
 import IpRelationshipGraph from "../components/IpRelationshipGraph.vue";
 
 // Cadence for the stream, in milliseconds.
@@ -233,6 +236,7 @@ export default {
     },
     deviceIcon,
     deviceColor,
+    deviceDisplay,
     confidenceLabel(value) {
       return ({ high: "alta confianza", medium: "confianza media", low: "baja confianza" })[value] || "sin clasificar";
     },
@@ -352,6 +356,11 @@ export default {
 .device-cell__label {
   font-weight: 650;
   line-height: 1.1;
+}
+
+.device-cell__detail {
+  font-weight: 500;
+  color: var(--text-dim);
 }
 
 .device-cell__confidence {

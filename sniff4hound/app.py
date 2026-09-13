@@ -662,6 +662,7 @@ ENDPOINTS = [
     {"method": "POST", "path": "/api/whitelist/", "desc": "Create a whitelist entry (category, match_type, value, label)."},
     {"method": "DELETE", "path": "/api/whitelist/", "desc": "Delete a whitelist entry."},
     {"method": "POST", "path": "/api/whitelist/toggle", "desc": "Enable/disable a whitelist entry without deleting it."},
+    {"method": "POST", "path": "/api/whitelist/ip", "desc": "Whitelist one IP and purge everything already captured about it (packets, tags, payloads, flows, domains, paths). Without {\"confirm\": true}, returns how many packets would be deleted instead of doing it."},
     {"method": "GET", "path": "/api/domains/", "desc": "Searchable catalog of domains seen in DNS/HTTP/TLS traffic."},
     {"method": "GET", "path": "/api/paths/", "desc": "Searchable catalog of HTTP request paths."},
     {"method": "GET", "path": "/api/intel/ips/", "desc": "Searchable catalog of IPs seen in stored traffic. ?scope=public|private|local|multicast|reserved|unknown (comma separated) filters by address scope; the full vocabulary and per-scope counts come back in the X-Scope-Counts header."},
@@ -2980,6 +2981,28 @@ def whitelist_toggle(request):
         raise ValueError("id is required")
     enabled = _required_json_bool(payload, "enabled")
     return _whitelist_row(store.set_whitelist_entry_enabled(entry_id, enabled))
+
+
+@app.api("/api/whitelist/ip", methods=("POST",))
+def whitelist_ip(request):
+    """Whitelist one IP and forget everything already captured about it -
+    the IP graph popup's "Whitelist" action, deliberately stronger than a
+    plain whitelist entry added from Settings (see Sniffer._store_packet
+    and SniffStore.purge_ip_data). Requires ?confirm=1 (or
+    {"confirm": true} in the body) since the purge is irreversible; a
+    request without it only reports what a purge would remove, so the
+    frontend can show a real count before asking the operator to confirm.
+    """
+    payload = _read_json_body(request)
+    ip = str(payload.get("ip") or "").strip()
+    if not ip:
+        raise ValueError("ip is required")
+    confirmed = bool(payload.get("confirm")) or str(request.query.get("confirm") or "") == "1"
+    if not confirmed:
+        return {"status": "confirm_required", "ip": ip, "packets": store.count_ip_packets(ip)}
+    entry = store.create_whitelist_entry(category="ip", match_type="exact", value=ip)
+    purged = store.purge_ip_data(ip)
+    return {"status": "ok", "entry": _whitelist_row(entry), "purged": purged}
 
 
 @app.api("/api/domains/", methods=("GET",))
