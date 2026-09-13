@@ -89,7 +89,7 @@ Priority: optional
 Architecture: $PACKAGE_ARCH
 Maintainer: JorgelSC Dev
 Depends: python3 (>= 3.12)
-Recommends: python3-pip
+Recommends: python3-venv
 Homepage: https://github.com/jorgelsc-dev/Sniff4Hound
 Description: Native Python network sniffer with bundled web dashboard
  Sniff4Hound captures local traffic, persists runtime data in SQLite, and
