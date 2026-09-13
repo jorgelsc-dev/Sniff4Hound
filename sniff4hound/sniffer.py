@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from .anomaly import AnomalyEngine
 from .logger import get_capture_logger
 from .monitors import RuleAlertThrottle, ensure_monitor_index, evaluate_packet, indexed_monitors_by_id
+from .regex_safety import compiled_regex, regex_search
 from .rulesets import build_packet_text, classify_packet, literal_packet_text_pattern
 from .store import compile_exclusion_networks, packet_matches_exclusion_filter
 from .settings import (
@@ -927,32 +928,23 @@ class Sniffer:
             src_ip = str(packet.get("src_ip") or "").strip().lower()
             dst_ip = str(packet.get("dst_ip") or "").strip().lower()
             if is_regex:
-                try:
-                    pattern = re.compile(value)
-                except re.error:
-                    return False
-                return bool(pattern.search(src_ip) or pattern.search(dst_ip))
+                pattern = compiled_regex(value, 0)
+                return bool(regex_search(pattern, src_ip) or regex_search(pattern, dst_ip))
             wanted = value.lower()
             return src_ip == wanted or dst_ip == wanted
         if category == "port":
             src_port = str(safe_int(packet.get("src_port"), 0))
             dst_port = str(safe_int(packet.get("dst_port"), 0))
             if is_regex:
-                try:
-                    pattern = re.compile(value)
-                except re.error:
-                    return False
-                return bool(pattern.search(src_port) or pattern.search(dst_port))
+                pattern = compiled_regex(value, 0)
+                return bool(regex_search(pattern, src_port) or regex_search(pattern, dst_port))
             return src_port == value or dst_port == value
         if category == "protocol":
             proto = normalize_protocol_name(packet.get("proto"))
             transport = str(packet.get("transport") or "").strip().lower()
             if is_regex:
-                try:
-                    pattern = re.compile(value, flags=re.IGNORECASE)
-                except re.error:
-                    return False
-                return bool(pattern.search(proto) or (transport and pattern.search(transport)))
+                pattern = compiled_regex(value, re.IGNORECASE)
+                return bool(regex_search(pattern, proto) or (transport and regex_search(pattern, transport)))
             wanted = normalize_protocol_name(value)
             return proto == wanted or transport == wanted
         if category not in ("domain", "path"):
@@ -960,12 +952,9 @@ class Sniffer:
         if packet_text is None:
             packet_text = build_packet_text(packet)
         if is_regex:
-            try:
-                return bool(re.search(value, packet_text, flags=re.IGNORECASE))
-            except re.error:
-                return False
+            return bool(regex_search(compiled_regex(value, re.IGNORECASE), packet_text))
         pattern = literal_packet_text_pattern(value.lower())
-        return bool(re.search(pattern, packet_text))
+        return bool(regex_search(compiled_regex(pattern, 0), packet_text))
 
     def _whitelisted(self, packet: dict) -> bool:
         entries = self._whitelist_cache

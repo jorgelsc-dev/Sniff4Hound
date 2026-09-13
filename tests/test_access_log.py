@@ -93,6 +93,27 @@ class AccessLogFormatTests(unittest.TestCase):
         )
         self.assertIn("GET /api/ports/?since=1h&limit=50 ", line)
 
+    def test_sanitized_fields_are_length_bounded(self):
+        line = _capture(
+            access_log.log_response,
+            _FakeRequest(path="/" + "a" * 2000),
+            _FakeResponse(200, b""),
+            0.0,
+        )
+        match = LINE_RE.match(line)
+        self.assertIsNotNone(match, line)
+        self.assertLessEqual(len(match.group("target")), access_log.MAX_FIELD_CHARS)
+
+    def test_ws_ticket_query_is_redacted(self):
+        line = _capture(
+            access_log.log_response,
+            _FakeRequest(path="/ws/", query_string="ws_ticket=secret&refresh=1000"),
+            _FakeResponse(101, b""),
+            0.0,
+        )
+        self.assertIn("ws_ticket=REDACTED", line)
+        self.assertNotIn("secret", line)
+
     def test_missing_referer_and_location_become_a_dash(self):
         line = _capture(access_log.log_response, _FakeRequest(headers={}), _FakeResponse(404, b"nope"), 0.0)
         match = LINE_RE.match(line)

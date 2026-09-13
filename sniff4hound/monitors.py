@@ -10,6 +10,7 @@ import json
 
 from . import settings
 from .ahocorasick import AhoCorasick
+from .regex_safety import compiled_regex, regex_has_backtracking_risk, regex_search, validate_regex_pattern
 from .runtime_paths import resolve_data_file
 from .rulesets import build_packet_text, normalize_action, normalize_match, rule_matches_packet
 from .utils import coerce_bool, json_dumps, normalize_protocol_name, safe_int
@@ -2628,39 +2629,11 @@ def _validate_regex_patterns(match: dict):
     if len(patterns) > settings.MONITOR_MAX_REGEX_PATTERNS:
         raise ValueError(f"Too many regex patterns (max {settings.MONITOR_MAX_REGEX_PATTERNS})")
     for pattern in patterns:
-        if len(pattern) > settings.MONITOR_MAX_REGEX_LENGTH:
-            raise ValueError(f"Regex pattern is too long (max {settings.MONITOR_MAX_REGEX_LENGTH} characters)")
-        try:
-            re.compile(pattern)
-        except re.error as exc:
-            raise ValueError(f"Invalid regex pattern '{pattern}': {exc}") from exc
-        if _regex_has_backtracking_risk(pattern):
-            raise ValueError(f"Regex pattern has nested or ambiguous repetition risk: '{pattern}'")
+        validate_regex_pattern(pattern)
 
 
 def _regex_has_backtracking_risk(pattern: str) -> bool:
-    """Cheap guardrail for user-defined monitor regexes.
-
-    Sniff4Hound evaluates monitor regexes on the capture path, so reject the
-    common catastrophic-backtracking shapes up front instead of relying on a
-    runtime timeout that Python's stdlib regex engine does not provide.
-    """
-    if re.search(r"\\[1-9]", pattern):
-        return True
-    for group in re.findall(r"\(([^()]*)\)\s*(?:[+*]|\{\d+,?\d*\})", pattern):
-        has_inner_repeat = re.search(r"(?:\.\*|\.\+|\\[dwsDWS][+*]|\[[^\]]+\][+*]|[A-Za-z0-9][+*])", group)
-        has_literal_separator = re.search(r"(?:\\[./:_-]|[./:_-])", group)
-        if has_inner_repeat and not has_literal_separator:
-            return True
-    if re.search(r"\.\*\s*(?:\.\*|\{)", pattern):
-        return True
-    if re.search(r"\([^)]*\|[^)]*\)\s*(?:[+*]|\{\d+,?\d*\})", pattern):
-        alternatives = re.findall(r"\(([^)]*\|[^)]*)\)\s*(?:[+*]|\{\d+,?\d*\})", pattern)
-        for group in alternatives:
-            parts = [part.strip("\\^$") for part in group.split("|") if part]
-            if any(left and right and (left.startswith(right) or right.startswith(left)) for left in parts for right in parts if left != right):
-                return True
-    return False
+    return regex_has_backtracking_risk(pattern)
 
 
 def normalize_monitor(item: dict, allow_source: bool = False, *, validate_regex: bool = True) -> dict:
@@ -2957,10 +2930,7 @@ def describe_match(monitor: dict, packet: dict) -> str:
     if regexes:
         packet_text = build_packet_text(packet)
         for pattern in regexes:
-            try:
-                found = re.search(pattern, packet_text, re.IGNORECASE)
-            except re.error:
-                continue
+            found = regex_search(compiled_regex(pattern, re.IGNORECASE), packet_text)
             if found:
                 value = found.group(0).strip()
                 if value:

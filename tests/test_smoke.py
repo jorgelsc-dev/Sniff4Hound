@@ -902,6 +902,16 @@ class SmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             manage_module._clear_stale_capture_socket(str(Path(tmp_dir) / "never-existed.sock"))
 
+    def test_capture_start_lock_uses_a_sidecar_lock_file(self):
+        import sniff4hound.manage as manage_module
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            socket_path = Path(tmp_dir) / "capture-45678.sock"
+            lock_path = socket_path.with_name(f"{socket_path.name}.lock")
+
+            with manage_module._capture_start_lock(str(socket_path)):
+                self.assertTrue(lock_path.exists())
+
     def test_manage_main_clears_stale_socket_before_spawning_capture_child(self):
         # Ordering regression, same rationale as
         # test_manage_main_creates_web_store_before_spawning_capture_child:
@@ -920,6 +930,22 @@ class SmokeTests(unittest.TestCase):
             spawn_index,
             "the stale socket must be cleared before the privileged capture child is spawned",
         )
+
+    def test_manage_main_serializes_capture_socket_startup_until_connected(self):
+        import inspect
+
+        import sniff4hound.manage as manage_module
+
+        source = inspect.getsource(manage_module.main)
+        lock_index = source.index("with _capture_start_lock(")
+        clear_index = source.index("_clear_stale_capture_socket(")
+        spawn_index = source.index("_spawn_capture_child(")
+        connect_index = source.index("connect_capture_service()")
+        restore_index = source.index("_restore_tty_attrs(")
+        self.assertLess(lock_index, clear_index)
+        self.assertLess(clear_index, spawn_index)
+        self.assertLess(spawn_index, connect_index)
+        self.assertLess(connect_index, restore_index)
 
     def test_manage_main_pins_data_dir_before_spawning_capture_child(self):
         # Regression test: the capture child is relaunched via `sudo`,
@@ -953,6 +979,8 @@ class SmokeTests(unittest.TestCase):
                 manage_module, "_spawn_capture_child", side_effect=_capture_spawn
             ), patch.object(
                 manage_module, "_stop_capture_child"
+            ), patch.object(
+                manage_module, "write_ipc_token_file", return_value=True
             ), patch.object(
                 manage_module, "_print_startup_banner"
             ), patch.object(

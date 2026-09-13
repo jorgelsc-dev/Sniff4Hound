@@ -60,8 +60,8 @@
             class="mb-4"
             icon="mdi-shield-lock-outline"
           >
-            The startup link saves the code in this browser until the next run gives you
-            a new one. Sign out or enter a fresh code to replace it.
+            The startup link keeps the code for this tab. Sign out or enter a fresh
+            code to replace it.
           </v-alert>
           <v-text-field
             ref="authInput"

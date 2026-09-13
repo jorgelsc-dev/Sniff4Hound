@@ -4,7 +4,6 @@ import ctypes
 import ctypes.util
 import ipaddress
 import json
-import re
 import sqlite3
 import threading
 import time
@@ -14,6 +13,7 @@ from pathlib import Path
 
 from . import ip_registry
 from .runtime_paths import ensure_data_dir, resolve_data_file
+from .honeypot_ports import listener_port_allowed, listener_port_policy_error
 from .monitors import builtin_monitor_seed_fields, describe_match, normalize_monitor
 from .protocol_facets import (
     DETAIL_KEYS,
@@ -25,6 +25,7 @@ from .protocol_facets import (
     resolve_row_columns,
 )
 from .rulesets import literal_packet_text_pattern, load_builtin_rulesets, normalize_ruleset
+from .regex_safety import validate_regex_pattern
 from .device_profiles import infer_device_profile
 from .settings import (
     MONITOR_FILTER_DEFAULT,
@@ -51,6 +52,7 @@ from .utils import (
     local_ip_candidates,
     normalize_protocol_name,
     normalize_text,
+    redact_sensitive_text,
     safe_float,
     safe_int,
     stable_flow_key,
@@ -1033,6 +1035,8 @@ class SniffStore:
         port = safe_int(port, 0)
         if port < 1 or port > 65535:
             raise ValueError("port must be between 1 and 65535")
+        if not listener_port_allowed(proto, port, source="custom"):
+            raise ValueError(listener_port_policy_error(proto, port, source="custom"))
         listener_id = f"{proto}/{port}"
         if self.get_honeypot_listener(listener_id):
             raise ValueError(f"Listener {listener_id} already exists")
@@ -1055,6 +1059,10 @@ class SniffStore:
         existing = self.get_honeypot_listener(listener_id)
         if not existing:
             raise ValueError(f"Unknown listener id: {listener_id}")
+        if enabled and not listener_port_allowed(existing.get("proto"), existing.get("port"), source=existing.get("source") or "custom"):
+            raise ValueError(
+                listener_port_policy_error(existing.get("proto"), safe_int(existing.get("port"), 0), source=existing.get("source") or "custom")
+            )
         now = utc_now()
         self._execute(
             "UPDATE honeypot_listeners SET enabled = ?, updated_at = ? WHERE id = ?",
@@ -2960,10 +2968,7 @@ class SniffStore:
         if not value:
             raise ValueError("value is required")
         if match_type == "regex":
-            try:
-                re.compile(value)
-            except re.error as exc:
-                raise ValueError(f"Invalid regex pattern: {exc}") from exc
+            validate_regex_pattern(value)
         else:
             value = self._normalize_list_value(category, value, exact=True)
         entry_id = f"blacklist-{category}-{uuid.uuid4().hex[:12]}"
@@ -3048,10 +3053,7 @@ class SniffStore:
         if not value:
             raise ValueError("value is required")
         if match_type == "regex":
-            try:
-                re.compile(value)
-            except re.error as exc:
-                raise ValueError(f"Invalid regex pattern: {exc}") from exc
+            validate_regex_pattern(value)
         else:
             value = self._normalize_list_value(category, value, exact=True)
         entry_id = f"whitelist-{category}-{uuid.uuid4().hex[:12]}"
@@ -4603,9 +4605,9 @@ class SniffStore:
         now = utc_now()
         rule_hits = packet.get("rule_hits") if isinstance(packet.get("rule_hits"), list) else []
         tags = packet.get("tags") if isinstance(packet.get("tags"), list) else []
-        payload_text = normalize_text(packet.get("payload_text") or "", limit=PAYLOAD_TEXT_MAX_CHARS)
-        summary_text = normalize_text(packet.get("summary") or "", limit=PAYLOAD_TEXT_MAX_CHARS)
-        banner_text = normalize_text(packet.get("banner_text") or payload_text, limit=PAYLOAD_TEXT_MAX_CHARS)
+        payload_text = redact_sensitive_text(normalize_text(packet.get("payload_text") or "", limit=PAYLOAD_TEXT_MAX_CHARS))
+        summary_text = redact_sensitive_text(normalize_text(packet.get("summary") or "", limit=PAYLOAD_TEXT_MAX_CHARS))
+        banner_text = redact_sensitive_text(normalize_text(packet.get("banner_text") or payload_text, limit=PAYLOAD_TEXT_MAX_CHARS))
         payload_hex = str(packet.get("payload_hex") or "")
         length = safe_int(packet.get("length", 0), 0)
         payload_len = safe_int(packet.get("payload_len", 0), 0)

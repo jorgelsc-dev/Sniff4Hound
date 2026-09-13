@@ -147,6 +147,15 @@ class TestHoneypotListenerStore(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.create_honeypot_listener("tcp", 70000)
 
+    def test_create_listener_rejects_privileged_custom_port(self):
+        with self.assertRaises(ValueError):
+            self.store.create_honeypot_listener("tcp", 22)
+
+    def test_enabling_uncurated_privileged_builtin_port_is_rejected(self):
+        self.assertFalse(self.store.get_honeypot_listener("tcp/2")["enabled"])
+        with self.assertRaises(ValueError):
+            self.store.set_honeypot_listener_enabled("tcp/2", True)
+
     def test_set_enabled_works_on_builtin_and_custom(self):
         self.store.set_honeypot_listener_enabled("tcp/22", False)
         self.assertFalse(self.store.get_honeypot_listener("tcp/22")["enabled"])

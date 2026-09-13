@@ -8,18 +8,19 @@ Sniff4Hound usa un token de sesion corto para la UI y JWT HS256 para integracion
 - tiene 8 caracteres alfanumericos;
 - se imprime en la terminal cuando inicia `sniff4hound`;
 - el enlace de arranque usa `/?code=<token>` para que la UI lo guarde
-  automaticamente.
+  automaticamente en la sesion de la pestaña.
 
 Cabeceras aceptadas:
 
 - `Authorization: Bearer <token>`
 - `X-Security-Code: <token>`
 - `X-Access-Token: <token>`
-- `?security_code=<token>`, `?access_token=<token>`, `?token=<token>` o `?auth=<token>` solo para el handshake WebSocket
+- `POST /api/ws/ticket` emite un `ws_ticket` de un solo uso y corta vida para
+  el handshake WebSocket
 
-La UI conserva el codigo en `localStorage` como `sniff4hound.securityCode`.
-Cuando el banner del siguiente arranque trae un codigo nuevo, abrir ese enlace
-lo reemplaza.
+La UI conserva el codigo en `sessionStorage` como `sniff4hound.securityCode`.
+El valor se borra al cerrar la pestaña; abrir un enlace de arranque nuevo lo
+reemplaza para esa pestaña.
 
 Si `SNIFF4HOUND_REQUIRE_AUTH=0`, la app permite acceso anonimo cuando no se envia token.
 
@@ -88,13 +89,14 @@ Variables:
 - `SNIFF4HOUND_AUTH_LOCKOUT_MAX_SECONDS` (300)
 
 Las credenciales nunca llegan al log: `access_log.redact_query()` sustituye por
-`REDACTED` el valor de `code`, `security_code`, `access_token`, `token` y
-`auth` en la query string (y en el `Referer`) antes de imprimir la linea.
+`REDACTED` el valor de `code`, `security_code`, `access_token`, `token`,
+`auth`, `ws_ticket` y `ticket` en la query string (y en el `Referer`) antes de
+imprimir la linea.
 
 ## Flujo de validacion
 
 1. `extract_token_from_header()` limpia la cabecera `Authorization`.
 2. `verify_token()` compara el token de sesion o valida el JWT.
-3. `authenticate_request()` devuelve el estado de autentificacion para HTTP y WebSocket.
+3. `authenticate_request()` devuelve el estado de autentificacion para HTTP y para emitir tickets WebSocket.
 4. `app._guard_request_auth()` aplica el limitador y registra el fallo antes de responder.
-5. La query string solo se usa para autenticar el handshake de `WS /ws/`, no para desbloquear peticiones HTTP normales.
+5. El handshake de `WS /ws/` consume un `ws_ticket` de un solo uso; la query string no desbloquea peticiones HTTP normales.
