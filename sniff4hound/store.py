@@ -847,7 +847,21 @@ class SniffStore:
             self._migrate_packets_columns()
             self._migrate_tags_columns()
             self._create_indexes()
-            self._migrate_sensitive_capture_storage()
+            # Two processes (the unprivileged web process and the privileged
+            # capture child) open this same file and both run migrations on
+            # every startup. That's normally instant, but
+            # _migrate_sensitive_capture_storage can do a full-table UPDATE
+            # across `packets`, which on a large, long-lived database can run
+            # well past the 5s busy_timeout _open_connection sets for regular
+            # operation - the second process to reach it then dies with
+            # "database is locked" instead of just waiting its turn. Raised
+            # only for this one-time startup migration window, restored
+            # right after.
+            self._conn.execute("PRAGMA busy_timeout=60000")
+            try:
+                self._migrate_sensitive_capture_storage()
+            finally:
+                self._conn.execute("PRAGMA busy_timeout=5000")
 
     def _migrate_packets_columns(self):
         existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(packets)")}
@@ -917,10 +931,19 @@ class SniffStore:
     def _migrate_sensitive_capture_storage(self):
         changed = False
         if not STORE_RAW_PACKET_BYTES:
-            cursor = self._conn.execute(
-                "UPDATE packets SET payload_hex = '', raw_packet = NULL WHERE payload_hex != '' OR raw_packet IS NOT NULL"
-            )
-            changed = changed or cursor.rowcount > 0
+            # A plain SELECT doesn't take the write lock the UPDATE below
+            # needs, so this lets both processes cheaply agree there's
+            # nothing left to purge (the steady-state case, once the table
+            # has actually been cleaned) without either of them contending
+            # for a write transaction over the full `packets` table.
+            pending = self._conn.execute(
+                "SELECT 1 FROM packets WHERE payload_hex != '' OR raw_packet IS NOT NULL LIMIT 1"
+            ).fetchone()
+            if pending is not None:
+                cursor = self._conn.execute(
+                    "UPDATE packets SET payload_hex = '', raw_packet = NULL WHERE payload_hex != '' OR raw_packet IS NOT NULL"
+                )
+                changed = changed or cursor.rowcount > 0
 
         updates = []
         for row in self._conn.execute("SELECT id, response_plain FROM payloads WHERE response_plain != ''"):
