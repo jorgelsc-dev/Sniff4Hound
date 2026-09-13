@@ -519,7 +519,7 @@ function whitelistIpAndForget(ip, { confirm = false } = {}) {
   });
 }
 
-function buildIntelQuery({ search = "", limit = 200, offset = 0, scope = "" } = {}) {
+function buildIntelQuery({ search = "", limit = 200, offset = 0, scope = "", ip = "" } = {}) {
   const params = new URLSearchParams();
   if (search) params.set("search", search);
   if (limit) params.set("limit", String(limit));
@@ -528,6 +528,9 @@ function buildIntelQuery({ search = "", limit = 200, offset = 0, scope = "" } = 
   // Endpoints that do not know it simply ignore the parameter.
   const scopes = Array.isArray(scope) ? scope.join(",") : String(scope || "");
   if (scopes) params.set("scope", scopes);
+  // Narrows domains/paths to one address - the IP graph popup's "dominios
+  // y paths asociados". Endpoints that do not know it simply ignore it.
+  if (ip) params.set("ip", ip);
   const query = params.toString();
   return query ? `?${query}` : "";
 }

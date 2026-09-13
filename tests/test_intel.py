@@ -177,6 +177,16 @@ class TestStoreIntelCatalogs(unittest.TestCase):
         rows = self.store.list_domains(search="example")
         self.assertEqual([row["name"] for row in rows], ["api.example.com"])
 
+    def test_list_domains_ip_filters(self):
+        # Backs the IP relationship graph's popup ("dominios asociados a
+        # esta IP"), which only wants the slice for one node, not the
+        # whole catalog to filter client-side.
+        self.store.record_domain(name="api.example.com", ip="10.0.0.5")
+        self.store.record_domain(name="tracker.ads.net", ip="10.0.0.9")
+        rows = self.store.list_domains(ip="10.0.0.5")
+        self.assertEqual([row["name"] for row in rows], ["api.example.com"])
+        self.assertEqual(self.store.count_domains(ip="10.0.0.5"), 1)
+
     def test_record_path_upserts_and_increments_hit_count(self):
         self.store.record_path(path="/login", method="post", host="example.com", ip="10.0.0.1", port=443)
         self.store.record_path(path="/login", method="POST", host="example.com", ip="10.0.0.1", port=443)
@@ -190,6 +200,13 @@ class TestStoreIntelCatalogs(unittest.TestCase):
         self.store.record_path(path="/login", method="POST", host="a.example.com")
         self.store.record_path(path="/login", method="GET", host="b.example.com")
         self.assertEqual(len(self.store.list_paths()), 3)
+
+    def test_list_paths_ip_filters(self):
+        self.store.record_path(path="/login", ip="10.0.0.5")
+        self.store.record_path(path="/admin", ip="10.0.0.9")
+        rows = self.store.list_paths(ip="10.0.0.5")
+        self.assertEqual([row["path"] for row in rows], ["/login"])
+        self.assertEqual(self.store.count_paths(ip="10.0.0.5"), 1)
 
     def test_list_ip_catalog_aggregates_src_and_dst(self):
         self.store.register_packet(

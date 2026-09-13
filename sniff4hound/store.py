@@ -2458,12 +2458,15 @@ class SniffStore:
             self._conn.commit()
         return self._fetchone("SELECT * FROM domains WHERE name = ?", (name,))
 
-    def _domain_filter(self, *, search="", since=""):
+    def _domain_filter(self, *, search="", since="", ip=""):
         clauses = []
         params = []
         if since:
             clauses.append("last_seen >= ?")
             params.append(str(since))
+        if ip:
+            clauses.append("ip = ?")
+            params.append(str(ip).strip())
         if search:
             needle = f"%{str(search).strip().lower()}%"
             clauses.append("(LOWER(name) LIKE ? OR LOWER(source) LIKE ? OR LOWER(ip) LIKE ?)")
@@ -2471,8 +2474,8 @@ class SniffStore:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return where, params
 
-    def list_domains(self, *, search="", limit=200, offset=0, since=""):
-        where, params = self._domain_filter(search=search, since=since)
+    def list_domains(self, *, search="", limit=200, offset=0, since="", ip=""):
+        where, params = self._domain_filter(search=search, since=since, ip=ip)
         params = list(params)
         params.extend([int(limit), int(offset)])
         return self._fetchall(
@@ -2480,8 +2483,8 @@ class SniffStore:
             tuple(params),
         )
 
-    def count_domains(self, *, search="", since=""):
-        where, params = self._domain_filter(search=search, since=since)
+    def count_domains(self, *, search="", since="", ip=""):
+        where, params = self._domain_filter(search=search, since=since, ip=ip)
         row = self._fetchone(f"SELECT COUNT(*) AS count FROM domains {where}", tuple(params))
         return int((row or {}).get("count") or 0)
 
@@ -2512,12 +2515,15 @@ class SniffStore:
             (method, path, host),
         )
 
-    def _path_filter(self, *, search="", since=""):
+    def _path_filter(self, *, search="", since="", ip=""):
         clauses = []
         params = []
         if since:
             clauses.append("last_seen >= ?")
             params.append(str(since))
+        if ip:
+            clauses.append("ip = ?")
+            params.append(str(ip).strip())
         if search:
             needle = f"%{str(search).strip().lower()}%"
             clauses.append("(LOWER(path) LIKE ? OR LOWER(host) LIKE ? OR LOWER(method) LIKE ? OR LOWER(ip) LIKE ?)")
@@ -2525,8 +2531,8 @@ class SniffStore:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return where, params
 
-    def list_paths(self, *, search="", limit=200, offset=0, since=""):
-        where, params = self._path_filter(search=search, since=since)
+    def list_paths(self, *, search="", limit=200, offset=0, since="", ip=""):
+        where, params = self._path_filter(search=search, since=since, ip=ip)
         params = list(params)
         params.extend([int(limit), int(offset)])
         return self._fetchall(
@@ -2534,8 +2540,8 @@ class SniffStore:
             tuple(params),
         )
 
-    def count_paths(self, *, search="", since=""):
-        where, params = self._path_filter(search=search, since=since)
+    def count_paths(self, *, search="", since="", ip=""):
+        where, params = self._path_filter(search=search, since=since, ip=ip)
         row = self._fetchone(f"SELECT COUNT(*) AS count FROM paths {where}", tuple(params))
         return int((row or {}).get("count") or 0)
 

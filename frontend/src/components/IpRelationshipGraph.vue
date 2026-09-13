@@ -182,6 +182,29 @@
             </span>
           </div>
 
+          <div v-if="loadingAssociations" class="ip-graph-popup__associations-loading mt-3">
+            <v-progress-circular indeterminate size="14" width="2" color="info" />
+            <span class="text-caption text-medium-emphasis">Buscando dominios y paths asociados…</span>
+          </div>
+          <template v-else>
+            <div v-if="selectedDomains.length" class="ip-graph-inspector__connections mt-3">
+              <span class="text-caption text-medium-emphasis">Dominios:</span>
+              <span v-for="domain in selectedDomains" :key="domain.id ?? domain.name" class="ip-graph-inspector__connection mono">
+                {{ domain.name }}
+              </span>
+            </div>
+            <div v-if="selectedPaths.length" class="ip-graph-inspector__connections mt-3">
+              <span class="text-caption text-medium-emphasis">Paths:</span>
+              <span
+                v-for="path in selectedPaths"
+                :key="path.id ?? `${path.method}-${path.path}-${path.host}`"
+                class="ip-graph-inspector__connection mono"
+              >
+                {{ path.method }} {{ path.path }}
+              </span>
+            </div>
+          </template>
+
           <v-alert v-if="actionError" type="error" variant="tonal" density="comfortable" class="mt-3">
             {{ actionError }}
           </v-alert>
@@ -232,6 +255,10 @@ const NODE_LIMIT = 150;
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.25;
+// Same order of magnitude as OperationsCenter's own alert-refresh interval -
+// frequent enough that the graph feels live, not so frequent that panning
+// or an open popup keeps getting interrupted by a redraw.
+const AUTO_REFRESH_MS = 15000;
 // Rough monospace advance width in px for the 8px label font - just needs
 // to be a reasonable upper bound for collision purposes, not exact metrics.
 const LABEL_CHAR_WIDTH = 4.6;
@@ -342,6 +369,10 @@ export default {
       whitelisting: false,
       actionError: "",
       actionNotice: "",
+      selectedDomains: [],
+      selectedPaths: [],
+      loadingAssociations: false,
+      refreshTimer: null,
     };
   },
   computed: {
@@ -449,6 +480,16 @@ export default {
   },
   mounted() {
     this.load();
+    // Same self-contained polling pattern as OperationsCenter's alert
+    // refresh - the graph does not otherwise know when new traffic
+    // arrives, so without this it only ever updated on a manual click.
+    this.refreshTimer = setInterval(() => {
+      this.load({ silent: true });
+      if (this.selectedIp) this.loadAssociations(this.selectedIp);
+    }, AUTO_REFRESH_MS);
+  },
+  beforeUnmount() {
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
   },
   methods: {
     deviceIconOf: deviceIcon,
@@ -457,8 +498,8 @@ export default {
     confidenceLabel(value) {
       return ({ high: "alta", medium: "media", low: "baja" })[value] || "sin clasificar";
     },
-    load() {
-      this.loading = true;
+    load({ silent = false } = {}) {
+      if (!silent) this.loading = true;
       this.error = "";
       store
         .fetchIpRelationshipGraph({ limit: NODE_LIMIT, scope: this.scopes })
@@ -471,7 +512,9 @@ export default {
           }
         })
         .catch((err) => {
-          this.error = (err && err.message) || "No se pudo cargar el mapa de relaciones";
+          // A silent background refresh failing transiently should not
+          // blank out an error banner over an otherwise-fine graph.
+          if (!silent) this.error = (err && err.message) || "No se pudo cargar el mapa de relaciones";
         })
         .finally(() => {
           this.loading = false;
@@ -480,10 +523,40 @@ export default {
     isNeighbor(ip) {
       return this.selectedNeighbors.some((neighbor) => neighbor.ip === ip);
     },
+    // Dominios/paths observados con esta IP como origen o destino - fetched
+    // on demand per selected node (not embedded in the graph payload, which
+    // can have 150 nodes) with a small limit, since the popup only ever
+    // shows a handful before linking out to the full catalog.
+    loadAssociations(ip) {
+      this.loadingAssociations = true;
+      Promise.all([
+        store.listDomains({ ip, limit: 8 }),
+        store.listPaths({ ip, limit: 8 }),
+      ])
+        .then(([domainsResult, pathsResult]) => {
+          if (this.selectedIp !== ip) return; // user moved on before this resolved
+          this.selectedDomains = Array.isArray(domainsResult) ? domainsResult : [];
+          this.selectedPaths = Array.isArray(pathsResult) ? pathsResult : [];
+        })
+        .catch(() => {
+          if (this.selectedIp !== ip) return;
+          this.selectedDomains = [];
+          this.selectedPaths = [];
+        })
+        .finally(() => {
+          if (this.selectedIp === ip) this.loadingAssociations = false;
+        });
+    },
     selectNode(ip) {
       this.actionError = "";
       this.actionNotice = "";
-      this.selectedIp = this.selectedIp === ip ? null : ip;
+      const opening = this.selectedIp !== ip;
+      this.selectedIp = opening ? ip : null;
+      if (opening) {
+        this.selectedDomains = [];
+        this.selectedPaths = [];
+        this.loadAssociations(ip);
+      }
     },
     closeInspector() {
       this.selectedIp = null;
@@ -747,6 +820,12 @@ export default {
   align-items: center;
   gap: 6px;
   margin-top: 8px;
+}
+
+.ip-graph-popup__associations-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .ip-graph-popup__evidence-item {

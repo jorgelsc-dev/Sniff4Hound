@@ -663,8 +663,8 @@ ENDPOINTS = [
     {"method": "DELETE", "path": "/api/whitelist/", "desc": "Delete a whitelist entry."},
     {"method": "POST", "path": "/api/whitelist/toggle", "desc": "Enable/disable a whitelist entry without deleting it."},
     {"method": "POST", "path": "/api/whitelist/ip", "desc": "Whitelist one IP and purge everything already captured about it (packets, tags, payloads, flows, domains, paths). Without {\"confirm\": true}, returns how many packets would be deleted instead of doing it."},
-    {"method": "GET", "path": "/api/domains/", "desc": "Searchable catalog of domains seen in DNS/HTTP/TLS traffic."},
-    {"method": "GET", "path": "/api/paths/", "desc": "Searchable catalog of HTTP request paths."},
+    {"method": "GET", "path": "/api/domains/", "desc": "Searchable catalog of domains seen in DNS/HTTP/TLS traffic. Optional ?ip= narrows to one address."},
+    {"method": "GET", "path": "/api/paths/", "desc": "Searchable catalog of HTTP request paths. Optional ?ip= narrows to one address."},
     {"method": "GET", "path": "/api/intel/ips/", "desc": "Searchable catalog of IPs seen in stored traffic. ?scope=public|private|local|multicast|reserved|unknown (comma separated) filters by address scope; the full vocabulary and per-scope counts come back in the X-Scope-Counts header."},
     {"method": "GET", "path": "/api/intel/ips/graph", "desc": "IP relationship graph: `nodes` (same shape as /api/intel/ips/, device type included) and `edges` (src_ip, dst_ip, weight = total packets, flow_count), one edge per host pair, both ends restricted to the returned node set."},
     {"method": "GET", "path": "/api/monitors/packets/", "desc": "Packets that matched a given monitor."},
@@ -3011,9 +3011,10 @@ def domains_collection(request):
     limit = _normalize_limit(request.query.get("limit"), default=200)
     offset = _normalize_offset(request.query.get("offset"))
     since = _normalize_since(request)
+    ip = str(request.query.get("ip") or "").strip()
     return _listing_response(
-        store.list_domains(search=search, limit=limit, offset=offset, since=since),
-        total=store.count_domains(search=search, since=since),
+        store.list_domains(search=search, limit=limit, offset=offset, since=since, ip=ip),
+        total=store.count_domains(search=search, since=since, ip=ip),
         limit=limit,
         offset=offset,
     )
@@ -3025,9 +3026,10 @@ def paths_collection(request):
     limit = _normalize_limit(request.query.get("limit"), default=200)
     offset = _normalize_offset(request.query.get("offset"))
     since = _normalize_since(request)
+    ip = str(request.query.get("ip") or "").strip()
     return _listing_response(
-        store.list_paths(search=search, limit=limit, offset=offset, since=since),
-        total=store.count_paths(search=search, since=since),
+        store.list_paths(search=search, limit=limit, offset=offset, since=since, ip=ip),
+        total=store.count_paths(search=search, since=since, ip=ip),
         limit=limit,
         offset=offset,
     )
