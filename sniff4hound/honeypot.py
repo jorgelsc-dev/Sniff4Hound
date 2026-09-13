@@ -13,6 +13,7 @@ import struct
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import formatdate
@@ -74,10 +75,19 @@ from .honeypot_ports import (  # noqa: F401 - re-exported, used throughout this 
     TFTP_UDP_PORTS,
     TLS_TCP_PORTS,
     VNC_PORTS,
+    listener_port_allowed,
+    listener_port_policy_error,
     service_label,
 )
 
-from .settings import DATA_DIR, PAYLOAD_TEXT_MAX_CHARS
+from .settings import (
+    DATA_DIR,
+    HONEYPOT_TCP_MAX_CONNECTIONS_PER_LISTENER,
+    HONEYPOT_UDP_RESPONSE_RATE_LIMIT,
+    HONEYPOT_UDP_RESPONSE_RATE_MAX_CLIENTS,
+    HONEYPOT_UDP_RESPONSE_RATE_WINDOW_SECONDS,
+    PAYLOAD_TEXT_MAX_CHARS,
+)
 
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
@@ -598,6 +608,8 @@ class HoneypotEngine:
         self._state = HoneypotState()
         self._tls_sni_map: dict[int, str] = {}
         self._tls_sni_lock = threading.Lock()
+        self._udp_rate_lock = threading.Lock()
+        self._udp_rate_windows: dict[tuple[int, str], deque[float]] = {}
         self._event_db: sqlite3.Connection | None = None
         self._tls_context: ssl.SSLContext | None = None
 
@@ -940,7 +952,12 @@ class HoneypotEngine:
                 break
             if not listener.get("enabled"):
                 continue
-            if self._spawn_listener(listener["id"], listener["proto"], listener["port"]):
+            if self._spawn_listener(
+                listener["id"],
+                listener["proto"],
+                listener["port"],
+                source=listener.get("source") or "builtin",
+            ):
                 started += 1
 
         LOGGER.info("Motor de listeners activo en %s con %s listeners", self.bind_host, started)
@@ -1200,6 +1217,7 @@ class HoneypotEngine:
         sock_type = socket.SOCK_DGRAM if udp else socket.SOCK_STREAM
         hosts = self._resolve_bind_hosts()
         sockets: list[socket.socket] = []
+        tcp_slots = threading.BoundedSemaphore(HONEYPOT_TCP_MAX_CONNECTIONS_PER_LISTENER)
         for host in hosts:
             sock = socket.socket(socket.AF_INET, sock_type)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1235,7 +1253,17 @@ class HoneypotEngine:
                                 break
                             self._set_error(f"tcp/{port}", str(error))
                             continue
-                        threading.Thread(target=handler, args=(client, addr, port), daemon=True).start()
+                        if not tcp_slots.acquire(blocking=False):
+                            try:
+                                client.close()
+                            except Exception:
+                                pass
+                            continue
+                        threading.Thread(
+                            target=self._handle_tcp_with_slot,
+                            args=(tcp_slots, handler, client, addr, port),
+                            daemon=True,
+                        ).start()
             else:
                 LOGGER.info("UDP listener activo en %s:%s (%d IP(s))", hosts, port, len(sockets))
                 while not stop_event.is_set():
@@ -1262,6 +1290,15 @@ class HoneypotEngine:
                 except Exception:
                     pass
 
+    def _handle_tcp_with_slot(self, slots: threading.BoundedSemaphore, handler, client, addr, port: int):
+        try:
+            handler(client, addr, port)
+        finally:
+            try:
+                slots.release()
+            except ValueError:
+                pass
+
     def _tcp_listener(self, port: int, stop_event: threading.Event, tls_context=None):
         if tls_context is not None:
             self._listen(
@@ -1275,7 +1312,7 @@ class HoneypotEngine:
     def _udp_listener(self, port: int, stop_event: threading.Event):
         self._listen(port, self._handle_udp, udp=True, stop_event=stop_event)
 
-    def _spawn_listener(self, listener_id: str, proto: str, port: int) -> bool:
+    def _spawn_listener(self, listener_id: str, proto: str, port: int, *, source: str = "custom") -> bool:
         """Start a single listener's thread, if it isn't already running.
         Returns False (with an error recorded) only for a TCP/TLS listener
         whose TLS context isn't ready - every other failure surfaces later,
@@ -1283,6 +1320,9 @@ class HoneypotEngine:
         existing = self._listener_threads.get(listener_id)
         if existing is not None and existing.is_alive():
             return True
+        if not listener_port_allowed(proto, port, source=source):
+            self._set_error(listener_id, listener_port_policy_error(proto, port, source=source))
+            return False
         stop_event = threading.Event()
         if proto == "tcp":
             tls_context = self._tls_context if port in TLS_TCP_PORTS else None
@@ -1325,7 +1365,12 @@ class HoneypotEngine:
             running = bool(self._state.running)
         if running:
             if enabled:
-                self._spawn_listener(listener["id"], listener["proto"], listener["port"])
+                self._spawn_listener(
+                    listener["id"],
+                    listener["proto"],
+                    listener["port"],
+                    source=listener.get("source") or "custom",
+                )
             else:
                 self._stop_listener_thread(listener_id)
         return self.snapshot()
@@ -1338,7 +1383,12 @@ class HoneypotEngine:
         with self._state_lock:
             running = bool(self._state.running)
         if running:
-            self._spawn_listener(listener["id"], listener["proto"], listener["port"])
+            self._spawn_listener(
+                listener["id"],
+                listener["proto"],
+                listener["port"],
+                source=listener.get("source") or "custom",
+            )
         return self.snapshot()
 
     def _handle_tcp(self, client_sock, addr, port, tls_context=None):
@@ -1891,8 +1941,34 @@ class HoneypotEngine:
         packet = self._build_packet(protocol="udp", port=port, addr=addr, data=data, banner_text="UDP datagram", summary="UDP datagram", meta=meta)
         self._emit_packet(packet)
 
+    def _udp_response_allowed(self, port: int, addr) -> bool:
+        source = str((addr or ("", 0))[0] or "")
+        if not source:
+            return False
+        now = time.monotonic()
+        cutoff = now - HONEYPOT_UDP_RESPONSE_RATE_WINDOW_SECONDS
+        key = (safe_int(port, 0), source)
+        with self._udp_rate_lock:
+            if len(self._udp_rate_windows) > HONEYPOT_UDP_RESPONSE_RATE_MAX_CLIENTS:
+                stale = [
+                    item_key
+                    for item_key, seen in self._udp_rate_windows.items()
+                    if not seen or seen[-1] <= cutoff
+                ]
+                for item_key in stale[: max(1, len(stale))]:
+                    self._udp_rate_windows.pop(item_key, None)
+            seen = self._udp_rate_windows.setdefault(key, deque())
+            while seen and seen[0] <= cutoff:
+                seen.popleft()
+            if len(seen) >= HONEYPOT_UDP_RESPONSE_RATE_LIMIT:
+                return False
+            seen.append(now)
+            return True
+
     def _udp_response_for(self, port: int, data: bytes, addr):
         if port == 68:
+            return None
+        if not self._udp_response_allowed(port, addr):
             return None
         if port in DNS_UDP_PORTS:
             response_ip = self._socket_listener_ip(None, addr[0])

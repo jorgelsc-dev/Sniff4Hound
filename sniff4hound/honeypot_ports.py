@@ -258,6 +258,57 @@ COMMON_PORTS = {
 }
 
 
+CUSTOM_LISTENER_DENY_PORTS = {
+    "tcp": frozenset(
+        set(range(1, 1024))
+        | SMB_PORTS
+        | FILE_SHARING_TCP_PORTS
+        | AUTH_TCP_PORTS
+        | DEVOPS_TCP_PORTS
+        | DATABASE_TCP_PORTS
+        | SEARCH_BIGDATA_TCP_PORTS
+        | REMOTE_ACCESS_TCP_PORTS
+        | MEMCACHED_TCP_PORTS
+        | REDIS_PORTS
+        | MONGODB_PORTS
+    ),
+    "udp": frozenset(
+        set(range(1, 1024))
+        | DHCP_UDP_PORTS
+        | DNS_UDP_PORTS
+        | NTP_UDP_PORTS
+        | SNMP_UDP_PORTS
+        | RPC_UDP_PORTS
+        | RADIUS_UDP_PORTS
+        | SSDP_UDP_PORTS
+        | MEMCACHED_UDP_PORTS
+        | IPMI_UDP_PORTS
+        | MDNS_UDP_PORTS
+    ),
+}
+
+
+def listener_port_allowed(proto: str, port: int, *, source: str = "custom") -> bool:
+    proto = str(proto or "").strip().lower()
+    try:
+        port = int(port)
+    except Exception:
+        return False
+    if proto not in ("tcp", "udp") or port < 1 or port > 65535:
+        return False
+    if source == "builtin" and port in set(DEFAULT_ENABLED_PORTS.get(proto, ())):
+        return True
+    return port not in CUSTOM_LISTENER_DENY_PORTS.get(proto, frozenset())
+
+
+def listener_port_policy_error(proto: str, port: int, *, source: str = "custom") -> str:
+    if listener_port_allowed(proto, port, source=source):
+        return ""
+    if int(port) < 1024:
+        return "privileged ports below 1024 require a curated builtin listener"
+    return "port is reserved for sensitive services; use a curated builtin listener or choose a high custom port"
+
+
 def service_label(proto: str, port: int) -> str:
     proto = str(proto or "").strip().lower()
     port = int(port)

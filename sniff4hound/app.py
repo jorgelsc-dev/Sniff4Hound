@@ -3,7 +3,8 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
-from urllib.parse import urlencode
+import secrets
+from urllib.parse import urlencode, urlparse
 import mimetypes
 import sys
 import time
@@ -75,6 +76,7 @@ DEFAULT_SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-Frame-Options": "DENY",
 }
+STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 FAVICON_SCAN_DEFAULT_LIMIT = min(API_MAX_LIMIT, 5000)
 FAVICON_MAX_BYTES = 512 * 1024
 FAVICON_CONTENT_TYPE_ALIASES = {
@@ -535,6 +537,9 @@ def connect_capture_service() -> bool:
 AUTH_SESSION_PATH = "/api/auth/session"
 DOCS_PATHS = ("/docs", "/docs.json")
 WS_AUTH_CLOSE_CODE = 4401
+WS_TICKET_TTL_SECONDS = 15.0
+_WS_TICKETS: dict[str, dict[str, Any]] = {}
+_WS_TICKET_LOCK = threading.Lock()
 # Bounds for the periodic snapshot channel. The floor is not a preference:
 # each delivery runs the same aggregate queries the HTTP endpoint does, over
 # the whole filtered set, so an unbounded interval lets any authenticated
@@ -848,6 +853,59 @@ def _request_header(request, *names: str) -> str | None:
     return None
 
 
+def _origin_tuple(value: str) -> tuple[str, str, int] | None:
+    text = str(value or "").strip()
+    if not text or text.lower() == "null":
+        return None
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return None
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return None
+    try:
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError:
+        return None
+    return scheme, parsed.hostname.lower(), int(port)
+
+
+def _request_host_origin(request) -> tuple[str, str, int] | None:
+    host = _request_header(request, "X-Forwarded-Host", "x-forwarded-host", "Host", "host")
+    if not host:
+        return None
+    host = str(host).split(",", 1)[0].strip()
+    proto = _request_header(request, "X-Forwarded-Proto", "x-forwarded-proto")
+    scheme = str(proto or "http").split(",", 1)[0].strip().lower() or "http"
+    if scheme not in {"http", "https"}:
+        scheme = "http"
+    return _origin_tuple(f"{scheme}://{host}")
+
+
+def _guard_request_origin(request) -> Response | None:
+    method = str(getattr(request, "method", "GET") or "GET").upper()
+    if method not in STATE_CHANGING_METHODS:
+        return None
+    supplied = _request_header(request, "Origin", "origin") or _request_header(request, "Referer", "referer")
+    if not supplied:
+        return None
+    actual = _origin_tuple(supplied)
+    expected = _request_host_origin(request)
+    if actual is not None and expected is not None and actual == expected:
+        return None
+    return Response.json(
+        {
+            "status": "error",
+            "code": "bad_origin",
+            "message": "Cross-origin state-changing requests are not allowed.",
+        },
+        status=403,
+    )
+
+
 def _extract_request_query_token(request) -> str | None:
     if request is None:
         return None
@@ -967,6 +1025,61 @@ def _guard_request_auth(request, *, allow_query: bool = False) -> Response | Non
         retry_after=lockout,
     )
     return _unauthorized_response("Invalid or missing security code")
+
+
+def _prune_ws_tickets(now: float | None = None):
+    current = time.monotonic() if now is None else float(now)
+    expired = [ticket for ticket, data in _WS_TICKETS.items() if float(data.get("expires_at", 0.0)) <= current]
+    for ticket in expired:
+        _WS_TICKETS.pop(ticket, None)
+
+
+def _issue_ws_ticket(request) -> dict:
+    token = _extract_request_token(request, allow_query=False)
+    if not token:
+        raise ValueError("Authenticated request required")
+    now = time.monotonic()
+    ticket = secrets.token_urlsafe(24)
+    client = _client_address(request)
+    with _WS_TICKET_LOCK:
+        _prune_ws_tickets(now)
+        _WS_TICKETS[ticket] = {
+            "token": token,
+            "client": client,
+            "expires_at": now + WS_TICKET_TTL_SECONDS,
+        }
+    return {"ticket": ticket, "expires_in": int(WS_TICKET_TTL_SECONDS)}
+
+
+def _consume_ws_ticket(request) -> str:
+    query = getattr(request, "query", None) or {}
+    ticket = str(query.get("ws_ticket") or query.get("ticket") or "").strip()
+    if not ticket:
+        return ""
+    now = time.monotonic()
+    client = _client_address(request)
+    with _WS_TICKET_LOCK:
+        _prune_ws_tickets(now)
+        data = _WS_TICKETS.pop(ticket, None)
+    if not data or float(data.get("expires_at", 0.0)) <= now:
+        return ""
+    if str(data.get("client") or "") != client:
+        return ""
+    return str(data.get("token") or "").strip()
+
+
+def _guard_websocket_auth(request) -> Response | None:
+    token = _consume_ws_ticket(request)
+    if token and request is not None:
+        headers = getattr(request, "headers", None)
+        if isinstance(headers, dict):
+            headers["X-Security-Code"] = token
+        else:
+            try:
+                setattr(request, "headers", {"X-Security-Code": token})
+            except Exception:
+                pass
+    return _guard_request_auth(request, allow_query=False)
 
 
 def append_chat_message(
@@ -2175,6 +2288,11 @@ def ws_clients(_request):
     return hub.list_clients()
 
 
+@app.api("/api/ws/ticket", methods=("POST",))
+def ws_ticket(request):
+    return _issue_ws_ticket(request)
+
+
 @app.api("/api/ws/broadcast", methods=("POST",))
 def ws_broadcast(request):
     payload = _read_json_body(request)
@@ -3058,6 +3176,9 @@ def _apply_api_auth_guards():
             denied = _guard_request_auth(request)
             if denied is not None:
                 return denied
+            bad_origin = _guard_request_origin(request)
+            if bad_origin is not None:
+                return bad_origin
             try:
                 return _handler(request, *args, **kwargs)
             except _InvalidJsonBody as exc:
@@ -3334,12 +3455,10 @@ def _ws_get_result(source_request, path: str, params: dict) -> dict:
     query = {str(key): str(value) for key, value in (params or {}).items() if value is not None}
 
     headers = dict(getattr(source_request, "headers", None) or {})
-    # The API routes deliberately refuse a credential in the query string -
-    # only the websocket handshake accepts one there, because a URL ends up in
-    # logs and history. So the credential the handshake proved is translated
-    # into the header form the routes do accept, rather than being replayed as
-    # a query parameter the guard is built to reject. The guard still runs; it
-    # is only being handed the token in the shape it asks for.
+    # The API routes deliberately refuse a credential in the query string.
+    # A successfully authenticated websocket request carries its already
+    # consumed ticket as an X-Security-Code header; the query fallback below is
+    # kept for unit tests and older in-process callers of this helper.
     source_query = getattr(source_request, "query", None) or {}
     if not any(key.lower() in ("x-security-code", "x-access-token") for key in headers):
         for key in ("security_code", "access_token", "token"):
@@ -3379,7 +3498,7 @@ def _ws_get_result(source_request, path: str, params: dict) -> dict:
 
 
 # --- one websocket route per data feed --------------------------------------
-# /ws/<feed>?security_code=...&refresh=1000&limit=500&proto=arp
+# /ws/<feed>?ws_ticket=...&refresh=1000&limit=500&proto=arp
 #
 # Everything the stream needs is in the URL, so changing what you are watching
 # means closing the socket and opening another - there is no subscribe message
@@ -3431,7 +3550,7 @@ def _make_feed_handler(feed_name: str):
     def feed_handler(ws, request=None):
         started_at = time.perf_counter()
         if REQUIRE_AUTH:
-            denied = _guard_request_auth(request, allow_query=True)
+            denied = _guard_websocket_auth(request)
             if denied is not None:
                 status = int(getattr(denied, "status", 401) or 401)
                 try:
@@ -3539,7 +3658,7 @@ for _feed_name in WS_FEEDS:
 def websocket_handler(ws, request=None):
     ws_started_at = time.perf_counter()
     if REQUIRE_AUTH:
-        denied = _guard_request_auth(request, allow_query=True)
+        denied = _guard_websocket_auth(request)
         if denied is not None:
             status = int(getattr(denied, "status", 401) or 401)
             try:

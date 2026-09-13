@@ -31,6 +31,16 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function memoryStorage(seed = {}) {
+  const values = new Map(Object.entries(seed));
+  return {
+    getItem: (key) => values.get(String(key)) ?? null,
+    setItem: (key, value) => { values.set(String(key), String(value)); },
+    removeItem: (key) => { values.delete(String(key)); },
+    clear: () => { values.clear(); },
+  };
+}
+
 const evidence = (packets = 1) => ({ soc_summary: { sampled_packets: packets, risk_score: 8, verdict: "observe" }, cycles: [], generated_at: "2026-09-05T10:00:00Z" });
 
 test("CSV neutralizes remote formulas, retains quoting and numeric values", () => {
@@ -70,6 +80,51 @@ test("replaced and closed streams cannot deliver stale frames or fallback", () =
   } finally {
     handle.close();
     globalThis.window = original;
+  }
+});
+
+test("legacy localStorage security code is not re-persisted to sessionStorage", async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const legacyToken = "legacy-secret";
+  const localStorage = memoryStorage({ "sniff4hound.securityCode": legacyToken });
+  const sessionStorage = memoryStorage();
+  globalThis.window = {
+    localStorage,
+    sessionStorage,
+    location: {
+      href: "http://localhost/",
+      origin: "http://localhost",
+      protocol: "http:",
+      hostname: "localhost",
+      port: "",
+    },
+    history: { replaceState() {} },
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    const path = String(url);
+    if (path.endsWith("/api/auth/session")) {
+      assert.equal(options.headers["X-Security-Code"], legacyToken);
+      return new Response(JSON.stringify({ require_auth: true, authenticated: true }), { status: 200 });
+    }
+    if (path.endsWith("/api/runtime/")) {
+      return new Response(JSON.stringify({ runtime: { mode: "sniffer" } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+
+  try {
+    await appStore.bootstrap();
+    assert.equal(appStore.state.authToken, legacyToken);
+    assert.equal(localStorage.getItem("sniff4hound.securityCode"), null);
+    assert.equal(sessionStorage.getItem("sniff4hound.securityCode"), null);
+  } finally {
+    appStore.state.authToken = "";
+    appStore.state.authStatus = "unknown";
+    appStore.state.authRequired = false;
+    appStore.state.authReady = false;
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
   }
 });
 

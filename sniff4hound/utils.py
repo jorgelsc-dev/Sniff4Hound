@@ -16,10 +16,31 @@ from .app_protocols import (
 )
 
 PRINTABLE_RE = re.compile(r"[^\x20-\x7E]+")
+REDACTED_SECRET = "[REDACTED]"
+SENSITIVE_TEXT_PATTERNS = (
+    re.compile(r"(?i)\b(authorization\s*:\s*(?:basic|bearer)\s+)[^\s\r\n]+"),
+    re.compile(r"(?i)\b((?:password|passwd|pwd|token|access_token|api[_-]?key|secret)\s*[=:]\s*)[^\s&;]+"),
+    re.compile(r"(?i)\b((?:mongodb|postgres(?:ql)?|mysql|redis)://[^:/\s]+:)[^@/\s]+(@)"),
+    re.compile(r"\beyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b"),
+)
 
 
 SINCE_WINDOW_RE = re.compile(r"^(\d+)\s*([smhdw])$", re.IGNORECASE)
 SINCE_WINDOW_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def redact_sensitive_text(value) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    for pattern in SENSITIVE_TEXT_PATTERNS:
+        if pattern.groups == 2:
+            text = pattern.sub(lambda match: f"{match.group(1)}{REDACTED_SECRET}{match.group(2)}", text)
+        elif pattern.groups == 1:
+            text = pattern.sub(lambda match: f"{match.group(1)}{REDACTED_SECRET}", text)
+        else:
+            text = pattern.sub(REDACTED_SECRET, text)
+    return text
 
 
 def utc_now() -> str:

@@ -50,6 +50,10 @@ class TestBlacklistEntries(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.create_blacklist_entry("path", "regex", "(unterminated")
 
+    def test_create_rejects_redos_risk_regex(self):
+        with self.assertRaises(ValueError):
+            self.store.create_blacklist_entry("domain", "regex", r"(a+)+$")
+
     def test_create_rejects_empty_value(self):
         with self.assertRaises(ValueError):
             self.store.create_blacklist_entry("ip", "exact", "   ")
@@ -165,6 +169,10 @@ class TestWhitelistEntries(unittest.TestCase):
     def test_create_rejects_invalid_regex(self):
         with self.assertRaises(ValueError):
             self.store.create_whitelist_entry("domain", "regex", "(unterminated")
+
+    def test_create_rejects_redos_risk_regex(self):
+        with self.assertRaises(ValueError):
+            self.store.create_whitelist_entry("domain", "regex", r"(a+)+$")
 
     def test_create_rejects_empty_value(self):
         with self.assertRaises(ValueError):

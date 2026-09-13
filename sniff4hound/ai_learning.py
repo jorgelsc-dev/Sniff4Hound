@@ -35,9 +35,12 @@ MAX_HIDDEN_NEURONS = 16
 MIN_HIDDEN_LAYERS = 1
 MAX_HIDDEN_LAYERS = 4
 DEFAULT_HIDDEN_SIZES = [DEFAULT_HIDDEN_NEURONS]
+MAX_IMPORTED_WEIGHT_ABS = 1_000_000.0
 
 
 def features(data):
+    if not data:
+        raise ValueError('No hay bytes suficientes para extraer características.')
     values = [v / 255 for v in data]
     mean = sum(values) / len(values)
     counts = Counter(data)
@@ -104,6 +107,11 @@ def _forward_full(model, x):
     layers = model['layers']
     for idx, layer in enumerate(layers):
         current = activations[-1]
+        if len(layer.get('w', [])) != len(layer.get('b', [])):
+            raise ValueError('Las dimensiones internas del modelo no coinciden.')
+        for row in layer.get('w', []):
+            if len(row) != len(current):
+                raise ValueError('Las dimensiones internas del modelo no coinciden.')
         z = [sum(w * v for w, v in zip(row, current)) + b for row, b in zip(layer['w'], layer['b'])]
         if idx == len(layers) - 1:
             activations.append([1 / (1 + math.exp(-max(-30, min(30, z[0]))))])
@@ -143,7 +151,11 @@ def _backprop_step(model, x, y, confidence, learning_rate):
     for idx, layer in enumerate(layers):
         a_in = activations[idx]
         delta = deltas[idx]
+        if len(layer['w']) != len(layer['b']) or len(delta) != len(layer['b']):
+            raise ValueError('Las dimensiones internas del modelo no coinciden.')
         for j in range(len(layer['b'])):
+            if len(layer['w'][j]) != len(a_in):
+                raise ValueError('Las dimensiones internas del modelo no coinciden.')
             layer['b'][j] -= learning_rate * delta[j]
             row = layer['w'][j]
             dj = delta[j]
@@ -274,17 +286,37 @@ def _validate_imported_model(payload):
     if not isinstance(model, dict) or not isinstance(model.get('layers'), list) or not model['layers']:
         raise ValueError('El modelo importado no tiene capas.')
     sizes = [len(FEATURES)]
-    for layer in model['layers']:
+    normalized_layers = []
+
+    def _number(value, where: str) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(f'El valor {where} debe ser numérico y finito.')
+        parsed = float(value)
+        if abs(parsed) > MAX_IMPORTED_WEIGHT_ABS:
+            raise ValueError(f'El valor {where} excede el máximo permitido ({MAX_IMPORTED_WEIGHT_ABS:g}).')
+        return parsed
+
+    for layer_index, layer in enumerate(model['layers']):
         if not isinstance(layer, dict) or 'w' not in layer or 'b' not in layer:
             raise ValueError('Cada capa debe tener pesos (w) y sesgos (b).')
         w, b = layer['w'], layer['b']
         if not isinstance(w, list) or not isinstance(b, list) or len(w) != len(b):
             raise ValueError('Las dimensiones de w y b no coinciden en una capa.')
-        for row in w:
+        normalized_w = []
+        for row_index, row in enumerate(w):
             if not isinstance(row, list) or len(row) != sizes[-1]:
                 raise ValueError(
                     f'Una capa espera {sizes[-1]} entradas pero encontró {len(row) if isinstance(row, list) else "?"}.'
                 )
+            normalized_w.append([
+                _number(value, f'w[{layer_index}][{row_index}][{value_index}]')
+                for value_index, value in enumerate(row)
+            ])
+        normalized_b = [
+            _number(value, f'b[{layer_index}][{value_index}]')
+            for value_index, value in enumerate(b)
+        ]
+        normalized_layers.append({'w': normalized_w, 'b': normalized_b})
         sizes.append(len(b))
     if sizes[-1] != 1:
         raise ValueError('La última capa debe tener exactamente 1 neurona de salida.')
@@ -296,7 +328,7 @@ def _validate_imported_model(payload):
     for size in hidden_sizes:
         if not (MIN_HIDDEN_NEURONS <= size <= MAX_HIDDEN_NEURONS):
             raise ValueError(f'Cada capa oculta debe tener entre {MIN_HIDDEN_NEURONS} y {MAX_HIDDEN_NEURONS} neuronas.')
-    return model, hidden_sizes
+    return {'layers': normalized_layers}, hidden_sizes
 
 
 def import_model(state, payload):

@@ -231,12 +231,12 @@ curl -X POST http://127.0.0.1:45678/api/runtime/ \
 
 - `SNIFF4HOUND_REQUIRE_AUTH=1` por defecto.
 - El banner imprime un enlace de arranque como `http://127.0.0.1:45678/?code=<token>`;
-  la SPA lee ese `code`, lo guarda en `localStorage` y limpia la URL visible.
+  la SPA lee ese `code`, lo guarda en `sessionStorage` de la pestaña y limpia la URL visible.
 - Se aceptan:
   - `Authorization: Bearer <token>`
   - `X-Security-Code: <token>`
   - `X-Access-Token: <token>`
-  - `?security_code=<token>`, `?access_token=<token>`, `?token=<token>` o `?auth=<token>` solo en el handshake de `WS /ws/`
+  - `WS /ws/` usa tickets `ws_ticket` de un solo uso emitidos por `POST /api/ws/ticket`; el security code largo no viaja en la URL del WebSocket.
 - `GET /api/auth/session` indica si la sesion esta autenticada.
 - `sniff4hound.auth.generate_token()` crea JWT HS256 para integraciones.
 - No hay secreto de firma por defecto: si `SNIFF4HOUND_JWT_SECRET` no esta
@@ -247,6 +247,11 @@ curl -X POST http://127.0.0.1:45678/api/runtime/ \
   contra un limitador por IP (`SNIFF4HOUND_AUTH_FAILURE_THRESHOLD` fallos en
   `SNIFF4HOUND_AUTH_FAILURE_WINDOW_SECONDS`); al superarlo la respuesta pasa a
   `429` con `Retry-After` y backoff incremental.
+- Los previews de payload/banner/summary persistidos se redactan para patrones
+  comunes de secretos (`Authorization`, passwords, tokens, JWT y credenciales en URLs) antes de entrar a SQLite/exportaciones.
+- Los responders UDP del honeypot tienen rate limit por IP de origen y los
+  listeners TCP tienen un límite de conexiones concurrentes por puerto. No se
+  recomienda exponerlos a Internet sin filtrado adicional.
 
 ## Superficie HTTP y WS
 

@@ -232,6 +232,18 @@ class LearningTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             import_model({}, bad_output)
 
+    def test_import_model_rejects_non_numeric_or_extreme_weights(self):
+        valid = export_model({'model': initial_model([6])})
+        bad_type = json.loads(json.dumps(valid))
+        bad_type['model']['layers'][0]['w'][0][0] = 'nan'
+        with self.assertRaises(ValueError):
+            import_model({}, bad_type)
+
+        bad_magnitude = json.loads(json.dumps(valid))
+        bad_magnitude['model']['layers'][0]['b'][0] = 10_000_000
+        with self.assertRaises(ValueError):
+            import_model({}, bad_magnitude)
+
     def test_effectiveness_not_ready_without_both_classes(self):
         state = update_feedback({}, packet(1), 'malicious', 3, '')
         self.assertEqual(model_effectiveness(state), {'ready': False, 'accuracy': None, 'correct': 0, 'total': 1})

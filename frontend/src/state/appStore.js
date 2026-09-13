@@ -6,7 +6,7 @@ const AUTH_SESSION_PATH = "/api/auth/session";
 const STORAGE_KEY_API = "sniff4hound.apiBase";
 const STORAGE_KEY_AUTH = "sniff4hound.securityCode";
 const LEGACY_STORAGE_KEY_AUTH = "sniff4hound.sessionToken";
-const QUERY_AUTH_KEYS = ["code", "security_code", "access_token", "token", "auth"];
+const QUERY_AUTH_KEYS = ["code"];
 const STORAGE_KEY_NOTIFY_SOUND = "sniff4hound.notifySoundEnabled";
 const STORAGE_KEY_TIME_RANGE = "sniff4hound.timeRange";
 // Relative windows understood by the API's `since` query parameter. The empty
@@ -71,6 +71,7 @@ let wsReconnectTimer = null;
 let wsRefreshTimer = null;
 let wsPendingRefreshPayload = null;
 let wsCoalescedEventCount = 0;
+let wsConnectAttempt = 0;
 let notificationIdSeq = 0;
 let audioContext = null;
 let lastRuntimeForNotify = null;
@@ -146,23 +147,42 @@ function readStartupAuthTokenFromUrl() {
 }
 
 function readLocalAuthToken() {
-  if (typeof window === "undefined" || !window.localStorage) {
+  if (typeof window === "undefined") {
     return "";
   }
   try {
-    return String(window.localStorage.getItem(STORAGE_KEY_AUTH) || "").trim();
+    const sessionToken = window.sessionStorage
+      ? String(window.sessionStorage.getItem(STORAGE_KEY_AUTH) || "").trim()
+      : "";
+    if (sessionToken) return sessionToken;
+  } catch {
+    // storage may be unavailable; fall through to the migration cleanup
+  }
+  try {
+    const legacyToken = window.localStorage
+      ? String(
+          window.localStorage.getItem(STORAGE_KEY_AUTH) ||
+            window.localStorage.getItem(LEGACY_STORAGE_KEY_AUTH) ||
+            "",
+        ).trim()
+      : "";
+    if (window.localStorage) {
+      window.localStorage.removeItem(STORAGE_KEY_AUTH);
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
+    }
+    return legacyToken;
   } catch {
     return "";
   }
 }
 
 function clearLegacySessionAuthToken() {
-  if (typeof window === "undefined" || !window.sessionStorage) {
+  if (typeof window === "undefined") {
     return;
   }
   try {
-    window.sessionStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
-    window.sessionStorage.removeItem(STORAGE_KEY_AUTH);
+    if (window.sessionStorage) window.sessionStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
+    if (window.localStorage) window.localStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
   } catch {
     // private-mode / disabled storage: nothing to clean up
   }
@@ -181,18 +201,23 @@ function readStoredAuthToken() {
 function persistAuthToken(token) {
   const cleaned = String(token || "").trim();
   inMemoryAuthToken = cleaned;
-  if (typeof window === "undefined" || !window.localStorage) {
+  if (typeof window === "undefined") {
     return;
   }
   try {
-    if (cleaned) {
-      window.localStorage.setItem(STORAGE_KEY_AUTH, cleaned);
-    } else {
-      window.localStorage.removeItem(STORAGE_KEY_AUTH);
+    if (window.sessionStorage) {
+      if (cleaned) {
+        window.sessionStorage.setItem(STORAGE_KEY_AUTH, cleaned);
+      } else {
+        window.sessionStorage.removeItem(STORAGE_KEY_AUTH);
+      }
     }
-    window.localStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
+    if (window.localStorage) {
+      window.localStorage.removeItem(STORAGE_KEY_AUTH);
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
+    }
   } catch {
-    // localStorage may be unavailable; the in-memory copy still covers this tab
+    // storage may be unavailable; the in-memory copy still covers this tab
   }
 }
 
@@ -619,6 +644,7 @@ function clearReconnectTimer() {
 }
 
 function destroyRealtime() {
+  wsConnectAttempt += 1;
   clearReconnectTimer();
   if (wsRefreshTimer) {
     clearTimeout(wsRefreshTimer);
@@ -841,6 +867,12 @@ function httpFetchWithMeta(path, opts, config) {
 
 function fetchJsonPromise(path, options = {}, config = {}) {
   return fetchWithMeta(path, options, config).then((result) => result.data);
+}
+
+function requestWsTicket() {
+  if (!state.authToken) return Promise.resolve("");
+  return fetchJsonPromise("/api/ws/ticket", { method: "POST" }, { preferHttp: true })
+    .then((payload) => String((payload && payload.ticket) || "").trim());
 }
 
 const IOC_EXPORT_DATASETS = new Set(["alerts", "endpoints", "flows", "domains"]);
@@ -1521,20 +1553,20 @@ function scheduleTableRefresh(payload) {
 
 // --- per-feed websocket streams --------------------------------------------
 // One socket per data feed, with everything the stream needs in its URL:
-//   /ws/<feed>?security_code=...&refresh=1000&limit=500&proto=arp
+//   /ws/<feed>?ws_ticket=...&refresh=1000&limit=500&proto=arp
 //
 // Changing what you are watching closes the socket and opens another. That is
 // the point of putting the parameters in the URL rather than in a subscribe
 // message: a live connection can never end up serving a slice its URL does not
 // describe, so there is no state to get out of step on either side.
 
-function feedUrl(feed, params = {}) {
+function feedUrl(feed, params = {}, ticket = "") {
   let base = state.apiBase;
   if (!base && typeof window !== "undefined") {
     base = window.location.origin;
   }
   const query = new URLSearchParams();
-  if (state.authToken) query.set("security_code", state.authToken);
+  if (ticket) query.set("ws_ticket", ticket);
   Object.entries(params).forEach(([key, value]) => {
     if (value === undefined || value === null || value === "") return;
     query.set(key, String(value));
@@ -1550,7 +1582,8 @@ function feedUrl(feed, params = {}) {
     const host = typeof window !== "undefined" ? window.location.host : "127.0.0.1:45678";
     const protocol =
       typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : "ws";
-    return `${protocol}://${host}${path}?${query.toString()}`;
+    const suffix = query.toString();
+    return `${protocol}://${host}${path}${suffix ? `?${suffix}` : ""}`;
   }
 }
 
@@ -1589,6 +1622,7 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
   let reconnectAttempts = 0;
   let hasGivenUp = false;
   let currentParams = params || {};
+  let connectAttempt = 0;
 
   const clearFirstFrameTimer = () => {
     if (firstFrameTimer) {
@@ -1605,6 +1639,7 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
 
   const connect = (next) => {
     currentParams = next || {};
+    const attempt = ++connectAttempt;
     clearReconnectTimer();
     // Closed before opening the replacement, not after: two sockets for the
     // same feed would both be pushed to, and the view would render whichever
@@ -1620,67 +1655,75 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
       socket = null;
     }
     if (closedByCaller) return false;
-    try {
-      socket = new window.WebSocket(feedUrl(feed, currentParams));
-    } catch {
-      socket = null;
-      giveUp();
-      return false;
-    }
-    const connectedSocket = socket;
-    const isCurrent = () => !closedByCaller && socket === connectedSocket;
-    clearFirstFrameTimer();
-    firstFrameTimer = setTimeout(() => {
-      firstFrameTimer = null;
-      if (isCurrent()) giveUp();
-    }, FEED_FIRST_FRAME_TIMEOUT_MS);
-    socket.addEventListener("error", () => {
-      if (!isCurrent()) return;
-      clearFirstFrameTimer();
-      if (!closedByCaller) giveUp();
-    });
-    socket.addEventListener("close", () => {
-      if (!isCurrent()) return;
-      clearFirstFrameTimer();
-      if (closedByCaller) return;
-      // Keep retrying the connection so a view that already fell back to HTTP
-      // still recovers once the stream comes back, but stop leaving the caller
-      // hanging past a few attempts - fall back explicitly instead. Only the
-      // *first* attempt past the threshold calls giveUp(): without the
-      // `hasGivenUp` guard, every subsequent close (the connection keeps
-      // retrying in the background) would re-trigger the caller's fallback
-      // forever instead of once.
-      reconnectAttempts += 1;
-      if (reconnectAttempts > FEED_MAX_SILENT_RECONNECTS && !hasGivenUp) {
-        hasGivenUp = true;
+    const openWithTicket = (ticket = "") => {
+      if (closedByCaller || attempt !== connectAttempt) return;
+      try {
+        socket = new window.WebSocket(feedUrl(feed, currentParams, ticket));
+      } catch {
+        socket = null;
         giveUp();
-      }
-      const delay = Math.min(FEED_RECONNECT_BASE_MS * reconnectAttempts, FEED_RECONNECT_MAX_MS);
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        connect(currentParams);
-      }, delay);
-    });
-    socket.addEventListener("message", (event) => {
-      if (!isCurrent()) return;
-      const payload = parseJsonSafe(event.data);
-      if (!payload || typeof payload !== "object") return;
-      if (String(payload.type || "") === "auth_required") {
-        clearFirstFrameTimer();
-        handleUnauthorized(payload.message || "Session expired. Re-enter the security code.");
         return;
       }
-      if (String(payload.type || "") === "feed_data") {
+      const connectedSocket = socket;
+      const isCurrent = () => !closedByCaller && socket === connectedSocket;
+      clearFirstFrameTimer();
+      firstFrameTimer = setTimeout(() => {
+        firstFrameTimer = null;
+        if (isCurrent()) giveUp();
+      }, FEED_FIRST_FRAME_TIMEOUT_MS);
+      socket.addEventListener("error", () => {
+        if (!isCurrent()) return;
         clearFirstFrameTimer();
-        reconnectAttempts = 0;
-        hasGivenUp = false;
-      }
-      try {
-        onMessage(payload);
-      } catch {
-        // A failing view must not tear down its own stream.
-      }
-    });
+        if (!closedByCaller) giveUp();
+      });
+      socket.addEventListener("close", () => {
+        if (!isCurrent()) return;
+        clearFirstFrameTimer();
+        if (closedByCaller) return;
+        // Keep retrying the connection so a view that already fell back to HTTP
+        // still recovers once the stream comes back, but stop leaving the caller
+        // hanging past a few attempts - fall back explicitly instead. Only the
+        // *first* attempt past the threshold calls giveUp(): without the
+        // `hasGivenUp` guard, every subsequent close (the connection keeps
+        // retrying in the background) would re-trigger the caller's fallback
+        // forever instead of once.
+        reconnectAttempts += 1;
+        if (reconnectAttempts > FEED_MAX_SILENT_RECONNECTS && !hasGivenUp) {
+          hasGivenUp = true;
+          giveUp();
+        }
+        const delay = Math.min(FEED_RECONNECT_BASE_MS * reconnectAttempts, FEED_RECONNECT_MAX_MS);
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connect(currentParams);
+        }, delay);
+      });
+      socket.addEventListener("message", (event) => {
+        if (!isCurrent()) return;
+        const payload = parseJsonSafe(event.data);
+        if (!payload || typeof payload !== "object") return;
+        if (String(payload.type || "") === "auth_required") {
+          clearFirstFrameTimer();
+          handleUnauthorized(payload.message || "Session expired. Re-enter the security code.");
+          return;
+        }
+        if (String(payload.type || "") === "feed_data") {
+          clearFirstFrameTimer();
+          reconnectAttempts = 0;
+          hasGivenUp = false;
+        }
+        try {
+          onMessage(payload);
+        } catch {
+          // A failing view must not tear down its own stream.
+        }
+      });
+    };
+    if (state.authToken) {
+      requestWsTicket().then(openWithTicket).catch(() => giveUp());
+    } else {
+      openWithTicket("");
+    }
     return true;
   };
 
@@ -1717,7 +1760,7 @@ function feedListResult(payload) {
   };
 }
 
-function wsUrl() {
+function wsUrl(ticket = "") {
   let base = state.apiBase;
   if (!base && typeof window !== "undefined") {
     base = window.location.origin;
@@ -1727,21 +1770,21 @@ function wsUrl() {
     parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
     parsed.pathname = "/ws/";
     parsed.search = "";
-    if (state.authToken) {
-      parsed.searchParams.set("security_code", state.authToken);
+    if (ticket) {
+      parsed.searchParams.set("ws_ticket", ticket);
     }
     return parsed.toString();
   } catch {
     if (typeof window !== "undefined") {
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const suffix = state.authToken
-        ? `?security_code=${encodeURIComponent(state.authToken)}`
+      const suffix = ticket
+        ? `?ws_ticket=${encodeURIComponent(ticket)}`
         : "";
       return `${protocol}://${window.location.host}/ws/${suffix}`;
     }
   }
-  const suffix = state.authToken
-    ? `?security_code=${encodeURIComponent(state.authToken)}`
+  const suffix = ticket
+    ? `?ws_ticket=${encodeURIComponent(ticket)}`
     : "";
   return `ws://127.0.0.1:45678/ws/${suffix}`;
 }
@@ -1788,6 +1831,9 @@ function connectRealtime() {
     lockRealtimeForAuth();
     return;
   }
+  if (state.wsStatus === "connecting") {
+    return;
+  }
   if (
     wsClient &&
     (wsClient.readyState === window.WebSocket.OPEN ||
@@ -1796,18 +1842,30 @@ function connectRealtime() {
     return;
   }
 
-  let socket = null;
-  try {
-    socket = new window.WebSocket(wsUrl());
-  } catch {
-    state.wsStatus = "error";
-    scheduleReconnect();
-    return;
-  }
-
-  wsClient = socket;
   state.wsStatus = "connecting";
+  const attempt = ++wsConnectAttempt;
+  requestWsTicket()
+    .then((ticket) => {
+      if (attempt !== wsConnectAttempt || state.shutdownPending) return;
+      let socket;
+      try {
+        socket = new window.WebSocket(wsUrl(ticket));
+      } catch {
+        state.wsStatus = "error";
+        scheduleReconnect();
+        return;
+      }
+      wsClient = socket;
+      attachRealtimeSocket(socket);
+    })
+    .catch(() => {
+      if (attempt !== wsConnectAttempt) return;
+      state.wsStatus = "error";
+      scheduleReconnect();
+    });
+}
 
+function attachRealtimeSocket(socket) {
   socket.addEventListener("open", () => {
     if (wsClient !== socket) return;
     clearReconnectTimer();

@@ -49,7 +49,7 @@
       <p class="text-body-2 text-medium-emphasis mb-3">
         La red neuronal aprende de tus revisiones (abajo); el detector LOF agrupa paquetes del mismo
         protocolo para medir cuáles son atípicos. Ambos motores tienen parámetros reales que puedes
-        ajustar - capas y neuronas por capa para la red, tamaño mínimo de grupo para el LOF.
+        ajustar - capas y neuronas por capa para la red, tamaño mínimo de grupo para el LOF. El LOF no puntúa grupos por debajo de ese mínimo.
       </p>
       <v-alert v-if="learningConfigError" type="error" density="comfortable" class="mb-3">{{ learningConfigError }}</v-alert>
       <v-row dense v-if="learningConfigDraft">
@@ -436,7 +436,9 @@ async function setSampling(enabled) {
 function statusLabel(packet) {
   if (packet.status === "no_bytes") return "No se puede analizar este registro sin bytes.";
   if (packet.feedback) return `Conclusión del operador: ${packet.feedback.label}. Puedes corregirla o retirar la etiqueta.`;
-  if (packet.status === "insufficient_data" && packet.neural_score === null) return "Esperando un grupo LOF de 20 imágenes o suficientes revisiones para la red neuronal.";
+  if (packet.status === "insufficient_data" && packet.neural_score === null) {
+    return `Esperando un grupo LOF de ${learningConfig.value?.min_cohort || 20} imágenes o suficientes revisiones para la red neuronal.`;
+  }
   if (packet.alerted) return "Ya tiene una coincidencia de reglas o monitores.";
   if (packet.detection_status !== "evaluated") return "Sin evaluación completa de monitores registrada; no se clasifica como falso negativo.";
   if (packet.candidate) return "Posible falso negativo: patrón atípico sin alertas registradas. Revisar.";

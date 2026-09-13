@@ -5,30 +5,12 @@ from pathlib import Path
 import json
 
 from .runtime_paths import resolve_data_file
+from .regex_safety import compiled_regex, limit_regex_subject, regex_search
 from .utils import coerce_bool, normalize_protocol_name, unique_ordered, safe_int
 
 
-# Compiled-pattern cache, keyed by pattern text, shared by every ruleset/
-# monitor regex check. CPython's own `re` module already memoizes compiled
-# patterns internally, but that cache is process-global, shared by every
-# unrelated regex call in the app, and capped small (512 entries by
-# default) - with hundreds of distinct monitor/ruleset patterns evaluated
-# on every captured packet, it thrashes constantly. This cache is scoped to
-# just those patterns and, in practice, converges to one entry per distinct
-# pattern and then stays stable for the life of the process. `None` is
-# cached too, so a pattern that fails to compile isn't retried every packet.
-_COMPILED_REGEX_CACHE: dict[str, "re.Pattern | None"] = {}
-
-
 def _compiled_regex(pattern: str):
-    if pattern in _COMPILED_REGEX_CACHE:
-        return _COMPILED_REGEX_CACHE[pattern]
-    try:
-        compiled = re.compile(pattern, re.IGNORECASE)
-    except re.error:
-        compiled = None
-    _COMPILED_REGEX_CACHE[pattern] = compiled
-    return compiled
+    return compiled_regex(pattern, re.IGNORECASE)
 
 
 def literal_packet_text_pattern(value: str) -> str:
@@ -354,7 +336,7 @@ def build_packet_text(packet: dict) -> str:
     src/dst IPs or MACs into the payload buffer makes IOC-like literals fire
     on routing metadata rather than observed application data.
     """
-    return " ".join(
+    return limit_regex_subject(" ".join(
         str(value)
         for value in (
             packet.get("summary"),
@@ -365,7 +347,7 @@ def build_packet_text(packet: dict) -> str:
             packet.get("http_method"),
         )
         if value not in (None, "")
-    ).lower()
+    ).lower())
 
 
 def _is_http_response_packet(packet: dict) -> bool:
@@ -386,7 +368,7 @@ def _regex_matches_any(patterns, *values) -> bool:
         if compiled is None:
             continue
         for value in values:
-            if value and compiled.search(str(value)):
+            if value and regex_search(compiled, value):
                 return True
     return False
 
@@ -478,7 +460,7 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
         matched_port = False
         for pattern in port_regexes:
             compiled = _compiled_regex(pattern)
-            if compiled is not None and (compiled.search(str(src_port)) or compiled.search(str(dst_port))):
+            if compiled is not None and (regex_search(compiled, str(src_port)) or regex_search(compiled, str(dst_port))):
                 matched_port = True
                 break
         if not matched_port:
@@ -511,7 +493,7 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
         matched_ip = False
         for pattern in ip_regexes:
             compiled = _compiled_regex(pattern)
-            if compiled is not None and (compiled.search(src_ip) or compiled.search(dst_ip)):
+            if compiled is not None and (regex_search(compiled, src_ip) or regex_search(compiled, dst_ip)):
                 matched_ip = True
                 break
         if not matched_ip:
@@ -526,7 +508,7 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
         matched_protocol = False
         for pattern in protocol_regexes:
             compiled = _compiled_regex(pattern)
-            if compiled is not None and (compiled.search(proto) or (transport and compiled.search(transport))):
+            if compiled is not None and (regex_search(compiled, proto) or (transport and regex_search(compiled, transport))):
                 matched_protocol = True
                 break
         if not matched_protocol:
@@ -632,7 +614,7 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
         matched_any = False
         for pattern in regexes:
             compiled = _compiled_regex(pattern)
-            if compiled is not None and compiled.search(packet_text):
+            if compiled is not None and regex_search(compiled, packet_text):
                 matched_any = True
                 break
         if not matched_any:
@@ -641,7 +623,7 @@ def rule_matches_packet(rule: dict, packet: dict, *, packet_text: str | None = N
     if exclude_regexes:
         for pattern in exclude_regexes:
             compiled = _compiled_regex(pattern)
-            if compiled is not None and compiled.search(packet_text):
+            if compiled is not None and regex_search(compiled, packet_text):
                 return False
 
     if min_length and packet_length < min_length:

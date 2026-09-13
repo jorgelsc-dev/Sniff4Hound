@@ -14,11 +14,10 @@ Timestamps are UTC, in the exact format `utils.utc_now()` writes into every
 sort and correlate as plain strings. They used to be local wall-clock time,
 which silently drifted apart from everything else the sensor records.
 
-Credentials never reach the line: the frontend passes the session code in the
-WebSocket handshake query string (`/ws/?security_code=...`), so the query of
-both the request target and the Referer is scrubbed of the auth parameters
-before anything is printed - otherwise every reconnect wrote the live code to
-the console in clear text.
+Credentials never reach the line: startup links, legacy query-token callers
+and WebSocket one-time tickets put credential-like values in URLs, so the
+query of both the request target and the Referer is scrubbed before anything
+is printed.
 
 WebSocket handshakes are logged as the HTTP request they actually are, with
 status 101, and the matching close gets its own `WS CLOSE` line carrying the
@@ -51,8 +50,9 @@ from .utils import utc_now
 # app._extract_request_query_token, plus the frontend bootstrap `code` link).
 # Their values are replaced before the request target - or a Referer - is ever
 # written out.
-REDACTED_QUERY_KEYS = frozenset({"code", "security_code", "access_token", "token", "auth"})
+REDACTED_QUERY_KEYS = frozenset({"code", "security_code", "access_token", "token", "auth", "ws_ticket", "ticket"})
 REDACTED_VALUE = "REDACTED"
+MAX_FIELD_CHARS = 512
 
 
 def _timestamp() -> str:
@@ -145,7 +145,7 @@ def _sanitize_field(value: str, default: str = "-") -> str:
             out.append("?")
         else:
             out.append(char)
-    return "".join(out)
+    return "".join(out)[:MAX_FIELD_CHARS]
 
 
 def _client_address(request) -> str:

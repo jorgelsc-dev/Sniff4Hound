@@ -12,6 +12,7 @@ import threading
 import time
 import unicodedata
 import webbrowser
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,11 @@ try:
     import termios
 except ImportError:  # pragma: no cover - non-POSIX platforms
     termios = None
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None
 
 
 from .console import (  # noqa: F401  (re-exported: manage.py is the console's public entry point)
@@ -419,6 +425,36 @@ def _clear_stale_capture_socket(ipc_socket: str) -> None:
         pass
 
 
+@contextmanager
+def _capture_start_lock(ipc_socket: str):
+    """Serialize unlink/spawn/connect for a capture IPC socket path."""
+    socket_path = Path(ipc_socket).expanduser()
+    lock_path = socket_path.with_name(f"{socket_path.name}.lock")
+    lock_file = None
+    try:
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = open(lock_path, "a+b", buffering=0)
+        except OSError:
+            lock_file = None
+            yield
+            return
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if lock_file is not None:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            try:
+                lock_file.close()
+            except OSError:
+                pass
+
+
 def _capture_log_path(ipc_socket: str) -> Path:
     return Path(ipc_socket).with_suffix(".log")
 
@@ -608,8 +644,6 @@ def main():
         return 1
 
     ipc_socket = resolve_ipc_socket(selected_port)
-    _clear_stale_capture_socket(ipc_socket)
-    ipc_token = resolve_ipc_token() or generate_ipc_token()
     # The token reaches the privileged child through a 0600 file whose path
     # (never its contents) is what goes on the `sudo env ...` command line -
     # /proc/<pid>/cmdline is world-readable, so the old
@@ -617,50 +651,53 @@ def main():
     # shared secret to every local user for the life of the process. The file
     # is removed as soon as the child has connected, and again on shutdown.
     ipc_token_file = default_ipc_token_path(ipc_socket)
-    if not write_ipc_token_file(ipc_token_file, ipc_token):
-        print(f"[!] Could not write the capture IPC token file at {ipc_token_file}.", file=sys.stderr)
-        return 1
-    os.environ["SNIFF4HOUND_IPC_SOCKET"] = ipc_socket
-    os.environ["SNIFF4HOUND_IPC_TOKEN_FILE"] = ipc_token_file
-    os.environ.pop("SNIFF4HOUND_IPC_TOKEN", None)
-    # DATA_DIR (and so the default DB_PATH, honeypot log/db/certs - see
-    # settings.py and honeypot.py) defaults to this process's home
-    # directory. The capture child below is relaunched via `sudo`, which
-    # resets HOME to root's home by default, so without pinning this
-    # explicitly the two processes would silently compute two different
-    # paths and the privileged child would persist captured traffic where
-    # the web process never looks. setdefault() so an operator-provided
-    # SNIFF4HOUND_DATA_DIR/SNIFF4HOUND_DB_PATH still wins.
-    os.environ.setdefault("SNIFF4HOUND_DATA_DIR", str(DATA_DIR))
-
-    # Import (and so construct sniff4hound.app's SniffStore, as this
-    # unprivileged user) *before* spawning the privileged capture child.
-    # Both processes open the same SQLite file; whichever one creates it
-    # first owns it on disk, and a root-owned DB file/WAL is unwritable by
-    # this process afterwards. Importing first guarantees the web process
-    # wins that race regardless of how fast the capture child starts.
+    shutdown_capture = lambda: None
     try:
-        from .app import app, append_chat_message, bootstrap_capture, connect_capture_service, hub, runtime, shutdown_capture, store
-    except sqlite3.OperationalError as exc:
-        _print_db_permission_error(exc)
-        return 1
+        with _capture_start_lock(ipc_socket):
+            _clear_stale_capture_socket(ipc_socket)
+            ipc_token = resolve_ipc_token() or generate_ipc_token()
+            if not write_ipc_token_file(ipc_token_file, ipc_token):
+                print(f"[!] Could not write the capture IPC token file at {ipc_token_file}.", file=sys.stderr)
+                return 1
+            os.environ["SNIFF4HOUND_IPC_SOCKET"] = ipc_socket
+            os.environ["SNIFF4HOUND_IPC_TOKEN_FILE"] = ipc_token_file
+            os.environ.pop("SNIFF4HOUND_IPC_TOKEN", None)
+            # DATA_DIR (and so the default DB_PATH, honeypot log/db/certs - see
+            # settings.py and honeypot.py) defaults to this process's home
+            # directory. The capture child below is relaunched via `sudo`, which
+            # resets HOME to root's home by default, so without pinning this
+            # explicitly the two processes would silently compute two different
+            # paths and the privileged child would persist captured traffic where
+            # the web process never looks. setdefault() so an operator-provided
+            # SNIFF4HOUND_DATA_DIR/SNIFF4HOUND_DB_PATH still wins.
+            os.environ.setdefault("SNIFF4HOUND_DATA_DIR", str(DATA_DIR))
 
-    capture_process = _spawn_capture_child(ipc_socket, ipc_token_file)
-    if capture_process is None:
-        _remove_ipc_token_file(ipc_token_file)
-        return 1
+            # Import (and so construct sniff4hound.app's SniffStore, as this
+            # unprivileged user) *before* spawning the privileged capture child.
+            # Both processes open the same SQLite file; whichever one creates it
+            # first owns it on disk, and a root-owned DB file/WAL is unwritable by
+            # this process afterwards. Importing first guarantees the web process
+            # wins that race regardless of how fast the capture child starts.
+            try:
+                from .app import app, append_chat_message, bootstrap_capture, connect_capture_service, hub, runtime, shutdown_capture, store
+            except sqlite3.OperationalError as exc:
+                _print_db_permission_error(exc)
+                return 1
 
-    try:
-        time.sleep(0.2)
-        if capture_process.poll() is not None:
-            print(f"[!] Capture process exited immediately (code {capture_process.returncode}).", file=sys.stderr)
-            return 1
-        if not connect_capture_service():
-            print("[!] Sniff4Hound cannot start without the capture process. See the error above.", file=sys.stderr)
-            return 1
-        # The child has authenticated by now, so nothing needs the file any
-        # more - shrink the window in which it exists at all.
-        _remove_ipc_token_file(ipc_token_file)
+            capture_process = _spawn_capture_child(ipc_socket, ipc_token_file)
+            if capture_process is None:
+                return 1
+
+            time.sleep(0.2)
+            if capture_process.poll() is not None:
+                print(f"[!] Capture process exited immediately (code {capture_process.returncode}).", file=sys.stderr)
+                return 1
+            if not connect_capture_service():
+                print("[!] Sniff4Hound cannot start without the capture process. See the error above.", file=sys.stderr)
+                return 1
+            # The child has authenticated by now, so nothing needs the file any
+            # more - shrink the window in which it exists at all.
+            _remove_ipc_token_file(ipc_token_file)
 
         # sudo's password/fingerprint prompt for the capture child we just
         # waited on can leave the shared controlling terminal in raw mode

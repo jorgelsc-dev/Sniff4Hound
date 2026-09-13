@@ -124,6 +124,38 @@ class AuthGuardHardeningTests(unittest.TestCase):
         self.assertEqual(self._dispatch(headers={"x-security-code": "Ab12Cd34"}).status, 200)
         self.assertEqual(self._dispatch(headers={"x-security-code": "nope"}).status, 401)
 
+    def test_cross_origin_state_change_is_rejected_after_auth(self):
+        response = self.app.app.dispatch(
+            _request(
+                "/api/echo",
+                method="POST",
+                headers={
+                    "x-security-code": "Ab12Cd34",
+                    "host": "127.0.0.1:45678",
+                    "origin": "http://evil.example",
+                },
+                body="{}",
+            )
+        )
+        self.assertEqual(response.status, 403)
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["code"], "bad_origin")
+
+    def test_same_origin_state_change_is_allowed(self):
+        response = self.app.app.dispatch(
+            _request(
+                "/api/echo",
+                method="POST",
+                headers={
+                    "x-security-code": "Ab12Cd34",
+                    "host": "127.0.0.1:45678",
+                    "origin": "http://127.0.0.1:45678",
+                },
+                body="hello",
+            )
+        )
+        self.assertEqual(response.status, 200)
+
     def test_the_session_endpoint_shares_the_limiter(self):
         # /api/auth/session is the one route the guard skips, which makes it
         # the only free "is this code right?" oracle if it is not limited.
@@ -138,6 +170,22 @@ class AuthGuardHardeningTests(unittest.TestCase):
         for _ in range(self.auth.AUTH_FAILURE_THRESHOLD + 5):
             self.app.app.dispatch(_request("/api/auth/session"))
         self.assertEqual(self._dispatch(headers={"x-security-code": "Ab12Cd34"}).status, 200)
+
+    def test_websocket_ticket_is_one_time_and_replaces_query_security_code(self):
+        issued = self.app.app.dispatch(
+            _request("/api/ws/ticket", method="POST", headers={"x-security-code": "Ab12Cd34"})
+        )
+        self.assertEqual(issued.status, 200)
+        ticket = json.loads(issued.body.decode("utf-8"))["ticket"]
+
+        first = _request("/ws/", query=f"ws_ticket={ticket}")
+        self.assertIsNone(self.app._guard_websocket_auth(first))
+
+        replay = _request("/ws/", query=f"ws_ticket={ticket}")
+        self.assertEqual(self.app._guard_websocket_auth(replay).status, 401)
+
+        old_style = _request("/ws/", query="security_code=Ab12Cd34")
+        self.assertEqual(self.app._guard_websocket_auth(old_style).status, 401)
 
 
 class ExportEndpointTests(unittest.TestCase):
@@ -244,6 +292,17 @@ class ExportContentTests(unittest.TestCase):
         payload = export.build_export(self.store, "alerts", limit=100)
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["rows"][0]["hit_count"], 3)
+
+    def test_captured_secret_preview_is_redacted_before_storage(self):
+        row = self._record_packet(
+            payload_text="Authorization: Bearer very-secret-token password=hunter2",
+            banner_text="redis://user:supersecret@example.internal",
+        )
+        text = f"{row.get('payload_text')} {row.get('banner_text')}"
+        self.assertIn("[REDACTED]", text)
+        self.assertNotIn("very-secret-token", text)
+        self.assertNotIn("hunter2", text)
+        self.assertNotIn("supersecret", text)
 
     def test_domain_rows_come_from_the_domain_catalog(self):
         from sniff4hound import export
