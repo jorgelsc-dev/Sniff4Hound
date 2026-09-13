@@ -3,15 +3,18 @@ from __future__ import annotations
 import re
 from typing import Any
 
+try:
+    import regex as _timeout_regex
+except ImportError as exc:  # pragma: no cover - dependency is declared in pyproject.
+    raise RuntimeError(
+        "Sniff4Hound requires the 'regex' package so capture-path regex checks can enforce timeouts. "
+        "Install the project with `python -m pip install -e .` or install `regex` explicitly."
+    ) from exc
+
 from . import settings
 
-try:  # pragma: no cover - exercised when the optional dependency is absent.
-    import regex as _timeout_regex
-except Exception:  # pragma: no cover
-    _timeout_regex = None
 
-
-_COMPILED_REGEX_CACHE: dict[tuple[str, int, bool], Any | None] = {}
+_COMPILED_REGEX_CACHE: dict[tuple[str, int], Any | None] = {}
 
 
 def limit_regex_subject(value: Any) -> str:
@@ -60,14 +63,11 @@ def validate_regex_pattern(pattern: str, *, max_length: int | None = None) -> st
 
 def compiled_regex(pattern: str, flags: int = re.IGNORECASE):
     text = str(pattern or "").strip()
-    key = (text, int(flags), _timeout_regex is not None)
+    key = (text, int(flags))
     if key in _COMPILED_REGEX_CACHE:
         return _COMPILED_REGEX_CACHE[key]
     try:
-        if _timeout_regex is not None:
-            compiled = _timeout_regex.compile(text, flags)
-        else:
-            compiled = re.compile(text, flags)
+        compiled = _timeout_regex.compile(text, flags)
     except Exception:
         compiled = None
     _COMPILED_REGEX_CACHE[key] = compiled
@@ -79,9 +79,7 @@ def regex_search(compiled, value: Any):
         return None
     subject = limit_regex_subject(value)
     try:
-        if _timeout_regex is not None:
-            return compiled.search(subject, timeout=settings.MONITOR_REGEX_TIMEOUT_SECONDS)
-        return compiled.search(subject)
+        return compiled.search(subject, timeout=settings.MONITOR_REGEX_TIMEOUT_SECONDS)
     except TimeoutError:
         return None
     except Exception:

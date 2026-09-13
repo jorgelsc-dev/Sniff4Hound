@@ -119,10 +119,58 @@ test("legacy localStorage security code is not re-persisted to sessionStorage", 
     assert.equal(localStorage.getItem("sniff4hound.securityCode"), null);
     assert.equal(sessionStorage.getItem("sniff4hound.securityCode"), null);
   } finally {
-    appStore.state.authToken = "";
+    appStore.signOut();
     appStore.state.authStatus = "unknown";
     appStore.state.authRequired = false;
     appStore.state.authReady = false;
+    appStore.state.authPromptOpen = false;
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("startup URL security code stays in memory only", async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const localStorage = memoryStorage();
+  const sessionStorage = memoryStorage();
+  let cleanedUrl = "";
+  globalThis.window = {
+    localStorage,
+    sessionStorage,
+    location: {
+      href: "http://localhost/?code=url-secret",
+      origin: "http://localhost",
+      protocol: "http:",
+      hostname: "localhost",
+      port: "",
+    },
+    history: { replaceState(_state, _title, url) { cleanedUrl = url; } },
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    const path = String(url);
+    if (path.endsWith("/api/auth/session")) {
+      assert.equal(options.headers["X-Security-Code"], "url-secret");
+      return new Response(JSON.stringify({ require_auth: true, authenticated: true }), { status: 200 });
+    }
+    if (path.endsWith("/api/runtime/")) {
+      return new Response(JSON.stringify({ runtime: { mode: "sniffer" } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+
+  try {
+    await appStore.bootstrap();
+    assert.equal(appStore.state.authToken, "url-secret");
+    assert.equal(cleanedUrl, "/");
+    assert.equal(localStorage.getItem("sniff4hound.securityCode"), null);
+    assert.equal(sessionStorage.getItem("sniff4hound.securityCode"), null);
+  } finally {
+    appStore.signOut();
+    appStore.state.authStatus = "unknown";
+    appStore.state.authRequired = false;
+    appStore.state.authReady = false;
+    appStore.state.authPromptOpen = false;
     globalThis.window = originalWindow;
     globalThis.fetch = originalFetch;
   }

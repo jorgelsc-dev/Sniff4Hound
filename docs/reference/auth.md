@@ -7,8 +7,8 @@ Sniff4Hound usa un token de sesion corto para la UI y JWT HS256 para integracion
 - se genera al arrancar;
 - tiene 8 caracteres alfanumericos;
 - se imprime en la terminal cuando inicia `sniff4hound`;
-- el enlace de arranque usa `/?code=<token>` para que la UI lo guarde
-  automaticamente en la sesion de la pestaña.
+- el enlace de arranque usa `/?code=<token>` para que la UI lo cargue
+  automaticamente en memoria y limpie la URL visible.
 
 Cabeceras aceptadas:
 
@@ -18,9 +18,9 @@ Cabeceras aceptadas:
 - `POST /api/ws/ticket` emite un `ws_ticket` de un solo uso y corta vida para
   el handshake WebSocket
 
-La UI conserva el codigo en `sessionStorage` como `sniff4hound.securityCode`.
-El valor se borra al cerrar la pestaña; abrir un enlace de arranque nuevo lo
-reemplaza para esa pestaña.
+La UI no persiste el codigo en `localStorage` ni `sessionStorage`. Las claves
+legacy (`sniff4hound.securityCode` y `sniff4hound.sessionToken`) se leen una vez
+si existen para compatibilidad y se eliminan inmediatamente.
 
 Si `SNIFF4HOUND_REQUIRE_AUTH=0`, la app permite acceso anonimo cuando no se envia token.
 

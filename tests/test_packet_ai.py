@@ -82,6 +82,9 @@ class AiStorageTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        forensic = patch('sniff4hound.store.STORE_RAW_PACKET_BYTES', True)
+        forensic.start()
+        self.addCleanup(forensic.stop)
         self.store = SniffStore(Path(tmp.name) / 'test.db')
         self.addCleanup(self.store.close)
 

@@ -16,6 +16,7 @@
 | `SNIFF4HOUND_SNAPLEN` | `65535` | Tamano maximo del paquete capturado. |
 | `SNIFF4HOUND_POLL_TIMEOUT` | `0.5` | Espera de polling en captura. |
 | `SNIFF4HOUND_CAPTURE_BUFFER_BYTES` | `524288` | Buffer de captura. |
+| `SNIFF4HOUND_STORE_RAW_PACKET` | `0` | Retiene `raw_packet`/`payload_hex` crudos solo si se activa explicitamente para analisis forense o byte-image AI. |
 | `SNIFF4HOUND_FRONTEND_DIST` | auto | Sobrescribe el directorio compilado de la UI. |
 | `SNIFF4HOUND_DECLARED_LATITUDE` | vacio | Latitud del sitio donde esta el sensor. Solo valor inicial: se ajusta desde Settings. |
 | `SNIFF4HOUND_DECLARED_LONGITUDE` | vacio | Longitud del sitio donde esta el sensor. |
