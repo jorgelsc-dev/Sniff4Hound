@@ -6,7 +6,7 @@ Sniff4Hound usa SQLite como unico almacenamiento local. La base por defecto es `
 
 - `sessions`: sesiones de captura y contadores globales.
 - `flows`: conversaciones agregadas por clave estable.
-- `packets`: paquetes individuales y payload bruto.
+- `packets`: paquetes individuales, previews redactados y metadatos de captura.
 - `payloads`: respuestas registradas por el honeypot.
 - `tags`: etiquetas y metadatos de analisis.
 - `rulesets`: catalogo de reglas editables.
@@ -18,6 +18,9 @@ Sniff4Hound usa SQLite como unico almacenamiento local. La base por defecto es `
 - Se activa `foreign_keys`.
 - El timeout de espera es de `5000 ms`.
 - El `text_factory` normaliza texto binario para que la API no rompa al serializar.
+- `raw_packet` y `payload_hex` no se retienen por defecto. Activa
+  `SNIFF4HOUND_STORE_RAW_PACKET=1` solo cuando necesites analisis forense o
+  byte-image AI con bytes crudos.
 
 ## Limites de retencion
 

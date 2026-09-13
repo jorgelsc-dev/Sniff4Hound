@@ -303,6 +303,11 @@ class ExportContentTests(unittest.TestCase):
         self.assertNotIn("very-secret-token", text)
         self.assertNotIn("hunter2", text)
         self.assertNotIn("supersecret", text)
+        payload = self.store.list_payloads(limit=1)[0]
+        self.assertIn("[REDACTED]", payload["response_plain"])
+        self.assertNotIn("very-secret-token", payload["response_plain"])
+        self.assertNotIn("hunter2", payload["response_plain"])
+        self.assertNotIn("supersecret", payload["response_plain"])
 
     def test_domain_rows_come_from_the_domain_catalog(self):
         from sniff4hound import export
@@ -493,6 +498,9 @@ class ApiInputCoercionTests(unittest.TestCase):
 
     def test_favicon_endpoints_extract_and_serve_captured_http_icons(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
+            forensic = patch("sniff4hound.store.STORE_RAW_PACKET_BYTES", True)
+            forensic.start()
+            self.addCleanup(forensic.stop)
             replacement_store, icon = self._store_with_captured_favicon(tmp_dir)
             try:
                 with patch.object(self.app, "store", replacement_store):
@@ -526,6 +534,9 @@ class ApiInputCoercionTests(unittest.TestCase):
         self.auth.RATE_LIMITER.reset()
         self.addCleanup(self.auth.RATE_LIMITER.reset)
         with tempfile.TemporaryDirectory() as tmp_dir:
+            forensic = patch("sniff4hound.store.STORE_RAW_PACKET_BYTES", True)
+            forensic.start()
+            self.addCleanup(forensic.stop)
             replacement_store, icon = self._store_with_captured_favicon(tmp_dir)
             try:
                 payload_id = replacement_store.list_payloads(limit=1)[0]["id"]

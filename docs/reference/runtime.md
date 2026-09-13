@@ -16,6 +16,7 @@
 | `SNIFF4HOUND_SNAPLEN` | `65535` | Tamano maximo del paquete capturado. |
 | `SNIFF4HOUND_POLL_TIMEOUT` | `0.5` | Espera de polling en captura. |
 | `SNIFF4HOUND_CAPTURE_BUFFER_BYTES` | `524288` | Buffer de captura. |
+| `SNIFF4HOUND_STORE_RAW_PACKET` | `0` | Retiene `raw_packet`/`payload_hex` crudos solo si se activa explicitamente para analisis forense o byte-image AI. |
 | `SNIFF4HOUND_FRONTEND_DIST` | auto | Sobrescribe el directorio compilado de la UI. |
 | `SNIFF4HOUND_DECLARED_LATITUDE` | vacio | Latitud del sitio donde esta el sensor. Solo valor inicial: se ajusta desde Settings. |
 | `SNIFF4HOUND_DECLARED_LONGITUDE` | vacio | Longitud del sitio donde esta el sensor. |
@@ -28,6 +29,37 @@ Sniff4Hound siempre requiere root para arrancar (captura de paquetes raw). No
 existe ninguna variable de entorno para saltarse esto: si no corre como root,
 intenta relanzarse con `sudo` y, si no puede, termina sin arrancar el
 servidor e imprime el motivo por stderr.
+
+## Modos de activacion (Sniffer / Honeypot / Training / IA)
+
+El Dashboard expone 4 interruptores independientes:
+
+- **Sniffer** / **Honeypot**: los motores de captura de siempre (`POST
+  /api/runtime/` con `{"engine": "sniffer"|"honeypot", "action": "start"|"stop"}`).
+- **Training** (`POST /api/ai/config` con `{"training_enabled": true|false}`,
+  antes `sampling_enabled`): cuando esta activo, todo paquete que pase
+  exclusiones/whitelist se evalua con los Monitors (catalogo de reglas +
+  detectores de anomalia) igual que siempre, pero en vez de persistir solo
+  el trafico que genera alerta, **se guarda todo** lo evaluado y se
+  encola en segundo plano para reentrenar la IA (`ai_learning.py`) usando el
+  veredicto de los Monitors como etiqueta (`malicious`/`benign`). La mitad
+  "guardar todo" funciona sin bytes crudos; la mitad "entrenar la red" exige
+  `SNIFF4HOUND_STORE_RAW_PACKET=1` (silenciosamente no hace nada sin eso).
+- **IA** (`POST /api/ai/config` con `{"ai_alert_mode_enabled": true|false}`):
+  cuando esta activo **y Training esta apagado** ("solo IA"), el catalogo de
+  reglas/regex de Monitors se salta por completo y el clasificador
+  entrenado por feedback decide si hay alerta. Los detectores de anomalia
+  (SYN flood, port scan, ARP spoof, ...) siguen funcionando siempre, sean
+  cuales sean estos dos flags. Si IA y Training estan **ambos** activos, los
+  Monitors se quedan a cargo de decidir la alerta (para no ensuciar las
+  etiquetas de entrenamiento) y solo Training sigue alimentando el
+  reentrenamiento. Requiere `SNIFF4HOUND_STORE_RAW_PACKET=1`: el backend
+  rechaza con `400` activar `ai_alert_mode_enabled` sin retencion de bytes
+  crudos, porque el clasificador puntua sobre `payload_hex`/`raw_packet`.
+
+`GET /api/ai/config` devuelve `training_enabled`, `ai_alert_mode_enabled` y
+`raw_retention_enabled` (espejo de `SNIFF4HOUND_STORE_RAW_PACKET`) para que
+el frontend sepa si puede ofrecer el interruptor de IA.
 
 ## Ubicacion del sensor y mapa
 

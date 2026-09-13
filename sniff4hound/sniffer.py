@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import math
+import queue
 import re
 import socket
 import sqlite3
@@ -9,9 +10,11 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from .ai_learning import features as ai_features, forward as ai_forward, is_current_model_shape
 from .anomaly import AnomalyEngine
 from .logger import get_capture_logger
 from .monitors import RuleAlertThrottle, ensure_monitor_index, evaluate_packet, indexed_monitors_by_id
+from .packet_ai import packet_bytes
 from .regex_safety import compiled_regex, regex_search
 from .rulesets import build_packet_text, classify_packet, literal_packet_text_pattern
 from .store import compile_exclusion_networks, packet_matches_exclusion_filter
@@ -24,6 +27,7 @@ from .settings import (
     MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT,
     PAYLOAD_TEXT_MAX_CHARS,
     PORT,
+    STORE_RAW_PACKET_BYTES,
 )
 from .app_decoders import decode as decode_app_payload
 from .app_protocols import (
@@ -614,6 +618,20 @@ class Sniffer:
         self._last_stats_broadcast_at = 0.0
         self._anomaly = AnomalyEngine()
         self._rule_throttle = RuleAlertThrottle()
+        self._training_enabled = False
+        self._ai_alert_mode_enabled = False
+        self._ai_model = None
+        # Bounded so a training-mode burst at wire speed can never make the
+        # capture thread block on `put()` - see _run_ai_training_worker.
+        # Overflow is simply dropped; losing an occasional training example
+        # is harmless, blocking capture is not. The worker thread itself is
+        # started lazily (see _enqueue_ai_training) rather than for every
+        # Sniffer instance - most never turn training on at all (including
+        # the many short-lived Sniffer()s the test suite creates), so there
+        # is no reason to leave an idle thread on every one of them.
+        self._ai_training_queue: queue.Queue = queue.Queue(maxsize=500)
+        self._ai_training_thread_lock = threading.Lock()
+        self._ai_training_thread_started = False
         # Per-flow "this TCP flow is carrying TLS" memory. A single TLS
         # record (especially Application Data, the bulk of any HTTPS
         # session after the handshake) is routinely larger than one Ethernet
@@ -978,7 +996,23 @@ class Sniffer:
                 whitelist = []
             filter_enabled = self.store.get_monitor_filter_enabled()
             get_config = getattr(self.store, "get_runtime_config", None)
-            self._ai_sampling_enabled = callable(get_config) and get_config("ai_sampling_enabled", "0") == "1"
+            # `training_enabled` replaces the old `ai_sampling_enabled` flag;
+            # an install upgrading from before this change still has its
+            # previous choice honoured until it is next changed explicitly.
+            stored_training = callable(get_config) and get_config("training_enabled", "")
+            if stored_training == "":
+                stored_training = callable(get_config) and get_config("ai_sampling_enabled", "0")
+            self._training_enabled = stored_training == "1"
+            self._ai_alert_mode_enabled = callable(get_config) and get_config("ai_alert_mode_enabled", "0") == "1"
+            ai_model = None
+            if self._ai_alert_mode_enabled:
+                try:
+                    candidate = self.store.ai_learning_state().get("model")
+                    if is_current_model_shape(candidate):
+                        ai_model = candidate
+                except Exception:
+                    LOGGER.exception("Failed to load AI model for alert mode")
+            self._ai_model = ai_model
             get_min_severity = getattr(self.store, "get_monitor_min_severity", None)
             get_suppress_generated_info = getattr(self.store, "get_monitor_suppress_generated_info", None)
             min_severity = get_min_severity() if callable(get_min_severity) else MONITOR_MIN_SEVERITY_DEFAULT
@@ -1138,12 +1172,97 @@ class Sniffer:
             return False
         return safe_int(packet.get("src_port"), 0) == PORT or safe_int(packet.get("dst_port"), 0) == PORT
 
+    def _classify_with_ai(self, packet: dict) -> dict | None:
+        """Score one live packet with the persisted feedback-trained model
+        ("solo IA" mode). Cheap and synchronous - forward() is a handful of
+        tiny matrix ops - but needs the packet's own raw bytes, which are
+        only present when SNIFF4HOUND_STORE_RAW_PACKET keeps them around
+        (enforced at the /api/ai/config layer before this flag can be set)."""
+        model = self._ai_model
+        if not model:
+            return None
+        try:
+            data, _source, _partial = packet_bytes(packet)
+            if not data:
+                return None
+            _hidden, score = ai_forward(model, ai_features(data))
+        except Exception:
+            LOGGER.exception("AI classification failed")
+            return None
+        return {"score": score, "is_alert": score >= 0.5}
+
+    def _ai_hit_from_verdict(self, verdict: dict) -> dict:
+        score = float(verdict.get("score") or 0.0)
+        if score >= 0.85:
+            severity = "critical"
+        elif score >= 0.7:
+            severity = "high"
+        elif score >= 0.55:
+            severity = "medium"
+        else:
+            severity = "low"
+        return {
+            "monitor_id": "ai-classifier",
+            "monitor_name": "Clasificador IA",
+            "tag": "ai_alert",
+            "label": "Alerta IA",
+            "severity": severity,
+            "detail": f"score={score:.2f}",
+        }
+
+    def _training_confidence(self, monitor_hits: list[dict]) -> float:
+        """Confidence fed into ai_learning.update_feedback for an
+        auto-labelled example - higher for hits the operator's own monitor
+        catalog/anomaly engine flagged at higher severity, moderate for
+        traffic nothing flagged (an absence of signal, not a verified
+        negative)."""
+        if not monitor_hits:
+            return 0.6
+        rank = max(
+            MONITOR_SEVERITY_RANK.get(str(hit.get("severity") or "info").strip().lower(), 0)
+            for hit in monitor_hits
+        )
+        return {0: 0.6, 1: 0.65, 2: 0.75, 3: 0.85, 4: 0.95}.get(rank, 0.6)
+
+    def _run_ai_training_worker(self):
+        """Drains _ai_training_queue and feeds each auto-labelled packet
+        into the same online-learning path as manual operator feedback
+        (store.save_ai_feedback) - on its own daemon thread so a training
+        write (fingerprint, mini-batch backprop, persist) never blocks the
+        capture loop that enqueued it."""
+        while True:
+            try:
+                packet_id, label, confidence, note = self._ai_training_queue.get()
+                self.store.save_ai_feedback(packet_id, label, confidence, note)
+            except Exception:
+                LOGGER.debug("Auto AI training feedback failed", exc_info=True)
+
+    def _enqueue_ai_training(self, packet_id, label: str, confidence: float, note: str) -> None:
+        if not self._ai_training_thread_started:
+            with self._ai_training_thread_lock:
+                if not self._ai_training_thread_started:
+                    threading.Thread(
+                        target=self._run_ai_training_worker,
+                        daemon=True,
+                        name="sniff4hound-ai-training",
+                    ).start()
+                    self._ai_training_thread_started = True
+        try:
+            self._ai_training_queue.put_nowait((packet_id, label, confidence, note))
+        except queue.Full:
+            pass
+
     def _store_packet(self, packet: dict):
         if self._is_own_dashboard_traffic(packet):
             self._touch_packet(packet, stored=False)
             return
         monitors, filter_enabled = self._get_monitor_context()
         detection_muted = self._detection_muted(packet) or self._whitelisted(packet) or self._exclusion_filtered(packet)
+        # "Solo IA": IA activa y Training apagado. El catalogo de reglas se
+        # salta y el veredicto de la IA ocupa su lugar; los detectores de
+        # anomalia (SYN flood, port scan, ...) siguen corriendo siempre, ya
+        # que son contadores de tasa independientes del catalogo declarativo.
+        ai_only_mode = self._ai_alert_mode_enabled and not self._training_enabled
         monitor_matched = False
         if detection_muted:
             matches = []
@@ -1151,9 +1270,15 @@ class Sniffer:
         else:
             rulesets = self._get_rulesets()
             matches = classify_packet(packet, rulesets)
-            monitor_hits = evaluate_packet(packet, monitors) if filter_enabled else []
-            monitor_matched = bool(monitor_hits)
-            monitor_hits = self._filter_monitor_hits(monitor_hits)
+            catalog_hits = [] if (ai_only_mode or not filter_enabled) else evaluate_packet(packet, monitors)
+            ai_hits = []
+            if ai_only_mode:
+                verdict = self._classify_with_ai(packet)
+                if verdict and verdict.get("is_alert"):
+                    ai_hits = [self._ai_hit_from_verdict(verdict)]
+            combined_hits = catalog_hits + ai_hits
+            monitor_matched = bool(combined_hits)
+            monitor_hits = self._filter_monitor_hits(combined_hits)
             if monitor_hits:
                 monitor_hits = self._rule_throttle.filter(monitor_hits, packet.get("src_ip"))
             # Anomaly detectors run unconditionally, regardless of filter_enabled —
@@ -1170,25 +1295,46 @@ class Sniffer:
         packet["rule_hits"] = matches
         packet["monitor_hits"] = monitor_hits
         packet["tags"] = tags
-        packet["ai_detection_status"] = "muted" if detection_muted else ("evaluated" if filter_enabled else "disabled")
+        if detection_muted:
+            packet["ai_detection_status"] = "muted"
+        elif ai_only_mode:
+            packet["ai_detection_status"] = "ai_decided"
+        elif filter_enabled:
+            packet["ai_detection_status"] = "evaluated"
+        else:
+            packet["ai_detection_status"] = "disabled"
         if monitor_matched and not monitor_hits:
             packet["ai_detection_status"] = "suppressed"
         packet["banner_text"] = packet.get("banner_text") or packet.get("payload_text") or ""
 
-        detected = detection_muted or bool(monitor_hits) or not filter_enabled
-        ai_sample = False
-        if not detected and getattr(self, "_ai_sampling_enabled", False):
-            now = time.monotonic()
-            with self._state_lock:
-                if now - getattr(self, "_ai_last_sample", float("-inf")) >= 1:
-                    ai_sample = True
-                    self._ai_last_sample = now
+        # Training mode stores every non-muted packet it evaluates (not just
+        # the ones that alert) so both "clean" and "malicious" labels are
+        # available to train from - it replaces the old throttled
+        # ai_sampling_enabled (1 sample/sec) with the full evaluated feed.
+        detected = detection_muted or bool(monitor_hits) or not filter_enabled or self._training_enabled
+        ai_sample = (
+            self._training_enabled
+            and detected
+            and filter_enabled
+            and not detection_muted
+            and not monitor_hits
+        )
         packet["ai_sample"] = ai_sample
-        if detected or ai_sample:
+        if detected:
             saved = self.store.register_packet(packet)
             self._touch_packet(saved or packet, stored=True)
             self._broadcast_packet(saved or packet, persisted=True)
             self._record_intel(packet)
+            if (
+                self._training_enabled
+                and not detection_muted
+                and STORE_RAW_PACKET_BYTES
+                and saved
+                and saved.get("id")
+            ):
+                label = "malicious" if monitor_hits else "benign"
+                confidence = self._training_confidence(monitor_hits)
+                self._enqueue_ai_training(saved["id"], label, confidence, "auto:training")
         else:
             # Undetected traffic can arrive at wire speed; broadcasting a full
             # "packet" event for every one of them would flood connected

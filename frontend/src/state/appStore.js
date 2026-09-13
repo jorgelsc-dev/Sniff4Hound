@@ -150,52 +150,61 @@ function readLocalAuthToken() {
   if (typeof window === "undefined") {
     return "";
   }
+  let token = "";
   try {
-    const sessionToken = window.sessionStorage
-      ? String(window.sessionStorage.getItem(STORAGE_KEY_AUTH) || "").trim()
-      : "";
-    if (sessionToken) return sessionToken;
-  } catch {
-    // storage may be unavailable; fall through to the migration cleanup
-  }
-  try {
-    const legacyToken = window.localStorage
+    token = window.sessionStorage
       ? String(
-          window.localStorage.getItem(STORAGE_KEY_AUTH) ||
-            window.localStorage.getItem(LEGACY_STORAGE_KEY_AUTH) ||
+          window.sessionStorage.getItem(STORAGE_KEY_AUTH) ||
+            window.sessionStorage.getItem(LEGACY_STORAGE_KEY_AUTH) ||
             "",
         ).trim()
       : "";
-    if (window.localStorage) {
-      window.localStorage.removeItem(STORAGE_KEY_AUTH);
-      window.localStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
-    }
-    return legacyToken;
   } catch {
-    return "";
+    // storage may be unavailable; fall through to localStorage cleanup
   }
+  try {
+    if (!token) {
+      token = window.localStorage
+        ? String(
+            window.localStorage.getItem(STORAGE_KEY_AUTH) ||
+              window.localStorage.getItem(LEGACY_STORAGE_KEY_AUTH) ||
+              "",
+          ).trim()
+        : "";
+    }
+  } catch {
+    // localStorage may be unavailable; cleanup below still tries sessionStorage
+  }
+  clearStoredAuthTokens();
+  return token;
 }
 
-function clearLegacySessionAuthToken() {
+function clearStoredAuthTokens() {
   if (typeof window === "undefined") {
     return;
   }
   try {
-    if (window.sessionStorage) window.sessionStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
-    if (window.localStorage) window.localStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
+    if (window.sessionStorage) {
+      window.sessionStorage.removeItem(STORAGE_KEY_AUTH);
+      window.sessionStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
+    }
+    if (window.localStorage) {
+      window.localStorage.removeItem(STORAGE_KEY_AUTH);
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
+    }
   } catch {
     // private-mode / disabled storage: nothing to clean up
   }
 }
 
 function readStoredAuthToken() {
-  clearLegacySessionAuthToken();
   const urlToken = readStartupAuthTokenFromUrl();
   if (urlToken) {
     persistAuthToken(urlToken);
     return urlToken;
   }
-  return String(inMemoryAuthToken || readLocalAuthToken()).trim();
+  const storedToken = readLocalAuthToken();
+  return String(inMemoryAuthToken || storedToken).trim();
 }
 
 function persistAuthToken(token) {
@@ -205,17 +214,7 @@ function persistAuthToken(token) {
     return;
   }
   try {
-    if (window.sessionStorage) {
-      if (cleaned) {
-        window.sessionStorage.setItem(STORAGE_KEY_AUTH, cleaned);
-      } else {
-        window.sessionStorage.removeItem(STORAGE_KEY_AUTH);
-      }
-    }
-    if (window.localStorage) {
-      window.localStorage.removeItem(STORAGE_KEY_AUTH);
-      window.localStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
-    }
+    clearStoredAuthTokens();
   } catch {
     // storage may be unavailable; the in-memory copy still covers this tab
   }

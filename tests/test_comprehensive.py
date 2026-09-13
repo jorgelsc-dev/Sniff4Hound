@@ -629,8 +629,8 @@ class TestSniffStore(unittest.TestCase):
         payloads = self.store.list_payloads(limit=10)
         self.assertEqual(payloads, [])
 
-    def test_packet_raw_binary_encoding(self):
-        """Raw packet binary should be encoded as hex string."""
+    def test_packet_raw_binary_is_disabled_by_default(self):
+        """Raw packet binary should not be retained without forensic opt-in."""
         packet = {
             "session_id": 1,
             "proto": "tcp",
@@ -644,6 +644,25 @@ class TestSniffStore(unittest.TestCase):
             "raw_packet": b"\x00\x01\x02\xff",
         }
         result = self.store.register_packet(packet)
+        self.assertIsNone(result["raw_packet"])
+        self.assertEqual(result["payload_hex"], "")
+
+    def test_packet_raw_binary_encoding_when_forensic_storage_is_enabled(self):
+        """Raw packet binary should be encoded as hex string in forensic mode."""
+        packet = {
+            "session_id": 1,
+            "proto": "tcp",
+            "src_ip": "10.0.0.1",
+            "dst_ip": "10.0.0.2",
+            "src_port": 5000,
+            "dst_port": 443,
+            "payload_text": "",
+            "payload_hex": "",
+            "summary": "Test",
+            "raw_packet": b"\x00\x01\x02\xff",
+        }
+        with patch("sniff4hound.store.STORE_RAW_PACKET_BYTES", True):
+            result = self.store.register_packet(packet)
         self.assertIsInstance(result["raw_packet"], str)
         self.assertRegex(result["raw_packet"], r"^[0-9a-f]+$")
 

@@ -41,6 +41,7 @@ from .settings import (
     RETENTION_DAYS,
     RETENTION_INTERVAL_SECONDS,
     RETENTION_MAX_PACKETS,
+    STORE_RAW_PACKET_BYTES,
 )
 from .utils import (
     KNOWN_PROTOCOLS,
@@ -117,6 +118,33 @@ def _sqlite_text_factory(value):
     return str(value)
 
 
+def _sanitize_packet_forensic_fields(row: dict | None) -> dict | None:
+    if not row:
+        return row
+    if not STORE_RAW_PACKET_BYTES:
+        if "payload_hex" in row:
+            row["payload_hex"] = ""
+        if "raw_packet" in row:
+            row["raw_packet"] = None
+        if "frame_hex" in row:
+            row["frame_hex"] = ""
+        if "frame_length" in row:
+            row["frame_length"] = 0
+    return row
+
+
+def _sanitize_payload_forensic_fields(row: dict | None) -> dict | None:
+    if not row:
+        return row
+    if "response_plain" in row:
+        row["response_plain"] = redact_sensitive_text(
+            normalize_text(row.get("response_plain") or "", limit=PAYLOAD_TEXT_MAX_CHARS)
+        )
+    if not STORE_RAW_PACKET_BYTES and "payload_hex" in row:
+        row["payload_hex"] = ""
+    return row
+
+
 def _flatten_packet_details(row: dict) -> dict:
     """A packet row with its decoder extras lifted to top-level keys.
 
@@ -134,7 +162,7 @@ def _flatten_packet_details(row: dict) -> dict:
         for key, value in details.items():
             if key in DETAIL_KEYS:
                 packet[key] = value
-    return packet
+    return _sanitize_packet_forensic_fields(packet)
 
 
 def _coerce_json(value, default):
@@ -819,6 +847,7 @@ class SniffStore:
             self._migrate_packets_columns()
             self._migrate_tags_columns()
             self._create_indexes()
+            self._migrate_sensitive_capture_storage()
 
     def _migrate_packets_columns(self):
         existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(packets)")}
@@ -884,6 +913,26 @@ class SniffStore:
         ):
             self._conn.execute(statement)
         self._conn.commit()
+
+    def _migrate_sensitive_capture_storage(self):
+        changed = False
+        if not STORE_RAW_PACKET_BYTES:
+            cursor = self._conn.execute(
+                "UPDATE packets SET payload_hex = '', raw_packet = NULL WHERE payload_hex != '' OR raw_packet IS NOT NULL"
+            )
+            changed = changed or cursor.rowcount > 0
+
+        updates = []
+        for row in self._conn.execute("SELECT id, response_plain FROM payloads WHERE response_plain != ''"):
+            current = str(row["response_plain"] or "")
+            redacted = redact_sensitive_text(normalize_text(current, limit=PAYLOAD_TEXT_MAX_CHARS))
+            if redacted != current:
+                updates.append((redacted, row["id"]))
+        if updates:
+            self._conn.executemany("UPDATE payloads SET response_plain = ? WHERE id = ?", updates)
+            changed = True
+        if changed:
+            self._conn.commit()
 
     def _seed_baseline(self):
         with self._lock:
@@ -1781,6 +1830,7 @@ class SniffStore:
             f"SELECT {columns} FROM packets {where} ORDER BY id DESC LIMIT ? OFFSET ?",
             tuple(params),
         )
+        rows = [_sanitize_packet_forensic_fields(row) for row in rows]
         return self._attach_review_labels(rows)
 
     def _attach_review_labels(self, rows):
@@ -1846,9 +1896,10 @@ class SniffStore:
         # Convert the bounded BLOB in SQL: the normal row serializer limits
         # binary fields to a 256-byte preview and would lose image data.
         if packet_id is not None:
-            return self._fetchall(
+            rows = self._fetchall(
                 f"SELECT {self._AI_PACKET_COLUMNS} FROM packets WHERE id = ?", (packet_id,)
             )
+            return [_sanitize_packet_forensic_fields(row) for row in rows]
         filters = self.get_exclusion_filters()
         has_filters = any(filters.values())
         # No filters: keep the cheap, direct 200-row fetch. With filters,
@@ -1861,9 +1912,10 @@ class SniffStore:
             f"SELECT {self._AI_PACKET_COLUMNS} FROM packets ORDER BY id DESC LIMIT ?", (fetch_limit,)
         )
         if not has_filters:
-            return rows
+            return [_sanitize_packet_forensic_fields(row) for row in rows]
         networks = compile_exclusion_networks(filters)
-        return [row for row in rows if not packet_matches_exclusion_filter(row, filters, networks)][:200]
+        rows = [row for row in rows if not packet_matches_exclusion_filter(row, filters, networks)][:200]
+        return [_sanitize_packet_forensic_fields(row) for row in rows]
 
     def get_exclusion_filters(self):
         # Runtime-config key kept as "ai_exclusion_filters" (its original,
@@ -2259,7 +2311,7 @@ class SniffStore:
         where, params = self._payload_filter(search=search, proto=proto, interface=interface, mode=mode, since=since)
         params = list(params)
         params.extend([int(limit), int(offset)])
-        return self._fetchall(
+        rows = self._fetchall(
             f"""
             SELECT
                 payloads.*,
@@ -2284,9 +2336,10 @@ class SniffStore:
             """,
             tuple(params),
         )
+        return [_sanitize_payload_forensic_fields(row) for row in rows]
 
     def get_payload_with_packet(self, payload_id: int):
-        return self._fetchone(
+        return _sanitize_payload_forensic_fields(self._fetchone(
             """
             SELECT
                 payloads.*,
@@ -2308,7 +2361,7 @@ class SniffStore:
             WHERE payloads.id = ?
             """,
             (safe_int(payload_id, 0),),
-        )
+        ))
 
     def _tag_filter(self, *, proto="", search="", since=""):
         clauses = []
@@ -4608,7 +4661,8 @@ class SniffStore:
         payload_text = redact_sensitive_text(normalize_text(packet.get("payload_text") or "", limit=PAYLOAD_TEXT_MAX_CHARS))
         summary_text = redact_sensitive_text(normalize_text(packet.get("summary") or "", limit=PAYLOAD_TEXT_MAX_CHARS))
         banner_text = redact_sensitive_text(normalize_text(packet.get("banner_text") or payload_text, limit=PAYLOAD_TEXT_MAX_CHARS))
-        payload_hex = str(packet.get("payload_hex") or "")
+        payload_hex = str(packet.get("payload_hex") or "") if STORE_RAW_PACKET_BYTES else ""
+        raw_packet = packet.get("raw_packet") if STORE_RAW_PACKET_BYTES else None
         length = safe_int(packet.get("length", 0), 0)
         payload_len = safe_int(packet.get("payload_len", 0), 0)
         state = str(packet.get("state") or ("open" if payload_len else "filtered")).strip().lower() or "open"
@@ -4656,13 +4710,13 @@ class SniffStore:
             json_dumps(extract_details(packet)),
             json_dumps(tags),
             json_dumps(rule_hits),
-            packet.get("raw_packet"),
+            raw_packet,
             now,
             now,
         )
         with self._lock:
             try:
-                return self._write_packet_rows(packet, packet_row, flow_key, tags, rule_hits, banner_text, length, payload_len, now)
+                return self._write_packet_rows(packet, packet_row, flow_key, tags, rule_hits, banner_text, payload_text, length, payload_len, now)
             except sqlite3.Error as exc:
                 if not any(token in str(exc).lower() for token in self._RECOVERABLE_ERRORS):
                     raise
@@ -4670,9 +4724,9 @@ class SniffStore:
                 # a packet row, its flow, tags and payload have to land
                 # together or not at all.
                 self._recover_connection()
-                return self._write_packet_rows(packet, packet_row, flow_key, tags, rule_hits, banner_text, length, payload_len, now)
+                return self._write_packet_rows(packet, packet_row, flow_key, tags, rule_hits, banner_text, payload_text, length, payload_len, now)
 
-    def _write_packet_rows(self, packet, packet_row, flow_key, tags, rule_hits, banner_text, length, payload_len, now):
+    def _write_packet_rows(self, packet, packet_row, flow_key, tags, rule_hits, banner_text, payload_text, length, payload_len, now):
         """The write half of register_packet, so it can be retried whole.
 
         Caller holds self._lock.
@@ -4694,7 +4748,7 @@ class SniffStore:
         packet_id = cursor.lastrowid
         self._upsert_flow(packet_id, session_id, flow_key, packet, tags, banner_text, now)
         self._insert_tag_rows(packet_id, flow_key, packet, tags, now)
-        self._insert_payload_row(packet_id, flow_key, packet, banner_text, now)
+        self._insert_payload_row(packet_id, flow_key, packet, banner_text, payload_text, now)
         self.bump_session_counters(session_id, length or payload_len, len(rule_hits))
         self._conn.commit()
 
@@ -4771,8 +4825,8 @@ class SniffStore:
                 ),
             )
 
-    def _insert_payload_row(self, packet_id: int, flow_key: str, packet: dict, banner_text: str, now: str):
-        payload_text = str(packet.get("payload_text") or "").strip()
+    def _insert_payload_row(self, packet_id: int, flow_key: str, packet: dict, banner_text: str, payload_text: str, now: str):
+        payload_text = redact_sensitive_text(normalize_text(payload_text or "", limit=PAYLOAD_TEXT_MAX_CHARS))
         if not payload_text and not banner_text:
             return
         response_plain = banner_text or payload_text
@@ -4801,13 +4855,13 @@ class SniffStore:
         )
 
     def get_packet(self, packet_id: int):
-        return self._fetchone("SELECT * FROM packets WHERE id = ?", (packet_id,))
+        return _sanitize_packet_forensic_fields(self._fetchone("SELECT * FROM packets WHERE id = ?", (packet_id,)))
 
     def get_flow(self, flow_key: str):
         return self._fetchone("SELECT * FROM flows WHERE flow_key = ?", (flow_key,))
 
     def get_payload(self, payload_id: int):
-        return self._fetchone("SELECT * FROM payloads WHERE id = ?", (payload_id,))
+        return _sanitize_payload_forensic_fields(self._fetchone("SELECT * FROM payloads WHERE id = ?", (payload_id,)))
 
     def get_tag(self, tag_id: int):
         return self._fetchone("SELECT * FROM tags WHERE id = ?", (tag_id,))
@@ -4817,7 +4871,9 @@ class SniffStore:
         if not packet:
             return None
         packet["tags"] = self._fetchall("SELECT * FROM tags WHERE packet_id = ? ORDER BY id ASC", (packet_id,))
-        packet["payload"] = self._fetchone("SELECT * FROM payloads WHERE packet_id = ? ORDER BY id DESC LIMIT 1", (packet_id,))
+        packet["payload"] = _sanitize_payload_forensic_fields(
+            self._fetchone("SELECT * FROM payloads WHERE packet_id = ? ORDER BY id DESC LIMIT 1", (packet_id,))
+        )
         return packet
 
     def trim_oversized_tables(self, *, force: bool = False):

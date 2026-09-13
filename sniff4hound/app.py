@@ -42,6 +42,7 @@ from .settings import (
     DEFAULT_DOCS_TITLE,
     HOST,
     PORT,
+    STORE_RAW_PACKET_BYTES,
     resolve_ipc_call_timeout,
     resolve_ipc_connect_timeout,
     resolve_ipc_socket,
@@ -604,8 +605,8 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ai/packets/", "desc": "Local byte-image anomaly analysis of the latest 200 packets."},
     {"method": "POST", "path": "/api/ai/feedback", "desc": "Learn from a reviewed packet: label, confidence and note."},
     {"method": "POST", "path": "/api/packets/review", "desc": "Label any captured packet benign, malicious or unreviewed."},
-    {"method": "GET", "path": "/api/ai/config", "desc": "Current AI sampling flag and learning config (hidden_sizes, min_cohort)."},
-    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable sampling and/or set learning_config: hidden_sizes (classifier hidden-layer widths, one entry per layer, up to 4 layers) and/or min_cohort (minimum group size the LOF outlier detector needs before it scores a protocol/source cohort)."},
+    {"method": "GET", "path": "/api/ai/config", "desc": "Current training/AI-alert-mode flags, raw_retention_enabled and learning config (hidden_sizes, min_cohort)."},
+    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable training_enabled (store+auto-train on every evaluated packet, replaces the old sampling_enabled) and/or ai_alert_mode_enabled (AI decides alerts instead of the rule catalog when training is off; requires SNIFF4HOUND_STORE_RAW_PACKET=1), and/or set learning_config: hidden_sizes (classifier hidden-layer widths, one entry per layer, up to 4 layers) and/or min_cohort (minimum group size the LOF outlier detector needs before it scores a protocol/source cohort)."},
     {"method": "GET", "path": "/api/ai/model", "desc": "Export the classifier's current architecture and weights."},
     {"method": "POST", "path": "/api/ai/model", "desc": "Import a previously exported classifier architecture and weights."},
     {"method": "GET", "path": "/api/detection/exclusions", "desc": "Shared exclusion filter (IP type, CIDR, port, protocol)."},
@@ -2492,31 +2493,62 @@ def _ai_snapshot(threshold=50):
     result = learning_snapshot(
         store.ai_learning_state(), packets, analysis, hidden_sizes=learning_config["hidden_sizes"]
     )
-    result["sampling_enabled"] = store.get_runtime_config("ai_sampling_enabled", "0") == "1"
+    training_enabled = _get_training_enabled()
+    result["sampling_enabled"] = training_enabled
+    result["training_enabled"] = training_enabled
+    result["ai_alert_mode_enabled"] = store.get_runtime_config("ai_alert_mode_enabled", "0") == "1"
+    result["raw_retention_enabled"] = bool(STORE_RAW_PACKET_BYTES)
     result["exclusion_filters"] = store.get_exclusion_filters()
     result["learning_config"] = learning_config
     return result
 
 
+def _get_training_enabled() -> bool:
+    # `training_enabled` replaces the old `ai_sampling_enabled` flag; an
+    # installation upgrading from before this change still has its previous
+    # choice honoured until it is next changed explicitly.
+    stored = store.get_runtime_config("training_enabled", "")
+    if stored == "":
+        stored = store.get_runtime_config("ai_sampling_enabled", "0")
+    return stored == "1"
+
+
 @app.api("/api/ai/config", methods=("GET", "POST"))
 def ai_config(request):
     if request.method.upper() == "GET":
+        training_enabled = _get_training_enabled()
         return {
-            "sampling_enabled": store.get_runtime_config("ai_sampling_enabled", "0") == "1",
+            "sampling_enabled": training_enabled,
+            "training_enabled": training_enabled,
+            "ai_alert_mode_enabled": store.get_runtime_config("ai_alert_mode_enabled", "0") == "1",
+            "raw_retention_enabled": bool(STORE_RAW_PACKET_BYTES),
             "learning_config": store.get_ai_learning_config(),
         }
     payload = _read_json_body(request)
-    has_sampling = "sampling_enabled" in payload
+    has_training = "training_enabled" in payload or "sampling_enabled" in payload
+    has_ai_alert_mode = "ai_alert_mode_enabled" in payload
     has_learning_config = "learning_config" in payload
-    if not has_sampling and not has_learning_config:
-        raise ValueError("sampling_enabled or learning_config is required")
+    if not has_training and not has_ai_alert_mode and not has_learning_config:
+        raise ValueError("training_enabled, ai_alert_mode_enabled or learning_config is required")
     response = {}
-    if has_sampling:
-        enabled = payload.get("sampling_enabled")
+    if has_training:
+        enabled = payload.get("training_enabled", payload.get("sampling_enabled"))
         if not isinstance(enabled, bool):
-            raise ValueError("sampling_enabled must be a boolean")
-        store.set_runtime_config("ai_sampling_enabled", "1" if enabled else "0")
+            raise ValueError("training_enabled must be a boolean")
+        store.set_runtime_config("training_enabled", "1" if enabled else "0")
         response["sampling_enabled"] = enabled
+        response["training_enabled"] = enabled
+    if has_ai_alert_mode:
+        enabled = payload.get("ai_alert_mode_enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("ai_alert_mode_enabled must be a boolean")
+        if enabled and not STORE_RAW_PACKET_BYTES:
+            raise ValueError(
+                "ai_alert_mode_enabled requires raw packet retention "
+                "(SNIFF4HOUND_STORE_RAW_PACKET=1) so the AI classifier has bytes to score"
+            )
+        store.set_runtime_config("ai_alert_mode_enabled", "1" if enabled else "0")
+        response["ai_alert_mode_enabled"] = enabled
     if has_learning_config:
         response["learning_config"] = store.set_ai_learning_config(payload.get("learning_config"))
     return response

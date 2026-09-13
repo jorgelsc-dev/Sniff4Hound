@@ -231,7 +231,8 @@ curl -X POST http://127.0.0.1:45678/api/runtime/ \
 
 - `SNIFF4HOUND_REQUIRE_AUTH=1` por defecto.
 - El banner imprime un enlace de arranque como `http://127.0.0.1:45678/?code=<token>`;
-  la SPA lee ese `code`, lo guarda en `sessionStorage` de la pestaña y limpia la URL visible.
+  la SPA lee ese `code`, lo conserva solo en memoria durante la vida de la app
+  y limpia la URL visible.
 - Se aceptan:
   - `Authorization: Bearer <token>`
   - `X-Security-Code: <token>`
@@ -296,6 +297,11 @@ Variables practicas del runtime:
 - `SNIFF4HOUND_CAPTURE_INTERFACES`
 - `SNIFF4HOUND_PROMISCUOUS`
 - `SNIFF4HOUND_CAPTURE_BUFFER_BYTES`
+- `SNIFF4HOUND_STORE_RAW_PACKET`: `0` por defecto; usa `1` solo si necesitas
+  retener bytes/hex crudos para analisis forense o byte-image AI. Tambien es
+  requisito para el modo IA del Dashboard (`ai_alert_mode_enabled`) y para
+  que el modo Training reentrene el modelo, no solo guarde el dataset - ver
+  `docs/reference/runtime.md#modos-de-activacion-sniffer--honeypot--training--ia`.
 - `SNIFF4HOUND_POLL_TIMEOUT`
 - `SNIFF4HOUND_REQUIRE_AUTH`
 - `SNIFF4HOUND_JWT_SECRET` (opcional; si falta se genera uno por instalacion)

@@ -286,7 +286,7 @@ class SmokeTests(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_raw_packet_is_json_safe(self):
+    def test_raw_packet_is_not_retained_by_default_and_remains_json_safe(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "sniff4hound.db"
             store = SniffStore(db_path)
@@ -304,7 +304,8 @@ class SmokeTests(unittest.TestCase):
                     "raw_packet": b"\x00\x01\x02\x03",
                 }
                 row = store.register_packet(packet)
-                self.assertIsInstance(row["raw_packet"], str)
+                self.assertIsNone(row["raw_packet"])
+                self.assertEqual(row["payload_hex"], "")
                 json.dumps(store.dashboard_snapshot())
                 json.dumps(store.analytics_snapshot())
             finally:

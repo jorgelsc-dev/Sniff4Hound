@@ -321,6 +321,14 @@ API_MAX_LIMIT = max(100, _as_int(_env("SNIFF4HOUND_API_MAX_LIMIT", "20000"), 200
 # capture thread (rulesets.build_packet_text joins this in on every packet).
 PAYLOAD_TEXT_MAX_CHARS = max(240, _as_int(_env("SNIFF4HOUND_PAYLOAD_TEXT_MAX_CHARS", "4096"), 4096))
 
+# Raw frame bytes and their hex dumps are useful for forensic/image analysis,
+# but they can also retain credentials exactly as they crossed the wire. Keep
+# them opt-in; text previews are still retained after redaction.
+STORE_RAW_PACKET_BYTES = _as_bool(
+    _env("SNIFF4HOUND_STORE_RAW_PACKET_BYTES", _env("SNIFF4HOUND_STORE_RAW_PACKET", "0")),
+    default=False,
+)
+
 ICMP_FLOOD_WINDOW_SECONDS = max(1, _as_int(_env("SNIFF4HOUND_ICMP_FLOOD_WINDOW_SECONDS", "5"), 5))
 ICMP_FLOOD_THRESHOLD = max(1, _as_int(_env("SNIFF4HOUND_ICMP_FLOOD_THRESHOLD", "30"), 30))
 ARP_SPOOF_COOLDOWN_SECONDS = max(1, _as_int(_env("SNIFF4HOUND_ARP_SPOOF_COOLDOWN_SECONDS", "30"), 30))
