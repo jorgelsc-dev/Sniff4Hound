@@ -618,66 +618,6 @@ export default {
           this.whitelisting = false;
         });
     },
-    closeInspector() {
-      this.selectedIp = null;
-      this.actionError = "";
-      this.actionNotice = "";
-    },
-    blacklistSelected() {
-      if (!this.selectedNode || this.blacklisting) return;
-      const ip = this.selectedNode.ip;
-      this.blacklisting = true;
-      this.actionError = "";
-      this.actionNotice = "";
-      store
-        .createBlacklistEntry({ category: "ip", matchType: "exact", value: ip })
-        .then(() => {
-          this.actionNotice = `${ip} agregada a la blacklist.`;
-        })
-        .catch((err) => {
-          this.actionError = (err && err.message) || "No se pudo bloquear la IP";
-        })
-        .finally(() => {
-          this.blacklisting = false;
-        });
-    },
-    // Two-step: first call asks the backend how many packets a purge
-    // would remove (nothing is deleted yet), then a native confirm()
-    // names that real count before the second call actually does it -
-    // whitelisting an IP here is irreversible (see FAQA.md / purge_ip_data).
-    whitelistSelected() {
-      if (!this.selectedNode || this.whitelisting) return;
-      const ip = this.selectedNode.ip;
-      this.whitelisting = true;
-      this.actionError = "";
-      this.actionNotice = "";
-      store
-        .whitelistIpAndForget(ip)
-        .then((preview) => {
-          const count = Number(preview && preview.packets) || 0;
-          const proceed = window.confirm(
-            `Esto va a eliminar ${count} paquete(s) ya capturados de ${ip} y a dejar de registrar tráfico nuevo de esta IP. ` +
-              "No se puede deshacer. ¿Continuar?"
-          );
-          if (!proceed) {
-            this.whitelisting = false;
-            return null;
-          }
-          return store.whitelistIpAndForget(ip, { confirm: true });
-        })
-        .then((result) => {
-          if (!result) return;
-          this.actionNotice = `${ip} en whitelist. Se eliminaron ${result.purged?.packets ?? 0} paquete(s).`;
-          this.selectedIp = null;
-          this.load();
-        })
-        .catch((err) => {
-          this.actionError = (err && err.message) || "No se pudo poner la IP en whitelist";
-        })
-        .finally(() => {
-          this.whitelisting = false;
-        });
-    },
     zoomBy(delta) {
       this.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round((this.zoom + delta) * 100) / 100));
     },
