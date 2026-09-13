@@ -118,10 +118,10 @@ def _sqlite_text_factory(value):
     return str(value)
 
 
-def _sanitize_packet_forensic_fields(row: dict | None) -> dict | None:
+def _sanitize_packet_forensic_fields(row: dict | None, *, raw_retention_enabled: bool) -> dict | None:
     if not row:
         return row
-    if not STORE_RAW_PACKET_BYTES:
+    if not raw_retention_enabled:
         if "payload_hex" in row:
             row["payload_hex"] = ""
         if "raw_packet" in row:
@@ -133,19 +133,19 @@ def _sanitize_packet_forensic_fields(row: dict | None) -> dict | None:
     return row
 
 
-def _sanitize_payload_forensic_fields(row: dict | None) -> dict | None:
+def _sanitize_payload_forensic_fields(row: dict | None, *, raw_retention_enabled: bool) -> dict | None:
     if not row:
         return row
     if "response_plain" in row:
         row["response_plain"] = redact_sensitive_text(
             normalize_text(row.get("response_plain") or "", limit=PAYLOAD_TEXT_MAX_CHARS)
         )
-    if not STORE_RAW_PACKET_BYTES and "payload_hex" in row:
+    if not raw_retention_enabled and "payload_hex" in row:
         row["payload_hex"] = ""
     return row
 
 
-def _flatten_packet_details(row: dict) -> dict:
+def _flatten_packet_details(row: dict, *, raw_retention_enabled: bool) -> dict:
     """A packet row with its decoder extras lifted to top-level keys.
 
     The extras are stored as one JSON column so the schema does not need a
@@ -162,7 +162,7 @@ def _flatten_packet_details(row: dict) -> dict:
         for key, value in details.items():
             if key in DETAIL_KEYS:
                 packet[key] = value
-    return _sanitize_packet_forensic_fields(packet)
+    return _sanitize_packet_forensic_fields(packet, raw_retention_enabled=raw_retention_enabled)
 
 
 def _coerce_json(value, default):
@@ -930,7 +930,7 @@ class SniffStore:
 
     def _migrate_sensitive_capture_storage(self):
         changed = False
-        if not STORE_RAW_PACKET_BYTES:
+        if not self.get_raw_retention_enabled():
             # A plain SELECT doesn't take the write lock the UPDATE below
             # needs, so this lets both processes cheaply agree there's
             # nothing left to purge (the steady-state case, once the table
@@ -1726,7 +1726,7 @@ class SniffStore:
             # flags that are always empty.
             "columns": [{"key": key, "label": label} for key, label in resolve_row_columns(proto_name)],
             "packets": [
-                _flatten_packet_details(row)
+                _flatten_packet_details(row, raw_retention_enabled=self.get_raw_retention_enabled())
                 for row in self.list_packets(
                     proto=proto_name, mode=mode, interface=interface, search=search, since=since, limit=int(limit)
                 )
@@ -1853,7 +1853,8 @@ class SniffStore:
             f"SELECT {columns} FROM packets {where} ORDER BY id DESC LIMIT ? OFFSET ?",
             tuple(params),
         )
-        rows = [_sanitize_packet_forensic_fields(row) for row in rows]
+        raw_retention_enabled = self.get_raw_retention_enabled()
+        rows = [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
         return self._attach_review_labels(rows)
 
     def _attach_review_labels(self, rows):
@@ -1918,11 +1919,12 @@ class SniffStore:
     def list_ai_packets(self, packet_id=None):
         # Convert the bounded BLOB in SQL: the normal row serializer limits
         # binary fields to a 256-byte preview and would lose image data.
+        raw_retention_enabled = self.get_raw_retention_enabled()
         if packet_id is not None:
             rows = self._fetchall(
                 f"SELECT {self._AI_PACKET_COLUMNS} FROM packets WHERE id = ?", (packet_id,)
             )
-            return [_sanitize_packet_forensic_fields(row) for row in rows]
+            return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
         filters = self.get_exclusion_filters()
         has_filters = any(filters.values())
         # No filters: keep the cheap, direct 200-row fetch. With filters,
@@ -1935,10 +1937,10 @@ class SniffStore:
             f"SELECT {self._AI_PACKET_COLUMNS} FROM packets ORDER BY id DESC LIMIT ?", (fetch_limit,)
         )
         if not has_filters:
-            return [_sanitize_packet_forensic_fields(row) for row in rows]
+            return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
         networks = compile_exclusion_networks(filters)
         rows = [row for row in rows if not packet_matches_exclusion_filter(row, filters, networks)][:200]
-        return [_sanitize_packet_forensic_fields(row) for row in rows]
+        return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
 
     def get_exclusion_filters(self):
         # Runtime-config key kept as "ai_exclusion_filters" (its original,
@@ -2359,7 +2361,10 @@ class SniffStore:
             """,
             tuple(params),
         )
-        return [_sanitize_payload_forensic_fields(row) for row in rows]
+        return [
+            _sanitize_payload_forensic_fields(row, raw_retention_enabled=self.get_raw_retention_enabled())
+            for row in rows
+        ]
 
     def get_payload_with_packet(self, payload_id: int):
         return _sanitize_payload_forensic_fields(self._fetchone(
@@ -2384,7 +2389,7 @@ class SniffStore:
             WHERE payloads.id = ?
             """,
             (safe_int(payload_id, 0),),
-        ))
+        ), raw_retention_enabled=self.get_raw_retention_enabled())
 
     def _tag_filter(self, *, proto="", search="", since=""):
         clauses = []
@@ -3171,6 +3176,28 @@ class SniffStore:
     def set_monitor_filter_enabled(self, value: bool):
         self.set_runtime_config("monitor_filter_enabled", "1" if value else "0")
         return self.get_monitor_filter_enabled()
+
+    def get_raw_retention_enabled(self) -> bool:
+        """Whether raw_packet/payload_hex bytes are kept instead of scrubbed.
+
+        Was a `SNIFF4HOUND_STORE_RAW_PACKET` env var read once at process
+        start; now a runtime_config flag (env var still sets the default for
+        a database that has never had it toggled) so it can be flipped from
+        the Dashboard without restarting - both the unprivileged web process
+        and the privileged capture child read it from here, each on its own
+        connection to the same file, so a toggle from one reaches the other
+        the moment it commits. This is a single indexed point lookup (unlike
+        e.g. list_monitors()), so unlike that cache there is no per-packet
+        cost here worth trading staleness for.
+        """
+        stored = self.get_runtime_config("raw_retention_enabled", "")
+        if stored == "":
+            return bool(STORE_RAW_PACKET_BYTES)
+        return stored == "1"
+
+    def set_raw_retention_enabled(self, value: bool) -> bool:
+        self.set_runtime_config("raw_retention_enabled", "1" if value else "0")
+        return self.get_raw_retention_enabled()
 
     def get_monitor_min_severity(self) -> str:
         value = str(self.get_runtime_config("monitor_min_severity", MONITOR_MIN_SEVERITY_DEFAULT) or "").strip().lower()
@@ -4684,8 +4711,9 @@ class SniffStore:
         payload_text = redact_sensitive_text(normalize_text(packet.get("payload_text") or "", limit=PAYLOAD_TEXT_MAX_CHARS))
         summary_text = redact_sensitive_text(normalize_text(packet.get("summary") or "", limit=PAYLOAD_TEXT_MAX_CHARS))
         banner_text = redact_sensitive_text(normalize_text(packet.get("banner_text") or payload_text, limit=PAYLOAD_TEXT_MAX_CHARS))
-        payload_hex = str(packet.get("payload_hex") or "") if STORE_RAW_PACKET_BYTES else ""
-        raw_packet = packet.get("raw_packet") if STORE_RAW_PACKET_BYTES else None
+        raw_retention_enabled = self.get_raw_retention_enabled()
+        payload_hex = str(packet.get("payload_hex") or "") if raw_retention_enabled else ""
+        raw_packet = packet.get("raw_packet") if raw_retention_enabled else None
         length = safe_int(packet.get("length", 0), 0)
         payload_len = safe_int(packet.get("payload_len", 0), 0)
         state = str(packet.get("state") or ("open" if payload_len else "filtered")).strip().lower() or "open"
@@ -4878,13 +4906,19 @@ class SniffStore:
         )
 
     def get_packet(self, packet_id: int):
-        return _sanitize_packet_forensic_fields(self._fetchone("SELECT * FROM packets WHERE id = ?", (packet_id,)))
+        return _sanitize_packet_forensic_fields(
+            self._fetchone("SELECT * FROM packets WHERE id = ?", (packet_id,)),
+            raw_retention_enabled=self.get_raw_retention_enabled(),
+        )
 
     def get_flow(self, flow_key: str):
         return self._fetchone("SELECT * FROM flows WHERE flow_key = ?", (flow_key,))
 
     def get_payload(self, payload_id: int):
-        return _sanitize_payload_forensic_fields(self._fetchone("SELECT * FROM payloads WHERE id = ?", (payload_id,)))
+        return _sanitize_payload_forensic_fields(
+            self._fetchone("SELECT * FROM payloads WHERE id = ?", (payload_id,)),
+            raw_retention_enabled=self.get_raw_retention_enabled(),
+        )
 
     def get_tag(self, tag_id: int):
         return self._fetchone("SELECT * FROM tags WHERE id = ?", (tag_id,))
@@ -4895,7 +4929,8 @@ class SniffStore:
             return None
         packet["tags"] = self._fetchall("SELECT * FROM tags WHERE packet_id = ? ORDER BY id ASC", (packet_id,))
         packet["payload"] = _sanitize_payload_forensic_fields(
-            self._fetchone("SELECT * FROM payloads WHERE packet_id = ? ORDER BY id DESC LIMIT 1", (packet_id,))
+            self._fetchone("SELECT * FROM payloads WHERE packet_id = ? ORDER BY id DESC LIMIT 1", (packet_id,)),
+            raw_retention_enabled=self.get_raw_retention_enabled(),
         )
         return packet
 

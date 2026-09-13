@@ -297,11 +297,15 @@ Variables practicas del runtime:
 - `SNIFF4HOUND_CAPTURE_INTERFACES`
 - `SNIFF4HOUND_PROMISCUOUS`
 - `SNIFF4HOUND_CAPTURE_BUFFER_BYTES`
-- `SNIFF4HOUND_STORE_RAW_PACKET`: `0` por defecto; usa `1` solo si necesitas
-  retener bytes/hex crudos para analisis forense o byte-image AI. Tambien es
-  requisito para el modo IA del Dashboard (`ai_alert_mode_enabled`) y para
-  que el modo Training reentrene el modelo, no solo guarde el dataset - ver
-  `docs/reference/runtime.md#modos-de-activacion-sniffer--honeypot--training--ia`.
+- `SNIFF4HOUND_STORE_RAW_PACKET`: `1` por defecto (el clasificador de IA y el
+  analisis forense necesitan bytes crudos, y el trafico limpio ya no se
+  persiste - ver mas abajo - asi que retenerlos por defecto solo aplica al
+  trafico que ya alerto); solo fija el valor inicial para una base de datos
+  nueva - el interruptor "Bytes crudos" del Dashboard (o `POST
+  /api/ai/config` con `{"raw_retention_enabled": true|false}`) la alterna
+  despues sin reiniciar. Necesaria para el modo IA del Dashboard
+  (`ai_alert_mode_enabled`) y para que el modo Training reentrene el modelo -
+  ver `docs/reference/runtime.md#modos-de-activacion-sniffer--honeypot--training--ia`.
 - `SNIFF4HOUND_POLL_TIMEOUT`
 - `SNIFF4HOUND_REQUIRE_AUTH`
 - `SNIFF4HOUND_JWT_SECRET` (opcional; si falta se genera uno por instalacion)
