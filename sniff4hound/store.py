@@ -1927,19 +1927,28 @@ class SniffStore:
             return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
         filters = self.get_exclusion_filters()
         has_filters = any(filters.values())
-        # No filters: keep the cheap, direct 200-row fetch. With filters,
-        # over-fetch a bounded window so excluded traffic doesn't just shrink
-        # the analyzed set, then filter and trim back down to 200 in Python -
-        # scope/CIDR classification isn't expressible in SQLite (same reason
+        # Muted/whitelisted/excluded traffic is never evaluated (see
+        # Sniffer._store_packet) - it persists for capture visibility, not
+        # because anything was learned from it, so it never has bytes to
+        # score. Always over-fetch a wider window so filtering it (and any
+        # exclusion filters) out doesn't just shrink the reviewable set down
+        # to whatever muted traffic happened to be most recent - scope/CIDR
+        # classification isn't expressible in SQLite either way (same reason
         # `_grouped_ip_catalog` filters after the fetch).
-        fetch_limit = 1000 if has_filters else 200
+        fetch_limit = 1000 if has_filters else 400
         rows = self._fetchall(
             f"SELECT {self._AI_PACKET_COLUMNS} FROM packets ORDER BY id DESC LIMIT ?", (fetch_limit,)
         )
-        if not has_filters:
-            return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
-        networks = compile_exclusion_networks(filters)
-        rows = [row for row in rows if not packet_matches_exclusion_filter(row, filters, networks)][:200]
+
+        def _is_muted(row):
+            details = json_loads(row.get("details_json") or "{}", default={}) or {}
+            return isinstance(details, dict) and details.get("ai_detection_status") == "muted"
+
+        rows = [row for row in rows if not _is_muted(row)]
+        if has_filters:
+            networks = compile_exclusion_networks(filters)
+            rows = [row for row in rows if not packet_matches_exclusion_filter(row, filters, networks)]
+        rows = rows[:200]
         return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
 
     def get_exclusion_filters(self):
