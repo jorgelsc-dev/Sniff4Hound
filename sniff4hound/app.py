@@ -163,6 +163,7 @@ SPA_ROUTES = (
     "/domains",
     "/paths",
     "/ips",
+    "/chat",
     "/api",
 )
 

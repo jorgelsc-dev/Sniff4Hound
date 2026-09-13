@@ -98,3 +98,7 @@ public-site/
 
 # Local VirtualBox test lab (disks, keys and captures) - local testing only
 /.lab-vbox/
+
+# Generated QA artifacts (screenshots, video, reports from scripts/qa_*.js) -
+# local run output, not source.
+/QA/

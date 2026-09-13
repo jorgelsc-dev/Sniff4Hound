@@ -1591,3 +1591,34 @@ class SmokeTests(unittest.TestCase):
                     os.environ.pop("SNIFF4HOUND_REQUIRE_AUTH", None)
                 else:
                     os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = previous_auth
+
+    def test_every_vue_router_path_is_in_spa_routes(self):
+        # Regression: /chat was a real vue-router route (frontend/src/
+        # router/index.js) missing from app.SPA_ROUTES, so a refresh (F5),
+        # a bookmark, or a link pasted into a ticket for that view answered
+        # a bare-text 404 instead of the SPA - the exact failure mode the
+        # comment above SPA_ROUTES already describes for /settings,
+        # /domains, /paths and /ips. This walks the router file itself so a
+        # new view can't silently reintroduce the same gap.
+        import re as _re
+
+        import sniff4hound.app as app_module
+
+        router_path = Path(__file__).resolve().parents[1] / "frontend" / "src" / "router" / "index.js"
+        source = router_path.read_text(encoding="utf-8")
+        route_objects = _re.findall(r"\{[^{}]*\}", source)
+        static_paths = []
+        for obj in route_objects:
+            if "redirect" in obj:
+                continue
+            match = _re.search(r'path:\s*"([^"]+)"', obj)
+            if not match:
+                continue
+            path = match.group(1)
+            if path in ("/", "") or ":" in path or path.startswith("/:"):
+                continue
+            static_paths.append(path)
+
+        self.assertIn("/chat", static_paths, "test fixture itself is stale - /chat should still be a real route")
+        missing = [path for path in static_paths if path not in app_module.SPA_ROUTES]
+        self.assertEqual(missing, [], f"vue-router paths missing from app.SPA_ROUTES (will 404 on refresh): {missing}")
