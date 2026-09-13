@@ -642,9 +642,18 @@ export default {
       this.zoomBy(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
     },
     onPointerDown(event) {
-      // Only the background/svg should start a pan - letting a node's own
-      // click-to-select handler fire without the viewport also treating it
-      // as the start of a drag.
+      // Only the background/svg should start a pan. This used to capture
+      // the pointer unconditionally, which - regardless of where inside
+      // the viewport the press actually started - hijacked every
+      // following pointerup (and, on real hardware, the click that fires
+      // after it) to the viewport itself: a node's own click-to-select
+      // never got a chance to run, so clicking a node silently did
+      // nothing instead of opening its popup. Bailing out here when the
+      // press started on a node leaves that node's own @click handler
+      // free to fire normally.
+      if (event.target && event.target.closest && event.target.closest(".ip-graph-node")) {
+        return;
+      }
       this.panning = true;
       this.panStart = { x: event.clientX - this.pan.x, y: event.clientY - this.pan.y };
       if (this.$refs.viewport && event.pointerId != null) {
