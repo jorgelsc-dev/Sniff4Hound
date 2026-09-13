@@ -325,8 +325,8 @@ PAYLOAD_TEXT_MAX_CHARS = max(240, _as_int(_env("SNIFF4HOUND_PAYLOAD_TEXT_MAX_CHA
 # but they can also retain credentials exactly as they crossed the wire. Keep
 # them opt-in; text previews are still retained after redaction.
 STORE_RAW_PACKET_BYTES = _as_bool(
-    _env("SNIFF4HOUND_STORE_RAW_PACKET_BYTES", _env("SNIFF4HOUND_STORE_RAW_PACKET", "0")),
-    default=False,
+    _env("SNIFF4HOUND_STORE_RAW_PACKET_BYTES", _env("SNIFF4HOUND_STORE_RAW_PACKET", "1")),
+    default=True,
 )
 
 ICMP_FLOOD_WINDOW_SECONDS = max(1, _as_int(_env("SNIFF4HOUND_ICMP_FLOOD_WINDOW_SECONDS", "5"), 5))

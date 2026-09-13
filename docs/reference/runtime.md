@@ -16,7 +16,7 @@
 | `SNIFF4HOUND_SNAPLEN` | `65535` | Tamano maximo del paquete capturado. |
 | `SNIFF4HOUND_POLL_TIMEOUT` | `0.5` | Espera de polling en captura. |
 | `SNIFF4HOUND_CAPTURE_BUFFER_BYTES` | `524288` | Buffer de captura. |
-| `SNIFF4HOUND_STORE_RAW_PACKET` | `0` | Retiene `raw_packet`/`payload_hex` crudos solo si se activa explicitamente para analisis forense o byte-image AI. |
+| `SNIFF4HOUND_STORE_RAW_PACKET` | `1` | Valor inicial de la retencion de `raw_packet`/`payload_hex` crudos para una base de datos que nunca la cambio desde el Dashboard/API - ver `raw_retention_enabled` mas abajo, que ahora se puede alternar en caliente. Solo importa para el trafico que ya alerto: el trafico limpio ya no persiste (ver mas abajo), asi que retener sus bytes por defecto no expone mas que antes. |
 | `SNIFF4HOUND_FRONTEND_DIST` | auto | Sobrescribe el directorio compilado de la UI. |
 | `SNIFF4HOUND_DECLARED_LATITUDE` | vacio | Latitud del sitio donde esta el sensor. Solo valor inicial: se ajusta desde Settings. |
 | `SNIFF4HOUND_DECLARED_LONGITUDE` | vacio | Longitud del sitio donde esta el sensor. |
@@ -36,15 +36,20 @@ El Dashboard expone 4 interruptores independientes:
 
 - **Sniffer** / **Honeypot**: los motores de captura de siempre (`POST
   /api/runtime/` con `{"engine": "sniffer"|"honeypot", "action": "start"|"stop"}`).
+- **Persistencia**: todo paquete no muteado/whitelisteado se evalua siempre
+  por completo (catalogo de reglas, detectores de anomalia y, en "solo IA",
+  el clasificador), pero solo **persiste si esa evaluacion levanto algo**
+  (`Sniffer._store_packet`) - trafico limpio se procesa para obtener su
+  veredicto y se descarta, no se guarda una fila por cada paquete que pasa
+  por el sensor. Esto aplica igual con Training activo o apagado: ya no
+  existe un modo que guarde trafico "benigno" sin alerta.
 - **Training** (`POST /api/ai/config` con `{"training_enabled": true|false}`,
-  antes `sampling_enabled`): cuando esta activo, todo paquete que pase
-  exclusiones/whitelist se evalua con los Monitors (catalogo de reglas +
-  detectores de anomalia) igual que siempre, pero en vez de persistir solo
-  el trafico que genera alerta, **se guarda todo** lo evaluado y se
-  encola en segundo plano para reentrenar la IA (`ai_learning.py`) usando el
-  veredicto de los Monitors como etiqueta (`malicious`/`benign`). La mitad
-  "guardar todo" funciona sin bytes crudos; la mitad "entrenar la red" exige
-  `SNIFF4HOUND_STORE_RAW_PACKET=1` (silenciosamente no hace nada sin eso).
+  antes `sampling_enabled`): con Training activo, todo paquete que alerte
+  (via Monitors) se encola en segundo plano para reentrenar la IA
+  (`ai_learning.py`) etiquetado `malicious`. Requiere retencion de bytes
+  crudos activa (`raw_retention_enabled`, ver abajo) para esa mitad de
+  "entrenar la red"; sin eso, el paquete que alerta igual persiste, pero no
+  se encola para reentrenamiento.
 - **IA** (`POST /api/ai/config` con `{"ai_alert_mode_enabled": true|false}`):
   cuando esta activo **y Training esta apagado** ("solo IA"), el catalogo de
   reglas/regex de Monitors se salta por completo y el clasificador
@@ -53,13 +58,26 @@ El Dashboard expone 4 interruptores independientes:
   cuales sean estos dos flags. Si IA y Training estan **ambos** activos, los
   Monitors se quedan a cargo de decidir la alerta (para no ensuciar las
   etiquetas de entrenamiento) y solo Training sigue alimentando el
-  reentrenamiento. Requiere `SNIFF4HOUND_STORE_RAW_PACKET=1`: el backend
-  rechaza con `400` activar `ai_alert_mode_enabled` sin retencion de bytes
-  crudos, porque el clasificador puntua sobre `payload_hex`/`raw_packet`.
+  reentrenamiento. Requiere retencion de bytes crudos activa: el backend
+  rechaza con `400` activar `ai_alert_mode_enabled` sin ella, porque el
+  clasificador puntua sobre `payload_hex`/`raw_packet`.
+- **Retencion de bytes crudos** (`POST /api/ai/config` con
+  `{"raw_retention_enabled": true|false}`): controla si `payload_hex`/
+  `raw_packet` se guardan tal cual o se limpian en cada lectura/escritura
+  (ver `store.py:_migrate_sensitive_capture_storage`,
+  `_sanitize_packet_forensic_fields`). Antes solo se podia fijar al arrancar
+  con `SNIFF4HOUND_STORE_RAW_PACKET`; ahora es un flag de `runtime_config`
+  que el Dashboard puede alternar sin reiniciar - la variable de entorno
+  solo decide el valor inicial de una base de datos que nunca uso este
+  interruptor. Apagarlo no purga retroactivamente lo ya guardado (eso pasa
+  al reiniciar el proceso); solo deja de retener bytes nuevos de inmediato.
+  Como ambos procesos (web y captura privilegiada) leen este flag de la
+  misma base SQLite compartida, alternarlo desde el Dashboard llega al
+  proceso de captura sin reiniciar nada.
 
 `GET /api/ai/config` devuelve `training_enabled`, `ai_alert_mode_enabled` y
-`raw_retention_enabled` (espejo de `SNIFF4HOUND_STORE_RAW_PACKET`) para que
-el frontend sepa si puede ofrecer el interruptor de IA.
+`raw_retention_enabled` para que el frontend sepa si puede ofrecer el
+interruptor de IA y el propio interruptor de retencion de bytes crudos.
 
 ## Ubicacion del sensor y mapa
 

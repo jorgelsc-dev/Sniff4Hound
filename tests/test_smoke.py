@@ -286,11 +286,12 @@ class SmokeTests(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_raw_packet_is_not_retained_by_default_and_remains_json_safe(self):
+    def test_raw_packet_can_be_disabled_and_remains_json_safe(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "sniff4hound.db"
             store = SniffStore(db_path)
             try:
+                store.set_raw_retention_enabled(False)
                 packet = {
                     "session_id": 1,
                     "proto": "tcp",

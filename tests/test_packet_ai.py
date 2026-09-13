@@ -95,7 +95,7 @@ class AiStorageTests(unittest.TestCase):
         self.assertEqual(json.loads(row['details_json'])['ai_detection_status'], 'evaluated')
         self.assertTrue(analyze_packets([row])['rows'][0]['sampled'])
 
-    def test_training_mode_is_opt_in_stores_every_evaluated_packet_and_does_not_fabricate_hits(self):
+    def test_clean_traffic_is_never_persisted_regardless_of_training_mode(self):
         sniffer = Sniffer(self.store, MagicMock())
         sniffer._training_enabled = False
         with patch.object(sniffer, '_get_monitor_context', return_value=([], True)), \
@@ -108,13 +108,9 @@ class AiStorageTests(unittest.TestCase):
             sniffer._training_enabled = True
             sniffer._store_packet(packet())
             sniffer._store_packet(packet())
-        # Training mode stores every evaluated packet, not a throttled
-        # sample - both calls above land, unlike the old 1/sec sampling cap.
-        self.assertEqual(self.store.count_packets(), 2)
-        row = self.store.list_ai_packets()[0]
-        self.assertEqual(json.loads(row['rule_hits_json']), [])
-        self.assertTrue(json.loads(row['details_json'])['ai_sample'])
-        self.store.clear_detections(scope='all')
+        # Persistence depends only on whether evaluation raised something -
+        # Training does not keep a feed of undetected traffic of its own.
+        self.assertEqual(self.store.count_packets(), 0)
         self.assertEqual(self.store.list_ai_packets(), [])
 
 
@@ -172,19 +168,23 @@ class AiApiTests(unittest.TestCase):
         from sniff4hound import app as module
         request = lambda body: Request('POST', '/api/ai/config', '', {}, body, ('203.0.113.10', 1234))
         with patch.object(module, 'store', self.store):
-            with patch.object(module, 'STORE_RAW_PACKET_BYTES', False):
-                with self.assertRaises(ValueError):
-                    module.ai_config(request(b'{"ai_alert_mode_enabled":true}'))
-                self.assertEqual(self.store.get_runtime_config('ai_alert_mode_enabled', '0'), '0')
-                get_request = Request('GET', '/api/ai/config', '', {}, b'', ('203.0.113.10', 1234))
-                self.assertFalse(module.ai_config(get_request)['raw_retention_enabled'])
-            with patch.object(module, 'STORE_RAW_PACKET_BYTES', True):
-                result = module.ai_config(request(b'{"ai_alert_mode_enabled":true}'))
-                self.assertTrue(result['ai_alert_mode_enabled'])
-                self.assertEqual(self.store.get_runtime_config('ai_alert_mode_enabled'), '1')
-                # Turning it back off never needs raw retention.
-                result = module.ai_config(request(b'{"ai_alert_mode_enabled":false}'))
-                self.assertFalse(result['ai_alert_mode_enabled'])
+            self.store.set_raw_retention_enabled(False)
+            with self.assertRaises(ValueError):
+                module.ai_config(request(b'{"ai_alert_mode_enabled":true}'))
+            self.assertEqual(self.store.get_runtime_config('ai_alert_mode_enabled', '0'), '0')
+            get_request = Request('GET', '/api/ai/config', '', {}, b'', ('203.0.113.10', 1234))
+            self.assertFalse(module.ai_config(get_request)['raw_retention_enabled'])
+            self.store.set_raw_retention_enabled(True)
+            result = module.ai_config(request(b'{"ai_alert_mode_enabled":true}'))
+            self.assertTrue(result['ai_alert_mode_enabled'])
+            self.assertEqual(self.store.get_runtime_config('ai_alert_mode_enabled'), '1')
+            # Turning it back off never needs raw retention.
+            result = module.ai_config(request(b'{"ai_alert_mode_enabled":false}'))
+            self.assertFalse(result['ai_alert_mode_enabled'])
+            # The Dashboard's own toggle for the flag itself.
+            result = module.ai_config(request(b'{"raw_retention_enabled":false}'))
+            self.assertFalse(result['raw_retention_enabled'])
+            self.assertFalse(self.store.get_raw_retention_enabled())
 
     def test_ai_model_export_import_endpoint(self):
         from wsbuilder import Request

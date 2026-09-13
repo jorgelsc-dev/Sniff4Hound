@@ -27,7 +27,7 @@
         aria-label="Navegación"
         @click="toggle"
       >
-        <v-icon :icon="open ? 'mdi-close' : 'mdi-toolbox-outline'" size="26" />
+        <v-icon :icon="open ? 'mdi-close' : 'mdi-paw'" size="26" />
       </button>
     </div>
   </teleport>

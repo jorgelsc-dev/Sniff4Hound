@@ -18,9 +18,19 @@ Sniff4Hound usa SQLite como unico almacenamiento local. La base por defecto es `
 - Se activa `foreign_keys`.
 - El timeout de espera es de `5000 ms`.
 - El `text_factory` normaliza texto binario para que la API no rompa al serializar.
-- `raw_packet` y `payload_hex` no se retienen por defecto. Activa
-  `SNIFF4HOUND_STORE_RAW_PACKET=1` solo cuando necesites analisis forense o
-  byte-image AI con bytes crudos.
+- `raw_packet` y `payload_hex` se retienen por defecto (el clasificador de
+  IA y el analisis forense los necesitan). Se puede desactivar con el
+  interruptor "Bytes crudos" del Dashboard (o `POST /api/ai/config` con
+  `{"raw_retention_enabled": false}`, flag `runtime_config`, sin
+  reiniciar); `SNIFF4HOUND_STORE_RAW_PACKET` solo fija el valor inicial de
+  una base que nunca uso ese interruptor.
+- `packets` solo guarda trafico que efectivamente alerto (Monitors, un
+  detector de anomalia o, en modo "solo IA", el clasificador) - ver
+  `Sniffer._store_packet`. Un paquete evaluado y limpio se procesa para su
+  veredicto y se descarta; nunca llega a `INSERT`. La excepcion es
+  trafico muteado/whitelisteado/excluido: no se evalua (nada que levantar
+  por diseno) pero igual se guarda sin tags, para no perder visibilidad de
+  lo que se esta excluyendo.
 
 ## Limites de retencion
 

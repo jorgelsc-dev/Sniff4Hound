@@ -629,8 +629,8 @@ class TestSniffStore(unittest.TestCase):
         payloads = self.store.list_payloads(limit=10)
         self.assertEqual(payloads, [])
 
-    def test_packet_raw_binary_is_disabled_by_default(self):
-        """Raw packet binary should not be retained without forensic opt-in."""
+    def test_packet_raw_binary_can_be_disabled(self):
+        """Raw packet binary is not retained once raw retention is turned off."""
         packet = {
             "session_id": 1,
             "proto": "tcp",
@@ -643,6 +643,7 @@ class TestSniffStore(unittest.TestCase):
             "summary": "Test",
             "raw_packet": b"\x00\x01\x02\xff",
         }
+        self.store.set_raw_retention_enabled(False)
         result = self.store.register_packet(packet)
         self.assertIsNone(result["raw_packet"])
         self.assertEqual(result["payload_hex"], "")

@@ -42,7 +42,6 @@ from .settings import (
     DEFAULT_DOCS_TITLE,
     HOST,
     PORT,
-    STORE_RAW_PACKET_BYTES,
     resolve_ipc_call_timeout,
     resolve_ipc_connect_timeout,
     resolve_ipc_socket,
@@ -2497,7 +2496,7 @@ def _ai_snapshot(threshold=50):
     result["sampling_enabled"] = training_enabled
     result["training_enabled"] = training_enabled
     result["ai_alert_mode_enabled"] = store.get_runtime_config("ai_alert_mode_enabled", "0") == "1"
-    result["raw_retention_enabled"] = bool(STORE_RAW_PACKET_BYTES)
+    result["raw_retention_enabled"] = store.get_raw_retention_enabled()
     result["exclusion_filters"] = store.get_exclusion_filters()
     result["learning_config"] = learning_config
     return result
@@ -2521,15 +2520,16 @@ def ai_config(request):
             "sampling_enabled": training_enabled,
             "training_enabled": training_enabled,
             "ai_alert_mode_enabled": store.get_runtime_config("ai_alert_mode_enabled", "0") == "1",
-            "raw_retention_enabled": bool(STORE_RAW_PACKET_BYTES),
+            "raw_retention_enabled": store.get_raw_retention_enabled(),
             "learning_config": store.get_ai_learning_config(),
         }
     payload = _read_json_body(request)
     has_training = "training_enabled" in payload or "sampling_enabled" in payload
+    has_raw_retention = "raw_retention_enabled" in payload
     has_ai_alert_mode = "ai_alert_mode_enabled" in payload
     has_learning_config = "learning_config" in payload
-    if not has_training and not has_ai_alert_mode and not has_learning_config:
-        raise ValueError("training_enabled, ai_alert_mode_enabled or learning_config is required")
+    if not has_training and not has_raw_retention and not has_ai_alert_mode and not has_learning_config:
+        raise ValueError("training_enabled, raw_retention_enabled, ai_alert_mode_enabled or learning_config is required")
     response = {}
     if has_training:
         enabled = payload.get("training_enabled", payload.get("sampling_enabled"))
@@ -2538,14 +2538,23 @@ def ai_config(request):
         store.set_runtime_config("training_enabled", "1" if enabled else "0")
         response["sampling_enabled"] = enabled
         response["training_enabled"] = enabled
+    if has_raw_retention:
+        enabled = payload.get("raw_retention_enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("raw_retention_enabled must be a boolean")
+        # Ahead of has_ai_alert_mode below so enabling both in one request
+        # (the common Dashboard case: flip raw retention on, then the AI
+        # engine) sees the update rather than racing its own read of the
+        # flag it just set.
+        response["raw_retention_enabled"] = store.set_raw_retention_enabled(enabled)
     if has_ai_alert_mode:
         enabled = payload.get("ai_alert_mode_enabled")
         if not isinstance(enabled, bool):
             raise ValueError("ai_alert_mode_enabled must be a boolean")
-        if enabled and not STORE_RAW_PACKET_BYTES:
+        if enabled and not store.get_raw_retention_enabled():
             raise ValueError(
                 "ai_alert_mode_enabled requires raw packet retention "
-                "(SNIFF4HOUND_STORE_RAW_PACKET=1) so the AI classifier has bytes to score"
+                "(raw_retention_enabled=true) so the AI classifier has bytes to score"
             )
         store.set_runtime_config("ai_alert_mode_enabled", "1" if enabled else "0")
         response["ai_alert_mode_enabled"] = enabled

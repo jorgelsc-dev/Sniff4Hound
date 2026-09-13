@@ -249,9 +249,26 @@
                 </div>
               </div>
               <div class="runtime-state-card__body">
+                <div class="runtime-stat">
+                  <span class="runtime-stat__label">Bytes crudos</span>
+                  <div class="d-flex align-center ga-2">
+                    <span class="runtime-stat__value">{{ rawRetentionEnabled ? "Retenidos" : "No retenidos" }}</span>
+                    <v-switch
+                      :model-value="rawRetentionEnabled"
+                      color="warning"
+                      density="compact"
+                      hide-details
+                      inset
+                      :loading="rawRetentionBusy"
+                      :disabled="rawRetentionBusy"
+                      aria-label="Toggle raw packet retention"
+                      @update:model-value="toggleRawRetention"
+                    />
+                  </div>
+                </div>
                 <div v-if="!rawRetentionEnabled" class="runtime-stat">
                   <span class="runtime-stat__value text-warning">
-                    Requiere SNIFF4HOUND_STORE_RAW_PACKET=1 para que el clasificador tenga bytes que puntuar.
+                    El clasificador de IA necesita los bytes crudos del paquete para puntuar. Activa la retencion arriba.
                   </span>
                 </div>
                 <div v-else class="runtime-stat">
@@ -468,6 +485,7 @@ export default {
       aiAlertModeEnabled: false,
       aiAlertModeBusy: false,
       rawRetentionEnabled: false,
+      rawRetentionBusy: false,
       aiColumns: [
         { key: "created_at", label: "Seen" },
         { key: "proto", label: "Proto" },
@@ -754,7 +772,7 @@ export default {
     },
     aiSamplingSummary() {
       if (this.aiSamplingEnabled) {
-        return "Guardando todo el tráfico evaluado por los Monitors y entrenando la IA con ese veredicto.";
+        return "Reentrenando la IA con el veredicto de los Monitors en todo tráfico que genera alerta.";
       }
       return "Detenido. Solo se persiste el tráfico que ya generó una alerta.";
     },
@@ -818,9 +836,8 @@ export default {
     // Unlike sniffer/honeypot, Training has no separate running process to
     // start/stop - it is a persistent flag on the capture pipeline: every
     // packet that passes exclusions/whitelist gets evaluated by Monitors
-    // (rules + anomalies) as usual, but instead of only alerting traffic
-    // being stored, *everything* evaluated is stored and auto-fed to the
-    // IA trainer with the Monitors' verdict as its label.
+    // (rules + anomalies) as usual, and whatever raises an alert is
+    // auto-fed to the IA trainer, labeled "malicious" from that verdict.
     toggleAiSampling(enabled) {
       if (this.aiSamplingBusy) return;
       this.aiSamplingBusy = true;
@@ -838,6 +855,31 @@ export default {
         })
         .finally(() => {
           this.aiSamplingBusy = false;
+        });
+    },
+    // Raw packet retention (SNIFF4HOUND_STORE_RAW_PACKET) used to be
+    // startup-only; it now lives in runtime_config so it can be flipped
+    // here without restarting sniff4hound. Turning it off does not purge
+    // already-stored bytes immediately - that happens on the next process
+    // start (see store._migrate_sensitive_capture_storage) - but it stops
+    // new packets from keeping theirs right away.
+    toggleRawRetention(enabled) {
+      if (this.rawRetentionBusy) return;
+      this.rawRetentionBusy = true;
+      this.engineError = "";
+      this.store
+        .fetchJsonPromise("/api/ai/config", {
+          method: "POST",
+          body: JSON.stringify({ raw_retention_enabled: Boolean(enabled) }),
+        })
+        .then((config) => {
+          this.rawRetentionEnabled = Boolean(config.raw_retention_enabled);
+        })
+        .catch((err) => {
+          this.engineError = (err && err.message) || "Failed to update raw packet retention";
+        })
+        .finally(() => {
+          this.rawRetentionBusy = false;
         });
     },
     // "Solo IA": the AI classifier decides alerts instead of the rule

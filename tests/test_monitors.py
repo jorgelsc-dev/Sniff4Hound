@@ -796,11 +796,15 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         packet = self._base_packet(transport="udp", proto="udp", dst_port=SNIFFER_PORT, src_port=51234)
         self.assertFalse(self.sniffer._is_own_dashboard_traffic(packet))
 
-    def test_filter_disabled_persists_everything(self):
+    def test_filter_disabled_does_not_persist_clean_traffic(self):
+        # Disabling the Monitors filter skips the rule catalog, so a clean
+        # packet has nothing left to raise - persistence now depends only
+        # on whether evaluation actually alerted, so it is dropped like any
+        # other unevaluated-clean traffic.
         self.store.set_monitor_filter_enabled(False)
         self.sniffer._store_packet(self._base_packet())
-        self.assertEqual(self.store.list_count("packets"), 1)
-        self.assertEqual(self.sniffer.state.packets_stored, 1)
+        self.assertEqual(self.store.list_count("packets"), 0)
+        self.assertEqual(self.sniffer.state.packets_stored, 0)
 
     def test_exclusion_filter_mutes_detection_by_port(self):
         # The shared exclusion filter (Settings > Exclusions) is the same
@@ -957,11 +961,14 @@ class TestSnifferGatedPersistence(unittest.TestCase):
 
 
 class TestTrainingAndAiAlertModes(unittest.TestCase):
-    """Sniffer._store_packet's "Training" and "IA" activation modes - see
-    FAQA plan snoopy-bubbling-toast: Training stores every evaluated packet
-    and auto-feeds the IA trainer with the Monitors' verdict as the label;
-    "solo IA" (ai_alert_mode_enabled without training_enabled) skips the
-    rule catalog and lets the IA classifier decide instead."""
+    """Sniffer._store_packet's "Training" and "IA" activation modes.
+
+    Every non-muted packet is fully evaluated, but only persists if that
+    evaluation raised something - Training does not keep a "benign" feed of
+    its own any more, it only auto-feeds the IA trainer with "malicious"
+    labels for packets Monitors already alerted on. "solo IA"
+    (ai_alert_mode_enabled without training_enabled) skips the rule catalog
+    and lets the IA classifier decide instead."""
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -1049,21 +1056,21 @@ class TestTrainingAndAiAlertModes(unittest.TestCase):
         classify.assert_not_called()
         self.assertEqual(self.store.list_count("packets"), 1)
 
-    def test_training_mode_stores_undetected_traffic_and_labels_it_benign(self):
-        with patch("sniff4hound.sniffer.STORE_RAW_PACKET_BYTES", True):
+    def test_training_mode_never_persists_undetected_traffic(self):
+        # Persistence now depends only on whether evaluation raised
+        # something; Training no longer keeps a "benign" feed of its own -
+        # clean traffic is processed for its verdict and dropped, same as
+        # with Training off.
+        with patch.object(self.sniffer, "_store_raw_packet_bytes", True):
             self.sniffer._training_enabled = True
             with patch.object(self.store, "save_ai_feedback") as save_feedback:
                 self.sniffer._store_packet(self._base_packet())
-                self._wait_for_call(save_feedback)
-        self.assertEqual(self.store.list_count("packets"), 1)
-        save_feedback.assert_called_once()
-        packet_id, label, confidence, note = save_feedback.call_args[0]
-        self.assertEqual(label, "benign")
-        self.assertEqual(note, "auto:training")
-        self.assertGreater(confidence, 0)
+                time.sleep(0.2)
+        self.assertEqual(self.store.list_count("packets"), 0)
+        save_feedback.assert_not_called()
 
     def test_training_mode_labels_a_monitor_hit_malicious(self):
-        with patch("sniff4hound.sniffer.STORE_RAW_PACKET_BYTES", True):
+        with patch.object(self.sniffer, "_store_raw_packet_bytes", True):
             self.sniffer._training_enabled = True
             with patch.object(self.store, "save_ai_feedback") as save_feedback:
                 self.sniffer._store_packet(self._base_packet(dst_port=3389))
@@ -1074,13 +1081,14 @@ class TestTrainingAndAiAlertModes(unittest.TestCase):
         self.assertGreaterEqual(confidence, 0.75)
 
     def test_training_mode_without_raw_retention_skips_auto_feedback(self):
-        # Training still stores the labelled dataset even without forensic
-        # bytes; only the "auto-train the network" half needs raw bytes, so
-        # it must not even try when they are unavailable.
-        with patch("sniff4hound.sniffer.STORE_RAW_PACKET_BYTES", False):
+        # An alerting packet still persists without forensic bytes (that
+        # decision only depends on the Monitors verdict); only the
+        # "auto-train the network" half needs raw bytes, so it must not
+        # even try when they are unavailable.
+        with patch.object(self.sniffer, "_store_raw_packet_bytes", False):
             self.sniffer._training_enabled = True
             with patch.object(self.store, "save_ai_feedback") as save_feedback:
-                self.sniffer._store_packet(self._base_packet())
+                self.sniffer._store_packet(self._base_packet(dst_port=3389))
                 time.sleep(0.2)
         self.assertEqual(self.store.list_count("packets"), 1)
         save_feedback.assert_not_called()

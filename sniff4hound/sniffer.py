@@ -605,6 +605,7 @@ class Sniffer:
         self._monitor_cache: list[dict] = []
         self._whitelist_cache: list[dict] = []
         self._monitor_filter_enabled = True
+        self._store_raw_packet_bytes = bool(STORE_RAW_PACKET_BYTES)
         self._monitor_min_severity = MONITOR_MIN_SEVERITY_DEFAULT
         self._monitor_suppress_generated_info = MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT
         self._detection_exclude_scopes: frozenset[str] = frozenset()
@@ -995,6 +996,8 @@ class Sniffer:
             if not isinstance(whitelist, list):
                 whitelist = []
             filter_enabled = self.store.get_monitor_filter_enabled()
+            get_raw_retention = getattr(self.store, "get_raw_retention_enabled", None)
+            raw_retention_enabled = get_raw_retention() if callable(get_raw_retention) else bool(STORE_RAW_PACKET_BYTES)
             get_config = getattr(self.store, "get_runtime_config", None)
             # `training_enabled` replaces the old `ai_sampling_enabled` flag;
             # an install upgrading from before this change still has its
@@ -1033,6 +1036,7 @@ class Sniffer:
             self._monitor_cache = monitors
             self._whitelist_cache = whitelist
             self._monitor_filter_enabled = filter_enabled
+            self._store_raw_packet_bytes = raw_retention_enabled
             self._monitor_min_severity = min_severity
             self._monitor_suppress_generated_info = suppress_generated_info
             self._detection_exclude_scopes = exclude_scopes
@@ -1307,20 +1311,20 @@ class Sniffer:
             packet["ai_detection_status"] = "suppressed"
         packet["banner_text"] = packet.get("banner_text") or packet.get("payload_text") or ""
 
-        # Training mode stores every non-muted packet it evaluates (not just
-        # the ones that alert) so both "clean" and "malicious" labels are
-        # available to train from - it replaces the old throttled
-        # ai_sampling_enabled (1 sample/sec) with the full evaluated feed.
-        detected = detection_muted or bool(monitor_hits) or not filter_enabled or self._training_enabled
-        ai_sample = (
-            self._training_enabled
-            and detected
-            and filter_enabled
-            and not detection_muted
-            and not monitor_hits
-        )
-        packet["ai_sample"] = ai_sample
-        if detected:
+        # Every non-muted packet is fully evaluated - rule catalog, anomaly
+        # detectors and (in "solo IA" mode) the AI classifier - but only
+        # persists if that evaluation actually raised something. Clean
+        # traffic is processed for its verdict and then dropped, so the
+        # packets table only ever holds what an operator would want to look
+        # at, and disk/DB growth tracks alert volume instead of link speed.
+        # Muted/whitelisted/excluded traffic is the one exception: it is
+        # deliberately never evaluated (nothing to raise, by design), but
+        # still persists untagged - "mute detection without hiding capture"
+        # is its own, separately relied-on contract (see
+        # ExcludedTrafficPipelineTests), not a case of "checked and clean".
+        should_persist = detection_muted or bool(monitor_hits)
+        packet["ai_sample"] = False
+        if should_persist:
             saved = self.store.register_packet(packet)
             self._touch_packet(saved or packet, stored=True)
             self._broadcast_packet(saved or packet, persisted=True)
@@ -1328,19 +1332,19 @@ class Sniffer:
             if (
                 self._training_enabled
                 and not detection_muted
-                and STORE_RAW_PACKET_BYTES
+                and self._store_raw_packet_bytes
                 and saved
                 and saved.get("id")
             ):
-                label = "malicious" if monitor_hits else "benign"
                 confidence = self._training_confidence(monitor_hits)
-                self._enqueue_ai_training(saved["id"], label, confidence, "auto:training")
+                self._enqueue_ai_training(saved["id"], "malicious", confidence, "auto:training")
         else:
-            # Undetected traffic can arrive at wire speed; broadcasting a full
+            # Clean traffic can arrive at wire speed; broadcasting a full
             # "packet" event for every one of them would flood connected
-            # dashboards. Only the counters need to stay live for this case,
-            # and even those are time-throttled so the broadcast rate has a
-            # hard ceiling regardless of how fast packets arrive.
+            # dashboards, and it is never persisted now anyway. Only the
+            # counters need to stay live for this case, and even those are
+            # time-throttled so the broadcast rate has a hard ceiling
+            # regardless of how fast packets arrive.
             self._touch_packet(packet, stored=False)
             self._broadcast_stats_throttled()
 
