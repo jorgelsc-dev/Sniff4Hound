@@ -35,7 +35,10 @@
         <v-chip size="small" color="primary">{{ aiSummary.analyzed }} analizados</v-chip>
         <v-chip size="small" color="warning">{{ aiSummary.candidates }} posibles falsos negativos</v-chip>
         <v-chip size="small" :color="aiSamplingEnabled ? 'success' : 'secondary'" variant="tonal">
-          {{ aiSamplingEnabled ? "Muestreo activo" : "Muestreo detenido" }}
+          {{ aiSamplingEnabled ? "Training activo" : "Training detenido" }}
+        </v-chip>
+        <v-chip size="small" :color="aiAlertModeEnabled ? 'success' : 'secondary'" variant="tonal">
+          {{ aiAlertModeEnabled ? "IA decide alertas" : "IA en modo consulta" }}
         </v-chip>
       </template>
       <template #cell-created_at="{ value }">
@@ -186,7 +189,7 @@
             <div class="runtime-state-card runtime-state-card--ai">
               <div class="runtime-state-card__topline">
                 <div>
-                  <div class="text-subtitle-2">IA</div>
+                  <div class="text-subtitle-2">Training</div>
                   <div class="text-caption text-medium-emphasis">
                     {{ aiSamplingSummary }}
                   </div>
@@ -203,7 +206,7 @@
                     inset
                     :loading="aiSamplingBusy"
                     :disabled="aiSamplingBusy"
-                    aria-label="Run the AI engine"
+                    aria-label="Run Training mode"
                     @update:model-value="toggleAiSampling"
                   />
                 </div>
@@ -216,6 +219,44 @@
                 <div class="runtime-stat">
                   <span class="runtime-stat__label">Posibles falsos negativos</span>
                   <span class="runtime-stat__value">{{ aiSummary.candidates }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="runtime-state-card runtime-state-card--ai">
+              <div class="runtime-state-card__topline">
+                <div>
+                  <div class="text-subtitle-2">IA</div>
+                  <div class="text-caption text-medium-emphasis">
+                    {{ aiAlertModeSummary }}
+                  </div>
+                </div>
+                <div class="d-flex align-center ga-2">
+                  <v-chip size="small" :color="aiAlertModeEnabled ? 'success' : 'secondary'" variant="tonal" :prepend-icon="aiAlertModeEnabled ? 'mdi-play-circle-outline' : 'mdi-stop-circle-outline'">
+                    {{ aiAlertModeEnabled ? "Running" : "Stopped" }}
+                  </v-chip>
+                  <v-switch
+                    :model-value="aiAlertModeEnabled"
+                    color="secondary"
+                    density="compact"
+                    hide-details
+                    inset
+                    :loading="aiAlertModeBusy"
+                    :disabled="aiAlertModeBusy || !rawRetentionEnabled"
+                    :aria-label="rawRetentionEnabled ? 'Run the AI alert engine' : 'AI alert engine requires raw packet retention'"
+                    @update:model-value="toggleAiAlertMode"
+                  />
+                </div>
+              </div>
+              <div class="runtime-state-card__body">
+                <div v-if="!rawRetentionEnabled" class="runtime-stat">
+                  <span class="runtime-stat__value text-warning">
+                    Requiere SNIFF4HOUND_STORE_RAW_PACKET=1 para que el clasificador tenga bytes que puntuar.
+                  </span>
+                </div>
+                <div v-else class="runtime-stat">
+                  <span class="runtime-stat__label">Modo</span>
+                  <span class="runtime-stat__value">{{ aiSamplingEnabled ? "IA + Training" : "Solo IA" }}</span>
                 </div>
               </div>
             </div>
@@ -424,6 +465,9 @@ export default {
       aiSummary: { analyzed: 0, candidates: 0 },
       aiSamplingEnabled: false,
       aiSamplingBusy: false,
+      aiAlertModeEnabled: false,
+      aiAlertModeBusy: false,
+      rawRetentionEnabled: false,
       aiColumns: [
         { key: "created_at", label: "Seen" },
         { key: "proto", label: "Proto" },
@@ -709,8 +753,21 @@ export default {
       return "Stopped until you start the honeypot.";
     },
     aiSamplingSummary() {
-      if (this.aiSamplingEnabled) return "Conservando una muestra de tráfico sin alertas para el análisis.";
-      return "Detenido. Solo se puntúa el tráfico que ya generó una alerta.";
+      if (this.aiSamplingEnabled) {
+        return "Guardando todo el tráfico evaluado por los Monitors y entrenando la IA con ese veredicto.";
+      }
+      return "Detenido. Solo se persiste el tráfico que ya generó una alerta.";
+    },
+    aiAlertModeSummary() {
+      if (!this.rawRetentionEnabled) {
+        return "Deshabilitado: activa la retención de bytes crudos para usarlo.";
+      }
+      if (this.aiAlertModeEnabled) {
+        return this.aiSamplingEnabled
+          ? "IA activa junto a Training: los Monitors siguen decidiendo la alerta."
+          : "Solo IA: el catálogo de reglas está en pausa, la IA decide las alertas.";
+      }
+      return "Detenido. Los Monitors deciden las alertas normalmente.";
     },
   },
   watch: {
@@ -758,10 +815,12 @@ export default {
           this.load({ silent: true }).catch(() => null);
         });
     },
-    // Unlike sniffer/honeypot, the AI engine has no separate running process
-    // to start/stop - "sampling" (keeping alert-free traffic for analysis)
-    // is the one persistent on/off state it actually has, so that is what
-    // this switch controls, same endpoint AiView's own toggle uses.
+    // Unlike sniffer/honeypot, Training has no separate running process to
+    // start/stop - it is a persistent flag on the capture pipeline: every
+    // packet that passes exclusions/whitelist gets evaluated by Monitors
+    // (rules + anomalies) as usual, but instead of only alerting traffic
+    // being stored, *everything* evaluated is stored and auto-fed to the
+    // IA trainer with the Monitors' verdict as its label.
     toggleAiSampling(enabled) {
       if (this.aiSamplingBusy) return;
       this.aiSamplingBusy = true;
@@ -769,16 +828,40 @@ export default {
       this.store
         .fetchJsonPromise("/api/ai/config", {
           method: "POST",
-          body: JSON.stringify({ sampling_enabled: Boolean(enabled) }),
+          body: JSON.stringify({ training_enabled: Boolean(enabled) }),
         })
         .then((config) => {
-          this.aiSamplingEnabled = Boolean(config.sampling_enabled);
+          this.aiSamplingEnabled = Boolean(config.training_enabled);
+        })
+        .catch((err) => {
+          this.engineError = (err && err.message) || "Failed to update Training mode";
+        })
+        .finally(() => {
+          this.aiSamplingBusy = false;
+        });
+    },
+    // "Solo IA": the AI classifier decides alerts instead of the rule
+    // catalog (only takes effect while Training is off - see backend
+    // Sniffer._store_packet). Requires raw packet retention
+    // (SNIFF4HOUND_STORE_RAW_PACKET=1) so the classifier has bytes to
+    // score; the backend rejects enabling it otherwise.
+    toggleAiAlertMode(enabled) {
+      if (this.aiAlertModeBusy) return;
+      this.aiAlertModeBusy = true;
+      this.engineError = "";
+      this.store
+        .fetchJsonPromise("/api/ai/config", {
+          method: "POST",
+          body: JSON.stringify({ ai_alert_mode_enabled: Boolean(enabled) }),
+        })
+        .then((config) => {
+          this.aiAlertModeEnabled = Boolean(config.ai_alert_mode_enabled);
         })
         .catch((err) => {
           this.engineError = (err && err.message) || "Failed to update the AI engine";
         })
         .finally(() => {
-          this.aiSamplingBusy = false;
+          this.aiAlertModeBusy = false;
         });
     },
     aiScoreColor(value) {
@@ -869,7 +952,9 @@ export default {
             const data = aiRes.value || {};
             this.aiRows = Array.isArray(data.rows) ? data.rows : [];
             this.aiSummary = { analyzed: Number(data.analyzed || 0), candidates: Number(data.candidates || 0) };
-            this.aiSamplingEnabled = Boolean(data.sampling_enabled);
+            this.aiSamplingEnabled = Boolean(data.training_enabled);
+            this.aiAlertModeEnabled = Boolean(data.ai_alert_mode_enabled);
+            this.rawRetentionEnabled = Boolean(data.raw_retention_enabled);
           } else {
             this.aiRows = [];
             this.aiSummary = { analyzed: 0, candidates: 0 };
@@ -923,10 +1008,11 @@ export default {
 
 .runtime-grid {
   display: grid;
-  /* 3 cards now (Sniffer/Honeypot/IA) - a fixed 2-column grid left the
-     3rd card alone on its own row with an empty cell beside it. Auto-fit
-     lets it settle into 3 columns on wide layouts and wrap down as space
-     shrinks, same as the media-query fallback below already does. */
+  /* 4 cards now (Sniffer/Honeypot/Training/IA) - a fixed 2-column grid left
+     an odd card alone on its own row with an empty cell beside it. Auto-fit
+     lets it settle into as many columns as fit on wide layouts and wrap
+     down as space shrinks, same as the media-query fallback below already
+     does. */
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 8px;
 }
@@ -1023,9 +1109,9 @@ export default {
 }
 
 /* The panel is now only ~50% of the viewport from md up (it used to be
-   full-width until xl), so the sniffer/honeypot/IA grid needs to collapse
-   to one column across that whole md-to-xl range or its cards get cramped -
-   not just below the old single 1264px cutoff. */
+   full-width until xl), so the sniffer/honeypot/training/IA grid needs to
+   collapse to one column across that whole md-to-xl range or its cards get
+   cramped - not just below the old single 1264px cutoff. */
 @media (max-width: 1900px) and (min-width: 600px) {
   .runtime-grid {
     grid-template-columns: 1fr;
