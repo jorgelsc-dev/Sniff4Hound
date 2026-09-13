@@ -30,9 +30,14 @@ existe ninguna variable de entorno para saltarse esto: si no corre como root,
 intenta relanzarse con `sudo` y, si no puede, termina sin arrancar el
 servidor e imprime el motivo por stderr.
 
-## Modos de activacion (Sniffer / Honeypot / Training / IA)
+## Modos de activacion (Sniffer / Honeypot / Monitors / IA)
 
-El Dashboard expone 4 interruptores independientes:
+El Dashboard expone 4 interruptores independientes. "Monitors" es la fase de
+etiquetado: mientras esta activo, Monitors decide las alertas y esas
+etiquetas alimentan el entrenamiento de la IA; al apagarlo, Monitors se
+retira por completo y la IA (si esta activa) decide sola - la idea es
+arrancar con Monitors activo, dejar que la IA aprenda de sus veredictos, y
+apagarlo cuando la IA ya puede operar sin el catalogo de reglas.
 
 - **Sniffer** / **Honeypot**: los motores de captura de siempre (`POST
   /api/runtime/` con `{"engine": "sniffer"|"honeypot", "action": "start"|"stop"}`).
@@ -41,26 +46,27 @@ El Dashboard expone 4 interruptores independientes:
   el clasificador), pero solo **persiste si esa evaluacion levanto algo**
   (`Sniffer._store_packet`) - trafico limpio se procesa para obtener su
   veredicto y se descarta, no se guarda una fila por cada paquete que pasa
-  por el sensor. Esto aplica igual con Training activo o apagado: ya no
-  existe un modo que guarde trafico "benigno" sin alerta.
-- **Training** (`POST /api/ai/config` con `{"training_enabled": true|false}`,
-  antes `sampling_enabled`): con Training activo, todo paquete que alerte
-  (via Monitors) se encola en segundo plano para reentrenar la IA
-  (`ai_learning.py`) etiquetado `malicious`. Requiere retencion de bytes
+  por el sensor. Esto aplica igual con Monitors activo o apagado: no existe
+  un modo que guarde trafico "benigno" sin alerta.
+- **Monitors** (`POST /api/ai/config` con `{"training_enabled": true|false}`
+  - el campo de la API sigue llamandose `training_enabled` internamente,
+  antes `sampling_enabled`): con Monitors activo, todo paquete que alerte
+  (via el catalogo de reglas) se encola en segundo plano para reentrenar la
+  IA (`ai_learning.py`) etiquetado `malicious`. Requiere retencion de bytes
   crudos activa (`raw_retention_enabled`, ver abajo) para esa mitad de
   "entrenar la red"; sin eso, el paquete que alerta igual persiste, pero no
   se encola para reentrenamiento.
 - **IA** (`POST /api/ai/config` con `{"ai_alert_mode_enabled": true|false}`):
-  cuando esta activo **y Training esta apagado** ("solo IA"), el catalogo de
+  cuando esta activo **y Monitors esta apagado** ("solo IA"), el catalogo de
   reglas/regex de Monitors se salta por completo y el clasificador
   entrenado por feedback decide si hay alerta. Los detectores de anomalia
   (SYN flood, port scan, ARP spoof, ...) siguen funcionando siempre, sean
-  cuales sean estos dos flags. Si IA y Training estan **ambos** activos, los
-  Monitors se quedan a cargo de decidir la alerta (para no ensuciar las
-  etiquetas de entrenamiento) y solo Training sigue alimentando el
-  reentrenamiento. Requiere retencion de bytes crudos activa: el backend
-  rechaza con `400` activar `ai_alert_mode_enabled` sin ella, porque el
-  clasificador puntua sobre `payload_hex`/`raw_packet`.
+  cuales sean estos dos flags. Si IA y Monitors estan **ambos** activos,
+  Monitors se queda a cargo de decidir la alerta (para no ensuciar las
+  etiquetas de entrenamiento) y solo sigue alimentando el reentrenamiento.
+  Requiere retencion de bytes crudos activa: el backend rechaza con `400`
+  activar `ai_alert_mode_enabled` sin ella, porque el clasificador puntua
+  sobre `payload_hex`/`raw_packet`.
 - **Retencion de bytes crudos** (`POST /api/ai/config` con
   `{"raw_retention_enabled": true|false}`): controla si `payload_hex`/
   `raw_packet` se guardan tal cual o se limpian en cada lectura/escritura

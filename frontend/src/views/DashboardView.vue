@@ -35,7 +35,7 @@
         <v-chip size="small" color="primary">{{ aiSummary.analyzed }} analizados</v-chip>
         <v-chip size="small" color="warning">{{ aiSummary.candidates }} posibles falsos negativos</v-chip>
         <v-chip size="small" :color="aiSamplingEnabled ? 'success' : 'secondary'" variant="tonal">
-          {{ aiSamplingEnabled ? "Training activo" : "Training detenido" }}
+          {{ aiSamplingEnabled ? "Monitors activo" : "Monitors detenido" }}
         </v-chip>
         <v-chip size="small" :color="aiAlertModeEnabled ? 'success' : 'secondary'" variant="tonal">
           {{ aiAlertModeEnabled ? "IA decide alertas" : "IA en modo consulta" }}
@@ -189,7 +189,7 @@
             <div class="runtime-state-card runtime-state-card--ai">
               <div class="runtime-state-card__topline">
                 <div>
-                  <div class="text-subtitle-2">Training</div>
+                  <div class="text-subtitle-2">Monitors</div>
                   <div class="text-caption text-medium-emphasis">
                     {{ aiSamplingSummary }}
                   </div>
@@ -206,7 +206,7 @@
                     inset
                     :loading="aiSamplingBusy"
                     :disabled="aiSamplingBusy"
-                    aria-label="Run Training mode"
+                    aria-label="Run Monitors (labeling/training phase)"
                     @update:model-value="toggleAiSampling"
                   />
                 </div>
@@ -273,7 +273,7 @@
                 </div>
                 <div v-else class="runtime-stat">
                   <span class="runtime-stat__label">Modo</span>
-                  <span class="runtime-stat__value">{{ aiSamplingEnabled ? "IA + Training" : "Solo IA" }}</span>
+                  <span class="runtime-stat__value">{{ aiSamplingEnabled ? "IA + Monitors" : "Solo IA" }}</span>
                 </div>
               </div>
             </div>
@@ -782,8 +782,8 @@ export default {
       }
       if (this.aiAlertModeEnabled) {
         return this.aiSamplingEnabled
-          ? "IA activa junto a Training: los Monitors siguen decidiendo la alerta."
-          : "Solo IA: el catálogo de reglas está en pausa, la IA decide las alertas.";
+          ? "IA activa junto a Monitors: los Monitors siguen decidiendo la alerta y etiquetando para la IA."
+          : "Solo IA: Monitors está en pausa, la IA decide las alertas sola.";
       }
       return "Detenido. Los Monitors deciden las alertas normalmente.";
     },
@@ -833,11 +833,15 @@ export default {
           this.load({ silent: true }).catch(() => null);
         });
     },
-    // Unlike sniffer/honeypot, Training has no separate running process to
-    // start/stop - it is a persistent flag on the capture pipeline: every
-    // packet that passes exclusions/whitelist gets evaluated by Monitors
-    // (rules + anomalies) as usual, and whatever raises an alert is
-    // auto-fed to the IA trainer, labeled "malicious" from that verdict.
+    // "Monitors" (API field still training_enabled - it is the labeling
+    // phase the AI trains from, not a display name for that field). Unlike
+    // sniffer/honeypot it has no separate running process to start/stop -
+    // it is a persistent flag on the capture pipeline: every packet that
+    // passes exclusions/whitelist gets evaluated by Monitors (rules +
+    // anomalies) as usual, and whatever raises an alert is auto-fed to the
+    // IA trainer, labeled "malicious" from that verdict. Turning Monitors
+    // off hands alerting over to the IA classifier alone (see "solo IA"
+    // below), which is the point once it has learned enough to run solo.
     toggleAiSampling(enabled) {
       if (this.aiSamplingBusy) return;
       this.aiSamplingBusy = true;
@@ -851,7 +855,7 @@ export default {
           this.aiSamplingEnabled = Boolean(config.training_enabled);
         })
         .catch((err) => {
-          this.engineError = (err && err.message) || "Failed to update Training mode";
+          this.engineError = (err && err.message) || "Failed to update Monitors";
         })
         .finally(() => {
           this.aiSamplingBusy = false;
@@ -883,7 +887,7 @@ export default {
         });
     },
     // "Solo IA": the AI classifier decides alerts instead of the rule
-    // catalog (only takes effect while Training is off - see backend
+    // catalog (only takes effect while Monitors is off - see backend
     // Sniffer._store_packet). Requires raw packet retention
     // (SNIFF4HOUND_STORE_RAW_PACKET=1) so the classifier has bytes to
     // score; the backend rejects enabling it otherwise.
@@ -1050,7 +1054,7 @@ export default {
 
 .runtime-grid {
   display: grid;
-  /* 4 cards now (Sniffer/Honeypot/Training/IA) - a fixed 2-column grid left
+  /* 4 cards now (Sniffer/Honeypot/Monitors/IA) - a fixed 2-column grid left
      an odd card alone on its own row with an empty cell beside it. Auto-fit
      lets it settle into as many columns as fit on wide layouts and wrap
      down as space shrinks, same as the media-query fallback below already

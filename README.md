@@ -304,8 +304,8 @@ Variables practicas del runtime:
   nueva - el interruptor "Bytes crudos" del Dashboard (o `POST
   /api/ai/config` con `{"raw_retention_enabled": true|false}`) la alterna
   despues sin reiniciar. Necesaria para el modo IA del Dashboard
-  (`ai_alert_mode_enabled`) y para que el modo Training reentrene el modelo -
-  ver `docs/reference/runtime.md#modos-de-activacion-sniffer--honeypot--training--ia`.
+  (`ai_alert_mode_enabled`) y para que el modo Monitors reentrene el modelo -
+  ver `docs/reference/runtime.md#modos-de-activacion-sniffer--honeypot--monitors--ia`.
 - `SNIFF4HOUND_POLL_TIMEOUT`
 - `SNIFF4HOUND_REQUIRE_AUTH`
 - `SNIFF4HOUND_JWT_SECRET` (opcional; si falta se genera uno por instalacion)
