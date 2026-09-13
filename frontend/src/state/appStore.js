@@ -170,9 +170,6 @@ function readLocalAuthToken() {
       window.localStorage.removeItem(STORAGE_KEY_AUTH);
       window.localStorage.removeItem(LEGACY_STORAGE_KEY_AUTH);
     }
-    if (legacyToken && window.sessionStorage) {
-      window.sessionStorage.setItem(STORAGE_KEY_AUTH, legacyToken);
-    }
     return legacyToken;
   } catch {
     return "";
