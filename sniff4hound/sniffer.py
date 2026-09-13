@@ -1322,10 +1322,16 @@ class Sniffer:
         # still persists untagged - "mute detection without hiding capture"
         # is its own, separately relied-on contract (see
         # ExcludedTrafficPipelineTests), not a case of "checked and clean".
-        should_persist = detection_muted or bool(monitor_hits)
+        is_alert = bool(monitor_hits)
+        should_persist = detection_muted or is_alert
         packet["ai_sample"] = False
         if should_persist:
-            saved = self.store.register_packet(packet)
+            # Muted/whitelisted/excluded traffic (detection_muted, no
+            # is_alert) is never evaluated, so it never earns the raw-bytes
+            # treatment meant for traffic that actually alerted - it still
+            # persists untagged (see the comment above), just without
+            # payload_hex/raw_packet, regardless of the global toggle.
+            saved = self.store.register_packet(packet, allow_raw_retention=is_alert)
             self._touch_packet(saved or packet, stored=True)
             self._broadcast_packet(saved or packet, persisted=True)
             self._record_intel(packet)

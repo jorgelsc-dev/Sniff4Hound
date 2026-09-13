@@ -4704,14 +4704,19 @@ class SniffStore:
             },
         }
 
-    def register_packet(self, packet: dict) -> dict:
+    def register_packet(self, packet: dict, *, allow_raw_retention: bool = True) -> dict:
         now = utc_now()
         rule_hits = packet.get("rule_hits") if isinstance(packet.get("rule_hits"), list) else []
         tags = packet.get("tags") if isinstance(packet.get("tags"), list) else []
         payload_text = redact_sensitive_text(normalize_text(packet.get("payload_text") or "", limit=PAYLOAD_TEXT_MAX_CHARS))
         summary_text = redact_sensitive_text(normalize_text(packet.get("summary") or "", limit=PAYLOAD_TEXT_MAX_CHARS))
         banner_text = redact_sensitive_text(normalize_text(packet.get("banner_text") or payload_text, limit=PAYLOAD_TEXT_MAX_CHARS))
-        raw_retention_enabled = self.get_raw_retention_enabled()
+        # allow_raw_retention=False forces raw bytes off for this call
+        # regardless of the global toggle - used for packets persisted only
+        # because they're muted/whitelisted/excluded (never evaluated, so
+        # never "alerting"), which should not get the forensic-detail
+        # treatment intended for traffic that actually raised something.
+        raw_retention_enabled = allow_raw_retention and self.get_raw_retention_enabled()
         payload_hex = str(packet.get("payload_hex") or "") if raw_retention_enabled else ""
         raw_packet = packet.get("raw_packet") if raw_retention_enabled else None
         length = safe_int(packet.get("length", 0), 0)
