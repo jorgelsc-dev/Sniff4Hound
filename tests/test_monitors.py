@@ -822,6 +822,22 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.assertEqual(packet.get("monitor_hits") or [], [])
         self.assertEqual(packet.get("ai_detection_status"), "muted")
 
+    def test_muted_traffic_never_retains_raw_bytes_even_with_global_retention_on(self):
+        # FAQA 1.1: muted/whitelisted/excluded traffic is never evaluated,
+        # so it never earns the raw-bytes treatment meant for traffic that
+        # actually alerted - it must persist untagged (see the test above)
+        # but without payload_hex/raw_packet, regardless of the global
+        # raw_retention_enabled default (on by default as of this change).
+        self.assertTrue(self.store.get_raw_retention_enabled())
+        self.store.set_exclusion_filters({"ports": [3389]})
+        packet = self._base_packet(
+            dst_port=3389, payload_hex="deadbeef", raw_packet=b"\xde\xad\xbe\xef"
+        )
+        self.sniffer._store_packet(packet)
+        row = self.store.get_packet(self.store.list_packets(limit=1)[0]["id"])
+        self.assertEqual(row["payload_hex"], "")
+        self.assertIsNone(row["raw_packet"])
+
     def test_exclusion_filter_mutes_detection_by_cidr(self):
         self.store.set_exclusion_filters({"cidrs": ["10.0.0.0/24"]})
         packet = self._base_packet(dst_port=3389, src_ip="10.0.0.5", dst_ip="10.0.0.9")
