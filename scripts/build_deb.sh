@@ -16,6 +16,7 @@ BIN_DIR="$PACKAGE_ROOT/usr/bin"
 DOC_DIR="$PACKAGE_ROOT/usr/share/doc/$PACKAGE_NAME"
 LAUNCHER_SOURCE="$ROOT_DIR/scripts/deb_launcher.py"
 WRAPPER_SOURCE="$ROOT_DIR/scripts/deb_wrapper.sh"
+POSTINST_SOURCE="$ROOT_DIR/scripts/deb_postinst.sh"
 POSTRM_SOURCE="$ROOT_DIR/scripts/deb_postrm.sh"
 
 require_command() {
@@ -35,6 +36,10 @@ if [[ ! -f "$LAUNCHER_SOURCE" ]]; then
 fi
 if [[ ! -f "$WRAPPER_SOURCE" ]]; then
   echo "Missing wrapper template: $WRAPPER_SOURCE" >&2
+  exit 1
+fi
+if [[ ! -f "$POSTINST_SOURCE" ]]; then
+  echo "Missing postinst template: $POSTINST_SOURCE" >&2
   exit 1
 fi
 if [[ ! -f "$POSTRM_SOURCE" ]]; then
@@ -84,6 +89,7 @@ Priority: optional
 Architecture: $PACKAGE_ARCH
 Maintainer: JorgelSC Dev
 Depends: python3 (>= 3.12)
+Recommends: python3-pip
 Homepage: https://github.com/jorgelsc-dev/Sniff4Hound
 Description: Native Python network sniffer with bundled web dashboard
  Sniff4Hound captures local traffic, persists runtime data in SQLite, and
@@ -92,6 +98,7 @@ EOF
 
 install -m 0644 "$LAUNCHER_SOURCE" "$INSTALL_ROOT/launcher.py"
 install -m 0755 "$WRAPPER_SOURCE" "$BIN_DIR/sniff4hound"
+install -m 0755 "$POSTINST_SOURCE" "$DEBIAN_DIR/postinst"
 install -m 0755 "$POSTRM_SOURCE" "$DEBIAN_DIR/postrm"
 install -m 0644 README.md "$DOC_DIR/README.md"
 install -m 0644 LICENSE "$DOC_DIR/LICENSE"
