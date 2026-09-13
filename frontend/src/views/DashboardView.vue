@@ -13,6 +13,8 @@
       </template>
     </ViewHeader>
 
+    <IpRelationshipGraph />
+
     <EntityTablePanel
       title="Alertas y detecciones IA"
       subtitle="Paquetes puntuados por el motor de IA local (LOF + red neuronal), más recientes primero."
@@ -449,6 +451,7 @@ import ViewHeader from "../components/ui/ViewHeader.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import ClearDataButton from "../components/ui/ClearDataButton.vue";
+import IpRelationshipGraph from "../components/IpRelationshipGraph.vue";
 import {
   buildPacketSizeSummary,
   buildPacketSummary,
@@ -465,6 +468,7 @@ export default {
     DataPanel,
     EntityTablePanel,
     ClearDataButton,
+    IpRelationshipGraph,
   },
   data() {
     return {

@@ -838,6 +838,36 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.assertEqual(row["payload_hex"], "")
         self.assertIsNone(row["raw_packet"])
 
+    def test_muted_traffic_is_excluded_from_the_ai_review_queue(self):
+        # Muted/whitelisted/excluded traffic is never evaluated and (per the
+        # test above) never retains raw bytes, so it can never contribute a
+        # score - listing it in the AI review queue ("Revisar / Ensenar")
+        # is pure "Sin bytes disponibles" noise for the operator. It still
+        # persists (list_packets), it just should not show up here.
+        self.store.set_exclusion_filters({"ports": [3389]})
+        muted_packet = self._base_packet(dst_port=3389)
+        self.sniffer._store_packet(muted_packet)
+        alerting_packet = self._base_packet(dst_port=3390, dst_ip="10.0.0.60")
+        self.sniffer._monitor_cache = [
+            normalize_monitor(
+                {
+                    "id": "test-port-3390",
+                    "name": "Test port 3390",
+                    "match": {"dst_ports": [3390]},
+                    "action": {"tag": "test-hit", "label": "Test hit", "severity": "medium"},
+                }
+            )
+        ]
+        self.sniffer._monitor_cache_at = 999999999.0
+        self.sniffer._store_packet(alerting_packet)
+
+        self.assertEqual(self.store.list_count("packets"), 2)
+        ai_packet_ids = {row["id"] for row in self.store.list_ai_packets()}
+        muted_id = self.store.list_packets(limit=2)[1]["id"]
+        alerting_id = self.store.list_packets(limit=2)[0]["id"]
+        self.assertNotIn(muted_id, ai_packet_ids)
+        self.assertIn(alerting_id, ai_packet_ids)
+
     def test_exclusion_filter_mutes_detection_by_cidr(self):
         self.store.set_exclusion_filters({"cidrs": ["10.0.0.0/24"]})
         packet = self._base_packet(dst_port=3389, src_ip="10.0.0.5", dst_ip="10.0.0.9")

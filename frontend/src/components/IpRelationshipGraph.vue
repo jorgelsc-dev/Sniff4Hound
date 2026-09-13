@@ -87,22 +87,31 @@
             @click="selectNode(node.ip)"
             @keydown.enter="selectNode(node.ip)"
             @keydown.space.prevent="selectNode(node.ip)"
+            @pointerenter="hoveredIp = node.ip"
+            @pointerleave="hoveredIp = hoveredIp === node.ip ? null : hoveredIp"
           >
+            <title>{{ node.ip }} · {{ node.display.label }}{{ node.display.detail ? ` (${node.display.detail})` : "" }} · {{ node.hit_count }} hits</title>
             <circle
               :cx="node.x"
               :cy="node.y"
               :r="node.radius"
               fill="currentColor"
               class="ip-graph-node__circle"
-              :class="`text-${deviceColorOf(node.device_type)}`"
+              :class="`text-${node.display.color}`"
               :stroke="selectedIp === node.ip ? '#fff' : 'rgba(255,255,255,0.35)'"
             />
             <foreignObject :x="node.x - 9" :y="node.y - 9" width="18" height="18" style="pointer-events: none">
               <div class="ip-graph-node__icon">
-                <span class="mdi" :class="deviceIconOf(node.device_type)"></span>
+                <span class="mdi" :class="node.display.icon"></span>
               </div>
             </foreignObject>
-            <text :x="node.x" :y="node.y + node.radius + 12" text-anchor="middle" class="ip-graph-node__label mono">
+            <text
+              v-if="visibleLabels.has(node.ip)"
+              :x="node.x"
+              :y="node.y + node.radius + 12"
+              text-anchor="middle"
+              class="ip-graph-node__label mono"
+            >
               {{ node.ip }}
             </text>
           </g>
@@ -110,32 +119,112 @@
       </svg>
     </div>
 
-    <div v-if="selectedNode" class="ip-graph-inspector mt-3">
-      <div class="d-flex align-center ga-2">
-        <v-avatar size="26" :color="deviceColorOf(selectedNode.device_type)" variant="tonal">
-          <v-icon :icon="deviceIconOf(selectedNode.device_type)" size="15" />
-        </v-avatar>
-        <span class="mono text-subtitle-2">{{ selectedNode.ip }}</span>
-        <v-chip size="x-small" variant="tonal">{{ selectedNode.device_type || "Unknown" }}</v-chip>
-        <v-chip size="x-small" variant="outlined">{{ selectedNode.hit_count }} hits</v-chip>
-        <v-spacer />
-        <router-link class="ip-graph-inspector__link" :to="{ path: '/investigate', query: { ip: selectedNode.ip } }">
-          Investigar <v-icon icon="mdi-arrow-right" size="13" />
-        </router-link>
-      </div>
-      <div v-if="selectedNeighbors.length" class="ip-graph-inspector__connections mt-2">
-        <span class="text-caption text-medium-emphasis">{{ selectedNeighbors.length }} relación(es):</span>
-        <span v-for="neighbor in selectedNeighbors" :key="neighbor.ip" class="ip-graph-inspector__connection mono">
-          {{ neighbor.ip }} <span class="text-medium-emphasis">×{{ neighbor.weight }}</span>
-        </span>
-      </div>
-    </div>
+    <v-dialog :model-value="Boolean(selectedNode)" max-width="460" @update:model-value="(open) => !open && closeInspector()">
+      <v-card v-if="selectedNode" rounded="lg" class="ip-graph-popup">
+        <v-card-item>
+          <template #prepend>
+            <v-avatar :color="selectedNode.display.color" variant="tonal" size="34">
+              <v-icon :icon="selectedNode.display.icon" size="19" />
+            </v-avatar>
+          </template>
+          <v-card-title class="mono">{{ selectedNode.ip }}</v-card-title>
+          <v-card-subtitle>
+            {{ selectedNode.display.label }}
+            <span v-if="selectedNode.display.detail">· {{ selectedNode.display.detail }}</span>
+          </v-card-subtitle>
+          <template #append>
+            <v-btn icon="mdi-close" variant="text" size="small" @click="closeInspector" />
+          </template>
+        </v-card-item>
+
+        <v-card-text class="ip-graph-popup__body">
+          <div class="ip-graph-popup__metrics">
+            <div class="ip-graph-popup__metric">
+              <span class="ip-graph-popup__metric-label">Hits</span>
+              <span class="ip-graph-popup__metric-value">{{ selectedNode.hit_count }}</span>
+            </div>
+            <div class="ip-graph-popup__metric">
+              <span class="ip-graph-popup__metric-label">Confianza</span>
+              <span class="ip-graph-popup__metric-value">{{ confidenceLabel(selectedNode.device_confidence) }}</span>
+            </div>
+            <div class="ip-graph-popup__metric">
+              <span class="ip-graph-popup__metric-label">Relaciones</span>
+              <span class="ip-graph-popup__metric-value">{{ selectedNeighbors.length }}</span>
+            </div>
+            <div class="ip-graph-popup__metric">
+              <span class="ip-graph-popup__metric-label">Ámbito</span>
+              <span class="ip-graph-popup__metric-value">{{ selectedNode.scope || "—" }}</span>
+            </div>
+            <div class="ip-graph-popup__metric ip-graph-popup__metric--wide">
+              <span class="ip-graph-popup__metric-label">Primera vez</span>
+              <span class="ip-graph-popup__metric-value">{{ formatTimestamp(selectedNode.first_seen) }}</span>
+            </div>
+            <div class="ip-graph-popup__metric ip-graph-popup__metric--wide">
+              <span class="ip-graph-popup__metric-label">Última vez</span>
+              <span class="ip-graph-popup__metric-value">{{ formatTimestamp(selectedNode.last_seen) }}</span>
+            </div>
+          </div>
+
+          <div v-if="selectedNode.device_evidence?.length" class="ip-graph-popup__evidence">
+            <span class="text-caption text-medium-emphasis">Evidencia:</span>
+            <span v-for="(item, i) in selectedNode.device_evidence" :key="i" class="ip-graph-popup__evidence-item">
+              {{ item }}
+            </span>
+          </div>
+
+          <div v-if="selectedNeighbors.length" class="ip-graph-inspector__connections mt-3">
+            <span class="text-caption text-medium-emphasis">Se comunica con:</span>
+            <span v-for="neighbor in visibleNeighbors" :key="neighbor.ip" class="ip-graph-inspector__connection mono">
+              {{ neighbor.ip }} <span class="text-medium-emphasis">×{{ neighbor.weight }}</span>
+            </span>
+            <span v-if="hiddenNeighborCount" class="ip-graph-inspector__connection ip-graph-inspector__connection--muted">
+              +{{ hiddenNeighborCount }} más
+            </span>
+          </div>
+
+          <v-alert v-if="actionError" type="error" variant="tonal" density="comfortable" class="mt-3">
+            {{ actionError }}
+          </v-alert>
+          <v-alert v-if="actionNotice" type="success" variant="tonal" density="comfortable" class="mt-3">
+            {{ actionNotice }}
+          </v-alert>
+        </v-card-text>
+
+        <v-card-actions class="flex-wrap ga-2">
+          <v-btn
+            size="small"
+            variant="tonal"
+            color="error"
+            :loading="blacklisting"
+            prepend-icon="mdi-cancel"
+            @click="blacklistSelected"
+          >
+            Bloquear
+          </v-btn>
+          <v-btn
+            size="small"
+            variant="tonal"
+            color="warning"
+            :loading="whitelisting"
+            prepend-icon="mdi-shield-check-outline"
+            @click="whitelistSelected"
+          >
+            Whitelist (borra historial)
+          </v-btn>
+          <v-spacer />
+          <router-link class="ip-graph-inspector__link" :to="{ path: '/investigate', query: { ip: selectedNode.ip } }">
+            Investigar <v-icon icon="mdi-arrow-right" size="13" />
+          </router-link>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-card>
 </template>
 
 <script>
 import store from "../state/appStore";
-import { deviceIcon, deviceColor } from "../utils/devices";
+import { deviceIcon, deviceColor, deviceDisplay } from "../utils/devices";
+import { formatTimestamp } from "../utils/traffic";
 
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 520;
@@ -143,6 +232,9 @@ const NODE_LIMIT = 150;
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.25;
+// Rough monospace advance width in px for the 8px label font - just needs
+// to be a reasonable upper bound for collision purposes, not exact metrics.
+const LABEL_CHAR_WIDTH = 4.6;
 
 // A compact Fruchterman-Reingold force layout: nodes repel each other,
 // edges pull their endpoints together, both effects shrink each pass
@@ -165,7 +257,11 @@ function computeLayout(nodes, edges) {
   });
   if (n === 1) return positions;
   const area = CANVAS_WIDTH * CANVAS_HEIGHT;
-  const k = Math.sqrt(area / n);
+  // A bit stronger than the "textbook" sqrt(area/n) repulsion constant -
+  // with labels drawn under each node, purely area-proportional spacing
+  // still left many pairs closer than their label widths, which is what
+  // produced the wall of overlapping text this was tuned against.
+  const k = Math.sqrt(area / n) * 1.35;
   const iterations = n > 200 ? 70 : n > 80 ? 110 : 160;
   let temperature = CANVAS_WIDTH / 10;
   const disp = new Map();
@@ -241,6 +337,11 @@ export default {
       panning: false,
       panStart: null,
       selectedIp: null,
+      hoveredIp: null,
+      blacklisting: false,
+      whitelisting: false,
+      actionError: "",
+      actionNotice: "",
     };
   },
   computed: {
@@ -257,7 +358,7 @@ export default {
       return this.nodes.map((node) => {
         const pos = this.positions.get(node.ip) || { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 };
         const share = (Number(node.hit_count) || 0) / this.maxHitCount;
-        return { ...node, x: pos.x, y: pos.y, radius: 9 + share * 11 };
+        return { ...node, x: pos.x, y: pos.y, radius: 9 + share * 11, display: deviceDisplay(node) };
       });
     },
     nodesByIp() {
@@ -282,6 +383,37 @@ export default {
         })
         .filter(Boolean);
     },
+    // Greedy label placement: bigger nodes (by radius, i.e. more hits)
+    // claim their label first; a smaller node whose label box would
+    // overlap an already-claimed one is skipped for now - it is still
+    // fully clickable, names itself in a native <title> tooltip on hover,
+    // and always shows its label the moment it is hovered or selected.
+    // This is what keeps one node's label from burying another's instead
+    // of just letting every node draw one regardless of how crowded the
+    // layout got.
+    visibleLabels() {
+      const visible = new Set();
+      const placed = [];
+      const sorted = [...this.layoutNodes].sort((a, b) => b.radius - a.radius);
+      for (const node of sorted) {
+        const focused = this.selectedIp === node.ip || this.hoveredIp === node.ip;
+        const width = Math.max(20, node.ip.length * LABEL_CHAR_WIDTH);
+        const box = {
+          left: node.x - width / 2,
+          right: node.x + width / 2,
+          top: node.y + node.radius + 3,
+          bottom: node.y + node.radius + 17,
+        };
+        const overlaps = placed.some(
+          (other) => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top
+        );
+        if (focused || !overlaps) {
+          visible.add(node.ip);
+          placed.push(box);
+        }
+      }
+      return visible;
+    },
     legendTypes() {
       const seen = new Set(this.nodes.map((node) => node.device_type || "Unknown"));
       return Array.from(seen).sort();
@@ -298,6 +430,17 @@ export default {
       });
       return rows.sort((a, b) => b.weight - a.weight);
     },
+    // A hub node can have dozens/hundreds of neighbors - listing all of
+    // them pushed the blacklist/whitelist buttons below the fold entirely.
+    // The popup is a quick "who is this and what do I do about it" glance,
+    // not a full neighbor browser (that's what "Investigar" is for), so
+    // it only ever shows the heaviest few.
+    visibleNeighbors() {
+      return this.selectedNeighbors.slice(0, 12);
+    },
+    hiddenNeighborCount() {
+      return Math.max(0, this.selectedNeighbors.length - this.visibleNeighbors.length);
+    },
   },
   watch: {
     scopes() {
@@ -310,6 +453,10 @@ export default {
   methods: {
     deviceIconOf: deviceIcon,
     deviceColorOf: deviceColor,
+    formatTimestamp,
+    confidenceLabel(value) {
+      return ({ high: "alta", medium: "media", low: "baja" })[value] || "sin clasificar";
+    },
     load() {
       this.loading = true;
       this.error = "";
@@ -334,7 +481,69 @@ export default {
       return this.selectedNeighbors.some((neighbor) => neighbor.ip === ip);
     },
     selectNode(ip) {
+      this.actionError = "";
+      this.actionNotice = "";
       this.selectedIp = this.selectedIp === ip ? null : ip;
+    },
+    closeInspector() {
+      this.selectedIp = null;
+      this.actionError = "";
+      this.actionNotice = "";
+    },
+    blacklistSelected() {
+      if (!this.selectedNode || this.blacklisting) return;
+      const ip = this.selectedNode.ip;
+      this.blacklisting = true;
+      this.actionError = "";
+      this.actionNotice = "";
+      store
+        .createBlacklistEntry({ category: "ip", matchType: "exact", value: ip })
+        .then(() => {
+          this.actionNotice = `${ip} agregada a la blacklist.`;
+        })
+        .catch((err) => {
+          this.actionError = (err && err.message) || "No se pudo bloquear la IP";
+        })
+        .finally(() => {
+          this.blacklisting = false;
+        });
+    },
+    // Two-step: first call asks the backend how many packets a purge
+    // would remove (nothing is deleted yet), then a native confirm()
+    // names that real count before the second call actually does it -
+    // whitelisting an IP here is irreversible (see FAQA.md / purge_ip_data).
+    whitelistSelected() {
+      if (!this.selectedNode || this.whitelisting) return;
+      const ip = this.selectedNode.ip;
+      this.whitelisting = true;
+      this.actionError = "";
+      this.actionNotice = "";
+      store
+        .whitelistIpAndForget(ip)
+        .then((preview) => {
+          const count = Number(preview && preview.packets) || 0;
+          const proceed = window.confirm(
+            `Esto va a eliminar ${count} paquete(s) ya capturados de ${ip} y a dejar de registrar tráfico nuevo de esta IP. ` +
+              "No se puede deshacer. ¿Continuar?"
+          );
+          if (!proceed) {
+            this.whitelisting = false;
+            return null;
+          }
+          return store.whitelistIpAndForget(ip, { confirm: true });
+        })
+        .then((result) => {
+          if (!result) return;
+          this.actionNotice = `${ip} en whitelist. Se eliminaron ${result.purged?.packets ?? 0} paquete(s).`;
+          this.selectedIp = null;
+          this.load();
+        })
+        .catch((err) => {
+          this.actionError = (err && err.message) || "No se pudo poner la IP en whitelist";
+        })
+        .finally(() => {
+          this.whitelisting = false;
+        });
     },
     zoomBy(delta) {
       this.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round((this.zoom + delta) * 100) / 100));
@@ -498,11 +707,54 @@ export default {
   pointer-events: none;
 }
 
-.ip-graph-inspector {
-  border-radius: 10px;
-  border: 1px solid rgba(var(--brand-sky-rgb), 0.16);
-  background: rgba(8, 14, 23, 0.6);
-  padding: 10px 12px;
+.ip-graph-popup__body {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.ip-graph-popup__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 14px;
+  margin-bottom: 4px;
+}
+
+.ip-graph-popup__metric {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ip-graph-popup__metric--wide {
+  grid-column: span 2;
+}
+
+.ip-graph-popup__metric-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+
+.ip-graph-popup__metric-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.ip-graph-popup__evidence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ip-graph-popup__evidence-item {
+  font-size: 0.72rem;
+  color: var(--text-soft);
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 999px;
+  padding: 2px 8px;
 }
 
 .ip-graph-inspector__link {
@@ -529,6 +781,11 @@ export default {
   background: rgba(255, 255, 255, 0.05);
   border-radius: 999px;
   padding: 2px 8px;
+}
+
+.ip-graph-inspector__connection--muted {
+  color: var(--text-dim);
+  background: transparent;
 }
 
 .mono {

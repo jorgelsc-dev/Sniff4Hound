@@ -1260,8 +1260,19 @@ class Sniffer:
         if self._is_own_dashboard_traffic(packet):
             self._touch_packet(packet, stored=False)
             return
+        if self._whitelisted(packet):
+            # Whitelisting an IP (from the IP graph's popup, or Settings)
+            # is a deliberate "stop tracking this host" action, distinct
+            # from a mute/exclusion scope - those still persist traffic
+            # untagged for capture visibility (see the muted/excluded
+            # contract preserved further down); an explicit whitelist entry
+            # instead drops the packet outright, same as clean/undetected
+            # traffic never makes it to storage.
+            self._touch_packet(packet, stored=False)
+            self._broadcast_stats_throttled()
+            return
         monitors, filter_enabled = self._get_monitor_context()
-        detection_muted = self._detection_muted(packet) or self._whitelisted(packet) or self._exclusion_filtered(packet)
+        detection_muted = self._detection_muted(packet) or self._exclusion_filtered(packet)
         # "Solo IA": IA activa y Training apagado. El catalogo de reglas se
         # salta y el veredicto de la IA ocupa su lugar; los detectores de
         # anomalia (SYN flood, port scan, ...) siguen corriendo siempre, ya
@@ -1317,17 +1328,18 @@ class Sniffer:
         # traffic is processed for its verdict and then dropped, so the
         # packets table only ever holds what an operator would want to look
         # at, and disk/DB growth tracks alert volume instead of link speed.
-        # Muted/whitelisted/excluded traffic is the one exception: it is
-        # deliberately never evaluated (nothing to raise, by design), but
-        # still persists untagged - "mute detection without hiding capture"
-        # is its own, separately relied-on contract (see
-        # ExcludedTrafficPipelineTests), not a case of "checked and clean".
+        # Muted/excluded traffic is the one exception: it is deliberately
+        # never evaluated (nothing to raise, by design), but still persists
+        # untagged - "mute detection without hiding capture" is its own,
+        # separately relied-on contract (see ExcludedTrafficPipelineTests),
+        # not a case of "checked and clean". Whitelisted traffic already
+        # returned above and never reaches this point at all.
         is_alert = bool(monitor_hits)
         should_persist = detection_muted or is_alert
         packet["ai_sample"] = False
         if should_persist:
-            # Muted/whitelisted/excluded traffic (detection_muted, no
-            # is_alert) is never evaluated, so it never earns the raw-bytes
+            # Muted/excluded traffic (detection_muted, no is_alert) is
+            # never evaluated, so it never earns the raw-bytes
             # treatment meant for traffic that actually alerted - it still
             # persists untagged (see the comment above), just without
             # payload_hex/raw_packet, regardless of the global toggle.

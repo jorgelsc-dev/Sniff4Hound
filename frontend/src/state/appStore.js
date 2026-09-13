@@ -507,6 +507,18 @@ function toggleWhitelistEntry(id, enabled) {
   });
 }
 
+// Whitelisting an IP from the IP graph's popup is deliberately stronger
+// than a plain whitelist entry: it also forgets everything already
+// captured about that host (see sniff4hound/app.py:whitelist_ip). Call
+// without `confirm` first to get a real packet count for a confirmation
+// prompt, then again with `confirm: true` to actually do it.
+function whitelistIpAndForget(ip, { confirm = false } = {}) {
+  return fetchJsonPromise("/api/whitelist/ip", {
+    method: "POST",
+    body: JSON.stringify({ ip, confirm: Boolean(confirm) }),
+  });
+}
+
 function buildIntelQuery({ search = "", limit = 200, offset = 0, scope = "" } = {}) {
   const params = new URLSearchParams();
   if (search) params.set("search", search);
@@ -2063,6 +2075,7 @@ export default {
   createWhitelistEntry,
   deleteWhitelistEntry,
   toggleWhitelistEntry,
+  whitelistIpAndForget,
   listHoneypotListeners,
   createHoneypotListener,
   toggleHoneypotListenerEnabled,

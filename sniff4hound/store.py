@@ -1927,19 +1927,28 @@ class SniffStore:
             return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
         filters = self.get_exclusion_filters()
         has_filters = any(filters.values())
-        # No filters: keep the cheap, direct 200-row fetch. With filters,
-        # over-fetch a bounded window so excluded traffic doesn't just shrink
-        # the analyzed set, then filter and trim back down to 200 in Python -
-        # scope/CIDR classification isn't expressible in SQLite (same reason
+        # Muted/whitelisted/excluded traffic is never evaluated (see
+        # Sniffer._store_packet) - it persists for capture visibility, not
+        # because anything was learned from it, so it never has bytes to
+        # score. Always over-fetch a wider window so filtering it (and any
+        # exclusion filters) out doesn't just shrink the reviewable set down
+        # to whatever muted traffic happened to be most recent - scope/CIDR
+        # classification isn't expressible in SQLite either way (same reason
         # `_grouped_ip_catalog` filters after the fetch).
-        fetch_limit = 1000 if has_filters else 200
+        fetch_limit = 1000 if has_filters else 400
         rows = self._fetchall(
             f"SELECT {self._AI_PACKET_COLUMNS} FROM packets ORDER BY id DESC LIMIT ?", (fetch_limit,)
         )
-        if not has_filters:
-            return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
-        networks = compile_exclusion_networks(filters)
-        rows = [row for row in rows if not packet_matches_exclusion_filter(row, filters, networks)][:200]
+
+        def _is_muted(row):
+            details = json_loads(row.get("details_json") or "{}", default={}) or {}
+            return isinstance(details, dict) and details.get("ai_detection_status") == "muted"
+
+        rows = [row for row in rows if not _is_muted(row)]
+        if has_filters:
+            networks = compile_exclusion_networks(filters)
+            rows = [row for row in rows if not packet_matches_exclusion_filter(row, filters, networks)]
+        rows = rows[:200]
         return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
 
     def get_exclusion_filters(self):
@@ -5259,6 +5268,61 @@ class SniffStore:
             "packets": max(0, packets_deleted),
             "tags": max(0, tags_deleted),
             "payloads": max(0, payloads_deleted),
+        }
+
+    def count_ip_packets(self, ip: str) -> int:
+        """How many stored packets have `ip` as either endpoint - what
+        `purge_ip_data(ip)` would remove from `packets`, used to show an
+        operator a real count before they confirm whitelisting-and-forgetting
+        a host from the IP graph's popup."""
+        ip = str(ip or "").strip()
+        if not ip:
+            return 0
+        row = self._fetchone("SELECT COUNT(*) AS c FROM packets WHERE src_ip = ? OR dst_ip = ?", (ip, ip))
+        return int((row or {}).get("c") or 0)
+
+    def purge_ip_data(self, ip: str) -> dict:
+        """Delete every packet/tag/payload/flow/domain/path row involving
+        one IP, on either side of the conversation (src or dst).
+
+        Used when an operator whitelists an IP from the IP relationship
+        graph's popup: unlike a Settings > Exclusions scope or a plain
+        whitelist entry added elsewhere, whitelisting a host from there is
+        a deliberate "forget this host entirely" action (see
+        `Sniffer._store_packet`, which also stops persisting anything new
+        for it) - so, unlike `clear_detections`, this does take `flows`,
+        `domains` and `paths` too rather than leaving them as untouched
+        running counters.
+        """
+        ip = str(ip or "").strip()
+        if not ip:
+            return {"packets": 0, "tags": 0, "payloads": 0, "flows": 0, "domains": 0, "paths": 0}
+        with self._lock:
+            tags_deleted = self._conn.execute(
+                "DELETE FROM tags WHERE packet_id IN (SELECT id FROM packets WHERE src_ip = ? OR dst_ip = ?)",
+                (ip, ip),
+            ).rowcount
+            payloads_deleted = self._conn.execute(
+                "DELETE FROM payloads WHERE packet_id IN (SELECT id FROM packets WHERE src_ip = ? OR dst_ip = ?)",
+                (ip, ip),
+            ).rowcount
+            packets_deleted = self._conn.execute(
+                "DELETE FROM packets WHERE src_ip = ? OR dst_ip = ?", (ip, ip)
+            ).rowcount
+            flows_deleted = self._conn.execute(
+                "DELETE FROM flows WHERE src_ip = ? OR dst_ip = ?", (ip, ip)
+            ).rowcount
+            domains_deleted = self._conn.execute("DELETE FROM domains WHERE ip = ?", (ip,)).rowcount
+            paths_deleted = self._conn.execute("DELETE FROM paths WHERE ip = ?", (ip,)).rowcount
+            self._conn.commit()
+        self._device_profile_cache.pop(ip, None)
+        return {
+            "packets": max(0, packets_deleted),
+            "tags": max(0, tags_deleted),
+            "payloads": max(0, payloads_deleted),
+            "flows": max(0, flows_deleted),
+            "domains": max(0, domains_deleted),
+            "paths": max(0, paths_deleted),
         }
 
     def read_catalog_file(self, filename: str) -> list[dict]:

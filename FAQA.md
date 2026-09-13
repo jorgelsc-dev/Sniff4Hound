@@ -1,9 +1,9 @@
 # Sniff4Hound - Informe de QA / Auditoria de Seguridad (FAQA)
 
 **Rol:** Revision realizada como QA Lead / analista SOC especializado en sniffers, honeypots y motores de IA de deteccion.
-**Alcance:** Rama `feature/faqa`, backend `sniff4hound/*.py`, frontend `frontend/src/**`, empaquetado Debian (`scripts/build_deb.sh`, `scripts/deb_postinst.sh`, `scripts/deb_postrm.sh`), pruebas relacionadas y verificacion puntual contra una instancia local real en ejecucion (`v0.58.0`, `http://127.0.0.1:45678`).
-**Metodo:** Relectura estatica dirigida de autenticacion, CSRF/origin checks, WebSocket, almacenamiento, redaccion, sniffer, honeypot, IA, frontend y empaquetado; contraste contra los hallazgos historicos del FAQA anterior tras el rediseno de retencion/persistencia de paquetes de esta iteracion; y pruebas dinamicas puntuales sobre la instancia viva. Los codigos de seguridad usados en la prueba no se documentan aqui.
-**Fecha:** 2026-09-13 (revision `v0.58.0`, sobre el mismo `v0.52.0` revisado antes).
+**Alcance:** Rama `feature/faqa`, backend `sniff4hound/*.py`, frontend `frontend/src/**`, empaquetado Debian (`scripts/build_deb.sh`, `scripts/deb_postinst.sh`, `scripts/deb_postrm.sh`), suite de tests completa (backend y frontend) y verificacion puntual contra una instancia local real en ejecucion (`v0.59.0`, `http://127.0.0.1:45678`).
+**Metodo:** Pasada de reverificacion completa de los 16 hallazgos historicos (2.1-2.16) por relectura de codigo puntual sobre cada uno (no solo los tocados por cambios recientes); ejecucion integra de la suite backend (`pytest`) y frontend (`npm run lint` + `npm run test:unit` + `npm run build`); y pruebas dinamicas puntuales de autenticacion, CSRF/origen, WebSocket e IA sobre la instancia viva. Los codigos de seguridad usados en la prueba no se documentan aqui.
+**Fecha:** 2026-09-13 (revision `v0.59.0`; sin cambios de codigo respecto a la revision `v0.58.0` anterior de este mismo dia - ver seccion 0).
 
 > Convencion de severidad: **Critical** (explotable remotamente / caida del sensor) | **High** (bypass relevante de un limite de seguridad) | **Medium** (riesgo real o gap de defensa en profundidad) | **Low** (mejora menor) | **Info** (limitacion o comportamiento aceptado).
 
@@ -11,19 +11,21 @@
 
 ## 0. Resumen ejecutivo
 
-- **No quedan hallazgos Critical, High, Medium ni Low abiertos.** El unico hallazgo Low que esta pasada habia detectado (trafico muteado/whitelisteado/excluido reteniendo bytes crudos por el nuevo default global) ya se corrigio y se verifico con test - ver 2.16.
-- Los hallazgos criticos/altos del reporte anterior siguen mitigados sin regresiones: ReDoS por regex, politica de puertos del honeypot, validacion de import de IA, rate limiting UDP, tickets WebSocket de un solo uso, guard CSRF por origen, limite de concurrencia TCP del honeypot, truncado/redaccion de access log y lock de arranque IPC (verificado por relectura de codigo puntual sobre cada uno).
-- La instancia local (`v0.58.0`) respondio correctamente a pruebas dinamicas sensibles: sesion autenticada `200`, `POST` cross-origin bloqueado con `403 bad_origin` (probado con y sin credencial valida), y `GET /api/ai/config` reflejando el estado real de retencion/Monitors/IA de esa instancia.
-- **Cambio de diseno relevante en esta iteracion:** la persistencia de paquetes ya no depende de los interruptores Monitors/IA para decidir "guardar todo" - un paquete solo persiste si la evaluacion (catalogo de reglas, detectores de anomalia o, en "solo IA", el clasificador) levanto algo, o si es trafico muteado/whitelisteado/excluido (que conserva su contrato previo de "visible pero sin tags"). Todo lo demas se evalua y se descarta sin llegar a `INSERT`. Ver 2.14.
-- Como consecuencia de lo anterior, la retencion de bytes crudos (`payload_hex`/`raw_packet`) paso de estar apagada por defecto a estar **encendida por defecto** (`STORE_RAW_PACKET_BYTES`/`SNIFF4HOUND_STORE_RAW_PACKET`, ahora `1`): dado que el trafico limpio ya no se guarda, el cambio solo expone bytes crudos del trafico que efectivamente alerto - el trafico muteado/whitelisteado/excluido, que persiste por su propio contrato de visibilidad, se corrigio para nunca retener bytes crudos independientemente de este flag global (ver 2.16). Sigue siendo un flag de `runtime_config` alternable en caliente desde el Dashboard/API sin reiniciar. Ver 2.14.
-- Se detecto y corrigio en esta iteracion un defecto de empaquetado (no de codigo Python en si) que podia dejar el sensor completamente inoperable en instalaciones `.deb` cuyo Python del sistema no coincidiera con el usado para compilar el paquete: la extension nativa vendorizada de `regex` fallaba al importar (`ImportError` disfrazado de import circular) y `sniff4hound` no arrancaba en absoluto. `scripts/deb_postinst.sh` ahora reconstruye esa dependencia para el interprete real del equipo destino dentro de un venv descartable en cada instalacion. Ver 2.15.
-- Los hallazgos previamente abiertos (retencion de bytes crudos opt-in, `sessionStorage` legible por JS, timeout de regex opcional) siguen cerrados; el `sessionStorage`/`localStorage` del frontend y el fail-fast de `regex_safety` no se tocaron en esta iteracion.
+- **Pasada de reverificacion completa** (`v0.59.0`): se releyo cada uno de los 16 hallazgos historicos previos (2.1-2.16) contra el codigo actual, no solo los tocados por el ultimo cambio, y ninguno regresiono.
+- **Esta vez si se resolvio el punto informativo pendiente** de pasadas anteriores ("repetir una pasada visual de las 14 vistas"): se escribio y corrio `scripts/qa_visual_pass.js`, un pase automatizado por CDP contra las 14 rutas reales del router actual (el unico script de pase visual que ya existia, `qa_ui_cdp.js`, resulto estar escrito para una UI de honeypot mas vieja con rutas que ya no existen, y se dejo intacto sin usarlo - ver 3.4).
+- **Esa corrida encontro un hallazgo real, ya corregido: 2.17** - `/chat` es una ruta valida del router de Vue pero faltaba en la tupla `SPA_ROUTES` del backend, asi que una carga directa/refresh de esa URL devolvia `404 Not Found` en vez de la SPA (navegar ahi desde dentro de la app funcionaba bien). Se agrego la ruta y una prueba de regresion que parsea el router y falla si una vista futura vuelve a faltar en `SPA_ROUTES`.
+- **Un segundo hallazgo, reportado por el operador con una captura del review de IA y corregido en el momento: 2.18** - la cola de revision/ensenanza de IA mostraba trafico muteado/whitelisteado/excluido ("Sin bytes disponibles", "Prioridad -/100") junto al trafico realmente evaluado, aunque ese trafico nunca tiene nada que puntuar por diseno (2.14/2.16). `list_ai_packets()` ahora lo excluye de ese listado especifico sin dejar de persistirlo.
+- **No quedan hallazgos Critical, High, Medium ni Low abiertos** tras ambas correcciones.
+- **Cambio de diseno pedido por el operador: 2.19** - el mapa de relaciones IP se movio al Dashboard (primero, antes de "Alertas y detecciones IA"), gano labels que ya no se pisan entre nodos, iconos/etiquetas mas especificos (Android, iPhone, Windows, Nginx, Apache, ...) via la evidencia que `infer_device_profile()` ya calculaba, y un popup por nodo con metricas + accion de blacklist/whitelist. Whitelistear un nodo ahi es deliberadamente mas fuerte que un whitelist comun: borra todo el historial de esa IP (con confirmacion nombrando la cantidad real de paquetes) y deja de rastrear su trafico nuevo por completo, en vez de solo silenciar alertas como sigue haciendo mute/exclusion.
+- Se corrio la suite completa como evidencia, no solo relectura de codigo: backend `pytest` (**911 passed, 2 skipped**, incluyendo las pruebas nuevas de `/chat`, exclusion de la cola de IA y whitelist-y-purga) y frontend `npm run lint` (0 warnings) + `npm run test:unit` (**13/13**) + `npm run build` (compila sin errores), mas un pase visual con navegador real (click en un nodo, popup, boton de blacklist end-to-end).
+- La instancia local (`v0.59.0`) respondio correctamente a pruebas dinamicas sensibles: `401` sin credencial en ruta mutante, `200` con credencial en `/api/auth/session`, `POST` cross-origin bloqueado con `403 bad_origin` (con credencial valida), ticket WS de un solo uso con `expires_in: 15`, y `GET /api/ai/config` reflejando el estado real de retencion/Monitors/IA de esa instancia.
+- Recordatorio de lo cerrado en pasadas anteriores del mismo dia, sigue vigente sin regresion: la persistencia de paquetes solo guarda trafico que alerto o esta muteado/whitelisteado/excluido (2.14); la retencion de bytes crudos esta encendida por defecto pero el trafico solo-muteado nunca la usa (2.16); y el `.deb` se autorepara si el Python del equipo destino no coincide con el de build (2.15).
 
 ---
 
 ## 1. Hallazgos abiertos actuales
 
-Ninguno. El unico punto que esta pasada habia dejado abierto (1.1 en la version anterior de este informe) se corrigio y se movio a la seccion 2 (`Hallazgos historicos cerrados`) como 2.16, con su evidencia de codigo y de test.
+Ninguno. El punto que una pasada anterior habia dejado abierto (1.1 en su momento) se corrigio y se movio a la seccion 2 como 2.16. Esta pasada encontro dos hallazgos nuevos - `/chat` faltante en `SPA_ROUTES` al ejecutar por fin el pase visual automatizado pendiente, y trafico muteado ensuciando la cola de revision de IA (reportado por el operador con una captura de pantalla) - ambos se corrigieron en el momento y se documentaron directamente como cerrados en 2.17 y 2.18, sin quedar abiertos en ningun punto de este informe.
 
 ---
 
@@ -111,7 +113,7 @@ Ninguno. El unico punto que esta pasada habia dejado abierto (1.1 en la version 
 
 **Estado:** cerrado, con rediseno de retencion.
 
-**Evidencia:** antes de esta iteracion, `Sniffer._store_packet()` persistia *todo* paquete evaluado cuando el filtro de Monitors estaba apagado o el modo Monitors (antes "Training") estaba activo, sin exigir que nada hubiera alertado - lo que llenaba la tabla `packets` de trafico limpio sin valor (visible en el review de IA como filas "Sin bytes disponibles"). Ahora `should_persist = detection_muted or bool(monitor_hits)` (`sniffer.py:1325`): todo paquete no muteado se evalua igual de completo (catalogo + anomalias + IA en "solo IA"), pero solo persiste si esa evaluacion levanto algo; lo demas se descarta tras obtener su veredicto y nunca llega a `INSERT`. Esto aplica igual con Monitors activo o apagado - ya no existe un modo que guarde trafico "benigno" sin alerta (`docs/reference/runtime.md`, seccion "Modos de activacion"). Como consecuencia, `STORE_RAW_PACKET_BYTES` paso a `1` por defecto (`settings.py:327-330`): solo el trafico que efectivamente alerto retiene bytes crudos (el muteado/whitelisteado/excluido no, ver 2.16), no todo el trafico capturado como hubiera ocurrido con el default anterior bajo el viejo esquema "guardar todo". El interruptor `raw_retention_enabled` sigue disponible para apagarlo (`store.py:3180-3202`, `POST /api/ai/config`). Cubierto por 904 tests backend pasando (incluye `tests/test_monitors.py::TestSnifferGatedPersistence` y la clase de Training/IA), y verificado en vivo contra `v0.58.0` (`GET /api/ai/config` con `training_enabled`, `ai_alert_mode_enabled` y `raw_retention_enabled` en `true` simultaneamente, reflejando el modo real de esa instancia).
+**Evidencia:** antes de esta iteracion, `Sniffer._store_packet()` persistia *todo* paquete evaluado cuando el filtro de Monitors estaba apagado o el modo Monitors (antes "Training") estaba activo, sin exigir que nada hubiera alertado - lo que llenaba la tabla `packets` de trafico limpio sin valor (visible en el review de IA como filas "Sin bytes disponibles"). Ahora `should_persist = detection_muted or bool(monitor_hits)` (`sniffer.py:1325`): todo paquete no muteado se evalua igual de completo (catalogo + anomalias + IA en "solo IA"), pero solo persiste si esa evaluacion levanto algo; lo demas se descarta tras obtener su veredicto y nunca llega a `INSERT`. Esto aplica igual con Monitors activo o apagado - ya no existe un modo que guarde trafico "benigno" sin alerta (`docs/reference/runtime.md`, seccion "Modos de activacion"). Como consecuencia, `STORE_RAW_PACKET_BYTES` paso a `1` por defecto (`settings.py:327-330`): solo el trafico que efectivamente alerto retiene bytes crudos (el muteado/whitelisteado/excluido no, ver 2.16), no todo el trafico capturado como hubiera ocurrido con el default anterior bajo el viejo esquema "guardar todo". El interruptor `raw_retention_enabled` sigue disponible para apagarlo (`store.py:3180-3202`, `POST /api/ai/config`). Cubierto por 905 tests backend pasando (incluye `tests/test_monitors.py::TestSnifferGatedPersistence` y la clase de Training/IA), y verificado en vivo contra `v0.58.0` y `v0.59.0` (`GET /api/ai/config` con `training_enabled`, `ai_alert_mode_enabled` y `raw_retention_enabled` en `true` simultaneamente en ambas instancias, reflejando el modo real).
 
 ### 2.15 High (empaquetado) - `.deb` inoperable si el Python del sistema no coincide con el de build
 
@@ -127,6 +129,37 @@ Ninguno. El unico punto que esta pasada habia dejado abierto (1.1 en la version 
 
 **Evidencia:** `SniffStore.register_packet()` ahora acepta `allow_raw_retention` (default `True`, no rompe otros llamadores); cuando es `False` fuerza `payload_hex=""`/`raw_packet=None` sin importar el flag global `get_raw_retention_enabled()` (`store.py:4707-4716`). `Sniffer._store_packet()` calcula `is_alert = bool(monitor_hits)` y llama `register_packet(packet, allow_raw_retention=is_alert)` (`sniffer.py:1325-1334`): el trafico persistido solo por estar muteado/whitelisteado/excluido (`detection_muted`, sin `is_alert`) nunca retiene bytes crudos, independientemente de que `raw_retention_enabled` este encendido globalmente; el trafico que si alerto sigue reteniendolos cuando el flag esta activo, que es la motivacion original del default (ver 2.14). Cubierto por `tests/test_monitors.py::TestSnifferGatedPersistence::test_muted_traffic_never_retains_raw_bytes_even_with_global_retention_on`, que fija `payload_hex`/`raw_packet` no vacios en el paquete de entrada, lo persiste via una regla de exclusion (sin alerta), y verifica que la fila guardada tiene ambos campos vacios pese a que `get_raw_retention_enabled()` es `True` por defecto.
 
+### 2.17 Low - Ruta `/chat` del vue-router faltaba en `SPA_ROUTES` (404 en refresh/deep-link)
+
+**Estado:** cerrado.
+
+**Detalle del hallazgo:** encontrado al ejecutar por primera vez un pase visual automatizado real (ver 3.4) contra las 14 vistas actuales del router (`frontend/src/router/index.js`), en vez de solo relectura de codigo. `/chat` es una ruta real del router (`ChatView.vue`), pero no estaba en la tupla `SPA_ROUTES` de `app.py` que decide que rutas reciben el `index.html` de la SPA en vez de un 404 (`app.py:1613-1780`, comentario en `app.py:130-135`: "Every path vue-router can land on has to be served index.html too... /settings, /domains, /paths and /ips were missing and did exactly that" - `/chat` quedo fuera de esa correccion anterior). Impacto: sin JavaScript corriendo aun (primera carga de esa URL), un refresh (F5), un marcador o un link de `/chat` pegado en un ticket devolvia `404 Not Found` en texto plano en vez de la SPA; navegar ahi *dentro* de la app (via el router del lado del cliente) funcionaba normal, por lo que el defecto solo era visible en carga directa/dura de esa URL. Sin impacto de seguridad (no expone nada, no evita ningun guard) - se clasifica Low por ser un defecto funcional real de navegacion.
+
+**Evidencia de correccion:** se agrego `"/chat"` a `SPA_ROUTES` (`app.py:136-167`). Verificado con `app.dispatch()` directo: `GET /chat` devuelve `200` con el HTML de la SPA (antes devolvia `404`). Se agrego ademas una prueba de regresion que impide que esto vuelva a pasar con una vista futura: `tests/test_smoke.py::SmokeTests::test_every_vue_router_path_is_in_spa_routes` parsea `frontend/src/router/index.js`, extrae cada ruta estatica sin `redirect`, y falla si alguna no esta en `app.SPA_ROUTES`.
+
+### 2.18 Low - Trafico muteado/whitelisteado/excluido aparecia en la cola de revision de IA sin nada que analizar
+
+**Estado:** cerrado.
+
+**Detalle del hallazgo:** reportado por el operador con una captura del review de IA (`Revisar / Ensenar`) mostrando registros UDP con "Sin bytes disponibles" y "Prioridad -/100" (`LOF -`, `Neuronal -`). `SniffStore.list_ai_packets()` devolvia las ultimas N filas de `packets` sin distinguir por que se habian persistido; desde el rediseno de persistencia (2.14) y el cierre de 2.16, el trafico muteado/whitelisteado/excluido persiste (para no perder visibilidad de captura) pero nunca se evalua y nunca retiene bytes crudos - no tiene absolutamente nada que el clasificador pueda puntuar. `packet_ai.analyze_packets()` procesa cada fila que recibe sin filtrar por `ai_detection_status`, asi que ese trafico llegaba igual a la cola de revision como ruido puro, sin valor para el operador que intenta ensenarle a la IA.
+
+**Evidencia de correccion:** `list_ai_packets()` ahora filtra las filas con `details_json.ai_detection_status == "muted"` antes de aplicar el limite de 200 (`store.py:1919-1949`), ampliando la ventana de sobre-fetch (`400`/`1000` filas segun haya filtros de exclusion activos) para que ese descarte no reduzca artificialmente el conjunto realmente revisable. La consulta por `packet_id` explicito (detalle de un paquete puntual) no se filtra, solo el listado de exploracion/revision. Cubierto por `tests/test_monitors.py::TestSnifferGatedPersistence::test_muted_traffic_is_excluded_from_the_ai_review_queue`, que persiste un paquete muteado y uno con alerta real en la misma corrida y verifica que solo el segundo aparece en `list_ai_packets()`.
+
+### 2.19 Info (cambio de diseno) - Whitelistear una IP desde el popup del grafo ahora borra su historial y deja de rastrearla
+
+**Estado:** implementado, verificado.
+
+**Detalle:** a pedido explicito del operador, el mapa de relaciones IP (ahora tambien en el Dashboard, primero antes de "Alertas y detecciones IA") gano un popup por nodo con metricas (hits, confianza, ambito, primera/ultima vez, evidencia de `infer_device_profile()`) y dos acciones: **Bloquear** (usa el `/api/blacklist/` ya existente sin cambios de comportamiento) y **Whitelist (borra historial)**, deliberadamente mas fuerte que un whitelist normal:
+
+- `Sniffer._store_packet()` ahora resuelve `_whitelisted(packet)` **antes** de evaluar nada; si coincide, el paquete se descarta igual que trafico limpio - nunca llega a `INSERT` (`sniffer.py:1259-1273`). Antes, whitelistear solo silenciaba alertas; el paquete se seguia guardando sin tags (mismo contrato que exclusion/mute, que sigue intacto para esas dos categorias - ver `ExcludedTrafficPipelineTests`).
+- `SniffStore.purge_ip_data(ip)` (nuevo) borra `packets`/`tags`/`payloads`/`flows`/`domains`/`paths` donde la IP es origen o destino (`store.py`, junto a `clear_detections`). A diferencia de `clear_detections`, si toca `flows`/`domains`/`paths`: es una accion dirigida a "olvidar este host", no una limpieza de ruido detras de una re-configuracion de monitores.
+- `POST /api/whitelist/ip` (nuevo) exige `{"confirm": true}` para borrar; sin el, solo devuelve cuantos paquetes se borrarian (`store.count_ip_packets`), para que el frontend pida confirmacion real con una cifra real antes de actuar - la accion es irreversible.
+- El popup pide esa confirmacion con `window.confirm()` nombrando la cantidad exacta de paquetes antes de la segunda llamada con `confirm: true`.
+
+**Verificado:** `tests/test_blacklist.py` (`TestWhitelistIpEndpoint`, `test_whitelisted_ip_traffic_is_not_persisted_at_all`, `test_whitelist_port_and_protocol_suppress_persistence`, `test_purge_ip_data_removes_only_that_ips_rows`) y un pase visual real con navegador headless: click en un nodo abre el popup con las metricas correctas, "Bloquear" crea la entrada de blacklist end-to-end (confirmado via `GET /api/blacklist/?category=ip`), y con 60+ vecinos la lista se acota a 12 (+"N mas") para que los botones de accion nunca queden fuera de vista - un defecto que el propio pase visual encontro y se corrigio en el momento (`ip-graph-popup__body` con `max-height`/scroll, `visibleNeighbors`/`hiddenNeighborCount`).
+
+**Por que Info y no un hallazgo de severidad:** es un cambio de diseno pedido explicitamente, no un defecto encontrado por la auditoria; se documenta aqui por su impacto en la politica de retencion de datos (relevante para el resto de este informe), no porque haya algo que cerrar.
+
 ---
 
 ## 3. QA dinamico contra instancia local
@@ -141,7 +174,7 @@ Pruebas ejecutadas:
 - `POST /api/runtime/` con credencial valida pero `Origin: http://evil.example`: **403**, `code: bad_origin`.
 - `POST /api/ws/ticket` con credencial valida: **200**, respuesta con ticket de un solo uso y `expires_in: 15`.
 
-### 3.2 `v0.58.0` (esta pasada)
+### 3.2 `v0.58.0` (pasada anterior, mismo dia)
 
 Instancia arrancada por el operador desde el `.deb`, banner `SNIFF4HOUND v0.58.0`, autenticacion requerida, servidor en `127.0.0.1:45678`. No se registra aqui el codigo de seguridad.
 
@@ -156,6 +189,37 @@ Pruebas ejecutadas:
 
 No se repitio en esta pasada una navegacion completa de las 14 vistas del frontend; la ultima navegacion completa documentada en el FAQA anterior correspondia a `v0.51.0` y no debe usarse como garantia visual de `v0.58.0`.
 
+### 3.3 `v0.59.0` (esta pasada - reverificacion completa)
+
+Instancia arrancada por el operador (`sniff4hound`), banner `SNIFF4HOUND v0.59.0`, autenticacion requerida, servidor en `127.0.0.1:45678`. No se registra aqui el codigo de seguridad.
+
+Pruebas ejecutadas (mismo guion que 3.2, repetido para confirmar ausencia de regresion tras el cambio de version):
+
+- `GET /` sin credencial: **200**.
+- `GET /api/dashboard/` sin credencial: **401**.
+- `POST /api/runtime/` sin credencial y con `Origin: http://evil.example`: **401** - el guard de auth sigue corriendo antes que el de origen.
+- `GET /api/auth/session` con credencial valida: **200**, `authenticated: true`.
+- `POST /api/runtime/` con credencial valida pero `Origin: http://evil.example`: **403**, `code: bad_origin`.
+- `POST /api/ws/ticket` con credencial valida: **200**, ticket de un solo uso, `expires_in: 15`.
+- `GET /api/ai/config` con credencial valida: **200**, `training_enabled`, `ai_alert_mode_enabled` y `raw_retention_enabled` en `true` simultaneamente - mismo estado que en `v0.58.0`, sin regresion.
+
+Ademas de las pruebas dinamicas, en esta pasada se ejecuto la suite completa como parte de la revision (no solo se leyo el codigo):
+
+- Backend: `python3 -m pytest tests/` -> **905 passed, 2 skipped, 310 subtests passed**.
+- Frontend: `npm run lint` -> **0 warnings/errores**; `npm run test:unit` -> **13/13**; `npm run build` -> compila sin errores.
+
+No se repitio en esta pasada una navegacion completa de las 14 vistas del frontend; sigue pendiente como punto informativo (ver seccion 5).
+
+### 3.4 Pase visual automatizado de las 14 vistas (cierre del punto informativo pendiente)
+
+`scripts/qa_ui_cdp.js` (el unico script de pase visual que existia en el repo) resulto estar escrito para una version anterior de la UI - navega a `/ports`, `/banners`, `/catalog`, `/explorer`, `/agents`, `/charts`, `/map`, `/tags` (una consola de gestion del honeypot con targets/puertos/banners) que ya no existe como tal; ese layout se reemplazo por las 14 vistas actuales (Dashboard, Sniffer, Honeypot, SOC, IA, Investigate, Protocols, Domains, Paths, IPs, Monitors, Settings, Chat, Radar). Correrlo hoy habria producido un reporte enganoso, no una verificacion real.
+
+Se escribio `scripts/qa_visual_pass.js` (nuevo, no reemplaza al anterior): conecta por CDP a un Chromium headless, navega cada una de las 14 rutas reales del router actual con el codigo de sesion en la URL (`?code=...`, igual que el link que imprime el banner de arranque), y por cada una registra titulo, si el arbol `#app`/`.v-application` monto, excepciones de JS y errores de consola durante esa carga. No siembra ni modifica datos (a diferencia de `qa_ui_cdp.js`, que si hacia acciones de escritura sobre targets del honeypot).
+
+**Resultado de la primera corrida real:** 13 de 14 vistas cargaron limpias (sin excepciones ni errores de consola): Dashboard, Sniffer, Honeypot, SOC, IA, Investigate, Protocols, Domains, Paths, IPs, Monitors, Settings, Radar. **Chat fallo**: la navegacion directa a `/chat` devolvio un `404 Not Found` de texto plano del backend en vez de la SPA - hallazgo nuevo, documentado y cerrado en 2.17. Tras la correccion, se verifico con `app.dispatch()` que `GET /chat` devuelve `200` con el HTML de la SPA.
+
+Con esto, el punto informativo pendiente de pasadas anteriores (repetir una revision de las 14 vistas) queda resuelto por primera vez con una herramienta automatizada y vigente para la UI actual, en vez de quedar como deuda. Sigue habiendo una diferencia deliberada de alcance: esto verifica que cada vista monta sin excepciones/errores de consola, no una revision de diseno visual pixel a pixel (ver 5.8).
+
 ---
 
 ## 4. Confirmado correcto en la revision actual
@@ -166,12 +230,14 @@ No se repitio en esta pasada una navegacion completa de las 14 vistas del fronte
 - **Frontend auth:** el token de URL se limpia con `history.replaceState()` tras leerlo (`appStore.js:120-147`) y se conserva solo en memoria (`appStore.js:210-221`); las claves legacy de `localStorage`/`sessionStorage` se leen una vez y se borran de inmediato (`appStore.js:149-198`).
 - **Redaccion textual:** payload, resumen y banner pasan por `redact_sensitive_text()` antes de persistirse (`store.py:4661-4663`).
 - **Retencion de bytes crudos:** `payload_hex`/`raw_packet`/`frame_hex` se guardan por defecto ahora (`settings.py:327-330`), pero solo para trafico que efectivamente alerto - el trafico muteado/whitelisteado/excluido persiste sin ellos, sin importar el flag global (ver 2.16); el trafico limpio ya no se guarda en absoluto, con o sin bytes (`sniffer.py:1325-1334`, `store.py:121-144`). El interruptor `raw_retention_enabled` sigue disponible para volver al comportamiento apagado (`store.py:3180-3202`).
-- **Persistencia de paquetes:** solo se guarda trafico que alerto en alguno de los motores de deteccion (catalogo de reglas, anomalias, IA en "solo IA") o que esta explicitamente muteado/whitelisteado/excluido; todo lo demas se evalua y se descarta sin `INSERT` (`sniffer.py:1314-1345`).
+- **Persistencia de paquetes:** solo se guarda trafico que alerto en alguno de los motores de deteccion (catalogo de reglas, anomalias, IA en "solo IA") o que esta explicitamente muteado/excluido; todo lo demas se evalua y se descarta sin `INSERT` (`sniffer.py:1314-1345`). Whitelisteado es la excepcion a esa excepcion: se descarta igual que trafico limpio, sin evaluarse siquiera (`sniffer.py:1259-1273`, ver 2.19).
+- **Cola de revision de IA:** el trafico muteado/whitelisteado/excluido persiste (para no perder visibilidad de captura) pero no aparece en `list_ai_packets()` - no tiene nada que puntuar y solo ensuciaria la cola de "Revisar / Ensenar" (`store.py:1919-1949`, ver 2.18).
 - **Honeypot:** politica de puertos sensibles centralizada y enforceada en el proceso listener (`honeypot_ports.py:261-309`, `honeypot.py:1315-1325`).
 - **DoS TCP/UDP honeypot:** limite de concurrencia TCP y rate limiting UDP activos (`honeypot.py:1216-1266`, `honeypot.py:1944-1972`).
 - **IA:** import de modelo valida forma, tipo, finitud y magnitud; operaciones internas validan dimensiones antes de usar pesos (`ai_learning.py:101-164`, `ai_learning.py:282-331`).
 - **Logs:** queries sensibles redactadas y campos truncados para evitar fuga de tokens/log injection (`access_log.py:49-91`, `access_log.py:125-148`).
 - **Empaquetado `.deb`:** el postinst reconstruye dependencias compiladas (`regex`) para el Python real del equipo destino si detecta mismatch de ABI, dentro de un venv descartable, sin tocar el Python del sistema (`scripts/deb_postinst.sh`); el postrm limpia el arbol de instalacion completo en `remove`/`purge` (`scripts/deb_postrm.sh`).
+- **Rutas de la SPA:** las 14 vistas del router de Vue tienen su contraparte en `app.SPA_ROUTES`, verificado tanto por un pase visual real con navegador (3.4) como por una prueba de regresion que compara ambas listas automaticamente (`tests/test_smoke.py::test_every_vue_router_path_is_in_spa_routes`).
 
 ---
 
@@ -184,10 +250,13 @@ No se repitio en esta pasada una navegacion completa de las 14 vistas del fronte
 5. **[Cerrado]** El proceso falla temprano y de forma visible si falta la dependencia `regex`; ver 2.13.
 6. **[Cerrado]** El `.deb` ya no queda inoperable si el Python del equipo destino no coincide con el usado para compilar el paquete (self-heal de `regex` en el postinst); ver 2.15.
 7. **[Cerrado]** El codigo de seguridad del frontend ya no se persiste en ningun almacenamiento del navegador (modo in-memory-only); ver 2.12.
-8. **[Info]** Repetir una pasada visual completa de las vistas principales en `v0.58.0` antes de una release publica si el cambio incluye UI significativa - la ultima pasada visual completa fue sobre `v0.51.0`.
+8. **[Cerrado]** Pase visual automatizado de las 14 vistas ejecutado por primera vez con una herramienta vigente para la UI actual (`scripts/qa_visual_pass.js`); encontro y cerro 2.17 (`/chat` devolvia 404 en carga directa); ver 3.4.
+9. **[Info]** Repetir el pase de 3.4 (o una revision visual manual de diseno) antes de una release publica si el cambio incluye UI significativa - ese script verifica que cada vista monta sin excepciones/errores de consola, no una revision de diseno pixel a pixel.
+10. **[Cerrado, sin accion]** `tests/test_monitors.py::TestTrainingAndAiAlertModes::test_training_plus_ai_mode_leaves_the_catalog_in_charge` fallo una vez en una corrida completa de esta pasada con `OSError: Directory not empty` al limpiar un directorio temporal; paso en aislamiento y en una segunda corrida completa (`906 passed, 2 skipped`, sin ese fallo). Confirmado transitorio (condicion de carrera de teardown bajo carga, no relacionada con los cambios de esta pasada) - no requiere accion salvo que reaparezca.
+11. **[Cerrado]** La cola de revision de IA ya no muestra trafico muteado/whitelisteado/excluido sin bytes ni puntaje - se filtra en `list_ai_packets()` sin dejar de persistirlo; ver 2.18.
 
 ---
 
 ## 6. Estado final de la auditoria
 
-**Aprobado.** No hay bloqueadores Critical/High/Medium/Low abiertos. La aplicacion esta en buen estado para uso local autenticado: el rediseno de esta iteracion reduce lo que se persiste (solo trafico que alerto o esta muteado/excluido, ya no "todo lo evaluado"), el trafico muteado/whitelisteado/excluido ya nunca retiene bytes crudos aunque el default global este encendido (2.16), y el codigo de seguridad del frontend sigue viviendo solo en memoria durante la vida de la pestana. Se corrigio ademas, en el mismo pase, un defecto de empaquetado que podia dejar el `.deb` completamente inoperable en equipos con un Python distinto al de build (2.15). Queda como punto informativo repetir la pasada visual completa de las 14 vistas en `v0.58.0` antes de una release con cambios de UI significativos.
+**Aprobado, con dos hallazgos nuevos encontrados y corregidos en la propia pasada (2.17, 2.18).** No hay bloqueadores Critical/High/Medium/Low abiertos. Se releyeron los 16 hallazgos historicos previos contra el codigo actual sin encontrar regresiones, y por primera vez se ejecuto de punta a punta el punto informativo que quedaba pendiente en las ultimas pasadas: un pase visual automatizado real de las 14 vistas (3.4), que encontro que `/chat` devolvia `404` en carga directa por faltar en `app.SPA_ROUTES` (2.17) - se corrigio en el momento y se agrego una prueba de regresion que ata ambas listas de rutas. Por separado, el operador reporto con una captura de pantalla que la cola de revision de IA mostraba trafico muteado/whitelisteado/excluido sin bytes ni puntaje (2.18); se corrigio filtrando ese trafico de `list_ai_packets()` sin dejar de persistirlo, con su propia prueba de regresion. Se corrio ademas la suite entera varias veces completas a lo largo de la pasada (906-911 tests backend segun el punto, 13 tests frontend, lint y build en todas; un fallo de teardown aislado en una corrida no se repitio en las demas - ver recomendacion 10) y las pruebas dinamicas de siempre contra la instancia real. Se agrego tambien, a pedido del operador, el rediseno del mapa de relaciones IP con whitelist-y-purga (2.19). El rediseno de la iteracion anterior sigue en pie: solo persiste trafico que alerto o esta muteado/excluido (2.14), ese trafico muteado/excluido nunca retiene bytes crudos aunque el default global este encendido (2.16), el `.deb` se autorepara ante un mismatch de Python (2.15), y el codigo de seguridad del frontend sigue viviendo solo en memoria durante la vida de la pestana (2.12). No queda ningun punto abierto en este informe.

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sniff4hound.monitors import evaluate_packet
 from sniff4hound.sniffer import Sniffer
@@ -194,7 +196,12 @@ class TestWhitelistEntries(unittest.TestCase):
         self.store.delete_whitelist_entry(ip_entry["id"])
         self.assertIsNone(self.store.get_whitelist_entry(ip_entry["id"]))
 
-    def test_whitelist_suppresses_detection_but_keeps_packet_visible(self):
+    def test_whitelisted_ip_traffic_is_not_persisted_at_all(self):
+        # Whitelisting an IP is a deliberate "stop tracking this host"
+        # action (unlike a mute/exclusion scope, which still stores traffic
+        # untagged for capture visibility - see ExcludedTrafficPipelineTests
+        # in test_detection_scopes.py): once whitelisted, its traffic is
+        # dropped outright, same as clean/undetected traffic.
         self.store.create_whitelist_entry("ip", "exact", "10.0.0.5")
         sniffer = Sniffer(self.store, _Hub(), interfaces=())
         sniffer._monitor_cache = [
@@ -212,12 +219,10 @@ class TestWhitelistEntries(unittest.TestCase):
         sniffer._monitor_cache_at = 999999999.0
         sniffer._store_packet(_packet(src_ip="10.0.0.5", dst_port=80))
 
-        rows = self.store.list_packets(limit=10)
-        self.assertEqual(len(rows), 1)
-        tags = self.store.list_tags(limit=20)
-        self.assertFalse(any(tag["key"] == "monitor" for tag in tags))
+        self.assertEqual(self.store.list_packets(limit=10), [])
+        self.assertEqual(self.store.list_tags(limit=20), [])
 
-    def test_whitelist_port_and_protocol_suppress_detection(self):
+    def test_whitelist_port_and_protocol_suppress_persistence(self):
         sniffer = Sniffer(self.store, _Hub(), interfaces=())
         sniffer._monitor_cache = [
             {
@@ -235,12 +240,81 @@ class TestWhitelistEntries(unittest.TestCase):
         self.store.create_whitelist_entry("port", "exact", "80")
         sniffer._whitelist_cache = self.store.list_whitelist_entries()
         sniffer._store_packet(_packet(dst_port=80))
-        self.assertFalse(any(tag["key"] == "monitor" for tag in self.store.list_tags(limit=20)))
+        self.assertEqual(self.store.list_packets(limit=20), [])
 
         self.store.create_whitelist_entry("protocol", "exact", "http")
         sniffer._whitelist_cache = self.store.list_whitelist_entries()
         sniffer._store_packet(_packet(proto="http", transport="tcp", dst_port=80))
-        self.assertFalse(any(tag["key"] == "monitor" for tag in self.store.list_tags(limit=40)))
+        self.assertEqual(self.store.list_packets(limit=40), [])
+
+    def test_purge_ip_data_removes_only_that_ips_rows(self):
+        target = self.store.register_packet(
+            _packet(src_ip="10.0.0.5", dst_ip="10.0.0.1", tags=[{"key": "monitor", "value": "hit"}])
+        )
+        other = self.store.register_packet(_packet(src_ip="10.0.0.9", dst_ip="10.0.0.1"))
+        self.store.record_domain(name="evil.example", ip="10.0.0.5")
+        self.store.record_domain(name="fine.example", ip="10.0.0.9")
+        self.store.record_path(path="/x", ip="10.0.0.5")
+        self.store.record_path(path="/y", ip="10.0.0.9")
+
+        result = self.store.purge_ip_data("10.0.0.5")
+
+        self.assertEqual(result["packets"], 1)
+        self.assertEqual(result["domains"], 1)
+        self.assertEqual(result["paths"], 1)
+        remaining_ids = {row["id"] for row in self.store.list_packets(limit=20)}
+        self.assertEqual(remaining_ids, {other["id"]})
+        self.assertEqual([row["name"] for row in self.store.list_domains(limit=20)], ["fine.example"])
+        self.assertEqual([row["path"] for row in self.store.list_paths(limit=20)], ["/y"])
+        self.assertEqual(self.store.list_tags(limit=20), [])
+
+
+class TestWhitelistIpEndpoint(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.store = SniffStore(Path(self.temp_dir.name) / "test.db")
+
+    def tearDown(self):
+        self.store.close()
+        self.temp_dir.cleanup()
+
+    def _call(self, body):
+        from wsbuilder import Request
+        from sniff4hound import app as module
+
+        request = Request("POST", "/api/whitelist/ip", "", {}, json.dumps(body).encode(), ("127.0.0.1", 0))
+        with patch.object(module, "store", self.store):
+            return module.whitelist_ip(request)
+
+    def test_without_confirm_reports_count_and_does_not_delete(self):
+        self.store.register_packet(_packet(src_ip="10.0.0.5", dst_ip="10.0.0.1"))
+        self.store.register_packet(_packet(src_ip="10.0.0.5", dst_ip="10.0.0.2"))
+
+        payload = self._call({"ip": "10.0.0.5"})
+
+        self.assertEqual(payload["status"], "confirm_required")
+        self.assertEqual(payload["packets"], 2)
+        self.assertEqual(self.store.list_whitelist_entries("ip"), [])
+        self.assertEqual(len(self.store.list_packets(limit=10)), 2)
+
+    def test_with_confirm_whitelists_and_purges(self):
+        self.store.register_packet(_packet(src_ip="10.0.0.5", dst_ip="10.0.0.1"))
+        self.store.register_packet(_packet(src_ip="10.0.0.9", dst_ip="10.0.0.1"))
+
+        payload = self._call({"ip": "10.0.0.5", "confirm": True})
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["purged"]["packets"], 1)
+        entries = self.store.list_whitelist_entries("ip")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["value"], "10.0.0.5")
+        remaining = self.store.list_packets(limit=10)
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["src_ip"], "10.0.0.9")
+
+    def test_missing_ip_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._call({})
 
 
 if __name__ == "__main__":
