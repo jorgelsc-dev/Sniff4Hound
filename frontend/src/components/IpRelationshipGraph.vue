@@ -3,10 +3,6 @@
     <div class="d-flex flex-wrap ga-3 align-center justify-space-between">
       <div>
         <h2 class="text-subtitle-1 font-weight-bold">Mapa de relaciones</h2>
-        <p class="text-caption text-medium-emphasis mb-0">
-          {{ nodes.length }} IPs · {{ edges.length }} relaciones observadas. Arrastra para mover el área,
-          usa los botones o Ctrl/Cmd + rueda para el zoom.
-        </p>
       </div>
       <v-btn size="small" variant="tonal" :loading="loading" @click="load">
         <v-icon icon="mdi-refresh" start size="16" />
@@ -57,12 +53,13 @@
       </div>
       <svg
         v-else
+        ref="svg"
         :viewBox="`0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`"
         class="ip-graph-svg"
         role="img"
         aria-label="Mapa de relaciones entre direcciones IP observadas"
       >
-        <g :transform="`translate(${pan.x} ${pan.y}) scale(${zoom})`">
+        <g ref="graphGroup" :transform="`translate(${pan.x} ${pan.y}) scale(${zoom})`">
           <line
             v-for="edge in layoutEdges"
             :key="edge.id"
@@ -80,13 +77,21 @@
             v-for="node in layoutNodes"
             :key="node.ip"
             class="ip-graph-node"
-            :class="{ 'is-selected': selectedIp === node.ip, 'is-dimmed': selectedIp && selectedIp !== node.ip && !isNeighbor(node.ip) }"
+            :class="{
+              'is-selected': selectedIp === node.ip,
+              'is-dimmed': selectedIp && selectedIp !== node.ip && !isNeighbor(node.ip),
+              'is-dragging': draggingIp === node.ip,
+            }"
             tabindex="0"
             role="button"
             :aria-label="`Inspeccionar ${node.ip}`"
-            @click="selectNode(node.ip)"
+            @click="onNodeClick(node)"
             @keydown.enter="selectNode(node.ip)"
             @keydown.space.prevent="selectNode(node.ip)"
+            @pointerdown="onNodePointerDown(node, $event)"
+            @pointermove="onNodePointerMove($event)"
+            @pointerup="onNodePointerUp($event)"
+            @pointercancel="onNodePointerUp($event)"
             @pointerenter="hoveredIp = node.ip"
             @pointerleave="hoveredIp = hoveredIp === node.ip ? null : hoveredIp"
           >
@@ -262,6 +267,16 @@ const AUTO_REFRESH_MS = 15000;
 // Rough monospace advance width in px for the 8px label font - just needs
 // to be a reasonable upper bound for collision purposes, not exact metrics.
 const LABEL_CHAR_WIDTH = 4.6;
+// Minimum gap kept between two node circles' edges when one is dragged near
+// another - the same idea as the force layout's repulsion, just applied on
+// demand instead of continuously.
+const NODE_MARGIN = 10;
+// Canvas-space distance (immune to zoom, since it's measured in the <g>'s
+// own coordinate system) a pointer must travel before a press on a node
+// counts as a drag rather than a click - without this, the small jitter
+// every real pointer device produces on a "click" would fire a drag on
+// every tap and swallow the click that opens the inspector.
+const DRAG_THRESHOLD = 3;
 
 // A compact Fruchterman-Reingold force layout: nodes repel each other,
 // edges pull their endpoints together, both effects shrink each pass
@@ -373,6 +388,15 @@ export default {
       selectedPaths: [],
       loadingAssociations: false,
       refreshTimer: null,
+      // ip -> {x, y} overrides from manual dragging, layered on top of the
+      // computed force layout. Kept across reloads/auto-refresh so a
+      // manually arranged graph doesn't jump back on the next poll.
+      manualPositions: new Map(),
+      draggingIp: null,
+      dragStartLocal: null,
+      dragOffset: { x: 0, y: 0 },
+      dragMoved: false,
+      suppressClickIp: null,
     };
   },
   computed: {
@@ -387,7 +411,8 @@ export default {
     },
     layoutNodes() {
       return this.nodes.map((node) => {
-        const pos = this.positions.get(node.ip) || { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 };
+        const pos = this.manualPositions.get(node.ip) ||
+          this.positions.get(node.ip) || { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 };
         const share = (Number(node.hit_count) || 0) / this.maxHitCount;
         return { ...node, x: pos.x, y: pos.y, radius: 9 + share * 11, display: deviceDisplay(node) };
       });
@@ -509,6 +534,10 @@ export default {
           this.edges = Array.isArray(data.edges) ? data.edges : [];
           if (this.selectedIp && !this.nodes.some((node) => node.ip === this.selectedIp)) {
             this.selectedIp = null;
+          }
+          const currentIps = new Set(this.nodes.map((node) => node.ip));
+          for (const ip of this.manualPositions.keys()) {
+            if (!currentIps.has(ip)) this.manualPositions.delete(ip);
           }
         })
         .catch((err) => {
@@ -635,6 +664,103 @@ export default {
     resetView() {
       this.zoom = 1;
       this.pan = { x: 0, y: 0 };
+      this.manualPositions.clear();
+    },
+    // Converts a pointer event's screen coordinates into the <g>'s own
+    // coordinate system (the same space node.x/node.y live in) via the
+    // element's screen CTM, so pan and zoom are inverted for free instead
+    // of re-deriving them by hand from viewBox/transform math.
+    clientToLocal(event) {
+      const svgEl = this.$refs.svg;
+      const groupEl = this.$refs.graphGroup;
+      if (!svgEl || !groupEl) return null;
+      const ctm = groupEl.getScreenCTM();
+      if (!ctm) return null;
+      const pt = svgEl.createSVGPoint();
+      pt.x = event.clientX;
+      pt.y = event.clientY;
+      const local = pt.matrixTransform(ctm.inverse());
+      return { x: local.x, y: local.y };
+    },
+    onNodeClick(node) {
+      // A drag ends with the same pointerup/click sequence as a tap, so a
+      // just-finished drag would otherwise also pop open the inspector.
+      if (this.suppressClickIp === node.ip) {
+        this.suppressClickIp = null;
+        return;
+      }
+      this.selectNode(node.ip);
+    },
+    onNodePointerDown(node, event) {
+      // Keep this from also bubbling into the viewport's pan handler.
+      event.stopPropagation();
+      const local = this.clientToLocal(event);
+      if (!local) return;
+      this.draggingIp = node.ip;
+      this.dragMoved = false;
+      this.dragStartLocal = local;
+      this.dragOffset = { x: local.x - node.x, y: local.y - node.y };
+      if (event.pointerId != null && event.currentTarget.setPointerCapture) {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }
+    },
+    onNodePointerMove(event) {
+      if (!this.draggingIp) return;
+      const local = this.clientToLocal(event);
+      if (!local) return;
+      if (!this.dragMoved) {
+        const dx = local.x - this.dragStartLocal.x;
+        const dy = local.y - this.dragStartLocal.y;
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+        this.dragMoved = true;
+      }
+      const node = this.nodesByIp.get(this.draggingIp);
+      const radius = node ? node.radius : 12;
+      const x = Math.min(CANVAS_WIDTH - radius, Math.max(radius, local.x - this.dragOffset.x));
+      const y = Math.min(CANVAS_HEIGHT - radius, Math.max(radius, local.y - this.dragOffset.y));
+      this.manualPositions.set(this.draggingIp, { x, y });
+      this.resolveOverlaps(this.draggingIp);
+    },
+    onNodePointerUp() {
+      if (!this.draggingIp) return;
+      const ip = this.draggingIp;
+      if (this.dragMoved) {
+        this.suppressClickIp = ip;
+        // Safety net in case the click that normally follows pointerup
+        // never fires (e.g. the release lands outside any element) - it
+        // still runs after the browser's own click dispatch either way,
+        // so a real click on this node is never eaten.
+        setTimeout(() => {
+          if (this.suppressClickIp === ip) this.suppressClickIp = null;
+        }, 0);
+      }
+      this.draggingIp = null;
+      this.dragStartLocal = null;
+    },
+    // Pushes any node that ends up too close to the one just moved outward
+    // along the line between them, just enough to restore NODE_MARGIN of
+    // clearance - the "keep a margin from the others" half of dragging.
+    // One pass per pointermove is enough: dragging fires this dozens of
+    // times a second, so a chain of nearby nodes settles within a couple
+    // of frames without needing a full relaxation loop here.
+    resolveOverlaps(movedIp) {
+      const nodes = this.layoutNodes;
+      const moved = nodes.find((candidate) => candidate.ip === movedIp);
+      if (!moved) return;
+      nodes.forEach((other) => {
+        if (other.ip === movedIp) return;
+        let dx = other.x - moved.x;
+        let dy = other.y - moved.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+        const minDist = moved.radius + other.radius + NODE_MARGIN;
+        if (dist >= minDist) return;
+        const push = minDist - dist;
+        dx /= dist;
+        dy /= dist;
+        const x = Math.min(CANVAS_WIDTH - other.radius, Math.max(other.radius, other.x + dx * push));
+        const y = Math.min(CANVAS_HEIGHT - other.radius, Math.max(other.radius, other.y + dy * push));
+        this.manualPositions.set(other.ip, { x, y });
+      });
     },
     onWheel(event) {
       if (!event.ctrlKey && !event.metaKey) return;
@@ -746,12 +872,17 @@ export default {
 }
 
 .ip-graph-node {
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
   transition: opacity 0.15s ease;
 }
 
 .ip-graph-node.is-dimmed {
   opacity: 0.3;
+}
+
+.ip-graph-node.is-dragging {
+  cursor: grabbing;
 }
 
 .ip-graph-node:focus {
