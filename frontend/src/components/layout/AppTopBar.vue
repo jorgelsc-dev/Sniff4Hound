@@ -1,5 +1,11 @@
 <template>
-  <v-app-bar color="transparent" flat height="40" class="top-bar">
+  <v-app-bar
+    color="transparent"
+    flat
+    height="40"
+    class="top-bar"
+    :class="{ 'top-bar--desktop': desktopMode }"
+  >
     <v-container class="d-flex align-center app-topbar">
       <div class="brand-lockup">
         <div class="brand-avatar mr-2">
@@ -16,21 +22,57 @@
         <NotificationBell />
         <v-btn
           icon
-          color="error"
+          :color="remoteBackend ? 'secondary' : 'error'"
           variant="tonal"
           size="small"
           density="comfortable"
           class="shutdown-btn"
           :loading="shutdownPending"
           :disabled="shutdownPending"
-          :aria-label="shutdownPending ? shutdownLabel || 'Stopping...' : 'Stop App'"
+          :aria-label="shutdownPending ? shutdownLabel || 'Stopping...' : stopButtonLabel"
           @click="$emit('shutdown-app')"
         >
-          <v-icon icon="mdi-power" />
+          <v-icon :icon="stopButtonIcon" />
           <v-tooltip activator="parent" location="bottom">
-            {{ shutdownPending ? (shutdownLabel || "Stopping...") : "Stop App" }}
+            {{ shutdownPending ? (shutdownLabel || "Stopping...") : stopButtonLabel }}
           </v-tooltip>
         </v-btn>
+        <div v-if="desktopMode" class="desktop-window-controls" aria-label="Window controls">
+          <v-btn
+            icon
+            variant="text"
+            size="small"
+            density="compact"
+            aria-label="Minimize"
+            @click="runDesktopWindowAction('minimize')"
+          >
+            <v-icon icon="mdi-window-minimize" />
+            <v-tooltip activator="parent" location="bottom">Minimize</v-tooltip>
+          </v-btn>
+          <v-btn
+            icon
+            variant="text"
+            size="small"
+            density="compact"
+            aria-label="Maximize"
+            @click="runDesktopWindowAction('maximize')"
+          >
+            <v-icon icon="mdi-window-maximize" />
+            <v-tooltip activator="parent" location="bottom">Maximize</v-tooltip>
+          </v-btn>
+          <v-btn
+            icon
+            variant="text"
+            size="small"
+            density="compact"
+            color="error"
+            aria-label="Close"
+            @click="runDesktopWindowAction('close')"
+          >
+            <v-icon icon="mdi-close" />
+            <v-tooltip activator="parent" location="bottom">Close</v-tooltip>
+          </v-btn>
+        </div>
       </div>
     </v-container>
   </v-app-bar>
@@ -55,8 +97,41 @@ export default {
       type: String,
       default: "",
     },
+    remoteBackend: {
+      type: Boolean,
+      default: false,
+    },
   },
   emits: ["shutdown-app"],
+  data() {
+    return {
+      desktopApi: null,
+    };
+  },
+  computed: {
+    desktopMode() {
+      return Boolean(this.desktopApi);
+    },
+    stopButtonIcon() {
+      return this.remoteBackend ? "mdi-close-circle-outline" : "mdi-power";
+    },
+    stopButtonLabel() {
+      return this.remoteBackend ? "Close App" : "Stop App";
+    },
+  },
+  mounted() {
+    if (typeof window !== "undefined" && window.sniff4houndDesktop) {
+      this.desktopApi = window.sniff4houndDesktop;
+    }
+  },
+  methods: {
+    runDesktopWindowAction(action) {
+      const fn = this.desktopApi && this.desktopApi[action];
+      if (typeof fn === "function") {
+        fn();
+      }
+    },
+  },
 };
 </script>
 
@@ -75,6 +150,10 @@ export default {
     radial-gradient(circle at 82% 0%, rgba(var(--brand-violet-rgb), 0.16), transparent 40%),
     linear-gradient(180deg, rgba(6, 11, 18, 0.94) 0%, rgba(9, 17, 29, 0.78) 72%, rgba(9, 17, 29, 0.18) 100%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.top-bar--desktop {
+  -webkit-app-region: drag;
 }
 
 .top-bar::after {
@@ -141,6 +220,7 @@ export default {
      painted over (and hid) the badge's count digit. */
   gap: 22px;
   min-width: 0;
+  -webkit-app-region: no-drag;
 }
 
 .shutdown-btn {
@@ -151,5 +231,15 @@ export default {
      edge, which otherwise misaligned it against this button. Applying the
      same offset here keeps both icons level. */
   margin-top: 10px;
+}
+
+.desktop-window-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 10px;
+  padding-left: 6px;
+  border-left: 1px solid rgba(var(--brand-sky-rgb), 0.16);
+  -webkit-app-region: no-drag;
 }
 </style>

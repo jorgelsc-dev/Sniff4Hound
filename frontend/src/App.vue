@@ -3,6 +3,7 @@
     <AppTopBar
       :shutdown-pending="shutdownPending"
       :shutdown-label="shutdownLabel"
+      :remote-backend="desktopRemoteBackend"
       @shutdown-app="shutdownApplication"
     />
     <GlobalToolsMenu />
@@ -108,6 +109,16 @@ import NotificationStack from "./components/ui/NotificationStack.vue";
 // itself out from under them.
 const SHUTDOWN_TAB_CLOSE_DELAY_MS = 4000;
 
+function readDesktopBackendMode() {
+  if (typeof window === "undefined" || !window.location) return "local";
+  try {
+    const parsed = new URL(window.location.href);
+    return String(parsed.searchParams.get("desktop_backend") || "local").trim().toLowerCase();
+  } catch {
+    return "local";
+  }
+}
+
 export default {
   name: "App",
   components: {
@@ -121,6 +132,7 @@ export default {
       accessTokenInput: "",
       authSubmitting: false,
       shutdownLabel: "",
+      desktopBackendMode: readDesktopBackendMode(),
     };
   },
   computed: {
@@ -146,6 +158,9 @@ export default {
     },
     shutdownPending() {
       return Boolean(this.store.state.shutdownPending);
+    },
+    desktopRemoteBackend() {
+      return this.desktopBackendMode === "remote";
     },
   },
   watch: {
@@ -183,6 +198,21 @@ export default {
     },
     shutdownApplication() {
       if (this.shutdownPending) return;
+      if (this.desktopRemoteBackend) {
+        if (typeof window !== "undefined") {
+          const confirmed = window.confirm("Close Sniff4Hound Desktop?");
+          if (!confirmed) return;
+          const desktopApi = window.sniff4houndDesktop;
+          if (desktopApi && typeof desktopApi.close === "function") {
+            desktopApi.close();
+            return;
+          }
+          if (typeof window.close === "function") {
+            window.close();
+          }
+        }
+        return;
+      }
       if (typeof window !== "undefined") {
         const confirmed = window.confirm(
           "Stop Sniff4Hound and close the local dashboard process?"

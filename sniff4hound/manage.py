@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import shlex
 import socket
@@ -15,6 +16,7 @@ import webbrowser
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlencode
 
 from .ipc import generate_ipc_token
 from .process_control import request_process_shutdown, reset_process_shutdown_request
@@ -91,6 +93,7 @@ def _handle_console_line(
 
 BANNER_INNER_WIDTH = 64
 FALLBACK_PORT_SCAN_SIZE = 100
+DESKTOP_READY_PREFIX = "SNIFF4HOUND_DESKTOP_READY "
 
 
 def _display_width(value: str) -> int:
@@ -175,14 +178,42 @@ def _stdout_is_tty() -> bool:
         return False
 
 
+def _desktop_mode_enabled() -> bool:
+    return str(os.environ.get("SNIFF4HOUND_DESKTOP", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _startup_frontend_url(host: str, port: int, *, desktop: bool = False) -> str:
+    from .auth import REQUIRE_AUTH, get_security_code
+
+    base_url = f"http://{host}:{port}"
+    query = {}
+    if REQUIRE_AUTH:
+        query["code"] = get_security_code()
+    if desktop:
+        query["desktop"] = "1"
+    return f"{base_url}/?{urlencode(query)}" if query else f"{base_url}/"
+
+
+def _emit_desktop_ready(host: str, port: int) -> None:
+    from .auth import REQUIRE_AUTH, get_security_code
+
+    payload = {
+        "url": _startup_frontend_url(host, port, desktop=True),
+        "host": str(host),
+        "port": int(port),
+        "auth_required": bool(REQUIRE_AUTH),
+        "security_code": get_security_code() if REQUIRE_AUTH else "",
+    }
+    print(f"{DESKTOP_READY_PREFIX}{json.dumps(payload, separators=(',', ':'))}", flush=True)
+
+
 def _print_startup_banner(host: str, port: int):
     """Print the startup banner with the active security code."""
     from .auth import REQUIRE_AUTH, get_security_code
     from . import __version__
 
     token = get_security_code()
-    base_url = f"http://{host}:{port}"
-    frontend_url = f"{base_url}/?code={token}" if REQUIRE_AUTH else f"{base_url}/"
+    frontend_url = _startup_frontend_url(host, port)
     lines = [
         _banner_rule("╔", "═", "╗"),
         _banner_line(f"🐕 SNIFF4HOUND v{__version__}", align="center"),
@@ -358,11 +389,11 @@ def _print_root_invocation_error() -> None:
 CAPTURE_ENV_DENYLIST = frozenset({"SNIFF4HOUND_IPC_TOKEN", "SNIFF4HOUND_JWT_SECRET"})
 
 
-def _build_capture_relaunch_command(ipc_socket: str, ipc_token_file: str, owner_uid: int) -> list[str]:
-    command = ["sudo", "env"]
+def _capture_child_env_assignments(ipc_socket: str, ipc_token_file: str, owner_uid: int) -> list[str]:
+    assignments = []
     for key in sorted(os.environ):
         if key.startswith("SNIFF4HOUND_") and key not in CAPTURE_ENV_DENYLIST:
-            command.append(f"{key}={os.environ[key]}")
+            assignments.append(f"{key}={os.environ[key]}")
     # The Debian package doesn't install `sniff4hound` into system
     # site-packages - it's only importable via PYTHONPATH pointing at the
     # vendored copy under /usr/lib/sniff4hound/vendor (see
@@ -372,18 +403,47 @@ def _build_capture_relaunch_command(ipc_socket: str, ipc_token_file: str, owner_
     # the package at all.
     pythonpath = os.environ.get("PYTHONPATH")
     if pythonpath:
-        command.append(f"PYTHONPATH={pythonpath}")
-    command.append(f"SNIFF4HOUND_IPC_SOCKET={ipc_socket}")
-    command.append(f"SNIFF4HOUND_IPC_TOKEN_FILE={ipc_token_file}")
-    command.append(f"SNIFF4HOUND_IPC_OWNER_UID={owner_uid}")
+        assignments.append(f"PYTHONPATH={pythonpath}")
+    assignments.append(f"SNIFF4HOUND_IPC_SOCKET={ipc_socket}")
+    assignments.append(f"SNIFF4HOUND_IPC_TOKEN_FILE={ipc_token_file}")
+    assignments.append(f"SNIFF4HOUND_IPC_OWNER_UID={owner_uid}")
+    return assignments
+
+
+def _build_capture_relaunch_command(ipc_socket: str, ipc_token_file: str, owner_uid: int) -> list[str]:
+    command = ["sudo", "env"]
+    command.extend(_capture_child_env_assignments(ipc_socket, ipc_token_file, owner_uid))
     command.extend([sys.executable, "-m", "sniff4hound.capture_service"])
     return command
+
+
+def _build_desktop_capture_relaunch_command(ipc_socket: str, ipc_token_file: str, owner_uid: int) -> list[str]:
+    pkexec = shutil.which("pkexec")
+    if pkexec:
+        env_bin = shutil.which("env") or "/usr/bin/env"
+        command = [pkexec, env_bin]
+        command.extend(_capture_child_env_assignments(ipc_socket, ipc_token_file, owner_uid))
+        command.extend([sys.executable, "-m", "sniff4hound.capture_service"])
+        return command
+    return _build_capture_relaunch_command(ipc_socket, ipc_token_file, owner_uid)
+
+
+def _capture_elevation_available() -> bool:
+    if _desktop_mode_enabled() and shutil.which("pkexec"):
+        return True
+    return shutil.which("sudo") is not None
+
+
+def _build_capture_child_command(ipc_socket: str, ipc_token_file: str, owner_uid: int) -> list[str]:
+    if _desktop_mode_enabled():
+        return _build_desktop_capture_relaunch_command(ipc_socket, ipc_token_file, owner_uid)
+    return _build_capture_relaunch_command(ipc_socket, ipc_token_file, owner_uid)
 
 
 def _print_capture_elevation_error() -> None:
     print("[!] The capture process requires root/administrator privileges and will not start without them.", file=sys.stderr)
     print("    Raw-socket packet capture is not possible as a regular user.", file=sys.stderr)
-    print("    Install sudo, or run `sniff4hound-capture` yourself as root and point this process at it", file=sys.stderr)
+    print("    Install pkexec/sudo, or run `sniff4hound-capture` yourself as root and point this process at it", file=sys.stderr)
     print("    with SNIFF4HOUND_IPC_SOCKET / SNIFF4HOUND_IPC_TOKEN.", file=sys.stderr)
 
 
@@ -469,10 +529,10 @@ def _open_capture_log(ipc_socket: str):
 
 
 def _spawn_capture_child(ipc_socket: str, ipc_token_file: str):
-    if shutil.which("sudo") is None:
+    if not _capture_elevation_available():
         _print_capture_elevation_error()
         return None
-    command = _build_capture_relaunch_command(ipc_socket, ipc_token_file, os.getuid())
+    command = _build_capture_child_command(ipc_socket, ipc_token_file, os.getuid())
 
     # The capture child (and the `sudo`/PAM prompt in front of it) must not
     # inherit this process's stdout/stderr: both processes would then write
@@ -636,6 +696,7 @@ def main():
     host = str(HOST)
     requested_port = int(PORT)
     selected_port = _select_listen_port(host, requested_port)
+    desktop_mode = _desktop_mode_enabled()
     console_thread = None
     capture_process = None
 
@@ -706,15 +767,18 @@ def main():
 
         if selected_port != requested_port:
             _print_port_fallback_notice(requested_port, selected_port)
-        _print_startup_banner(host, selected_port)
-        console_thread = _start_interactive_console(
-            host=host,
-            port=selected_port,
-            runtime=runtime,
-            hub=hub,
-            append_chat_message=append_chat_message,
-            store=store,
-        )
+        if desktop_mode:
+            _emit_desktop_ready(host, selected_port)
+        else:
+            _print_startup_banner(host, selected_port)
+            console_thread = _start_interactive_console(
+                host=host,
+                port=selected_port,
+                runtime=runtime,
+                hub=hub,
+                append_chat_message=append_chat_message,
+                store=store,
+            )
         bootstrap_capture()
         app.run(host, selected_port)
     except OSError as exc:

@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sniff4Hound</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #06111d;
+        color: #d8e7f5;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        overflow: hidden;
+        background: linear-gradient(180deg, rgba(15, 29, 45, 0.96), rgba(6, 17, 29, 0.98)), #06111d;
+      }
+
+      .titlebar {
+        height: 38px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        border-bottom: 1px solid rgba(132, 171, 207, 0.14);
+        background: #0b1725;
+        -webkit-app-region: drag;
+      }
+
+      .window-actions {
+        display: flex;
+        height: 100%;
+        -webkit-app-region: no-drag;
+      }
+
+      .window-action {
+        width: 46px;
+        height: 100%;
+        border: 0;
+        color: #c9d7e6;
+        background: transparent;
+        font: inherit;
+      }
+
+      .window-action:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .window-action.close:hover {
+        background: #d84040;
+        color: #fff;
+      }
+
+      main {
+        min-height: calc(100vh - 38px);
+        display: grid;
+        grid-template-columns: 58px 1fr;
+      }
+
+      .activity-bar {
+        background: #07101b;
+        border-right: 1px solid rgba(132, 171, 207, 0.14);
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding-top: 18px;
+      }
+
+      .mark {
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        object-fit: cover;
+        box-shadow: 0 0 0 1px rgba(15, 232, 255, 0.24), 0 10px 28px rgba(15, 232, 255, 0.18);
+      }
+
+      .content {
+        display: grid;
+        place-items: center;
+        padding: 36px;
+      }
+
+      .panel {
+        width: min(780px, 100%);
+      }
+
+      .kicker {
+        color: #0fe8ff;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 10px 0 8px;
+        font-size: 28px;
+        line-height: 1.12;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 0;
+        color: rgba(216, 231, 245, 0.76);
+        line-height: 1.6;
+      }
+
+      .mode-grid {
+        margin-top: 24px;
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+        gap: 14px;
+      }
+
+      .mode-panel {
+        border: 1px solid rgba(132, 171, 207, 0.16);
+        border-radius: 8px;
+        background: rgba(7, 16, 27, 0.86);
+        padding: 18px;
+      }
+
+      .mode-title {
+        margin: 0 0 8px;
+        font-size: 16px;
+        font-weight: 720;
+      }
+
+      .mode-copy {
+        min-height: 48px;
+        font-size: 13px;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: 1fr 92px;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+
+      .field.full {
+        grid-column: 1 / -1;
+      }
+
+      label {
+        color: rgba(216, 231, 245, 0.68);
+        font-size: 12px;
+      }
+
+      input,
+      select {
+        width: 100%;
+        height: 36px;
+        border: 1px solid rgba(132, 171, 207, 0.22);
+        border-radius: 6px;
+        outline: none;
+        background: rgba(1, 7, 13, 0.72);
+        color: #e7f2fd;
+        padding: 0 10px;
+        font: inherit;
+      }
+
+      input:focus,
+      select:focus {
+        border-color: rgba(15, 232, 255, 0.7);
+        box-shadow: 0 0 0 3px rgba(15, 232, 255, 0.1);
+      }
+
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      button.primary,
+      button.secondary {
+        height: 38px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        padding: 0 14px;
+        color: #031018;
+        background: #0fe8ff;
+        font: inherit;
+        font-weight: 720;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        color: #d8e7f5;
+        background: rgba(255, 255, 255, 0.06);
+        border-color: rgba(132, 171, 207, 0.22);
+      }
+
+      button.primary:hover {
+        background: #5cf1ff;
+      }
+
+      button.secondary:hover {
+        border-color: rgba(15, 232, 255, 0.44);
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.58;
+      }
+
+      .status {
+        margin-top: 18px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .status-row {
+        height: 7px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(132, 171, 207, 0.14);
+      }
+
+      .status-row.active::before {
+        content: "";
+        display: block;
+        width: 38%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #0fe8ff, #8e63ff);
+        animation: loading 1.2s ease-in-out infinite;
+      }
+
+      .log {
+        min-height: 20px;
+        color: rgba(216, 231, 245, 0.62);
+        font-size: 13px;
+      }
+
+      @keyframes loading {
+        0% {
+          transform: translateX(-110%);
+        }
+        100% {
+          transform: translateX(280%);
+        }
+      }
+
+      @media (max-width: 840px) {
+        .mode-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="titlebar">
+      <div class="window-actions">
+        <button class="window-action" type="button" data-action="minimize" aria-label="Minimize">-</button>
+        <button class="window-action" type="button" data-action="maximize" aria-label="Maximize">□</button>
+        <button class="window-action close" type="button" data-action="close" aria-label="Close">×</button>
+      </div>
+    </div>
+    <main>
+      <aside class="activity-bar">
+        <img class="mark" src="assets/icon.png" alt="" />
+      </aside>
+      <section class="content">
+        <div class="panel">
+          <div class="kicker">Sniff4Hound Desktop</div>
+          <h1>Choose sensor connection</h1>
+          <p>
+            Start the local runtime with capture engines stopped, or connect to a sensor
+            exposed through another address or tunnel.
+          </p>
+
+          <div class="mode-grid">
+            <section class="mode-panel">
+              <h2 class="mode-title">Local sensor</h2>
+              <p class="mode-copy">
+                Uses the bundled Python venv and keeps sniffer/honeypot engines off until
+                you start them inside the console.
+              </p>
+              <div class="actions">
+                <button id="local-start" class="primary" type="button">Start local</button>
+              </div>
+            </section>
+
+            <section class="mode-panel">
+              <h2 class="mode-title">Remote sensor</h2>
+              <p class="mode-copy">
+                Connect to an existing Sniff4Hound backend by host, port, and security code.
+              </p>
+              <form id="remote-form" class="form-grid">
+                <div class="field">
+                  <label for="remote-host">IP / host</label>
+                  <input id="remote-host" name="host" autocomplete="hostname" placeholder="127.0.0.1" />
+                </div>
+                <div class="field">
+                  <label for="remote-port">Port</label>
+                  <input id="remote-port" name="port" inputmode="numeric" placeholder="45678" />
+                </div>
+                <div class="field">
+                  <label for="remote-protocol">Protocol</label>
+                  <select id="remote-protocol" name="protocol">
+                    <option value="http">HTTP</option>
+                    <option value="https">HTTPS</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="remote-code">Security code</label>
+                  <input id="remote-code" name="securityCode" autocomplete="one-time-code" spellcheck="false" />
+                </div>
+                <div class="actions field full">
+                  <button id="remote-connect" class="secondary" type="submit">Connect remote</button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <div class="status">
+            <div id="status-row" class="status-row"></div>
+            <div id="log" class="log">Ready.</div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script>
+      const api = window.sniff4houndDesktop;
+      const log = document.getElementById("log");
+      const statusRow = document.getElementById("status-row");
+      const localStart = document.getElementById("local-start");
+      const remoteForm = document.getElementById("remote-form");
+      const remoteConnect = document.getElementById("remote-connect");
+      const remoteHost = document.getElementById("remote-host");
+      const remotePort = document.getElementById("remote-port");
+      const remoteProtocol = document.getElementById("remote-protocol");
+      const remoteCode = document.getElementById("remote-code");
+
+      function setBusy(isBusy, message) {
+        localStart.disabled = isBusy;
+        remoteConnect.disabled = isBusy;
+        statusRow.classList.toggle("active", Boolean(isBusy));
+        if (message) log.textContent = message;
+      }
+
+      for (const button of document.querySelectorAll("[data-action]")) {
+        button.addEventListener("click", () => {
+          const action = button.getAttribute("data-action");
+          if (api && typeof api[action] === "function") api[action]();
+        });
+      }
+
+      if (api && typeof api.onRuntimeStatus === "function") {
+        api.onRuntimeStatus((message) => {
+          if (message) log.textContent = message;
+        });
+      }
+
+      if (api && typeof api.getConnectionDefaults === "function") {
+        api.getConnectionDefaults().then((defaults) => {
+          remoteHost.value = defaults.host || "127.0.0.1";
+          remotePort.value = defaults.port || defaults.localPort || "45678";
+          remoteProtocol.value = defaults.protocol || "http";
+          if (defaults.mode === "remote") {
+            remoteCode.focus();
+          }
+        });
+      }
+
+      localStart.addEventListener("click", async () => {
+        if (!api || typeof api.startLocal !== "function") return;
+        setBusy(true, "Starting local backend...");
+        const result = await api.startLocal();
+        if (!result || result.ok === false) {
+          setBusy(false, (result && result.error) || "Unable to start local backend.");
+        }
+      });
+
+      remoteForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!api || typeof api.connectRemote !== "function") return;
+        setBusy(true, "Checking remote backend...");
+        const result = await api.connectRemote({
+          protocol: remoteProtocol.value,
+          host: remoteHost.value,
+          port: remotePort.value,
+          securityCode: remoteCode.value,
+        });
+        if (!result || result.ok === false) {
+          setBusy(false, (result && result.error) || "Unable to connect remote backend.");
+        }
+      });
+    </script>
+  </body>
+</html>

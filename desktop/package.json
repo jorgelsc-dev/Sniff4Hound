@@ -1,0 +1,61 @@
+{
+  "name": "sniff4hound-desktop",
+  "version": "0.54.0",
+  "private": true,
+  "description": "Sniff4Hound Linux desktop shell",
+  "homepage": "https://sniff4hound.jorgelsc.dev",
+  "desktopName": "Sniff4Hound",
+  "main": "main.js",
+  "author": "JorgelSC Dev",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron .",
+    "pack": "electron-builder --linux dir",
+    "dist": "electron-builder --linux AppImage deb"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "dev.jorgelsc.sniff4hound",
+    "productName": "Sniff4Hound",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "../dist/desktop"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "splash.html",
+      "assets/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/desktop/runtime/python-venv",
+        "to": "python-venv"
+      },
+      {
+        "from": "../frontend/dist",
+        "to": "frontend-dist"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "icon": "assets/icon.png",
+      "maintainer": "JorgelSC Dev",
+      "synopsis": "Native packet sniffer desktop console",
+      "description": "Sniff4Hound desktop app with an embedded Chromium shell and isolated Python runtime."
+    },
+    "deb": {
+      "depends": [
+        "policykit-1 | pkexec | sudo"
+      ]
+    }
+  }
+}

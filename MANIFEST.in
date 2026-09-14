@@ -20,6 +20,7 @@ include frontend/package.json
 include frontend/vite.config.js
 recursive-include frontend/public *
 recursive-include frontend/src *
+recursive-include desktop *
 prune frontend/node_modules
 prune frontend/node_modules_legacy_vuecli
 prune frontend/dist.root-owned-backup
@@ -27,6 +28,7 @@ prune frontend/dist_perm_old_20260611
 prune frontend/dist_root_old
 exclude frontend/Sniff4Hound.db
 prune .venv
+prune desktop/node_modules
 prune sniff4hound/.venv
 prune sniff4hound/__pycache__
 prune build
