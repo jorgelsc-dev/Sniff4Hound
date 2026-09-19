@@ -390,7 +390,12 @@
       </div>
       <div class="map-summary__item">
         <div class="map-summary__metric">
-          <div class="text-caption text-medium-emphasis">Active services</div>
+          <!-- This counts stored packets with state='open' (sniff4hound/store.py),
+               not distinct services - a host answering the same port 500 times
+               is 500 here, not 1. "Active services" claimed a stronger, wrong
+               meaning for the same number (finding 1.13). A real distinct-service
+               count needs its own host+transport+port+window definition. -->
+          <div class="text-caption text-medium-emphasis">Open-port packets</div>
           <div class="text-h6 font-weight-bold text-secondary">{{ summary.total_open_ports }}</div>
         </div>
       </div>

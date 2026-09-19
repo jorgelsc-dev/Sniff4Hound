@@ -23,6 +23,45 @@ if (process.platform === "linux") {
   app.commandLine.appendSwitch("no-sandbox");
 }
 
+// AI/automation channel: always-on Chrome DevTools Protocol remote debugging
+// on a fixed, well-known port, so an agent never has to ask the operator to
+// relaunch with a special flag first - see AGENTS.md's "Desktop App:
+// AI/Automation Access" for how to attach and drive/inspect the running
+// window (click elements, read the DOM, screenshot) exactly like a user
+// would. Deliberate, operator-directed tradeoff: any other local process can
+// attach to this port and fully control the window, a real attack surface
+// for a tool that already runs elevated - set SNIFF4HOUND_DESKTOP_DEBUG_PORT
+// to a different port, or to "0"/"false"/"off" to disable it outright, for a
+// deployment that wants it closed instead.
+const DEFAULT_DESKTOP_DEBUG_PORT = "9223";
+const desktopDebugPortRaw = String(process.env.SNIFF4HOUND_DESKTOP_DEBUG_PORT ?? DEFAULT_DESKTOP_DEBUG_PORT).trim();
+const desktopDebugDisabled = ["0", "false", "off", "no", ""].includes(desktopDebugPortRaw.toLowerCase());
+if (!desktopDebugDisabled) {
+  app.commandLine.appendSwitch("remote-debugging-port", desktopDebugPortRaw);
+  app.commandLine.appendSwitch("remote-allow-origins", "*");
+}
+
+// Every path that hands a URL to shell.openExternal() (new-window clicks,
+// blocked in-window navigations, the menu's GitHub link, and the
+// contextIsolation'd renderer bridge in preload.js) funnels through this
+// allowlist first. shell.openExternal() dispatches to the OS's own handler
+// for the URL's scheme - unrestricted, that includes `file:` (opens local
+// files/directories) and platform-specific handler schemes, not just
+// `javascript:`/`data:` (which openExternal itself already refuses to
+// launch, but defense in depth costs nothing here). A compromised renderer
+// or a malicious link served through the backend should not be able to
+// reach any of that (finding 1.11).
+const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+
+function isAllowedExternalUrl(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    return ALLOWED_EXTERNAL_PROTOCOLS.has(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
 let mainWindow = null;
 let backendProcess = null;
 let backendReady = null;
@@ -371,7 +410,7 @@ function createWindow() {
   mainWindow.once("ready-to-show", () => mainWindow.show());
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (isAllowedExternalUrl(url)) shell.openExternal(url);
     return { action: "deny" };
   });
 
@@ -386,7 +425,7 @@ function createWindow() {
       // fall through to block malformed navigations
     }
     event.preventDefault();
-    shell.openExternal(url);
+    if (isAllowedExternalUrl(url)) shell.openExternal(url);
   });
 
   mainWindow.on("close", () => {
@@ -544,7 +583,11 @@ ipcMain.handle("desktop-window:close", () => {
 });
 
 ipcMain.handle("desktop-shell:open-external", (_event, url) => {
-  if (!url) return;
+  // The renderer-facing bridge (preload.js) forwards whatever string the
+  // SPA passes, unvalidated - this is the only place left that can refuse
+  // a `file:`/`javascript:`/other unexpected scheme before it reaches the
+  // OS's own URL handler.
+  if (!url || !isAllowedExternalUrl(url)) return;
   shell.openExternal(url);
 });
 

@@ -78,7 +78,8 @@
         <span class="network-editor-panel__title">AJUSTES DEL MOTOR</span>
         <v-chip size="x-small" color="primary">{{ hiddenSizes.length }} capa(s) · {{ hiddenSizes.join('-') }}</v-chip>
         <v-chip v-if="effectiveness.ready" size="x-small" :color="effectivenessColor">
-          Efectividad {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
+          Acierto en entrenamiento {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
+          <v-tooltip activator="parent">Medido sobre los mismos ejemplos con los que el modelo entrenó (resustitución), no sobre datos no vistos.</v-tooltip>
         </v-chip>
         <v-chip v-else size="x-small" color="warning">Pendiente de evaluar<v-tooltip activator="parent">Se necesitan al menos 3 revisiones benignas y 3 maliciosas.</v-tooltip></v-chip>
       </div>

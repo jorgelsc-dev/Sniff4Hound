@@ -1,5 +1,5 @@
-import { createRouter, createWebHistory } from "vue-router";
-import { appBaseUrl } from "../utils/runtimeEnv";
+import { createRouter, createWebHistory, createMemoryHistory } from "vue-router";
+import { appBaseUrl } from "../utils/runtimeEnv.js";
 
 const routes = [
   { path: "/ai", name: "ai", component: () => import("../views/AiHubView.vue") },
@@ -52,8 +52,13 @@ const routes = [
   { path: "/:pathMatch(.*)*", redirect: "/" },
 ];
 
+// vue-router's default history needs `window`/`document`. This module is
+// also reached from the plain-Node unit test runner (no DOM at all), which
+// otherwise crashes at import time before a single test can run - swap to
+// the DOM-free memory history there; every real (browser/Electron) load
+// always has `window`.
 const router = createRouter({
-  history: createWebHistory(appBaseUrl()),
+  history: typeof window !== "undefined" ? createWebHistory(appBaseUrl()) : createMemoryHistory(appBaseUrl()),
   routes,
   scrollBehavior() {
     return { left: 0, top: 0 };

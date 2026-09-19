@@ -36,6 +36,14 @@ build/desktop/runtime/python-venv/bin/python -m pip install -e .
 cd desktop && npm install && npm run dev
 ```
 
+## AI/Automation Access
+
+Every launch opens a Chrome DevTools Protocol port on **9223** an agent or script can attach to
+and drive the window programmatically - on by default, no flag needed. Set
+`SNIFF4HOUND_DESKTOP_DEBUG_PORT` to use a different port, or to `0` to close it for a given launch.
+See `AGENTS.md`'s "Desktop App: AI/Automation Access" for how to attach and a couple of gotchas
+(notably `ELECTRON_RUN_AS_NODE`).
+
 ## Release Build
 
 The desktop app is no longer packaged on its own - `scripts/build_deb.sh`

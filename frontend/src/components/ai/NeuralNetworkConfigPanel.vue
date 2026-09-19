@@ -6,9 +6,10 @@
         {{ learningConfig.hidden_sizes.length }} capa(s) oculta(s) · {{ learningConfig.hidden_sizes.join('-') }}
       </v-chip>
       <v-chip v-if="effectiveness.ready" size="small" :color="effectivenessColor">
-        Efectividad {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
+        Acierto en entrenamiento {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
+        <v-tooltip activator="parent">Medido sobre los mismos ejemplos con los que el modelo entrenó (resustitución), no sobre datos no vistos.</v-tooltip>
       </v-chip>
-      <v-chip v-else :size="floating ? 'x-small' : 'small'" color="warning">{{ floating ? 'Pendiente de evaluar' : 'Efectividad: faltan revisiones (mín. 3 benignos y 3 maliciosos)' }}<v-tooltip activator="parent">Se necesitan al menos 3 revisiones benignas y 3 maliciosas.</v-tooltip></v-chip>
+      <v-chip v-else :size="floating ? 'x-small' : 'small'" color="warning">{{ floating ? 'Pendiente de evaluar' : 'Acierto en entrenamiento: faltan revisiones (mín. 3 benignos y 3 maliciosos)' }}<v-tooltip activator="parent">Se necesitan al menos 3 revisiones benignas y 3 maliciosas.</v-tooltip></v-chip>
     </div>
     <p v-if="!floating" class="text-body-2 text-medium-emphasis mb-3">
       La red neuronal aprende de tus revisiones; el detector LOF agrupa paquetes del mismo

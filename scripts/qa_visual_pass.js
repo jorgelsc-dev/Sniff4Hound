@@ -14,6 +14,12 @@ const BASE_URL = process.env.QA_BASE_URL || 'http://127.0.0.1:45678';
 const CODE = process.env.QA_CODE || '';
 const OUT_DIR = path.resolve(process.cwd(), 'QA');
 const SHOT_DIR = path.join(OUT_DIR, 'visual-pass');
+// 9223 matches desktop/main.js's DEFAULT_DESKTOP_DEBUG_PORT (the Electron
+// app this pass is meant to walk); override with QA_CDP_PORT=9222 for a
+// plain Chromium/headless target instead, whose default devtools port is
+// 9222, not 9223 (finding 1.10 - this used to be hardcoded to 9222, which
+// silently never attached to the actual documented Electron instance).
+const CDP_PORT = process.env.QA_CDP_PORT || '9223';
 
 const ROUTES = [
   { label: 'Dashboard', path: '/' },
@@ -21,6 +27,8 @@ const ROUTES = [
   { label: 'Honeypot', path: '/honeypot' },
   { label: 'SOC', path: '/soc' },
   { label: 'AI', path: '/ai' },
+  { label: 'AI Resumen', path: '/ai/overview' },
+  { label: 'AI Red neuronal', path: '/ai/neural-network' },
   { label: 'Investigate', path: '/investigate' },
   { label: 'Protocols', path: '/protocols' },
   { label: 'Domains', path: '/domains' },
@@ -28,13 +36,16 @@ const ROUTES = [
   { label: 'IPs', path: '/ips' },
   { label: 'Monitors', path: '/monitors' },
   { label: 'Settings', path: '/settings' },
+  { label: 'Dashboard Resumen', path: '/dashboard/overview' },
+  { label: 'Dashboard Mapa de nodos', path: '/dashboard/node-map' },
+  { label: 'Dashboard Mapa en vivo', path: '/dashboard/live-map' },
   { label: 'Chat', path: '/chat' },
 ];
 
 function fetchWsUrl() {
   return new Promise((resolve, reject) => {
     http
-      .get('http://127.0.0.1:9222/json/version', (res) => {
+      .get(`http://127.0.0.1:${CDP_PORT}/json/version`, (res) => {
         let data = '';
         res.on('data', (c) => (data += c));
         res.on('end', () => {

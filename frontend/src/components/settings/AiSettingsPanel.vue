@@ -62,9 +62,10 @@
         <v-chip size="small" color="primary">{{ learningConfig.hidden_sizes.length }} capa(s) · {{ learningConfig.hidden_sizes.join('-') }}</v-chip>
         <v-chip size="small" color="secondary">Cohorte mínima LOF: {{ learningConfig.min_cohort }}</v-chip>
         <v-chip v-if="effectiveness.ready" size="small" :color="effectivenessColor">
-          Efectividad {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
+          Acierto en entrenamiento {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
+          <v-tooltip activator="parent">Medido sobre los mismos ejemplos con los que el modelo entrenó (resustitución), no sobre datos no vistos.</v-tooltip>
         </v-chip>
-        <v-chip v-else size="small" color="warning">Efectividad: faltan revisiones</v-chip>
+        <v-chip v-else size="small" color="warning">Acierto en entrenamiento: faltan revisiones</v-chip>
       </div>
       <v-row dense>
         <v-col cols="12" md="6">

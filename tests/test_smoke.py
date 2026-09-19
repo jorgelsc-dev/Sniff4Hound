@@ -1607,16 +1607,56 @@ class SmokeTests(unittest.TestCase):
         # comment above SPA_ROUTES already describes for /settings,
         # /domains, /paths and /ips. This walks the router file itself so a
         # new view can't silently reintroduce the same gap.
+        #
+        # This used to `re.findall(r"\{[^{}]*\}", source)`, a flat regex that
+        # cannot see past a nested brace: a route with `meta: { ... }` (e.g.
+        # /ai/neural-network, /dashboard/node-map) only ever matched the
+        # inner meta object, so the route's own `path:` was never extracted
+        # and never checked - which is exactly how 5 nested routes reached
+        # SPA_ROUTES-less 404s (finding 1.1) without this test catching it.
+        # A small brace-depth walk finds each *complete* top-level route
+        # object instead of relying on there being no nesting inside one.
         import re as _re
 
         import sniff4hound.app as app_module
 
         router_path = Path(__file__).resolve().parents[1] / "frontend" / "src" / "router" / "index.js"
         source = router_path.read_text(encoding="utf-8")
-        route_objects = _re.findall(r"\{[^{}]*\}", source)
+
+        start_marker = "const routes = ["
+        array_start = source.index(start_marker) + len(start_marker) - 1  # position of the '['
+        depth = 0
+        array_end = None
+        for index in range(array_start, len(source)):
+            char = source[index]
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    array_end = index
+                    break
+        self.assertIsNotNone(array_end, "could not find the end of the routes array - router file format changed")
+        array_source = source[array_start:array_end + 1]
+
+        route_objects = []
+        depth = 0
+        obj_start = None
+        for index, char in enumerate(array_source):
+            if char == "{":
+                if depth == 0:
+                    obj_start = index
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0 and obj_start is not None:
+                    route_objects.append(array_source[obj_start:index + 1])
+                    obj_start = None
+        self.assertGreater(len(route_objects), 0, "no route objects extracted - router file format changed")
+
         static_paths = []
         for obj in route_objects:
-            if "redirect" in obj:
+            if _re.search(r"\bredirect\s*:", obj):
                 continue
             match = _re.search(r'path:\s*"([^"]+)"', obj)
             if not match:
@@ -1627,5 +1667,9 @@ class SmokeTests(unittest.TestCase):
             static_paths.append(path)
 
         self.assertIn("/chat", static_paths, "test fixture itself is stale - /chat should still be a real route")
+        self.assertIn(
+            "/ai/neural-network", static_paths,
+            "test fixture itself is stale - a route with a nested meta object should still be extracted",
+        )
         missing = [path for path in static_paths if path not in app_module.SPA_ROUTES]
         self.assertEqual(missing, [], f"vue-router paths missing from app.SPA_ROUTES (will 404 on refresh): {missing}")

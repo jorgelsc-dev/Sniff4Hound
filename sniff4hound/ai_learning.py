@@ -292,12 +292,20 @@ def model_effectiveness(state):
     This is not an estimate of real-world detection accuracy - see the
     module docstring on training loss - but it is the honest number
     available without asking the operator to hand-build a held-out labelled
-    set the model never trained on."""
+    set the model never trained on. `evaluation_mode` is always
+    'resubstitution' here (never a held-out split, unlike
+    run_tournament_round() below) - callers must not label this "accuracy"
+    without qualifying it (FAQA finding 1.25: a model that always predicts
+    "benign" over a mostly-benign dataset scores high here despite zero
+    real detection ability)."""
     examples = state.get('examples', [])
     counts = Counter(e['label'] for e in examples)
     ready = counts['benign'] >= 3 and counts['malicious'] >= 3
     if not ready or not examples:
-        return {'ready': False, 'accuracy': None, 'correct': 0, 'total': len(examples)}
+        return {
+            'ready': False, 'accuracy': None, 'correct': 0, 'total': len(examples),
+            'evaluation_mode': 'resubstitution',
+        }
     model = state.get('model')
     if not is_current_model_shape(model):
         model = initial_model()
@@ -305,7 +313,10 @@ def model_effectiveness(state):
         1 for example in examples
         if ('malicious' if forward(model, example['features'])[1] >= 0.5 else 'benign') == example['label']
     )
-    return {'ready': True, 'accuracy': round(correct / len(examples), 4), 'correct': correct, 'total': len(examples)}
+    return {
+        'ready': True, 'accuracy': round(correct / len(examples), 4), 'correct': correct, 'total': len(examples),
+        'evaluation_mode': 'resubstitution',
+    }
 
 
 def _accuracy_for(model, examples):
@@ -503,6 +514,14 @@ def run_tournament_round(examples, shapes, progress=None, progress_lock=None):
     counts = Counter(e['label'] for e in examples)
     use_holdout = counts['benign'] >= VALIDATION_MIN_PER_CLASS and counts['malicious'] >= VALIDATION_MIN_PER_CLASS
     train_examples, eval_examples = _split_train_validation(examples) if use_holdout else (examples, examples)
+    # Uniform across the whole round (same use_holdout for every candidate),
+    # carried on each result rather than as a separate return value so a
+    # caller indexing into the list (existing contract) sees it for free.
+    # Below VALIDATION_MIN_PER_CLASS this falls back to resubstitution - the
+    # same "trained on what it's scored on" weakness model_effectiveness()
+    # has, and the UI must say so rather than implying every tournament
+    # round validates on unseen data (finding 1.25).
+    evaluation_mode = 'holdout' if use_holdout else 'resubstitution'
 
     results = [None] * len(shapes)
 
@@ -520,7 +539,10 @@ def run_tournament_round(examples, shapes, progress=None, progress_lock=None):
 
         model, _ = train(train_examples, hidden_sizes=shape, on_epoch=_on_epoch)
         accuracy = _accuracy_for(model, eval_examples)
-        results[index] = {'hidden_sizes': shape, 'accuracy': accuracy, 'parameters': model}
+        results[index] = {
+            'hidden_sizes': shape, 'accuracy': accuracy, 'parameters': model,
+            'evaluation_mode': evaluation_mode,
+        }
         state.update(status='done', accuracy=accuracy)
         if progress is not None:
             with progress_lock:

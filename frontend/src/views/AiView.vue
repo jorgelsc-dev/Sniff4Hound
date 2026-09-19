@@ -31,7 +31,7 @@
       <v-alert type="info" variant="tonal" density="comfortable" class="mt-3">
         Los filtros de exclusión (IP, CIDR, puerto, protocolo) ahora se configuran en un solo lugar para
         todo el motor de detección - Sniffer, Monitores e IA.
-        <router-link to="/settings">Ir a Configuración → Exclusiones</router-link>.
+        <router-link to="/settings?section=exclusions">Ir a Configuración → Exclusiones</router-link>.
       </v-alert>
     </v-card>
 

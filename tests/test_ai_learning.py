@@ -268,7 +268,7 @@ class LearningTests(unittest.TestCase):
             'model': {'w1': [[0.0] * 8] * 6, 'b1': [0.0] * 6, 'w2': [0.0] * 6, 'b2': 0.0},
             'history': [], 'audit': [], 'training': {},
         }
-        self.assertEqual(model_effectiveness(legacy_state), {'ready': False, 'accuracy': None, 'correct': 0, 'total': 1})
+        self.assertEqual(model_effectiveness(legacy_state), {'ready': False, 'accuracy': None, 'correct': 0, 'total': 1, 'evaluation_mode': 'resubstitution'})
         exported = export_model(legacy_state)
         self.assertEqual(exported['hidden_sizes'], [6])
         rows = [packet()]
@@ -327,7 +327,7 @@ class LearningTests(unittest.TestCase):
 
     def test_effectiveness_not_ready_without_both_classes(self):
         state = update_feedback({}, packet(1), 'malicious', 3, '')
-        self.assertEqual(model_effectiveness(state), {'ready': False, 'accuracy': None, 'correct': 0, 'total': 1})
+        self.assertEqual(model_effectiveness(state), {'ready': False, 'accuracy': None, 'correct': 0, 'total': 1, 'evaluation_mode': 'resubstitution'})
 
     def test_effectiveness_scores_agreement_with_operator_labels(self):
         # Perfectly separable examples: after training the model should

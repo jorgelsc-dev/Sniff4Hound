@@ -1,262 +1,769 @@
-# Sniff4Hound - Informe de QA / Auditoria de Seguridad (FAQA)
+# Sniff4Hound - Informe FAQA / Revision QA
 
-**Rol:** Revision realizada como QA Lead / analista SOC especializado en sniffers, honeypots y motores de IA de deteccion.
-**Alcance:** Rama `feature/faqa`, backend `sniff4hound/*.py`, frontend `frontend/src/**`, empaquetado Debian (`scripts/build_deb.sh`, `scripts/deb_postinst.sh`, `scripts/deb_postrm.sh`), suite de tests completa (backend y frontend) y verificacion puntual contra una instancia local real en ejecucion (`v0.59.0`, `http://127.0.0.1:45678`).
-**Metodo:** Pasada de reverificacion completa de los 16 hallazgos historicos (2.1-2.16) por relectura de codigo puntual sobre cada uno (no solo los tocados por cambios recientes); ejecucion integra de la suite backend (`pytest`) y frontend (`npm run lint` + `npm run test:unit` + `npm run build`); y pruebas dinamicas puntuales de autenticacion, CSRF/origen, WebSocket e IA sobre la instancia viva. Los codigos de seguridad usados en la prueba no se documentan aqui.
-**Fecha:** 2026-09-13 (revision `v0.59.0`; sin cambios de codigo respecto a la revision `v0.58.0` anterior de este mismo dia - ver seccion 0).
+**Fecha:** 2026-09-19
 
-> Convencion de severidad: **Critical** (explotable remotamente / caida del sensor) | **High** (bypass relevante de un limite de seguridad) | **Medium** (riesgo real o gap de defensa en profundidad) | **Low** (mejora menor) | **Info** (limitacion o comportamiento aceptado).
+**Version observada:** `0.54.0` (`pyproject.toml`, `sniff4hound/__init__.py`, `desktop/package.json` y Electron `User-Agent`)
+
+**Instancia viva revisada:** Electron por CDP en `127.0.0.1:9223`, target `Sniff4Hound`, backend local en `http://127.0.0.1:45671/?code=...&desktop=1`
+
+**Alcance:** revision estatica del repo, pruebas automatizadas backend/frontend, build frontend, recorrido interactivo de la ventana Electron ya corriendo por CDP (menus, pestañas, busqueda, detalles y mapas), capturas de pantalla y verificacion HTTP de rutas SPA/deep links.
+
+**Nota de seguridad:** no se documenta el codigo de sesion observado.
+
+**Ampliacion Blue Team:** 2026-09-19. Este documento es una auditoria y una especificacion de mejoras; las correcciones propuestas no estan implementadas. Solo se modifica este informe. Los resultados del pase inicial se conservan, separados de las pruebas nuevas.
+
+**Guia de lectura:** hallazgos verificables en seccion 1; evidencia y limites en 2; plan tecnico detallado en 6; experiencia Blue Team en 7; arquitectura/rendimiento en 8; entregas y criterios de salida en 9; reproducciones en 10; referencias en 11. Las prioridades P0/P1/P2 de la ampliacion son orden de trabajo, no equivalen a una clasificacion CVSS.
+
+> Convencion de severidad: **Critical** (explotable / caida fuerte), **High** (riesgo serio o bloqueo de release), **Medium** (defecto funcional o seguridad defensiva), **Low** (mantenibilidad/limpieza), **Info** (contexto o recomendacion).
 
 ---
 
 ## 0. Resumen ejecutivo
 
-- **Pasada de reverificacion completa** (`v0.59.0`): se releyo cada uno de los 16 hallazgos historicos previos (2.1-2.16) contra el codigo actual, no solo los tocados por el ultimo cambio, y ninguno regresiono.
-- **Esta vez si se resolvio el punto informativo pendiente** de pasadas anteriores ("repetir una pasada visual de las 14 vistas"): se escribio y corrio `scripts/qa_visual_pass.js`, un pase automatizado por CDP contra las 14 rutas reales del router actual (el unico script de pase visual que ya existia, `qa_ui_cdp.js`, resulto estar escrito para una UI de honeypot mas vieja con rutas que ya no existen, y se dejo intacto sin usarlo - ver 3.4).
-- **Esa corrida encontro un hallazgo real, ya corregido: 2.17** - `/chat` es una ruta valida del router de Vue pero faltaba en la tupla `SPA_ROUTES` del backend, asi que una carga directa/refresh de esa URL devolvia `404 Not Found` en vez de la SPA (navegar ahi desde dentro de la app funcionaba bien). Se agrego la ruta y una prueba de regresion que parsea el router y falla si una vista futura vuelve a faltar en `SPA_ROUTES`.
-- **Un segundo hallazgo, reportado por el operador con una captura del review de IA y corregido en el momento: 2.18** - la cola de revision/ensenanza de IA mostraba trafico muteado/whitelisteado/excluido ("Sin bytes disponibles", "Prioridad -/100") junto al trafico realmente evaluado, aunque ese trafico nunca tiene nada que puntuar por diseno (2.14/2.16). `list_ai_packets()` ahora lo excluye de ese listado especifico sin dejar de persistirlo.
-- **No quedan hallazgos Critical, High, Medium ni Low abiertos** tras ambas correcciones.
-- **Cambio de diseno pedido por el operador: 2.19** - el mapa de relaciones IP se movio al Dashboard (primero, antes de "Alertas y detecciones IA"), gano labels que ya no se pisan entre nodos, iconos/etiquetas mas especificos (Android, iPhone, Windows, Nginx, Apache, ...) via la evidencia que `infer_device_profile()` ya calculaba, y un popup por nodo con metricas + accion de blacklist/whitelist. Whitelistear un nodo ahi es deliberadamente mas fuerte que un whitelist comun: borra todo el historial de esa IP (con confirmacion nombrando la cantidad real de paquetes) y deja de rastrear su trafico nuevo por completo, en vez de solo silenciar alertas como sigue haciendo mute/exclusion.
-- Se corrio la suite completa como evidencia, no solo relectura de codigo: backend `pytest` (**911 passed, 2 skipped**, incluyendo las pruebas nuevas de `/chat`, exclusion de la cola de IA y whitelist-y-purga) y frontend `npm run lint` (0 warnings) + `npm run test:unit` (**13/13**) + `npm run build` (compila sin errores), mas un pase visual con navegador real (click en un nodo, popup, boton de blacklist end-to-end).
-- La instancia local (`v0.59.0`) respondio correctamente a pruebas dinamicas sensibles: `401` sin credencial en ruta mutante, `200` con credencial en `/api/auth/session`, `POST` cross-origin bloqueado con `403 bad_origin` (con credencial valida), ticket WS de un solo uso con `expires_in: 15`, y `GET /api/ai/config` reflejando el estado real de retencion/Monitors/IA de esa instancia.
-- Recordatorio de lo cerrado en pasadas anteriores del mismo dia, sigue vigente sin regresion: la persistencia de paquetes solo guarda trafico que alerto o esta muteado/whitelisteado/excluido (2.14); la retencion de bytes crudos esta encendida por defecto pero el trafico solo-muteado nunca la usa (2.16); y el `.deb` se autorepara si el Python del equipo destino no coincide con el de build (2.15).
+La app Electron esta accesible y operativa. El Dashboard monta correctamente y muestra telemetria real: `1415` paquetes almacenados, `37` hosts unicos, `10` protocolos, `1394` respuestas; Sniffer y Honeypot aparecen detenidos en la instancia viva.
+
+La revision actual no puede considerarse "aprobada limpia": hay fallos abiertos en deep links, pruebas y orden del repo. El problema mas visible para usuario es que varias rutas nuevas del router de Vue devuelven `404` si se abren directo o se refrescan desde Electron/backend: `/ai/overview`, `/ai/neural-network`, `/dashboard/overview`, `/dashboard/node-map` y `/dashboard/live-map`.
+
+**Conclusion de la revision profunda:** la prioridad Blue Team es corregir la integridad de la investigacion y la visibilidad antes de ampliar funciones visuales. Se reproducen mezcla de IPs distintas, evidencia retenida que desaparece del investigador, alertas fuera del periodo seleccionado y exportaciones de alertas que ignoran el host buscado. Dos textos de configuracion contradicen decisiones de descarte del motor. Settings carga un catalogo de monitores de 42,9 MB por WebSocket. Estos problemas pesan mas que el desorden de carpetas o una renovacion estetica.
+
+La base permite evolucionar: hay evidencia por monitor, limites y metadatos en varias APIs, SQL parametrizado, proteccion CSV, control de origen/autenticacion, retencion diferenciada y fallback de WebSocket a HTTP. La propuesta es conservarlos y hacer consistente su contrato en toda la app.
+
+Tambien hay deuda clara de QA: `npm test` falla en el test unitario bajo Node 24 por una importacion ESM sin extension; la suite backend con `.venv` corre casi completa, pero termina con 2 fallos (`935 passed, 2 skipped, 2 failed`). Uno de esos fallos confirma que el test que debia proteger `SPA_ROUTES` esta obsoleto y no cubre todas las rutas actuales.
+
+El "reguero" existe pero es recuperable: hay artefactos generados (`dist/`, `QA/`, `build/`, `__pycache__`, `.pytest_cache`, `sniff4hound.egg-info`) presentes en el arbol local; varios estan ignorados por git, pero ensucian el workspace y confunden la revision. Ademas `FAQA.md` anterior hablaba de `v0.59.0`, mientras el codigo y Electron reportan `0.54.0`.
 
 ---
 
-## 1. Hallazgos abiertos actuales
+## 1. Hallazgos abiertos
 
-Ninguno. El punto que una pasada anterior habia dejado abierto (1.1 en su momento) se corrigio y se movio a la seccion 2 como 2.16. Esta pasada encontro dos hallazgos nuevos - `/chat` faltante en `SPA_ROUTES` al ejecutar por fin el pase visual automatizado pendiente, y trafico muteado ensuciando la cola de revision de IA (reportado por el operador con una captura de pantalla) - ambos se corrigieron en el momento y se documentaron directamente como cerrados en 2.17 y 2.18, sin quedar abiertos en ningun punto de este informe.
+### 1.1 Medium - Rutas SPA nuevas devuelven 404 en carga directa
+
+**Estado:** abierto.
+
+**Evidencia dinamica contra la app viva (`127.0.0.1:45671`):**
+
+```text
+200 /
+200 /ai
+404 /ai/overview
+404 /ai/neural-network
+404 /dashboard/overview
+404 /dashboard/node-map
+404 /dashboard/live-map
+200 /chat
+200 /investigate
+200 /sniffer
+200 /soc
+200 /protocols
+200 /honeypot
+200 /monitors
+200 /domains
+200 /paths
+200 /ips
+200 /settings
+```
+
+**Causa probable:** `frontend/src/router/index.js` ya tiene rutas anidadas/nuevas, pero `sniff4hound/app.py::SPA_ROUTES` no incluye `/ai/overview`, `/ai/neural-network`, `/dashboard/overview`, `/dashboard/node-map` ni `/dashboard/live-map`.
+
+**Impacto:** navegar desde la SPA puede funcionar, pero refrescar, abrir un marcador o pegar un link directo devuelve `404 Not Found`.
+
+**Recomendacion:** agregar esas rutas a `SPA_ROUTES` y mejorar la prueba `test_every_vue_router_path_is_in_spa_routes` para parsear el router de forma robusta o mantener una lista exportable compartida.
+
+### 1.2 Medium - Prueba de regresion de rutas SPA esta obsoleta
+
+**Estado:** abierto.
+
+**Evidencia:** `.venv/bin/python -m pytest tests/ -q` fallo en `SmokeTests.test_every_vue_router_path_is_in_spa_routes`. El parser regex del test no detecta bien rutas con objetos multilinea/meta y ni siquiera encuentra `/chat`, aunque la ruta existe en `frontend/src/router/index.js`.
+
+**Impacto:** el test que deberia prevenir 404 de deep links no esta protegiendo el caso actual. El hallazgo 1.1 paso a produccion/local precisamente por esa grieta.
+
+**Recomendacion:** reemplazar el parser regex por una fuente de verdad mas simple: por ejemplo, mover rutas SPA estaticas a un JSON/JS exportable, generar `SPA_ROUTES` desde ahi, o parsear el router con una herramienta AST en vez de regex.
+
+### 1.3 Medium - `npm test` falla bajo Node 24
+
+**Estado:** abierto.
+
+**Evidencia:** `cd frontend && npm test` ejecuta lint correctamente, pero `npm run test:unit` falla con:
+
+```text
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module
+frontend/src/utils/runtimeEnv imported from frontend/src/router/index.js
+```
+
+**Causa probable:** `router/index.js` importa `../utils/runtimeEnv` sin extension. Vite lo resuelve; Node ESM del runner unitario no.
+
+**Impacto:** CI/local QA queda rojo aunque `npm run build` si compila.
+
+**Recomendacion:** cambiar el import a `../utils/runtimeEnv.js` o ajustar el runner/loader para resolver igual que Vite. Preferible usar extension explicita en imports locales si los tests corren directo en Node.
+
+### 1.4 Low - Suite backend depende de usar el entorno correcto
+
+**Estado:** abierto/documental.
+
+**Evidencia:** `python -m pytest tests/ -q` con Python global fallo durante collection por `ModuleNotFoundError: No module named 'wsbuilder'`. Con `.venv/bin/python`, la suite si arranca y llega al final.
+
+**Resultado con `.venv`:**
+
+```text
+2 failed, 935 passed, 2 skipped, 316 subtests passed
+```
+
+**Recomendacion:** documentar en `README.md`/`FAQA.md` que QA local debe correr con `.venv/bin/python -m pytest ...` o despues de `python -m pip install -e .`. Si CI usa otro comando, alinearlo.
+
+### 1.5 Low - Fallo intermitente de limpieza de temporales en tests
+
+**Estado:** abierto/observado.
+
+**Evidencia:** `TestTrainingAndAiAlertModes.test_training_plus_ai_mode_leaves_the_catalog_in_charge` fallo en `tearDown`:
+
+```text
+OSError: [Errno 39] Directory not empty: '/tmp/...'
+```
+
+Este fallo ya aparecia mencionado como transitorio en el FAQA viejo, pero sigue ocurriendo.
+
+**Recomendacion:** revisar hilos/timers/handles que quedan vivos en ese test o hacer que el teardown espere/cierre explicitamente writers antes de `TemporaryDirectory.cleanup()`.
+
+### 1.6 Low - Versiones/documentacion desalineadas
+
+**Estado:** abierto.
+
+**Evidencia:** el FAQA anterior documentaba `v0.59.0`; el codigo actual declara `0.54.0` en `pyproject.toml`, `sniff4hound/__init__.py` y `desktop/package.json`. El frontend declara `1.0.0`, distinto del backend/desktop.
+
+**Recomendacion:** definir una sola fuente de version para backend, desktop y reportes de QA, o documentar explicitamente por que el frontend usa version independiente.
+
+### 1.7 Low - Documentacion historica con afirmaciones stale
+
+**Estado:** abierto.
+
+**Evidencia:** `ARCHITECTURE.md` todavia dice que el token se persiste en `localStorage`, mientras `README.md` y el codigo actual indican token en memoria y limpieza de storage legado. `CHANGELOG.md` tambien conserva entradas historicas sobre localStorage.
+
+**Recomendacion:** actualizar `ARCHITECTURE.md` para no contradecir el modelo de auth actual. En `CHANGELOG.md` puede quedarse como historia, pero conviene evitar que parezca comportamiento actual.
+
+### 1.8 Info/Seguridad - CDP Electron siempre abierto
+
+**Estado:** aceptado explicitamente por el operador en `AGENTS.md`; no es un defecto pendiente.
+
+**Evidencia:** `desktop/main.js` abre `remote-debugging-port` por defecto en `9223` y `remote-allow-origins=*`, salvo que `SNIFF4HOUND_DESKTOP_DEBUG_PORT=0/false/off/no`.
+
+**Impacto:** cualquier proceso local puede controlar la ventana Electron por CDP. Es util para QA/automatizacion, pero es una superficie fuerte para una herramienta que controla un backend privilegiado.
+
+**Recomendacion:** respetar el default solicitado y mantener documentada la opcion de desactivarlo por lanzamiento. Esta auditoria no propone revertir esa decision.
+
+### 1.9 Info - Desorden local de artefactos generados
+
+**Estado:** abierto/local.
+
+**Evidencia:** hay artefactos presentes en el arbol local:
+
+```text
+dist/sniff4hound_0.64.0_amd64.deb
+dist/sniff4hound_latest.deb
+dist/desktop/Sniff4Hound-0.54.0-amd64.deb
+dist/desktop/Sniff4Hound-0.54.0-x86_64.AppImage
+dist/desktop/builder-debug.yml
+dist/desktop/builder-effective-config.yaml
+QA/
+build/
+__pycache__/
+sniff4hound.egg-info/
+.pytest_cache/
+```
+
+Muchos estan ignorados por `.gitignore`, pero el workspace se vuelve dificil de leer y puede confundir revisiones manuales.
+
+**Recomendacion:** documentar un flujo de limpieza para artefactos de build/QA/caches. Ojo: `scripts/clean_artifacts.sh` hoy solo limpia artefactos runtime sensibles (`*.db`, logs, certificados honeypot/service) y deliberadamente no toca `dist/`, `QA/`, `build/`, `__pycache__`, `.pytest_cache` ni `sniff4hound.egg-info`.
+
+### 1.10 Low - Pase visual actual no cubre todas las rutas reales ni el puerto Electron
+
+**Estado:** abierto.
+
+**Evidencia:** `scripts/qa_visual_pass.js` declara manualmente solo rutas top-level (`/`, `/sniffer`, `/honeypot`, `/soc`, `/ai`, etc.) y omite `/ai/overview`, `/ai/neural-network`, `/dashboard/overview`, `/dashboard/node-map` y `/dashboard/live-map`. Tambien busca CDP en `127.0.0.1:9222`, mientras la app Electron documentada y viva esta en `9223`.
+
+**Impacto:** el pase visual puede salir verde aunque deep links reales fallen en carga directa, que es exactamente lo que ocurre con las rutas anidadas.
+
+**Recomendacion:** generar la lista desde `frontend/src/router/index.js` o una fuente compartida, incluir rutas anidadas y hacer configurable el puerto CDP (`QA_CDP_PORT`, default `9223` para Electron o `9222` para Chromium headless segun modo).
+
+### 1.11 Low - `openExternal` de Electron no valida esquema
+
+**Estado:** abierto/hardening.
+
+**Evidencia:** `desktop/preload.js` expone `openExternal(url)` al renderer y `desktop/main.js` llama `shell.openExternal(url)` sin allowlist de protocolo. Tambien `setWindowOpenHandler` envia cualquier URL externa a `shell.openExternal`.
+
+**Impacto:** con contenido renderer comprometido o un link malicioso servido por el backend, la app podria intentar abrir esquemas no deseados. El riesgo practico baja porque la ventana renderiza la SPA propia y `nodeIntegration` esta desactivado, pero el bridge deberia ser defensivo.
+
+**Recomendacion:** permitir solo `http:` y `https:`, y opcionalmente `mailto:` si se necesita. Rechazar `file:`, `javascript:`, `data:` y esquemas arbitrarios antes de llamar `shell.openExternal`.
 
 ---
 
-## 2. Hallazgos historicos cerrados
+### 1.12 Medium - Resumen limita incorrectamente el contador de protocolos a ocho
 
-### 2.1 Critical - ReDoS remoto por regex de reglas/monitores/whitelist
+**Estado:** reproducido en la interfaz y confirmado en codigo.
 
-**Estado:** cerrado.
+**Pasos:** abrir Dashboard principal con periodo ALL y observar 10 protocolos; abrir Dashboard > Resumen con ALL: muestra 8, aunque conserva los mismos 1415 paquetes y 37 hosts.
 
-**Evidencia:** `regex_safety.py` acota el texto evaluado (`limit_regex_subject`, lineas 17-21), rechaza patrones vacios, demasiado largos o con repeticion ambigua/nested backtracking (`validate_regex_pattern`, lineas 45-58), compila con la libreria `regex` si esta disponible y aplica timeout por busqueda (`regex_search`, lineas 77-88). El sniffer usa esos helpers en las evaluaciones regex de whitelist/monitores (`sniff4hound/sniffer.py:926-957`).
+**Causa:** `frontend/src/views/DashboardView.vue:299` calcula el indicador con `this.protocolSeries.length`; esa serie usa `.slice(0, 8)` en la linea 316. El limite de un grafico se convierte en un total incorrecto.
 
-### 2.2 High - Honeypot podia intentar bind en puertos sensibles
+**Recomendacion:** calcular el total desde la lista completa o el resumen del backend. Reservar el recorte para la visualizacion del top de protocolos.
 
-**Estado:** cerrado.
+### 1.13 Medium - Mapa etiqueta paquetes como servicios activos
 
-**Evidencia:** `honeypot_ports.py` define denylist para puertos privilegiados y servicios sensibles (`CUSTOM_LISTENER_DENY_PORTS`, lineas 261-288), y `listener_port_allowed()` distingue listeners `builtin` de `custom` (`honeypot_ports.py:291-301`). El proceso honeypot valida esa politica antes de levantar cada listener (`honeypot.py:1315-1325`), por lo que el proceso privilegiado ya no depende solo de la validacion web.
+**Estado:** reproducido en Mercator y Globe; confirmado en codigo.
 
-### 2.3 High - Import de modelo IA validaba forma pero no valores
+**Pasos:** Dashboard > Mapa en Vivo muestra `Active services: 1415`, igual al total de paquetes retenidos.
 
-**Estado:** cerrado.
+**Causa:** `frontend/src/components/MapPanel.vue:393` presenta `summary.total_open_ports` como servicios. `sniff4hound/store.py:4818` llena ese campo contando filas de `packets` con `state = 'open'`, sin contar servicios distintos ni comprobar actividad actual.
 
-**Evidencia:** `_validate_imported_model()` valida que cada peso/sesgo sea numerico, finito y dentro de magnitud maxima (`ai_learning.py:291-297`), normaliza pesos/sesgos a `float` (`ai_learning.py:311-319`) y mantiene validaciones de dimensiones/capas (`ai_learning.py:299-331`). Ademas, `_forward_full()` y `_backprop_step()` tienen checks internos de dimensiones (`ai_learning.py:101-164`).
+**Impacto:** el operador puede interpretar miles de paquetes como miles de servicios expuestos.
 
-### 2.4 High - Responders UDP sin rate limiting
+**Recomendacion:** renombrar el indicador para describir paquetes retenidos o calcular servicios distintos con una definicion explicita de host, transporte, puerto y ventana temporal.
 
-**Estado:** cerrado.
+### 1.14 Low - Orden anunciado de alertas IA no coincide con las filas
 
-**Evidencia:** el honeypot mantiene ventanas por `(port, source)` con maximo de clientes y limite por ventana (`honeypot.py:1944-1966`), y `_udp_response_for()` bloquea respuestas cuando `_udp_response_allowed()` devuelve falso (`honeypot.py:1968-1972`).
+**Estado:** reproducido.
 
-### 2.5 Medium - Codigo de seguridad en query string del WebSocket
+**Pasos:** Dashboard > Resumen anuncia "mas recientes primero", pero las primeras filas observadas son de 12:34:49, 12:34:50, 12:34:47 y 12:34:48, con scores descendentes 68, 66, 65.9 y 65.8.
 
-**Estado:** cerrado.
+**Causa:** `frontend/src/views/DashboardView.vue:36` anuncia orden temporal; la asignacion de filas en la linea 657 conserva el orden del API. `sniff4hound/packet_ai.py:121` ordena por score descendente.
 
-**Evidencia:** `_issue_ws_ticket()` emite tickets aleatorios, atados al cliente y con TTL corto (`app.py:1037-1051`). `_consume_ws_ticket()` los consume una sola vez con `pop()`, valida expiracion y cliente (`app.py:1054-1068`). El access log tambien redacta `ws_ticket` y `ticket` en queries (`access_log.py:49-55`, `access_log.py:65-91`).
+**Recomendacion:** mostrar "mayor puntuacion primero" o aplicar orden cronologico real; ofrecer un selector claro si ambos modos son utiles.
 
-### 2.6 Medium - Falta de verificacion CSRF/origen en rutas mutantes
+### 1.15 Low - Listas blancas muestran entradas duplicadas
 
-**Estado:** cerrado.
+**Estado:** duplicados observados; no se comprobo su mecanismo de creacion.
 
-**Evidencia:** `_guard_request_origin()` revisa `Origin`/`Referer` en metodos que cambian estado y rechaza origen cruzado con `403 bad_origin` (`app.py:888-906`). `_apply_api_auth_guards()` aplica autenticacion y luego origin guard a rutas API/docs protegidas (`app.py:3153-3207`). La prueba dinamica contra `/api/runtime/` con `Origin` externo devolvio `403`.
+**Pasos:** Settings > Lists > IP Whitelist muestra ocho entradas, incluyendo dos pares con la misma IP y tipo `exact`. Un par tiene etiquetas distintas y otro presenta la misma etiqueta vacia.
 
-### 2.7 Medium - Codigo de seguridad persistido en `localStorage`
+**Impacto:** introduce ambiguedad al editar o desactivar una entrada que sigue existiendo en otra fila.
 
-**Estado:** cerrado para almacenamiento persistente; el riesgo Low de `sessionStorage` que esta entrada dejaba abierto en su momento se cerro despues - ver 2.12.
+**Recomendacion:** comprobar unicidad por lista/tipo/valor normalizado y definir como combinar etiquetas. Revisar duplicados existentes antes de cualquier migracion; no se borraron datos en esta auditoria.
 
-**Evidencia:** `persistAuthToken()` escribe en `sessionStorage` y elimina claves de `localStorage` (`appStore.js:201-218`). La migracion desde almacenamiento legado ya no vuelve a persistir el token viejo (`appStore.js:149-177`). Existe prueba frontend especifica en `frontend/tests/soc-qa.test.js` para evitar regresion.
+### 1.16 Low - Idioma y estados iniciales poco consistentes
 
-### 2.8 Medium - Honeypot TCP sin limite de concurrencia por listener
+**Estado:** observado en el recorrido.
 
-**Estado:** cerrado.
+Dashboard principal y Chat usan español; Settings, SOC y tablas usan mayormente ingles. Settings mezcla pestañas inglesas con IA y Arquitectura en español. Protocols abre por defecto `Unknown` con cero filas aunque DNS tiene 898 y HTTP 217.
 
-**Evidencia:** `_listen()` crea un `threading.BoundedSemaphore(HONEYPOT_TCP_MAX_CONNECTIONS_PER_LISTENER)` por listener TCP (`honeypot.py:1216-1221`), rechaza conexiones cuando no hay slots (`honeypot.py:1256-1261`) y libera el slot en `_handle_tcp_with_slot()` (`honeypot.py:1293-1300`).
+Al entrar por primera vez en Monitors aparecieron contadores cero y "No monitor has matched" antes de cargar 30122 monitores y sus coincidencias. Al esperar la respuesta, la vista se completo; no se confirma un fallo de carga permanente.
 
-### 2.9 Low - Access log sin tope de longitud / redaccion incompleta de queries sensibles
+**Recomendacion:** unificar idioma, elegir un protocolo con trafico al abrir el atlas y distinguir carga inicial de ausencia confirmada de datos mediante skeleton/estado de carga.
 
-**Estado:** cerrado.
+### Hallazgos de la ampliacion profunda (1.17-1.29)
 
-**Evidencia:** `REDACTED_QUERY_KEYS` incluye `code`, `security_code`, `access_token`, `token`, `auth`, `ws_ticket` y `ticket` (`access_log.py:49-55`). `_sanitize_field()` escapa espacios/control chars y trunca cada campo a `MAX_FIELD_CHARS = 512` (`access_log.py:125-148`).
+Se conservan los identificadores para que cada correccion y prueba pueda referenciar un hallazgo. **UI** significa reproducido en Electron; **aislado** significa ejecutado con datos temporales; **estatico** significa confirmado en codigo, sin forzar el fallo sobre la sesion del operador.
 
-### 2.10 Low - Arranque IPC con carrera al limpiar socket obsoleto
+#### 1.17 High / P0 - El periodo del Dashboard no filtra las alertas IA
 
-**Estado:** mitigado.
+**Evidencia UI:** a las 13:24 locales, seleccionar 15M en Resumen deja paquetes/tags/hosts en cero, pero mantiene 200 filas IA de las 12:34. ALL vuelve a 1415 paquetes sin cambiar esas filas. Se restauro ALL.
 
-**Evidencia:** `_capture_start_lock()` serializa el bloque `unlink/spawn/connect` con lock file cuando el sistema soporta `fcntl` (`manage.py:428-455`), y `main()` lo usa alrededor de limpieza de socket, generacion de token, escritura de token 0600 y spawn del proceso de captura (`manage.py:656-700`). Si no puede abrir el lock file, el codigo hace fallback sin lock; es aceptable para ejecuciones locales normales, pero no equivale a soporte multi-instancia fuerte.
+**Causa:** `DashboardView.vue::load()` solicita `/api/ai/packets/?threshold=50` sin periodo; `app.py::ai_packets/_ai_snapshot` y `store.py::list_ai_packets` tampoco admiten `since`.
 
-### 2.11 Medium - Retencion de bytes/hex crudos pese a redaccion de texto
+**Impacto:** evidencia de otra ventana se presenta junto a una evaluacion temporal distinta. Puede provocar priorizacion incorrecta y conclusiones imposibles de reproducir.
 
-**Estado:** cerrado.
+**Correccion:** propagar el contexto temporal por HTTP y feed IA, filtrar en SQL antes de seleccionar/muestrear y devolver el intervalo efectivo. Si la IA requiere una cohorte de referencia externa a la ventana, separar explicitamente filas investigadas de cohorte de comparacion. Cohorte insuficiente debe producir ese estado, no rellenarse silenciosamente con historia.
 
-**Evidencia:** `STORE_RAW_PACKET_BYTES` (`settings.py:324-330`, `SNIFF4HOUND_STORE_RAW_PACKET_BYTES` / alias legado `SNIFF4HOUND_STORE_RAW_PACKET`, `0` por defecto) controla si `register_packet()` guarda `payload_hex`/`raw_packet` (`store.py:4661-4664`). Con la opcion desactivada (default), `_sanitize_packet_forensic_fields()` limpia `payload_hex`, `raw_packet`, `frame_hex` y `frame_length` en toda lectura -- listados (`store.py:1833`), `get_packet`/`get_packet_with_children` (`store.py:4858`, `store.py:4874-4877`) y las columnas que usa la vista/API de IA (`store.py:1899`, `store.py:1915`, `store.py:1919`) -- y `_migrate_sensitive_capture_storage()` limpia filas historicas ya guardadas al abrir la base (`store.py:917-934`). `payload_text`/`response_plain` siguen redactados con `redact_sensitive_text()` independientemente de esta opcion (`store.py:4828`). Documentado en `README.md`, `docs/reference/persistence.md` y `docs/reference/runtime.md`. Cubierto por `tests/test_smoke.py::test_raw_packet_is_not_retained_by_default_and_remains_json_safe`, `tests/test_comprehensive.py::TestSniffStore::test_packet_raw_binary_is_disabled_by_default` y su contraparte con la opcion activada.
+**Aceptacion:** con paquetes recientes y antiguos, 15M excluye los antiguos en todos los paneles; ALL los incluye; HTTP y WS producen el mismo conjunto. Probar cambio rapido de ventana con respuestas en orden inverso.
 
-### 2.12 Low - `sessionStorage` seguia siendo legible por JavaScript del mismo origen
+#### 1.18 High / P0 - Investigar una IP mezcla otras IPs y menciones textuales
 
-**Estado:** cerrado.
+**Evidencia aislada:** una BD con solo `10.0.0.10` devuelve un paquete y un flujo al investigar `10.0.0.1`. Una IP presente unicamente en `summary` tambien aparece como un paquete del host.
 
-**Evidencia:** el token de sesion del frontend ya no se persiste en ningun almacenamiento del navegador. `persistAuthToken()` guarda el token solo en la variable de modulo `inMemoryAuthToken` y llama a `clearStoredAuthTokens()`, que borra las claves actuales y legadas tanto de `sessionStorage` como de `localStorage` (`appStore.js:210-221`). `readLocalAuthToken()` solo lee claves legadas una vez (para no perder la sesion de un build anterior) y las borra de inmediato sin re-persistirlas (`appStore.js:149-180`). Recargar la pagina exige reautenticarse salvo que la URL traiga `?code=`. Documentado en `README.md` y `docs/reference/auth.md`. Cubierto por `frontend/tests/soc-qa.test.js` ("legacy localStorage security code is not re-persisted to sessionStorage" y "startup URL security code stays in memory only").
+**Causa:** `store.py::ip_intel()` usa `list_packets(search=ip)` y `list_flows(search=ip)`. La busqueda es parcial (`LIKE`), e incluye campos de texto. Los filtros de payloads/tags tambien buscan subcadenas en `flow_key`.
 
-### 2.13 Low - Timeout de regex dependia de que la dependencia `regex` estuviera instalada
+**Impacto:** atribucion de actividad a un activo que no participo en la comunicacion.
 
-**Estado:** cerrado.
+**Correccion:** filtro de entidad exacta `src_ip = ? OR dst_ip = ?`, normalizacion IPv4/IPv6 y joins por `packet_id`/flujo estructurado. Mantener busqueda libre como otro modo, sin usarla para resolver identidad. No corregir mediante regex sobre `flow_key`.
 
-**Evidencia:** `sniff4hound/regex_safety.py:6-11` ahora levanta `RuntimeError` en el import del modulo si el paquete `regex` no esta disponible, en vez de degradar en silencio a `re` sin timeout. Toda instalacion que arranque el proceso principal falla temprano y de forma visible si le falta la dependencia declarada en `pyproject.toml`, eliminando el escenario donde una instalacion parcial perdia la defensa contra ReDoS sin que nadie lo notara.
+**Aceptacion:** separar `.1`, `.10`, `.100`; incluir sentidos origen/destino; rechazar IP invalida; probar IPv6 equivalente, IP mencionada en payload y filas sin IP. Todas las tablas y exports del investigador deben mantener el mismo host objetivo.
 
-### 2.14 Medium (reevaluado) - Persistencia "guardar todo" durante Monitors/entrenamiento
+#### 1.19 High / P0 - Evidencia de un host se pierde del resultado por limitar antes de filtrar
 
-**Estado:** cerrado, con rediseno de retencion.
+**Evidencia aislada:** un host tiene un payload y el investigador lo muestra. Tras insertar 255 payloads ajenos, el investigador muestra cero payloads para el host, aunque SQL confirma que el original sigue retenido.
 
-**Evidencia:** antes de esta iteracion, `Sniffer._store_packet()` persistia *todo* paquete evaluado cuando el filtro de Monitors estaba apagado o el modo Monitors (antes "Training") estaba activo, sin exigir que nada hubiera alertado - lo que llenaba la tabla `packets` de trafico limpio sin valor (visible en el review de IA como filas "Sin bytes disponibles"). Ahora `should_persist = detection_muted or bool(monitor_hits)` (`sniffer.py:1325`): todo paquete no muteado se evalua igual de completo (catalogo + anomalias + IA en "solo IA"), pero solo persiste si esa evaluacion levanto algo; lo demas se descarta tras obtener su veredicto y nunca llega a `INSERT`. Esto aplica igual con Monitors activo o apagado - ya no existe un modo que guarde trafico "benigno" sin alerta (`docs/reference/runtime.md`, seccion "Modos de activacion"). Como consecuencia, `STORE_RAW_PACKET_BYTES` paso a `1` por defecto (`settings.py:327-330`): solo el trafico que efectivamente alerto retiene bytes crudos (el muteado/whitelisteado/excluido no, ver 2.16), no todo el trafico capturado como hubiera ocurrido con el default anterior bajo el viejo esquema "guardar todo". El interruptor `raw_retention_enabled` sigue disponible para apagarlo (`store.py:3180-3202`, `POST /api/ai/config`). Cubierto por 905 tests backend pasando (incluye `tests/test_monitors.py::TestSnifferGatedPersistence` y la clase de Training/IA), y verificado en vivo contra `v0.58.0` y `v0.59.0` (`GET /api/ai/config` con `training_enabled`, `ai_alert_mode_enabled` y `raw_retention_enabled` en `true` simultaneamente en ambas instancias, reflejando el modo real).
+**Causa:** `store.py::ip_intel()` primero obtiene los ultimos 250 payloads y 400 tags globales; despues filtra por IP en Python. Los resumenes usan longitudes de muestras como si fueran totales.
 
-### 2.15 High (empaquetado) - `.deb` inoperable si el Python del sistema no coincide con el de build
+**Correccion:** aplicar entidad y periodo en SQL antes de `LIMIT`; contar sobre el mismo predicado; paginar cada tipo de evidencia. Exponer `returned`, `total_available`, `truncated` y cursor. Mostrar "250 de N" en lugar de un total ambiguo.
 
-**Estado:** cerrado.
+**Aceptacion:** la evidencia del host permanece accesible aunque existan miles de eventos recientes ajenos. Verificar payloads, tags, flujos, ambos sentidos y paginacion sin duplicar/omitir filas.
 
-**Evidencia:** `scripts/build_deb.sh` vendoriza dependencias compiladas (p. ej. `regex`, con extension nativa `_regex.cpython-<abi>-*.so`) usando el Python que ejecuta el script de build; el wrapper instalado (`scripts/deb_wrapper.sh`) siempre corre con `/usr/bin/python3` del equipo destino. Si ambos Python difieren en ABI (por ejemplo build en 3.12, instalacion en 3.14), la extension nativa no carga y Python lo reporta como un import circular (`cannot import name '_regex' from partially initialized module 'regex'`) en vez de un mensaje claro de incompatibilidad - `sniff4hound` no arrancaba en absoluto, incluida la primera linea del banner. `scripts/deb_postinst.sh` ahora detecta el mismatch en `configure` (`import regex._regex` contra el Python real del equipo) y reconstruye `regex` para ese interprete dentro de un venv temporal descartable, copiando solo el paquete construido al `vendor/` del sensor - sin invocar `pip` del sistema como root ni tocar site-packages del sistema. `scripts/deb_postrm.sh` limpia `/usr/lib/sniff4hound` completo (incluidos los `__pycache__` que dpkg no rastreaba) en `remove`/`purge`, evitando que reinstalaciones/rebuilds dejen residuos huerfanos entre versiones.
+#### 1.20 High / P0 - Los controles de conservacion describen un comportamiento diferente al motor
 
-**Nota informativa:** el self-heal de `deb_postinst.sh` descarga `regex` desde PyPI via `pip` dentro del venv temporal durante la instalacion del paquete (como root, solo cuando hay mismatch de ABI) - riesgo de cadena de suministro estandar de cualquier instalacion por `pip`, mitigado por la verificacion de integridad propia de `pip`/PyPI (TLS + hashes de paquete) y por acotarse a un venv descartable que nunca se mezcla con site-packages del sistema. No requiere accion adicional, se documenta por transparencia.
+**Evidencia UI/codigo/tests:** `SettingsView.vue` promete que desactivar "Store only detected traffic" conserva todo. Sin embargo, `Sniffer._store_packet()` sigue persistiendo solo `detection_muted or is_alert or training_sample`; `test_filter_disabled_does_not_persist_clean_traffic` confirma el descarte. `BlacklistPanel.vue` dice que whitelist mantiene paquetes visibles, pero `_store_packet()` retorna antes de persistir cuando `_whitelisted()` coincide.
 
-### 2.16 Low - Trafico muteado/whitelisteado/excluido retenia bytes crudos por el nuevo default global
+**Impacto:** el operador puede creer que conserva evidencia completa o que solo silencia alertas cuando realmente excluye paquetes del historial.
 
-**Estado:** cerrado.
+**Correccion inmediata:** alinear rotulos, ayuda y confirmacion con el comportamiento real. Correccion funcional recomendada: separar `detection_enabled`, `persistence_policy` y `notification_policy`; no inferir las tres de un booleano. Definir "silenciar deteccion, conservar metadatos", "ignorar y no almacenar" y "retener evidencia" como decisiones distintas, con contadores de descarte y motivo.
 
-**Evidencia:** `SniffStore.register_packet()` ahora acepta `allow_raw_retention` (default `True`, no rompe otros llamadores); cuando es `False` fuerza `payload_hex=""`/`raw_packet=None` sin importar el flag global `get_raw_retention_enabled()` (`store.py:4707-4716`). `Sniffer._store_packet()` calcula `is_alert = bool(monitor_hits)` y llama `register_packet(packet, allow_raw_retention=is_alert)` (`sniffer.py:1325-1334`): el trafico persistido solo por estar muteado/whitelisteado/excluido (`detection_muted`, sin `is_alert`) nunca retiene bytes crudos, independientemente de que `raw_retention_enabled` este encendido globalmente; el trafico que si alerto sigue reteniendolos cuando el flag esta activo, que es la motivacion original del default (ver 2.14). Cubierto por `tests/test_monitors.py::TestSnifferGatedPersistence::test_muted_traffic_never_retains_raw_bytes_even_with_global_retention_on`, que fija `payload_hex`/`raw_packet` no vacios en el paquete de entrada, lo persiste via una regla de exclusion (sin alerta), y verifica que la fila guardada tiene ambos campos vacios pese a que `get_raw_retention_enabled()` es `True` por defecto.
+**Migracion:** preservar el comportamiento existente de cada instalacion; no activar conservacion completa por sorpresa. Presentar explicitamente el modo migrado. Revisar tambien la promesa de muestreo 1 paquete/s de IA frente a `training_capture_enabled`; su tasa real no se midio en esta auditoria.
 
-### 2.17 Low - Ruta `/chat` del vue-router faltaba en `SPA_ROUTES` (404 en refresh/deep-link)
+**Aceptacion:** matriz de pruebas por catalogo activado/desactivado, whitelist, exclusiones, entrenamiento, raw retention, anomalías y alerta IA. Cada fila debe fijar deteccion, persistencia, bytes, aprendizaje y notificacion esperados. Verificar el texto UI contra esa matriz.
 
-**Estado:** cerrado.
+#### 1.21 High / P0 - Exportar alertas desde un investigador ignora el objetivo
 
-**Detalle del hallazgo:** encontrado al ejecutar por primera vez un pase visual automatizado real (ver 3.4) contra las 14 vistas actuales del router (`frontend/src/router/index.js`), en vez de solo relectura de codigo. `/chat` es una ruta real del router (`ChatView.vue`), pero no estaba en la tupla `SPA_ROUTES` de `app.py` que decide que rutas reciben el `index.html` de la SPA en vez de un 404 (`app.py:1613-1780`, comentario en `app.py:130-135`: "Every path vue-router can land on has to be served index.html too... /settings, /domains, /paths and /ips were missing and did exactly that" - `/chat` quedo fuera de esa correccion anterior). Impacto: sin JavaScript corriendo aun (primera carga de esa URL), un refresh (F5), un marcador o un link de `/chat` pegado en un ticket devolvia `404 Not Found` en texto plano en vez de la SPA; navegar ahi *dentro* de la app (via el router del lado del cliente) funcionaba normal, por lo que el defecto solo era visible en carga directa/dura de esa URL. Sin impacto de seguridad (no expone nada, no evita ningun guard) - se clasifica Low por ser un defecto funcional real de navegacion.
+**Evidencia estatica/aislada:** `InvestigateView.vue::exportParams` envia `search: target`. `export.py::build_export` no pasa `search` a `_alert_rows`. Una solicitud de alerts con `search=203.0.113.250` devuelve una alerta de `192.0.2.1` a `192.0.2.2` en el fixture.
 
-**Evidencia de correccion:** se agrego `"/chat"` a `SPA_ROUTES` (`app.py:136-167`). Verificado con `app.dispatch()` directo: `GET /chat` devuelve `200` con el HTML de la SPA (antes devolvia `404`). Se agrego ademas una prueba de regresion que impide que esto vuelva a pasar con una vista futura: `tests/test_smoke.py::SmokeTests::test_every_vue_router_path_is_in_spa_routes` parsea `frontend/src/router/index.js`, extrae cada ruta estatica sin `redirect`, y falla si alguna no esta en `app.SPA_ROUTES`.
+**Impacto:** un fichero que el analista espera asociado al host puede contener alertas de toda la muestra. Riesgo de atribucion y de compartir evidencia ajena al caso.
 
-### 2.18 Low - Trafico muteado/whitelisteado/excluido aparecia en la cola de revision de IA sin nada que analizar
+**Correccion:** contrato explicito de exportacion (`entity_type`, `entity_value`, tiempo, severidad, protocolo), soportado por cada dataset. Aplicar filtros antes de agrupar/limitar. Rechazar filtros no soportados en lugar de ignorarlos. Vista previa con alcance y cantidad antes de descargar.
 
-**Estado:** cerrado.
+**Aceptacion:** datos de dos hosts; exportar el primero solo incluye su evidencia. Verificar CSV/JSON, variantes dominio e IP, filtros combinados y paridad con la tabla investigada.
 
-**Detalle del hallazgo:** reportado por el operador con una captura del review de IA (`Revisar / Ensenar`) mostrando registros UDP con "Sin bytes disponibles" y "Prioridad -/100" (`LOF -`, `Neuronal -`). `SniffStore.list_ai_packets()` devolvia las ultimas N filas de `packets` sin distinguir por que se habian persistido; desde el rediseno de persistencia (2.14) y el cierre de 2.16, el trafico muteado/whitelisteado/excluido persiste (para no perder visibilidad de captura) pero nunca se evalua y nunca retiene bytes crudos - no tiene absolutamente nada que el clasificador pueda puntuar. `packet_ai.analyze_packets()` procesa cada fila que recibe sin filtrar por `ai_detection_status`, asi que ese trafico llegaba igual a la cola de revision como ruido puro, sin valor para el operador que intenta ensenarle a la IA.
+#### 1.22 Medium / P1 - Agregaciones de exportacion pueden parecer completas siendo parciales
 
-**Evidencia de correccion:** `list_ai_packets()` ahora filtra las filas con `details_json.ai_detection_status == "muted"` antes de aplicar el limite de 200 (`store.py:1919-1949`), ampliando la ventana de sobre-fetch (`400`/`1000` filas segun haya filtros de exclusion activos) para que ese descarte no reduzca artificialmente el conjunto realmente revisable. La consulta por `packet_id` explicito (detalle de un paquete puntual) no se filtra, solo el listado de exploracion/revision. Cubierto por `tests/test_monitors.py::TestSnifferGatedPersistence::test_muted_traffic_is_excluded_from_the_ai_review_queue`, que persiste un paquete muteado y uno con alerta real en la misma corrida y verifica que solo el segundo aparece en `list_ai_packets()`.
+**Evidencia estatica/aislada:** `_alert_rows` pagina alertas crudas antes de agrupar. Dos eventos se convierten en una fila con `count=1, limit=2`; ese count no permite saber si se consumio toda la pagina de eventos. `build_export` no devuelve `total_available`, `next_cursor` ni `truncated`. `_alert_index` enriquece endpoints solo con 2000 alertas, y ante cualquier excepcion devuelve un indice vacio.
 
-### 2.19 Info (cambio de diseno) - Whitelistear una IP desde el popup del grafo ahora borra su historial y deja de rastrearla
+**Impacto:** counts y first/last seen de una regla son parciales por pagina; un fallo de enriquecimiento puede parecer ausencia de alertas; CSV omite incluso los metadatos del JSON.
 
-**Estado:** implementado, verificado.
+**Correccion:** decidir entre export de eventos y export de agregados. Para agregados, agrupar el conjunto filtrado y despues paginar por clave estable; para eventos, mantener ids y contar eventos consumidos. Añadir estado de completitud/enriquecimiento y manifest para CSV. Una excepcion de lectura debe marcar resultado parcial o fallar la exportacion.
 
-**Detalle:** a pedido explicito del operador, el mapa de relaciones IP (ahora tambien en el Dashboard, primero antes de "Alertas y detecciones IA") gano un popup por nodo con metricas (hits, confianza, ambito, primera/ultima vez, evidencia de `infer_device_profile()`) y dos acciones: **Bloquear** (usa el `/api/blacklist/` ya existente sin cambios de comportamiento) y **Whitelist (borra historial)**, deliberadamente mas fuerte que un whitelist normal:
+**Aceptacion:** grupo dividido entre paginas, >2000 alertas y fallo del enriquecimiento. Totales/fechas consistentes; cursor avanza correctamente incluso si muchas filas crudas colapsan en un agregado.
 
-- `Sniffer._store_packet()` ahora resuelve `_whitelisted(packet)` **antes** de evaluar nada; si coincide, el paquete se descarta igual que trafico limpio - nunca llega a `INSERT` (`sniffer.py:1259-1273`). Antes, whitelistear solo silenciaba alertas; el paquete se seguia guardando sin tags (mismo contrato que exclusion/mute, que sigue intacto para esas dos categorias - ver `ExcludedTrafficPipelineTests`).
-- `SniffStore.purge_ip_data(ip)` (nuevo) borra `packets`/`tags`/`payloads`/`flows`/`domains`/`paths` donde la IP es origen o destino (`store.py`, junto a `clear_detections`). A diferencia de `clear_detections`, si toca `flows`/`domains`/`paths`: es una accion dirigida a "olvidar este host", no una limpieza de ruido detras de una re-configuracion de monitores.
-- `POST /api/whitelist/ip` (nuevo) exige `{"confirm": true}` para borrar; sin el, solo devuelve cuantos paquetes se borrarian (`store.count_ip_packets`), para que el frontend pida confirmacion real con una cifra real antes de actuar - la accion es irreversible.
-- El popup pide esa confirmacion con `window.confirm()` nombrando la cantidad exacta de paquetes antes de la segunda llamada con `confirm: true`.
+#### 1.23 Medium / P1 - Settings transfiere todo el catalogo aunque se abra Capture
 
-**Verificado:** `tests/test_blacklist.py` (`TestWhitelistIpEndpoint`, `test_whitelisted_ip_traffic_is_not_persisted_at_all`, `test_whitelist_port_and_protocol_suppress_persistence`, `test_purge_ip_data_removes_only_that_ips_rows`) y un pase visual real con navegador headless: click en un nodo abre el popup con las metricas correctas, "Bloquear" crea la entrada de blacklist end-to-end (confirmado via `GET /api/blacklist/?category=ip`), y con 60+ vecinos la lista se acota a 12 (+"N mas") para que los botones de accion nunca queden fuera de vista - un defecto que el propio pase visual encontro y se corrigio en el momento (`ip-graph-popup__body` con `max-height`/scroll, `visibleNeighbors`/`hiddenNeighborCount`).
+**Evidencia UI/CDP:** dos entradas observadas en Settings; en la segunda se recibieron 45.005.382 bytes de payload WebSocket en unos seis segundos. Un `get_result` de `/api/monitors/` tuvo **42.926.707 bytes y 30122 filas**. `/api/honeypot/listeners/` tuvo **2.060.571 bytes y 10134 filas**. Son bytes de mensajes decodificados observados por CDP, no trafico comprimido de red ni benchmark p95.
 
-**Por que Info y no un hallazgo de severidad:** es un cambio de diseno pedido explicitamente, no un defecto encontrado por la auditoria; se documenta aqui por su impacto en la politica de retencion de datos (relevante para el resto de este informe), no porque haya algo que cerrar.
+**Causa:** `SettingsView.vue::load()` llama `listMonitors()` al montar; la API devuelve definiciones completas. Paginacion visual de tablas no evita transferir/deserializar el catalogo.
+
+**Correccion:** endpoints de resumen y listado paginado (50-100 filas), filtro/sort en servidor, detalle de regla bajo demanda, carga por pestaña y cache por revision del catalogo. Mantener un endpoint separado para exportacion completa. Compartir caché con Monitors; no reconstruir definiciones de reglas para cada contador.
+
+**Aceptacion propuesta:** abrir Capture no solicita el catalogo completo. Con 30k reglas, primer listado <=1 MB de JSON y p95 <=1 s en hardware de referencia acordado. Medir CPU, heap, tiempo de parse/render y bytes; son metas, no resultados ya alcanzados.
+
+#### 1.24 Medium / P1 - El worker de entrenamiento no tiene cierre propio
+
+**Evidencia estatica:** `sniffer.py::_run_ai_training_worker` usa `while True` y `queue.get()` sin sentinel; `_enqueue_ai_training` crea un daemon sin conservar handle. `Sniffer.stop()` espera hilos de captura, no este worker. `SniffStore.close()` cierra SQLite sin coordinarlo. La cola llena descarta ejemplos silenciosamente.
+
+**Impacto:** posibles escrituras contra store cerrado, hilos retenidos en pruebas/reinicios y falta de visibilidad sobre muestras perdidas. Es un candidato para investigar el teardown 1.5; no esta demostrada la causalidad de aquel fallo.
+
+**Correccion:** handle propio, evento/sentinel de cierre, politica explicita de drenar o cancelar pendientes, `task_done`, cierre idempotente y `join` acotado antes del store. Separar pausa de captura de cierre definitivo. Contadores queued/processed/dropped/failed. Aplicar coordinacion equivalente al torneo, sin esperar bajo locks que necesite el worker.
+
+**Aceptacion:** iniciar/procesar/detener/cerrar repetidamente sin nuevos hilos vivos ni escrituras tardias; cola llena visible; cierre con trabajo en curso; ausencia de deadlock; repetir la prueba de teardown de forma aislada.
+
+#### 1.25 Medium / P1 - Las metricas IA no permiten juzgar deteccion operacional
+
+**Evidencia:** `ai_learning.py::model_effectiveness` calcula acierto sobre ejemplos de entrenamiento. En UI se observo "Efectividad 83% (500/601)" con 500 benignos y 101 maliciosos: coincide con el acierto de una prediccion siempre benigna (83,2%). Esto no prueba que el modelo actual prediga siempre benigno; muestra por que accuracy sola es insuficiente.
+
+`run_tournament_round` usa holdout estratificado si hay >=6 ejemplos por clase; con menos reutiliza entrenamiento. La UI del torneo afirma de forma general que el acierto es sobre entrenamiento, lo que no describe ambos modos. El holdout aleatorio por ejemplo tampoco garantiza separacion por flujo/sesion. `_store_packet()` añade etiquetas automaticas `auto:training` derivadas de severidad de reglas; no son confirmaciones humanas de ataque.
+
+**Correccion:** devolver y mostrar `evaluation_mode`, procedencia de etiquetas, tamaños/clases y revision del dataset; renombrar "Efectividad" a "Acierto en entrenamiento" donde corresponda. Matriz de confusion, precision/recall de maliciosos, balanced accuracy, tasa de falsos positivos y comparacion con baseline. Separar validacion temporal/por flujo del entrenamiento y de la seleccion de arquitectura; no usar el conjunto de seleccion repetidamente como test final.
+
+**Aceptacion:** dataset 500/101 siempre benigno debe mostrar recall malicioso 0 y balanced accuracy 50%, sin señal visual de validacion satisfactoria. Holdout/resustitucion rotulados correctamente; ninguna etiqueta automatica aparece como verificacion humana. La IA debe complementar reglas hasta demostrar rendimiento independiente.
+
+#### 1.26 Low / P2 - El enlace de exclusiones abre otra pestaña
+
+**Evidencia UI:** IA > "Ir a Configuracion -> Exclusiones" abre `/settings` con Capture seleccionado. En `SettingsView.vue`, `VALID_TABS` tampoco incluye `exclusions`, aunque existe la pestaña.
+
+**Correccion:** link `/settings?section=exclusions`, incluir esa clave en validacion y sincronizar pestaña/URL. Usar una definicion comun de pestañas para evitar drift.
+
+**Aceptacion:** enlace desde IA, carga directa, atras/adelante y pestaña seleccionada coinciden; section desconocida cae en Capture sin error.
+
+#### 1.27 Medium / P1 - Dashboard puede aplicar respuestas de un contexto anterior
+
+**Evidencia estatica; carrera no forzada en la app viva:** `DashboardView.vue::load()` aplica resultados sin contador de secuencia ni comparar ventana solicitada con la actual. Investigate y SOC ya contienen protecciones de secuencia aprovechables. El fallback HTTP de `appStore.js::httpFetchWithMeta` tampoco fija un timeout propio.
+
+**Correccion:** incrementar revision de consulta y aceptar solo la mas reciente; cancelar peticiones obsoletas cuando sea posible; no borrar evidencia vigente durante refrescos de fondo. Incorporar timeout/cancelacion explicitos en lecturas HTTP y preservar error/frescura por panel. No reintentar escrituras automaticamente.
+
+**Aceptacion:** respuesta de ALL llega despues de 15M y no la reemplaza; navegar fuera durante carga no altera el nuevo contexto; error parcial mantiene datos previos marcados como desactualizados, no ceros.
+
+#### 1.28 Low / P2 - Controles de filtrado demasiado pequeños para uso continuado
+
+**Evidencia UI/CSS:** botones include/exclude de tabla miden 16x16 CSS px, con gap de 2 px en `components/ui/EntityTablePanel.vue`. Aparecen en hover o focus-within. En Sniffer a 1536x835 la tabla mide 2615 px; hay scroll interno, sin overflow global. En Settings a 390x844 no hubo overflow global, pero solo Capture/Honeypot caben enteros en la tira de pestañas.
+
+**Correccion:** area interactiva de al menos 24x24 con separacion adecuada, foco visible, menu de acciones por fila/celda y columnas predeterminadas por tarea. Tabla detallada sigue disponible. En viewport estrecho: selector de seccion reconocible y prioridad de lectura. WCAG 2.2 contempla excepciones de espaciado; no se afirma conformidad o incumplimiento global sin auditoria completa.
+
+**Aceptacion:** teclado completo, zoom 200%, contraste medido, foco no oculto; inspeccion 1280x800, 1536x835 y 390x844. Ninguna accion depende solo de color/hover. Ver referencia W3C en seccion 11.
+
+#### 1.29 Medium / P1 - Investigacion por dominio depende de texto libre, no de identidad DNS/HTTP/TLS
+
+**Evidencia estatica/aislada:** `InvestigateView.vue::loadDomain` combina consultas `search=dominio` a packets/banners/tags con el catalogo. `_packet_filter` no consulta las columnas `domain`/`http_host`. El fixture con una fila cuyo `domain=needle.example`, sin ese nombre en el resumen, devuelve un paquete por SQL exacto y cero por `list_packets(search=...)`.
+
+**Impacto:** evidencia estructurada existente puede omitirse; coincidencias incidentales de texto pueden incluirse. No se infiere cobertura completa de un dominio a partir del resumen visible.
+
+**Correccion:** endpoint de investigacion por dominio normalizado, con modos exacto/subdominios explicitos, fuentes DNS query, HTTP Host y TLS SNI separadas y enlaces a packet/flow ids. Normalizar mayusculas, punto final, puerto HTTP y representacion IDNA; no aplicar regex libre al buscar una entidad exacta. Compartir paginacion/tiempo del investigador IP.
+
+**Aceptacion:** dominio solo en campo estructurado, nombres parecidos, subdominio, punto final, Host con puerto y evidencia sin payload retenido. Ninguna fila ajena por mera mencion textual salvo modo de busqueda libre seleccionado.
+
+## 2. Validacion ejecutada
+
+### 2.1 Electron/CDP
+
+- `GET http://127.0.0.1:9223/json/version`: OK, Electron `38.8.6`, app `sniff4hound-desktop/0.54.0`.
+- `GET http://127.0.0.1:9223/json/list`: OK, target `Sniff4Hound`.
+- Lectura DOM por WebSocket CDP: OK, Dashboard montado con datos reales.
+
+### 2.2 Backend
+
+- `python -m pytest tests/ -q`: fallo por entorno global sin `wsbuilder`.
+- `.venv/bin/python -m pytest tests/ -q`: ejecuta suite completa y termina con `2 failed, 935 passed, 2 skipped, 316 subtests passed`.
+
+### 2.3 Frontend
+
+- `cd frontend && npm run build`: OK.
+- `cd frontend && npm test`: falla en `npm run test:unit` por resolucion ESM de `../utils/runtimeEnv`.
+- `npm run lint` dentro de `npm test`: no reporto errores antes del fallo unitario.
+
+### 2.4 Deep links SPA
+
+Se probaron rutas principales con `curl` contra el backend Electron vivo. Las rutas top-level principales responden `200`; las rutas nuevas anidadas de IA/Dashboard responden `404` y deben entrar a `SPA_ROUTES`.
+
+### 2.5 Recorrido interactivo sobre la ventana Electron existente
+
+Realizado el 2026-09-19, aproximadamente 13:16-13:22 America/Sao_Paulo. Conexion al target existente en CDP 9223; se accionaron controles DOM de la propia ventana, sin abrir otra instancia. Las capturas se inspeccionaron para Dashboard, nodos, red neuronal y mapas Mercator/Globe. Otros pantallazos se capturaron como evidencia auxiliar sin afirmar inspeccion visual completa de cada uno.
+
+| Modulo | Accion y resultado observado |
+| --- | --- |
+| Dashboard principal | Datos cargados: 1415 paquetes, 37 hosts, 10 protocolos. |
+| Dashboard Resumen / alertas IA | Abierto desde menu; 200 registros y 184 analizados. Detectados contador y orden incorrectos (1.12, 1.14). |
+| Mapa de nodos | Abierto con el enlace NODOS; grafo visible con hosts y conexiones. |
+| Mapa en Vivo | Cambio mediante botones de Mercator a Globe y vuelta; ambas proyecciones dibujan hosts/conexiones. Hallazgo 1.13. |
+| Chat | Seleccion de Estado general y envio de `/status`; respuesta confirma ambos motores detenidos y un cliente WebSocket. Se añadieron dos mensajes al historial (comando y respuesta). |
+| Settings | Abiertas Capture, Honeypot, Detection, Lists, Exclusions, Notifications, IA y Arquitectura; sin guardar cambios. |
+| Arquitectura | Click en nodo Trafico / conexiones abre su descripcion. |
+| IA Resumen | Galeria y configuracion cargadas: 184 analizados de 200, 601 ejemplos retenidos, revision 1284. No se etiquetaron paquetes. |
+| Red neuronal | Grafico 8 -> 4 -> 1 y comparacion de modelos visibles. Click sobre L1 no produjo texto adicional en la lectura realizada; detalle de neurona no validado. |
+| SOC | Tras cargar: 1415 paquetes, 9 findings, riesgo 76 y cuatro pasadas. No se modifico la profundidad. |
+| Investigador | Click en Investigate IP desde tabla de IPs abre evidencia del host: 250 paquetes, 100 flujos y 173 payloads en el resultado cargado. |
+| Monitors | Carga 30122 definiciones (18499 habilitadas); expandir Port scan / reconnaissance muestra un paquete, estadisticas y tabla. |
+| Protocols | Seleccion de tarjeta DNS navega a `/protocols/dns` y carga tablas (500 filas en la muestra); atlas indica 898 paquetes DNS retenidos. |
+| Sniffer | Busqueda `HTTP`: 152 de 600 filas cargadas. Texto inexistente: 0. Limpiar: 600. Expand JSON view abre el JSON de una fila. |
+| Honeypot | Estado vacio coherente con motor detenido: 0 hits, 10134 listeners configurados. No se abrieron listeners. |
+| Domains / Paths | Tablas cargadas con 312 dominios y 43 paths. |
+| IPs | Tabla con 37 hosts y enlace funcional al investigador. |
+
+Durante las ventanas de observacion CDP no se recogieron excepciones `Runtime.exceptionThrown` ni respuestas HTTP >=400. Esto no cubre mensajes de consola completos, fallos de transporte, ni solicitudes anteriores a cada conexion. Los 404 de carga directa siguen documentados por separado; la navegacion interna SPA funciona.
+
+**Limites:** no se iniciaron capturas/honeypot, no se borraron datos ni se guardaron ajustes, no se reentreno/importo el modelo y no se enviaron notificaciones externas. No se verificaron todos los botones, todas las familias de protocolos ni todos los flujos de escritura. Esta es cobertura interactiva por modulo, no una certificacion exhaustiva de cada funcion. Las pruebas automatizadas de 2.2/2.3 pertenecen al pase anterior y no se repitieron en este recorrido.
+
+**Evidencia local temporal:** `/tmp/s4h-dashboard.png`, `/tmp/s4h-nodes.png`, `/tmp/s4h-investigate.png`, `/tmp/s4h-ai.png`, `/tmp/s4h-rnn.png`, `/tmp/s4h-architecture.png`, `/tmp/s4h-architecture-detail.png`, `/tmp/s4h-sniffer.png`, `/tmp/s4h-alerts.png`, `/tmp/s4h-live-map.png`, `/tmp/s4h-globe.png`, `/tmp/s4h-dns.png`, `/tmp/s4h-monitor-detail.png`, `/tmp/s4h-chat.png`. Contienen datos de la sesion; no se incorporaron al repositorio. El script temporal `/tmp/s4h-live-review.cjs` permite adjuntarse al target y capturar resultados.
 
 ---
 
-## 3. QA dinamico contra instancia local
+## 3. Recomendaciones priorizadas
 
-### 3.1 `v0.52.0` (pasada anterior)
-
-La instancia revisada mostro banner de `SNIFF4HOUND v0.52.0`, con autenticacion habilitada y servidor en `127.0.0.1:45678`. No se registra aqui el codigo de seguridad.
-
-Pruebas ejecutadas:
-
-- `GET /api/auth/session` con credencial valida: **200**, `authenticated: true`, `security_code_length: 8`, `ws_auth_close_code: 4401`.
-- `POST /api/runtime/` con credencial valida pero `Origin: http://evil.example`: **403**, `code: bad_origin`.
-- `POST /api/ws/ticket` con credencial valida: **200**, respuesta con ticket de un solo uso y `expires_in: 15`.
-
-### 3.2 `v0.58.0` (pasada anterior, mismo dia)
-
-Instancia arrancada por el operador desde el `.deb`, banner `SNIFF4HOUND v0.58.0`, autenticacion requerida, servidor en `127.0.0.1:45678`. No se registra aqui el codigo de seguridad.
-
-Pruebas ejecutadas:
-
-- `GET /api/dashboard/` sin credencial: **401**, `code: auth_required`.
-- `GET /` sin credencial: **200** (la SPA carga; el gate de auth vive en la API/WS, no en el estatico).
-- `POST /api/runtime/` sin credencial y con `Origin: http://evil.example`: **401** (el guard de auth corre antes que el de origen).
-- `GET /api/auth/session` con credencial valida: **200**, `authenticated: true`.
-- `POST /api/runtime/` con credencial valida pero `Origin: http://evil.example`: **403**, `code: bad_origin` - confirma que el guard de origen tambien corre para una sesion ya autenticada, no solo para anonimos.
-- `GET /api/ai/config` con credencial valida: **200**, `{"sampling_enabled":true,"training_enabled":true,"ai_alert_mode_enabled":true,"raw_retention_enabled":true,...}` - refleja el modo real de esa instancia (Monitors + IA + retencion de bytes crudos, los tres activos a la vez) y confirma que el endpoint expone el estado actual de la nueva politica de retencion (ver 2.14).
-
-No se repitio en esta pasada una navegacion completa de las 14 vistas del frontend; la ultima navegacion completa documentada en el FAQA anterior correspondia a `v0.51.0` y no debe usarse como garantia visual de `v0.58.0`.
-
-### 3.3 `v0.59.0` (esta pasada - reverificacion completa)
-
-Instancia arrancada por el operador (`sniff4hound`), banner `SNIFF4HOUND v0.59.0`, autenticacion requerida, servidor en `127.0.0.1:45678`. No se registra aqui el codigo de seguridad.
-
-Pruebas ejecutadas (mismo guion que 3.2, repetido para confirmar ausencia de regresion tras el cambio de version):
-
-- `GET /` sin credencial: **200**.
-- `GET /api/dashboard/` sin credencial: **401**.
-- `POST /api/runtime/` sin credencial y con `Origin: http://evil.example`: **401** - el guard de auth sigue corriendo antes que el de origen.
-- `GET /api/auth/session` con credencial valida: **200**, `authenticated: true`.
-- `POST /api/runtime/` con credencial valida pero `Origin: http://evil.example`: **403**, `code: bad_origin`.
-- `POST /api/ws/ticket` con credencial valida: **200**, ticket de un solo uso, `expires_in: 15`.
-- `GET /api/ai/config` con credencial valida: **200**, `training_enabled`, `ai_alert_mode_enabled` y `raw_retention_enabled` en `true` simultaneamente - mismo estado que en `v0.58.0`, sin regresion.
-
-Ademas de las pruebas dinamicas, en esta pasada se ejecuto la suite completa como parte de la revision (no solo se leyo el codigo):
-
-- Backend: `python3 -m pytest tests/` -> **905 passed, 2 skipped, 310 subtests passed**.
-- Frontend: `npm run lint` -> **0 warnings/errores**; `npm run test:unit` -> **13/13**; `npm run build` -> compila sin errores.
-
-No se repitio en esta pasada una navegacion completa de las 14 vistas del frontend; sigue pendiente como punto informativo (ver seccion 5).
-
-### 3.4 Pase visual automatizado de las 14 vistas (cierre del punto informativo pendiente)
-
-`scripts/qa_ui_cdp.js` (el unico script de pase visual que existia en el repo) resulto estar escrito para una version anterior de la UI - navega a `/ports`, `/banners`, `/catalog`, `/explorer`, `/agents`, `/charts`, `/map`, `/tags` (una consola de gestion del honeypot con targets/puertos/banners) que ya no existe como tal; ese layout se reemplazo por las 14 vistas actuales (Dashboard, Sniffer, Honeypot, SOC, IA, Investigate, Protocols, Domains, Paths, IPs, Monitors, Settings, Chat, Radar). Correrlo hoy habria producido un reporte enganoso, no una verificacion real.
-
-Se escribio `scripts/qa_visual_pass.js` (nuevo, no reemplaza al anterior): conecta por CDP a un Chromium headless, navega cada una de las 14 rutas reales del router actual con el codigo de sesion en la URL (`?code=...`, igual que el link que imprime el banner de arranque), y por cada una registra titulo, si el arbol `#app`/`.v-application` monto, excepciones de JS y errores de consola durante esa carga. No siembra ni modifica datos (a diferencia de `qa_ui_cdp.js`, que si hacia acciones de escritura sobre targets del honeypot).
-
-**Resultado de la primera corrida real:** 13 de 14 vistas cargaron limpias (sin excepciones ni errores de consola): Dashboard, Sniffer, Honeypot, SOC, IA, Investigate, Protocols, Domains, Paths, IPs, Monitors, Settings, Radar. **Chat fallo**: la navegacion directa a `/chat` devolvio un `404 Not Found` de texto plano del backend en vez de la SPA - hallazgo nuevo, documentado y cerrado en 2.17. Tras la correccion, se verifico con `app.dispatch()` que `GET /chat` devuelve `200` con el HTML de la SPA.
-
-Con esto, el punto informativo pendiente de pasadas anteriores (repetir una revision de las 14 vistas) queda resuelto por primera vez con una herramienta automatizada y vigente para la UI actual, en vez de quedar como deuda. Sigue habiendo una diferencia deliberada de alcance: esto verifica que cada vista monta sin excepciones/errores de consola, no una revision de diseno visual pixel a pixel (ver 5.8).
+1. **Corregir deep links antes de release:** agregar rutas faltantes a `SPA_ROUTES` y verificar con `curl`/test que todas responden `200`.
+2. **Rehacer el test de rutas SPA:** no depender de regex fragil sobre objetos JS; usar AST, lista compartida o generacion automatica.
+3. **Arreglar `npm test`:** usar extension `.js` en `frontend/src/router/index.js` o adaptar el runner Node.
+4. **Cerrar el fallo de teardown temporal:** identificar hilos/handles vivos en `TestTrainingAndAiAlertModes`.
+5. **Alinear versiones:** backend, desktop, artefactos `dist` y FAQA no deben hablar de versiones distintas sin explicacion.
+6. **Limpiar workspace antes de QA:** crear/usar un flujo claro de limpieza para `dist/`, `build/`, `QA/`, caches y bytecode; el script actual solo cubre artefactos runtime sensibles.
+7. **Actualizar docs stale:** especialmente `ARCHITECTURE.md` sobre auth/localStorage.
+8. **Mantener documentado CDP 9223:** el operador ya acepta su apertura por defecto; conservar su opcion de desactivacion.
+9. **Actualizar scripts QA visuales:** `scripts/qa_visual_pass.js` debe cubrir rutas anidadas y puerto Electron; `scripts/qa_ui_cdp.js` parece apuntar a UI vieja y deberia marcarse legacy o reescribirse.
+10. **Endurecer Electron bridge:** allowlist de esquemas antes de `shell.openExternal`.
+11. **Corregir metricas visibles:** contador completo de protocolos y significado de Active services (1.12 y 1.13).
+12. **Ordenar la experiencia de operacion:** alinear orden de alertas y rotulos, revisar duplicados en listas, unificar idioma y evitar estados vacios durante carga (1.14-1.16).
 
 ---
 
-## 4. Confirmado correcto en la revision actual
+## 4. Cobertura por modulo revisado
 
-- **Auth/API:** rutas API y docs quedan envueltas por `_apply_api_auth_guards()` salvo `/api/auth/session`; errores de validacion se devuelven como JSON 400/404 en vez de 500 genericos (`app.py:3153-3207`).
-- **CSRF/origen:** mutaciones cross-origin con `Origin`/`Referer` externo se bloquean (`app.py:888-906`).
-- **WebSocket:** no usa el token largo en la query; usa ticket corto, atado al cliente y de un solo uso (`app.py:1037-1068`).
-- **Frontend auth:** el token de URL se limpia con `history.replaceState()` tras leerlo (`appStore.js:120-147`) y se conserva solo en memoria (`appStore.js:210-221`); las claves legacy de `localStorage`/`sessionStorage` se leen una vez y se borran de inmediato (`appStore.js:149-198`).
-- **Redaccion textual:** payload, resumen y banner pasan por `redact_sensitive_text()` antes de persistirse (`store.py:4661-4663`).
-- **Retencion de bytes crudos:** `payload_hex`/`raw_packet`/`frame_hex` se guardan por defecto ahora (`settings.py:327-330`), pero solo para trafico que efectivamente alerto - el trafico muteado/whitelisteado/excluido persiste sin ellos, sin importar el flag global (ver 2.16); el trafico limpio ya no se guarda en absoluto, con o sin bytes (`sniffer.py:1325-1334`, `store.py:121-144`). El interruptor `raw_retention_enabled` sigue disponible para volver al comportamiento apagado (`store.py:3180-3202`).
-- **Persistencia de paquetes:** solo se guarda trafico que alerto en alguno de los motores de deteccion (catalogo de reglas, anomalias, IA en "solo IA") o que esta explicitamente muteado/excluido; todo lo demas se evalua y se descarta sin `INSERT` (`sniffer.py:1314-1345`). Whitelisteado es la excepcion a esa excepcion: se descarta igual que trafico limpio, sin evaluarse siquiera (`sniffer.py:1259-1273`, ver 2.19).
-- **Cola de revision de IA:** el trafico muteado/whitelisteado/excluido persiste (para no perder visibilidad de captura) pero no aparece en `list_ai_packets()` - no tiene nada que puntuar y solo ensuciaria la cola de "Revisar / Ensenar" (`store.py:1919-1949`, ver 2.18).
-- **Honeypot:** politica de puertos sensibles centralizada y enforceada en el proceso listener (`honeypot_ports.py:261-309`, `honeypot.py:1315-1325`).
-- **DoS TCP/UDP honeypot:** limite de concurrencia TCP y rate limiting UDP activos (`honeypot.py:1216-1266`, `honeypot.py:1944-1972`).
-- **IA:** import de modelo valida forma, tipo, finitud y magnitud; operaciones internas validan dimensiones antes de usar pesos (`ai_learning.py:101-164`, `ai_learning.py:282-331`).
-- **Logs:** queries sensibles redactadas y campos truncados para evitar fuga de tokens/log injection (`access_log.py:49-91`, `access_log.py:125-148`).
-- **Empaquetado `.deb`:** el postinst reconstruye dependencias compiladas (`regex`) para el Python real del equipo destino si detecta mismatch de ABI, dentro de un venv descartable, sin tocar el Python del sistema (`scripts/deb_postinst.sh`); el postrm limpia el arbol de instalacion completo en `remove`/`purge` (`scripts/deb_postrm.sh`).
-- **Rutas de la SPA:** las 14 vistas del router de Vue tienen su contraparte en `app.SPA_ROUTES`, verificado tanto por un pase visual real con navegador (3.4) como por una prueba de regresion que compara ambas listas automaticamente (`tests/test_smoke.py::test_every_vue_router_path_is_in_spa_routes`).
+- **Backend API/runtime (`sniff4hound/app.py`, `runtime_controller.py`, `manage.py`, `capture_service.py`):** auth guards, origin guard, tickets WebSocket, rutas SPA, endpoints mutantes y arranque/cierre. Hallazgo principal: rutas SPA incompletas.
+- **Persistencia (`store.py`, `export.py`, `access_log.py`):** retencion raw, listados IA, purga por IP, exports y logs. No se encontro una inyeccion SQL directa en los puntos revisados; se observaron queries parametrizadas en las rutas sensibles revisadas.
+- **Captura/deteccion (`sniffer.py`, `honeypot.py`, `monitors.py`, `rulesets.py`, `regex_safety.py`, `anomaly.py`, `packet_ai.py`, `ai_learning.py`):** cache de monitores, whitelist/exclusion, entrenamiento IA, throttling y retencion. Riesgo pendiente: fallo intermitente de teardown apunta a hilos/handles vivos en pruebas de entrenamiento/IA.
+- **Frontend SPA (`frontend/src/router`, `state`, `views`, `components`):** router, auth en memoria, WS GET fallback, vistas principales y componentes grandes. Hallazgo principal: imports ESM sin extension rompen `npm test`; router y backend no comparten fuente de verdad.
+- **Desktop Electron (`desktop/main.js`, `preload.js`):** launcher backend, conexion remota, CDP, navegacion y bridge. Riesgos: CDP abierto por diseno, sandbox desactivado por empaquetado, `openExternal` sin allowlist.
+- **Scripts/QA/packaging (`scripts/*.sh`, `scripts/*.js`, `scripts/*.py`):** build Debian, postinst/postrm, QA CDP, limpieza local. Riesgos: scripts QA desfasados/incompletos y limpieza de build/caches no cubierta por `clean_artifacts.sh`.
+- **Docs/config/versionado (`README.md`, `ARCHITECTURE.md`, `FAQA.md`, package metadata):** inconsistencias de version y docs stale sobre almacenamiento del token.
 
 ---
 
-## 5. Recomendaciones priorizadas
+## 5. Estado final
 
-1. **[Cerrado]** El trafico persistido *solo* por estar muteado/whitelisteado/excluido (sin alerta real) ya nunca retiene bytes crudos, independientemente del interruptor global `raw_retention_enabled`; ver 2.16.
-2. **[Cerrado]** Persistencia "guardar todo" durante Monitors/filtro apagado eliminada: solo se guarda lo que alerto (o esta muteado/excluido); ver 2.14.
-3. **[Cerrado]** Retencion de bytes crudos ahora encendida por defecto, pero acotada a paquetes que realmente persisten (alerta o mute/whitelist/exclusion), no a todo el trafico capturado; sigue siendo alternable en caliente desde el Dashboard/API; ver 2.11, 2.14.
-4. **[Cerrado]** `payload_hex`/`frame_hex` quedan ocultos en toda vista/API cuando `raw_retention_enabled` esta apagado; ver 2.11.
-5. **[Cerrado]** El proceso falla temprano y de forma visible si falta la dependencia `regex`; ver 2.13.
-6. **[Cerrado]** El `.deb` ya no queda inoperable si el Python del equipo destino no coincide con el usado para compilar el paquete (self-heal de `regex` en el postinst); ver 2.15.
-7. **[Cerrado]** El codigo de seguridad del frontend ya no se persiste en ningun almacenamiento del navegador (modo in-memory-only); ver 2.12.
-8. **[Cerrado]** Pase visual automatizado de las 14 vistas ejecutado por primera vez con una herramienta vigente para la UI actual (`scripts/qa_visual_pass.js`); encontro y cerro 2.17 (`/chat` devolvia 404 en carga directa); ver 3.4.
-9. **[Info]** Repetir el pase de 3.4 (o una revision visual manual de diseno) antes de una release publica si el cambio incluye UI significativa - ese script verifica que cada vista monta sin excepciones/errores de consola, no una revision de diseno pixel a pixel.
-10. **[Cerrado, sin accion]** `tests/test_monitors.py::TestTrainingAndAiAlertModes::test_training_plus_ai_mode_leaves_the_catalog_in_charge` fallo una vez en una corrida completa de esta pasada con `OSError: Directory not empty` al limpiar un directorio temporal; paso en aislamiento y en una segunda corrida completa (`906 passed, 2 skipped`, sin ese fallo). Confirmado transitorio (condicion de carrera de teardown bajo carga, no relacionada con los cambios de esta pasada) - no requiere accion salvo que reaparezca.
-11. **[Cerrado]** La cola de revision de IA ya no muestra trafico muteado/whitelisteado/excluido sin bytes ni puntaje - se filtra en `list_ai_packets()` sin dejar de persistirlo; ver 2.18.
+**No aprobado limpio.** La aplicacion corre y el build frontend compila, pero hay defectos abiertos que afectan navegacion directa, confiabilidad de tests y orden del repo. El foco recomendado es primero arreglar `SPA_ROUTES` + prueba de regresion, luego dejar `npm test` verde y limpiar/normalizar artefactos y versiones antes de generar otro paquete.
 
----
+**Actualizacion de prioridad tras la revision profunda:** corregir primero 1.17-1.21 (periodo, entidad, completitud, politica de conservacion y exportacion). Deep links y tests son parte de esa primera entrega. Los artefactos ignorados en disco son una cuestion organizativa, no un bloqueo por si mismos. No hay evidencia suficiente para declarar la app lista como consola SOC de produccion ni para afirmar cobertura completa de deteccion.
 
-## 6. Estado final de la auditoria
+## 6. Plan tecnico de correccion
 
-**Aprobado, con dos hallazgos nuevos encontrados y corregidos en la propia pasada (2.17, 2.18).** No hay bloqueadores Critical/High/Medium/Low abiertos. Se releyeron los 16 hallazgos historicos previos contra el codigo actual sin encontrar regresiones, y por primera vez se ejecuto de punta a punta el punto informativo que quedaba pendiente en las ultimas pasadas: un pase visual automatizado real de las 14 vistas (3.4), que encontro que `/chat` devolvia `404` en carga directa por faltar en `app.SPA_ROUTES` (2.17) - se corrigio en el momento y se agrego una prueba de regresion que ata ambas listas de rutas. Por separado, el operador reporto con una captura de pantalla que la cola de revision de IA mostraba trafico muteado/whitelisteado/excluido sin bytes ni puntaje (2.18); se corrigio filtrando ese trafico de `list_ai_packets()` sin dejar de persistirlo, con su propia prueba de regresion. Se corrio ademas la suite entera varias veces completas a lo largo de la pasada (906-911 tests backend segun el punto, 13 tests frontend, lint y build en todas; un fallo de teardown aislado en una corrida no se repitio en las demas - ver recomendacion 10) y las pruebas dinamicas de siempre contra la instancia real. Se agrego tambien, a pedido del operador, el rediseno del mapa de relaciones IP con whitelist-y-purga (2.19). El rediseno de la iteracion anterior sigue en pie: solo persiste trafico que alerto o esta muteado/excluido (2.14), ese trafico muteado/excluido nunca retiene bytes crudos aunque el default global este encendido (2.16), el `.deb` se autorepara ante un mismatch de Python (2.15), y el codigo de seguridad del frontend sigue viviendo solo en memoria durante la vida de la pestana (2.12). No queda ningun punto abierto en este informe.
+### 6.1 Contrato de evidencia y consultas (P0)
+
+Aplicar primero a investigador IP, investigador dominio, alertas y exportaciones. Evitar implementar un nuevo lenguaje de consultas antes de resolver filtros estructurados.
+
+Contrato propuesto, todavia no existente:
+
+```json
+{
+  "query": {
+    "entity_type": "ip",
+    "entity_value": "192.0.2.10",
+    "from": "2026-09-19T12:00:00Z",
+    "to": "2026-09-19T13:00:00Z",
+    "sensor_id": "local",
+    "sort": ["created_at:desc", "id:desc"]
+  },
+  "meta": {
+    "snapshot_id": "opaque-snapshot-id",
+    "generated_at": "2026-09-19T13:00:01Z",
+    "returned": 50,
+    "total_available": 834,
+    "truncated": true,
+    "next_cursor": "opaque-cursor",
+    "coverage": "retained-evidence",
+    "partial": false
+  },
+  "rows": []
+}
+```
+
+- Definir intervalo UTC semiabierto `[from, to)`; resolver una ventana relativa una vez por investigacion. Todos los paneles y export comparten ese corte.
+- Validar filtros/sort en backend con allowlist; valores siempre parametrizados. No interpolar nombres de columna recibidos libremente.
+- Identidad exacta y texto libre son predicados distintos. La IP canonica debe conservar tambien el valor observado si se necesita trazabilidad.
+- Aplicar WHERE antes de limites y contar con el mismo WHERE. Cursor estable por timestamp/id; fijar snapshot o limite superior de id para evitar desplazamientos durante ingesta.
+- `total_available` significa filas retenidas que cumplen la consulta, nunca cantidad recibida en una pagina. Para estimaciones costosas, declararlas como estimacion.
+- Distinguir conteos de paquetes, flujos, servicios inferidos, hosts, detecciones y grupos de detecciones. Un servicio inferido no implica puerto confirmado abierto.
+- Documentar las unidades y alcance: periodo, acumulado de flujo, sesion actual del sensor o muestra. Mostrarlo junto al numero.
+- Añadir al export un manifest con consulta normalizada, version de app/esquema/reglas, corte temporal, completitud, hash SHA-256 de archivos y zona horaria. Un hash ayuda a verificar integridad, pero no garantiza por si mismo cadena de custodia.
+
+Archivos iniciales: `store.py::ip_intel`, `_packet_filter`, filtros payload/tags/flows; `app.py::ip_intel`, `ai_packets`, `_export_response`; `InvestigateView.vue`, `DashboardView.vue`, `IocExportMenu.vue`, `appStore.js`. Mantener compatibilidad de los endpoints actuales mientras migran los consumidores.
+
+### 6.2 Visibilidad, retencion y reglas (P0/P1)
+
+Definir una tabla de comportamiento antes de cambiar `_store_packet`. Propuesta de semantica, sujeta a migracion explicita:
+
+| Decision | Analizar | Conservar | Alertar | Uso |
+| --- | --- | --- | --- | --- |
+| Normal | Reglas/anomalias activas | Segun politica | Segun severidad | Operacion habitual |
+| Silenciar deteccion | No | Metadatos segun politica | No | Ruido conocido, aun investigable |
+| Excluir captura/almacenamiento | No | No | No | Exclusiones deliberadas y visibles |
+| Suprimir notificacion | Si | Evidencia | Sin popup; evento disponible | Reducir interrupciones |
+| Muestreo de fondo | Si, segun presupuesto | Muestra con tasa/procedencia | Segun resultado | Contexto para hunting/IA |
+
+El comportamiento actual no coincide necesariamente con esta tabla. No cambiarlo sin tests y migracion. La pantalla debe mostrar cantidad y motivo de paquetes omitidos; una vista vacia no equivale a red limpia.
+
+Para reglas: version/fuente/licencia, fecha, severidad, evidencia concreta que produjo el match, costo de ejecucion, ejemplos positivos y negativos. Separar firmas especificas, indicadores genericos y comportamiento. Los 30k monitores son volumen de catalogo, no medida demostrada de cobertura.
+
+Añadir perfiles de operacion conservadores (laboratorio, endpoint local, sensor de red) como configuraciones revisables. Correlacion y supresion con tiempo de expiracion, razon y auditoria; conservar el evento original. Evitar escalar automaticamente toda coincidencia generica a incidente critico.
+
+`_direction_for()` compara contra IPs locales del sensor; un SPAN/TAP puede observar terceros y producir `unknown`. El SOC vivo mostro 1415 direction gaps. No es prueba de parser roto: faltan contexto de sensor y definicion de direccion. Proponer redes internas configurables y clasificaciones separadas: direccion respecto al sensor, limites de red y rol cliente/servidor, cada una con fuente/confianza.
+
+### 6.3 Navegacion, pruebas y duplicados (P0/P1)
+
+| Hallazgo | Trabajo concreto | Verificacion |
+| --- | --- | --- |
+| 1.1 / 1.2 | Inventario compartido de rutas estaticas; añadir cinco rutas faltantes. Si se usa fallback SPA, limitarlo a navegacion HTML conocida, nunca ocultar 404 API/assets. Reemplazar regex fragil por lectura estructurada de rutas. | Carga directa, refresh y trailing slash; API/asset inexistente sigue 404; rutas dinamicas como `/protocols/dns`. |
+| 1.3 | Extension `.js` en import local; revisar imports ejecutados directamente por Node. Registrar version soportada de Node/Python y usar lockfiles. | `npm test` y build, en entorno documentado. |
+| 1.4 / 1.5 | Entorno de QA reproducible y cierre ordenado de workers. No ocultar fallos con reintentos indiscriminados o `ignore_errors=True`. | Suite completa mas repeticion focalizada del teardown despues del cambio. |
+| 1.6 / 1.7 | Fuente unica de version o politica explicita de componentes; docs de auth actualizadas. Conservar changelog como historia. | Comparar metadata, UI, User-Agent y paquete generado. |
+| 1.10 | QA CDP configurable a 9223; inventario de rutas derivado del router; registrar app/version/viewport y errores. | Ejecucion sobre build concreto; fixtures separadas de sesion real. |
+| 1.12 / 1.13 | Contadores desde consulta completa; servicios con semantica definida. | Dataset >8 protocolos; 100 paquetes del mismo servicio no son 100 servicios. |
+| 1.14 / 1.26 | Orden temporal/score explicito; pestaña en query string. | Navegacion atras/adelante y orden visible verificable. |
+| 1.15 | Unicidad `(category, match_type, normalized_value)` por tipo de lista; operacion idempotente y conflicto de etiquetas visible. | Crear dos veces no duplica; concurrencia; regex no se normaliza como dominio; migracion genera reporte antes de fusionar. |
+
+### 6.4 Seguridad defensiva y evidencia hostil (P1)
+
+El contenido capturado puede contener credenciales, HTML malicioso, comandos o enlaces de phishing. La consola debe tratarlo como datos incluso cuando procede del propio backend.
+
+- Mantener renderizado como texto, limites de payload y acciones explicitas para abrir URLs. No se encontraron usos de `v-html`/`innerHTML` en el barrido de frontend realizado; esto no equivale a una prueba completa de ausencia de XSS.
+- `desktop/main.js`: centralizar validacion de `openExternal`; permitir protocolos justificados, rechazar esquemas arbitrarios y validar sender del IPC. Pruebas con URL valida, malformada y `file:`, `data:`, `javascript:`.
+- Evaluar restaurar sandbox de renderer arreglando empaquetado/plataforma; documentar excepciones reales. Mantener `contextIsolation`, bridge minimo y navegacion restringida. La guia oficial de Electron es la referencia, no el comentario de que el costo es "modesto".
+- CDP 9223 permanece aceptado por el operador. No cambiar el default por esta auditoria; conservar opt-out y evitar distribuir secretos en capturas/logs.
+- Distinguir producto local de despliegue compartido. Para acceso multiusuario, diseñar roles viewer/analyst/admin, identidad de operador y autorizacion por accion. La autenticacion existente no demuestra ese modelo de autorizacion.
+- Auditoria de cambios: actor, accion, objeto, revision previa/nueva, momento, resultado y correlation id. Evitar registrar tokens/payload sensible completo. Los access logs HTTP no reemplazan historial de decisiones analiticas.
+- Mantener limites de regex, importacion/modelo, payload y peticiones. Revisar presupuestos CPU/memoria antes de ofrecer arquitecturas neuronales sin limites operacionales.
+- Exportar muestras sensibles con alcance visible y redaccion opcional. Conservar original controlado y export redactado como artefactos distintos, con manifest que explique la transformacion.
+
+### 6.5 Aprendizaje y ciclo de vida (P1)
+
+No confundir revisar un paquete, enseñarle al modelo y cerrar una alerta. `save_packet_review` escribe tags; `save_ai_feedback` escribe el estado del modelo. Son mecanismos independientes hoy. Mostrar claramente si una decision tambien entrena y ofrecer una politica explicita de precedencia para etiquetas manuales frente a automaticas.
+
+La procedencia debe acompañar al ejemplo: manual, derivado de regla, importado; actor, motivo, revision y confianza. No entrenar/validar con una copia del mismo flujo en particiones distintas. Conservar un conjunto de evaluacion final que no participe en seleccion de arquitectura.
+
+Implementar jobs con estados queued/running/cancelling/completed/failed, progreso basado en trabajo real y limites de CPU/memoria/tiempo. Reportar motivo de parada, version de pesos y rollback. El entrenamiento usa Python y threads sujetos al GIL; mas hilos no implican mas throughput. Medir interferencia con captura antes de decidir procesos separados o librerias numericas.
+
+Las decisiones operativas de bloqueo/contencion requieren evidencia y confirmacion contextual; no automatizarlas solo por score LOF o acierto del entrenamiento.
+
+## 7. Experiencia Blue Team propuesta
+
+### 7.1 Flujo principal de trabajo
+
+La primera pantalla debe permitir decidir que atender, por que y con que evidencia. Propuesta de navegacion principal:
+
+| Area | Trabajo del analista | Contenido principal |
+| --- | --- | --- |
+| Operaciones | Ver salud y pendientes | Estado sensor, ingesta/perdidas, cola de alertas, ultima evidencia, degradaciones |
+| Investigar | Pivotar desde entidad/evento | Consulta estructurada, cronologia, flujos, DNS/HTTP/TLS, bytes y evidencia asociada |
+| Casos | Registrar y entregar decisiones | Estado, propietario, notas, evidencias fijadas, tareas, conclusion, export |
+| Detecciones | Reducir ruido y explicar matches | Reglas, excepciones temporales, cobertura evaluada, versiones y pruebas |
+| Activos | Entender contexto | IPs observadas, nombres, roles inferidos, propietario/criticidad cuando se conozcan |
+| Configuracion | Operar sensor y producto | Interfaces, retencion, listeners, permisos, integraciones y diagnostico |
+
+Mapas, red neuronal y Chat quedan accesibles como vistas especializadas. La topologia ayuda a investigar, pero no sustituye una cola de trabajo ordenada. Se puede reutilizar buena parte del SOC actual; evitar duplicar tres dashboards con contadores distintos.
+
+Flujo objetivo: alerta -> evidencia exacta -> pivote a host/flujo/dominio conservando tiempo -> decision con motivo -> caso/tarea -> export reproducible. Un operador debe volver a la misma fila, filtros y scroll al regresar.
+
+### 7.2 Triage y casos: extension propuesta, no funcionalidad validada
+
+No se encontro un modelo explicito de casos, asignacion o ciclo de cierre en las rutas/tablas revisadas. Añadirlo progresivamente:
+
+- Estado de alerta: nueva, en revision, escalada, resuelta; resolucion y razon separadas (actividad esperada, falso positivo, incidente confirmado, evidencia insuficiente).
+- Agrupacion por regla, entidad y ventana; mostrar eventos originales, primer/ultimo evento y count. Dedupe no debe borrar evidencia.
+- Priorizacion explicable: severidad de regla, criticidad del activo si existe, recurrencia, correlaciones y confianza. No reemplazar estos campos por un score opaco.
+- Caso local inicialmente: titulo, estado, notas con timestamps y referencias de evidencia. Incorporar identidad/asignacion cuando haya multiusuario real, sin prometer concurrencia que SQLite/UI aun no gestionen.
+- Evidencia fijada: vinculo al evento mas una copia/manifest conservable si retencion puede eliminarlo. Definir espacio y expiracion de casos; no dejar evidencias fijadas crecer sin control.
+- Historial de decisiones append-only; correccion por nueva entrada, no sobrescritura invisible. Separar dato observado, inferencia y nota humana.
+- Persistir investigaciones guardadas con consulta y corte temporal; enlaces reproducibles sin tokens en URL.
+
+### 7.3 Tablas y detalle de evidencia
+
+Conservar los componentes actuales, pero reducir la carga visual inicial. Para una cola: tiempo, severidad, regla, origen, destino, count, estado y accion principal. El resto en un panel lateral de detalle con pestañas Evidencia, Flujo, Contexto e Historial.
+
+Filtros compartidos visibles: tiempo, sensor, IP exacta/CIDR, dominio, protocolo, puerto, regla, severidad y estado. Chips removibles, limpiar todo y consultas guardadas. Indicar expresamente "buscar en filas cargadas" cuando el filtro sea local; ofrecer "buscar en toda la evidencia retenida" con consulta backend. No presentar cero resultados de una muestra como inexistencia global.
+
+Congelar la seleccion durante actualizacion en vivo; mostrar contador de nuevos eventos y boton para incorporarlos. Evitar reordenar la fila bajo el cursor. Columnas, densidad y sort persistidos por vista con opcion de restablecer. UTC/local seleccionable, zona visible y timestamps exportados en UTC.
+
+Bytes/hex y texto deben alinearse con el paquete exacto; señalar truncamiento, bytes disponibles, ausencia por politica y procedencia. Añadir comparacion solicitud/respuesta donde el parser permita relacionarlas; no inventar reconstruccion de sesion TCP/TLS que no exista.
+
+### 7.4 Estilo visual y ergonomia
+
+- Mantener identidad Sniff4Hound, pero usar superficies neutras y acentos semanticos consistentes. Reservar rojo/ambar para severidad/estado, y cian para seleccion/accion.
+- Reducir tarjetas gigantes, texto introductorio repetitivo y encabezados altos en vistas operativas. Priorizar filas escaneables y detalle bajo demanda.
+- Adoptar español consistente o selector de idioma con catalogo centralizado; formato uniforme de fechas/numeros. Conservar terminos de protocolo estandar.
+- Barra de salud persistente: conectado, backend/sensor, motores deseados/reales, ultimo dato, errores y backlog. "WS online" no significa captura activa ni evidencia reciente.
+- Estados distintos para cargando, vacio real, error, parcial y desactualizado. Los ceros iniciales no deben parecer resultados definitivos.
+- Iconos conocidos con nombre accesible; acciones destructivas separadas de navegacion. Tamaños de hit-area, foco visible y soporte teclado revisados en componentes compartidos.
+- Respetar reduced-motion; graficos no deben competir con lectura. Ofrecer vista tabular de mapas/red neuronal. No basar informacion solo en color.
+- Pantalla estrecha: lista priorizada y panel de detalle, filtros en drawer y selector claro de seccion. El escritorio sigue siendo el objetivo principal; 390px sirve como prueba de robustez, no como promesa de paridad movil.
+
+### 7.5 Integraciones y cobertura
+
+Antes de integrar un SIEM externo, estabilizar el esquema de eventos y exports. Proponer JSONL/stream con event id, sensor id, schema version, timestamps, rule id/version, entidades, evidencia y politica de redaccion. Reintentos idempotentes y backlog observable; nunca bloquear captura por entrega remota.
+
+Mapeo ATT&CK solo donde la regla y la evidencia justifiquen una tecnica; permitir multiples tecnicas o ninguna. Mantener version de la taxonomia y separar cobertura teorica de cobertura validada por replay. Importar formatos de reglas exige documentar operadores soportados/no soportados; no afirmar compatibilidad completa por aceptar un archivo.
+
+Agregar replay offline de capturas controladas para evaluar detecciones sin escuchar la red real. Registrar esperados, observados, falsos positivos, falsos negativos y costo; elegir herramientas/librerias de parsing tras una evaluacion acotada, sin reescribir el motor entero como condicion para mejorar el producto.
+
+## 8. Arquitectura, rendimiento y orden
+
+### 8.1 Refactor incremental
+
+Medido en esta revision: `store.py` 5797 lineas; `app.py` 3977; `sniffer.py` 2708; `appStore.js` 2078; `SettingsView.vue` 2021; `MapPanel.vue` 1855. El tamaño es un indicador de concentracion de responsabilidades, no un defecto por si solo.
+
+Extraer por dominio cuando se toque el codigo correspondiente, manteniendo fachadas y contratos:
+
+1. Consultas/evidencia: predicados comunes, paginacion, snapshots y export.
+2. Catalogos/configuracion: monitores, listas, listeners y migraciones.
+3. IA: ejemplos, jobs, modelo, evaluacion y ciclo de vida.
+4. API: routers/handlers agrupados, validacion/auth transversal y serializacion consistente.
+5. Frontend: cliente HTTP/WS, estado de sesion, consulta, notificaciones y preferencias como responsabilidades separadas.
+6. Mapas: fuente de datos, proyeccion y controles, sin mezclar conteos de paquetes/servicios.
+
+No crear microservicios por cantidad de lineas. Primero hacer explicitos ownership, cierre y contratos; despues medir si una separacion de proceso mejora captura/analitica.
+
+### 8.2 Presupuestos de rendimiento propuestos
+
+Estas son metas para acordar y medir, no cifras logradas:
+
+| Operacion | Objetivo inicial | Metodo |
+| --- | --- | --- |
+| Cambio de vista con datos cacheados | Feedback visual <=100 ms | Performance trace y marcas UI |
+| Consulta paginada local caliente | p95 <=500 ms; render estable <=1 s | 30 repeticiones con dataset/hardware documentados |
+| Listado de 30k reglas | <=100 filas y <=1 MB por pagina | Bytes JSON, heap y latencia |
+| Ingesta bajo carga | Cero perdida no contabilizada | Comparar fixture enviado/capturado/descartado/persistido |
+| Refresco en vivo | Sin solapamiento de consultas equivalentes | Instrumentar in-flight y revision de contexto |
+| Entrenamiento | Presupuesto configurable y parada observable | CPU/RSS, backlog y latencia de ingesta concurrente |
+| Cierre | Sin workers ni escrituras posteriores | Enumeracion de threads/procesos y fixture temporal |
+
+Datasets de prueba sugeridos: 2k, 50k y 200k paquetes, 30k reglas y 10k listeners, con distribuciones de entidades realistas y payloads acotados. No generar estas cargas sobre la sesion del operador. Separar cold/warm cache y versiones del build.
+
+Usar `EXPLAIN QUERY PLAN` antes de añadir indices; los indices src/dst/created_at ya existen. Medir joins y consultas con OR; no añadir indices redundantes sin comprobar write amplification. Evitar materializar BLOBs en listados. Mantener WAL/retencion y verificar recuperacion en entorno aislado.
+
+### 8.3 Observabilidad del sensor
+
+Mostrar paquetes recibidos, descartados por kernel/socket cuando sea medible, errores de parseo, descartados por politica, escritos, bytes raw retenidos, backlog de persistencia/IA y ultima escritura. Si una metrica no existe, mostrar no disponible en vez de cero.
+
+Añadir timings por parse/deteccion/store/consulta, regla/version lenta, tamaño de DB/WAL y estado de retencion. La configuracion por defecto del codigo declara 7 dias generales, 30 dias de alertas y tope de 200000 paquetes; la UI debe mostrar valores efectivos de cada despliegue y prioridad del tope de filas.
+
+Health endpoint basico (proceso vivo) separado de readiness (DB/acceso/sensor listos). Logs estructurados con correlation id y contexto acotado; contadores persistentes/sesion diferenciados. Un boton de diagnostico exporta informacion redacted y nunca codigo de sesion.
+
+### 8.4 Workspace y entrega
+
+`dist/`, `build/`, caches y metadata editable son normales en desarrollo. La mejora es hacerlos reproducibles y distinguibles de codigo fuente, no borrarlos indiscriminadamente.
+
+- Mantener documentacion activa coherente; conservar informes antiguos como historicos fechados si hace falta.
+- Artefactos de release en directorio por version/plataforma, con manifest de commit, dependencias, checksums y resultados QA. `latest` debe resolver a un build identificable.
+- Separar limpieza de caches/build de limpieza de datos sensibles. Añadir dry-run y lista de rutas; nunca borrar DB o capturas desde un comando de limpieza de build.
+- Guardar screenshots/logs QA fuera de git cuando contienen telemetria. Evidencia sintetica apta para repo puede ir en fixtures.
+- Revisar si vistas legacy (Ports/Banners/Targets) siguen siendo accesibles/reutilizadas antes de eliminarlas. Retirar rutas/imports/docs juntos, con pruebas de compatibilidad.
+- CI: backend, lint/unit, build, humo Electron empaquetado y pase UI contra fixture. Fallo de una etapa no se compensa con build verde.
+- No regenerar lockfiles ni cambiar dependencias/versiones durante una auditoria documental sin necesidad. No se realizo un inventario CVE/SBOM completo ni se afirma ausencia de vulnerabilidades de dependencias.
+
+## 9. Backlog y criterios de salida
+
+| Entrega | Prioridad | Resultado comprobable | Dependencias |
+| --- | --- | --- | --- |
+| A: evidencia fiable | P0 | Entidades exactas; filtros temporales consistentes; evidencia paginada; export con mismo alcance; semantica de descarte explicita | Hallazgos 1.17-1.21 y 1.29 |
+| B: base verificable | P0/P1 | Deep links y tests verdes; cierre coordinado; contadores/orden correctos | 1.1-1.5, 1.12-1.14, 1.24 |
+| C: operacion fluida | P1 | Catalogos paginados/cacheados; errores/frescura visibles; sin respuestas obsoletas | 1.22, 1.23, 1.27 y contratos de A |
+| D: triage util | P1 | Cola, agrupacion, decision/razon, consultas guardadas, caso local y export reproducible | A-C |
+| E: deteccion medible | P1 | Replay, procedencia de labels, confusion matrix, holdout correcto, presupuesto IA | 1.20, 1.25 y telemetria |
+| F: pulido/integracion | P2 | Idioma, accesibilidad, navegacion, integracion versionada y entrega reproducible | A-E |
+
+No se asignan fechas artificiales sin conocer equipo, hardware y alcance de despliegue. Dimensionar A por cambios de contrato y migraciones, C por volumen real y D por necesidad local/multiusuario.
+
+**Puerta de salida para una version de uso Blue Team local:** cero P0 abiertos; tests nuevos de identidad/tiempo/export/persistencia pasan; QA completo del build identificado; warnings de evidencia parcial visibles; no se pierde evidencia silenciosamente por limites; captura/retencion y cierre verificados en fixture; manual de operacion alineado con UI.
+
+**Para despliegue compartido:** añadir identidad/autorizacion, concurrencia de decisiones, audit log, proteccion de exports, backup/restore y estrategia de actualizacion. No asumir que una version local cumple esos requisitos.
+
+**Pruebas de usuario propuestas:** con evidencia sintetica, pedir a un analista localizar una alerta, justificarla con dos eventos, pivotar a host, registrar decision y exportar el caso. Medir tiempo, errores de atribucion, pasos repetidos y dudas de alcance. Comparar contra el mismo ejercicio antes/despues; una interfaz moderna debe reducir errores y esfuerzo, no solo cambiar colores.
+
+## 10. Evidencia nueva y reproduccion
+
+### 10.1 Pruebas ejecutadas en la ampliacion
+
+```text
+.venv/bin/python -m pytest tests/test_soc_qa.py tests/test_packet_ai.py tests/test_auth_hardening.py tests/test_api_hardening.py tests/test_packet_review.py -q
+81 passed, 9 subtests passed in 38.06s
+
+.venv/bin/python -m pytest tests/test_monitors.py::TestSnifferGatedPersistence tests/test_detection_scopes.py -q
+44 passed in 90.42s
+```
+
+Son 125 pruebas seleccionadas aprobadas; no invalidan los dos fallos de la suite completa anterior. En particular, las pruebas actuales de persistencia pasan porque validan el comportamiento del motor que contradice los textos UI. No se repitio build ni toda la suite en esta ampliacion documental.
+
+Pruebas temporales adicionales: `/tmp/s4h-deep-probes.py`, ejecutado con `.venv` y `PYTHONPATH` del repo. Crea/cierra una SQLite temporal, sin conectarse a la DB viva. Resultados confirmados: prefijo de IP mezclado; IP solo textual incluida; payload retenido omitido tras ruido; whitelist duplicada; dominio estructurado no encontrado por busqueda textual; alcance de export alerts ignorado; count agregado distinto de eventos consumidos.
+
+La prueba de export usa un store simulado para aislar serializacion/filtrado; no es una descarga real del historial del operador. La omision de filtros se confirma tambien leyendo el camino UI -> API -> export.
+
+### 10.2 Reproductor minimo durable para identidad IP
+
+Ejecutar desde el repo con el entorno de pruebas instalado. No debe apuntar a una DB del operador. Se recomienda convertirlo en un test de regresion al corregir 1.18:
+
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from sniff4hound.store import SniffStore
+
+with TemporaryDirectory(prefix="s4h-regression-") as directory:
+    store = SniffStore(Path(directory) / "test.db")
+    try:
+        store.register_packet({
+            "src_ip": "10.0.0.10", "dst_ip": "192.0.2.9",
+            "src_port": 52000, "dst_port": 80, "proto": "tcp",
+        })
+        result = store.ip_intel("10.0.0.1")
+        # Falla en el codigo auditado: devuelve 1.
+        assert result["summary"]["packets"] == 0
+    finally:
+        store.close()
+```
+
+Para 1.19: insertar un paquete del host con `payload_text`/`banner_text`, consultar `ip_intel`, insertar 255 paquetes con payload de otro host, volver a consultar y contrastar `COUNT(*) FROM payloads WHERE packet_id = ?`. El contador del investigador cae de 1 a 0; el de almacenamiento permanece en 1.
+
+Para 1.21: fixture de `list_recent_alerts` con IP A; llamar `build_export(..., "alerts", search=IP_B)`. Esperado cero, observado una fila agregada de A. Al corregir, ampliar al handler real y UI para evitar que el filtro vuelva a perderse en otra capa.
+
+### 10.3 Evidencia UI y limites adicionales
+
+Se utilizo el mismo target Electron CDP 9223. Se probaron 15M/ALL en Resumen y se restauro ALL; enlace IA -> Exclusiones reprodujo seleccion Capture. Medicion de frames WebSocket registro solo tamaños/tipo/path/numero de filas, sin publicar contenido del catalogo ni credenciales.
+
+Capturas adicionales locales: `/tmp/s4h-deep-settings.png`, `/tmp/s4h-settings-1280.png`, `/tmp/s4h-settings-390.png`. Se inspecciono la captura estrecha; emulacion de viewport retirada al terminar cada captura. No se concluye soporte movil completo a partir de una pantalla.
+
+No se hicieron pruebas de saturacion de red, intrusiones, envios externos, arranque de listeners, purgas, importacion de modelos ni modificaciones de listas en la sesion real. Las carreras HTTP, fallos de transporte, multiusuario, recuperacion ante corte electrico y rendimiento bajo carga quedan pendientes de fixture dedicado. No se promete haber probado cada combinacion de reglas/protocolos.
+
+## 11. Referencias y criterio de diseño
+
+Las siguientes fuentes primarias orientan las propuestas; no prueban que la aplicacion ya las cumpla:
+
+- [NIST SP 800-61 Rev. 3, abril de 2025](https://csrc.nist.gov/pubs/sp/800/61/r3/final): sitúa la respuesta a incidentes dentro de la gestion de riesgo. La propuesta de casos/evidencia/decisiones es una adaptacion de producto, no una certificacion NIST.
+- [Electron: seguridad](https://github.com/electron/electron/blob/main/docs/tutorial/security.md) y [sandbox de procesos](https://www.electronjs.org/docs/latest/tutorial/sandbox): referencias para renderer, bridge y empaquetado. [API shell](https://www.electronjs.org/docs/latest/api/shell) documenta la apertura de recursos en aplicaciones del sistema.
+- [W3C WCAG 2.2, tamaño minimo del objetivo](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html): referencia de 24x24 CSS px con excepciones, incluyendo espaciado. [WCAG 2.2](https://www.w3.org/TR/WCAG22/) orienta la evaluacion de teclado, foco, contraste y zoom.
+
+Las metas de rendimiento, arquitectura propuesta y orden de entregas son juicio tecnico de esta auditoria basado en el codigo y las mediciones locales, no requisitos normativos de esas fuentes.

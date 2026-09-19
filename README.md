@@ -377,8 +377,11 @@ npm run dev
 Checks:
 
 ```bash
-python -m unittest discover -t . -s tests -q
-pytest tests/ -q
+# Requiere el entorno del proyecto (venv con `pip install -e .`), no el
+# Python global del sistema - de lo contrario falla en collection con
+# `ModuleNotFoundError: No module named 'wsbuilder'` antes de correr nada.
+.venv/bin/python -m unittest discover -t . -s tests -q
+.venv/bin/python -m pytest tests/ -q
 ```
 
 Frontend:

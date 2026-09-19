@@ -886,6 +886,14 @@ export default {
       if (routeProto && this.supportedProtocols.includes(routeProto)) {
         return routeProto;
       }
+      // No route param: land on whichever protocol actually has retained
+      // traffic instead of the catalog's declaration order, which can put a
+      // protocol with zero observed packets - including "unknown" itself -
+      // first, opening the atlas on an empty table by default (finding 1.16).
+      const withTraffic = this.supportedProtocols
+        .filter((proto) => (this.protocolCountMap[proto] || 0) > 0)
+        .sort((a, b) => (this.protocolCountMap[b] || 0) - (this.protocolCountMap[a] || 0));
+      if (withTraffic.length) return withTraffic[0];
       return this.supportedProtocols[0] || "unknown";
     },
     selectedProfile() {

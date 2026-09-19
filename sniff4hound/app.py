@@ -135,7 +135,12 @@ FRONTEND_DIST_DIR = _resolve_frontend_dist_dir()
 # _register_static_frontend), since "/soc/" used to 404 while "/soc" worked.
 SPA_ROUTES = (
     "/ai",
+    "/ai/overview",
+    "/ai/neural-network",
     "/dashboard",
+    "/dashboard/overview",
+    "/dashboard/node-map",
+    "/dashboard/live-map",
     "/investigate",
     "/sniffer",
     "/honeypot",
@@ -600,6 +605,7 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ip/domains/", "desc": "Domain discovery for an IP."},
     {"method": "GET", "path": "/api/ip/ttl-path/", "desc": "TTL path estimate for an IP."},
     {"method": "GET", "path": "/api/ip/intel/", "desc": "Combined host intel."},
+    {"method": "GET", "path": "/api/domain/intel/", "desc": "Structured domain investigation: packets/payloads/tags matched by DNS query name or HTTP Host (never free-text substring). ?mode=exact|subdomain, ?since= applies the shared time window."},
     {"method": "GET", "path": "/api/soc/analysis/", "desc": "Iterative SOC triage analysis."},
     {"method": "GET", "path": "/api/ai/packets/", "desc": "Local byte-image anomaly analysis of the latest 200 packets."},
     {"method": "POST", "path": "/api/ai/feedback", "desc": "Learn from a reviewed packet: label, confidence and note."},
@@ -2415,7 +2421,7 @@ def ip_ttl_path(request):
 def ip_intel(request):
     ip = str(request.query.get("ip") or "").strip()
     refresh = safe_int(request.query.get("refresh"), 0)
-    payload = store.ip_intel(ip)
+    payload = store.ip_intel(ip, since=_normalize_since(request))
     # `payload["domains"]` and `payload["ttl_path"]` used to be overwritten
     # here with hardcoded empties and a constant estimated_ttl of 64, which
     # discarded the real values store.ip_intel() had just computed and told
@@ -2442,6 +2448,13 @@ def ip_intel(request):
         "notes": [],
     }
     return payload
+
+
+@app.api("/api/domain/intel/", methods=("GET",))
+def domain_intel(request):
+    domain = str(request.query.get("domain") or "").strip()
+    mode = str(request.query.get("mode") or "exact").strip().lower()
+    return store.domain_intel(domain, mode=mode, since=_normalize_since(request))
 
 
 def _host_application_profile(payload: dict) -> dict:
@@ -2482,15 +2495,18 @@ def soc_analysis(request):
 
 @app.api("/api/ai/packets/", methods=("GET",))
 def ai_packets(request):
-    return _ai_snapshot(clamp_int(request.query.get("threshold"), 1, 99, default=50))
+    return _ai_snapshot(
+        clamp_int(request.query.get("threshold"), 1, 99, default=50),
+        since=_normalize_since(request),
+    )
 
 
-def _ai_snapshot(threshold=50):
+def _ai_snapshot(threshold=50, since=""):
     from .packet_ai import analyze_packets
     from .ai_learning import learning_snapshot
 
     learning_config = store.get_ai_learning_config()
-    packets = store.list_ai_packets()
+    packets = store.list_ai_packets(since=since)
     analysis = analyze_packets(packets, threshold=threshold, min_cohort=learning_config["min_cohort"])
     result = learning_snapshot(
         store.ai_learning_state(), packets, analysis, hidden_sizes=learning_config["hidden_sizes"]
@@ -2505,6 +2521,7 @@ def _ai_snapshot(threshold=50):
     result["learning_config"] = learning_config
     result["learning_suggestion"] = store.get_ai_learning_suggestion()
     result["ai_tournament"] = store.get_ai_tournament_state()
+    result["since"] = since
     return result
 
 
@@ -3437,7 +3454,7 @@ def _feed_soc(p: dict):
 # every few seconds would be megabytes per client for data that is identical
 # each time. Both stay on HTTP, where they are read once.
 WS_FEEDS = {
-    "ai": lambda p: _ai_snapshot(p.get("threshold", 50)),
+    "ai": lambda p: _ai_snapshot(p.get("threshold", 50), since=p.get("since", "")),
     "protocols": _feed_protocols,
     "ips": _feed_ports,
     "ports": _feed_ports,

@@ -1034,6 +1034,16 @@ class TestTrainingAndAiAlertModes(unittest.TestCase):
         self.addCleanup(self._refresh_patcher.stop)
 
     def tearDown(self):
+        # Several tests in this class enable training, which lazily starts
+        # the AI training worker thread (Sniffer._enqueue_ai_training) that
+        # writes to self.store on its own schedule. Without stopping it
+        # first, that write can still be in flight (or about to open the
+        # WAL/SHM files) when store.close() + temp_dir.cleanup() run right
+        # after, which is what made the intermittent
+        # `OSError: [Errno 39] Directory not empty` teardown failure
+        # (finding 1.5) possible - stop() now actually joins that thread
+        # (finding 1.24), so calling it here makes the ordering deterministic.
+        self.sniffer.stop()
         self.store.close()
         self.temp_dir.cleanup()
 

@@ -23,7 +23,7 @@
     <p v-if="tournament.champion && !tournament.active" class="tournament-panel__champion">
       Campeona: <strong>{{ (tournament.champion.hidden_sizes || []).join(" → ") }}</strong>
       <template v-if="tournament.champion.accuracy != null">
-        ({{ Math.round(tournament.champion.accuracy * 100) }}%)
+        ({{ Math.round(tournament.champion.accuracy * 100) }}% · {{ evaluationModeLabel(tournament.champion.evaluation_mode) }})
       </template>
       · revisá la sugerencia para aplicarla.
     </p>
@@ -43,6 +43,12 @@ const props = defineProps({
 const candidates = computed(() => props.tournament.candidates || []);
 const STOP_REASON_LABEL = { training_disabled: "Entrenamiento apagado", manual: "Detenido manualmente" };
 const stopReasonLabel = computed(() => STOP_REASON_LABEL[props.tournament.stop_reason] || "Finalizado");
+// Below VALIDATION_MIN_PER_CLASS (ai_learning.py), a round scores every
+// candidate on the same examples it trained on - the label says so instead
+// of implying every round validates on data the model never saw (1.25).
+function evaluationModeLabel(mode) {
+  return mode === "holdout" ? "validado en datos no vistos" : "sobre datos de entrenamiento";
+}
 </script>
 <style scoped>
 .tournament-panel {

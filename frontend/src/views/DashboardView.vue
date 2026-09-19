@@ -33,7 +33,7 @@
 
     <EntityTablePanel
       title="Alertas y detecciones IA"
-      subtitle="Paquetes puntuados por el motor de IA local (LOF + red neuronal), más recientes primero."
+      subtitle="Paquetes puntuados por el motor de IA local (LOF + red neuronal), mayor puntuación primero."
       class="mb-4"
       :rows="aiRows"
       :columns="aiColumns"
@@ -296,7 +296,7 @@ export default {
         {
           key: "protocols",
           label: "Protocols",
-          value: this.protocolSeries.length,
+          value: this.protocolCount,
           caption: "Observed protocol families",
           icon: "mdi-source-branch",
           colorClass: "text-secondary",
@@ -312,9 +312,17 @@ export default {
       ];
     },
     protocolSeries() {
+      // Capped for the chart, which only has room to plot a top-N - the
+      // "Protocols" stat card must not read off this truncated series (that
+      // pinned the counter at <=8 regardless of how many protocols were
+      // actually observed, finding 1.12). See protocolCount below for the
+      // real total.
       return Array.isArray(this.analytics.ports_by_proto)
         ? this.analytics.ports_by_proto.slice(0, 8)
         : [];
+    },
+    protocolCount() {
+      return Array.isArray(this.analytics.ports_by_proto) ? this.analytics.ports_by_proto.length : 0;
     },
     wsClientCount() {
       const clients = this.dashboard && Array.isArray(this.dashboard.ws_clients) ? this.dashboard.ws_clients : [];
@@ -624,11 +632,19 @@ export default {
       if (!options.silent) this.loading = true;
       this.error = "";
       const dashboardQuery = this.dashboardQuery();
+      // The AI alerts panel used to always request the unbounded feed here,
+      // so switching the dashboard to a short window (e.g. 15M) left stale
+      // rows from outside that window sitting next to data that had already
+      // been filtered (finding 1.17). `since` mirrors dashboardQuery()'s own
+      // cutoff instead of a separate `compact=1` query string, since
+      // /api/ai/packets/ doesn't take that param.
+      const since = String(this.store.state.timeRange || "").trim();
+      const aiQuery = since ? `?threshold=50&since=${encodeURIComponent(since)}` : "?threshold=50";
       return Promise.allSettled([
         this.store.fetchJsonPromise(`/api/dashboard/${dashboardQuery}`),
         this.store.fetchJsonPromise(`/api/charts/analytics${dashboardQuery}`),
         this.store.fetchListPromise("/ports/", { limit: this.packetLimit }),
-        this.store.fetchJsonPromise("/api/ai/packets/?threshold=50"),
+        this.store.fetchJsonPromise(`/api/ai/packets/${aiQuery}`),
       ])
         .then(([dashboardRes, analyticsRes, packetsRes, aiRes]) => {
           const errors = [];
