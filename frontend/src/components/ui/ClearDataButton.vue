@@ -4,11 +4,12 @@
       :size="size"
       :variant="variant"
       color="error"
-      prepend-icon="mdi-database-remove-outline"
+      icon
+      :aria-label="label"
       :disabled="busy"
       @click="open"
     >
-      {{ label }}
+      <v-icon icon="mdi-database-remove-outline" />
       <v-tooltip activator="parent" location="bottom">
         Delete every packet, flow and honeypot event. Monitors, listeners and settings survive.
       </v-tooltip>

@@ -11,6 +11,10 @@ The launcher supports two connection modes:
 - Remote sensor: connects to an existing Sniff4Hound backend by host/IP, port,
   and security code, useful when a sensor is exposed through a tunnel.
 
+The connection screen uses responsive local and remote sensor cards, keyboard-visible
+focus states, and a live connection status indicator. On narrow windows, the cards
+stack vertically and the screen scrolls to keep all controls accessible.
+
 ## Development
 
 From the repository root:

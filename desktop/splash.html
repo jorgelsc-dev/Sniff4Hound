@@ -7,262 +7,84 @@
     <style>
       :root {
         color-scheme: dark;
-        font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #06111d;
-        color: #d8e7f5;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #080e18;
+        color: #edf4fc;
+        font-synthesis: none;
       }
-
-      * {
-        box-sizing: border-box;
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background: radial-gradient(ellipse at 18% 30%, #12313b66, transparent 55%), radial-gradient(ellipse at 90% 90%, #25244544, transparent 50%), #080e18; }
+      button, input, select { font: inherit; }
+      .titlebar { height: 38px; display: flex; align-items: center; justify-content: space-between; padding-left: 18px; border-bottom: 1px solid #ffffff08; background: #080e1880; -webkit-app-region: drag; }
+      .window-label { font-size: 10px; letter-spacing: .16em; color: #687c93; }
+      .window-actions { display: flex; height: 100%; -webkit-app-region: no-drag; }
+      .window-action { width: 46px; border: 0; color: #8da1b7; background: transparent; cursor: pointer; }
+      .window-action:hover { background: #ffffff0d; }
+      .window-action.close:hover { background: #d84040; color: white; }
+      main { min-height: calc(100vh - 38px); }
+      .activity-bar { display: none; }
+      .content { min-height: calc(100vh - 38px); display: grid; place-items: center; padding: 48px 28px; }
+      .panel { width: min(940px, 100%); }
+      .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 36px; }
+      .mark { width: 40px; height: 40px; border-radius: 12px; object-fit: cover; border: 1px solid #64e7de33; }
+      .kicker { color: #d7e8f4; font-size: 12px; font-weight: 750; letter-spacing: .15em; }
+      .edition { display: block; color: #6f849c; font-size: 10px; letter-spacing: .18em; margin-top: 4px; }
+      h1 { margin: 0 0 12px; font-size: clamp(28px, 4vw, 42px); font-weight: 650; line-height: 1.15; letter-spacing: -.045em; }
+      p { margin: 0; color: #91a3b9; line-height: 1.7; }
+      .intro { max-width: 620px; font-size: 14px; }
+      .mode-grid { margin-top: 32px; display: grid; grid-template-columns: 1fr 1.1fr; gap: 20px; }
+      .mode-panel { position: relative; display: flex; flex-direction: column; border: 1px solid #253244; border-radius: 20px; background: linear-gradient(145deg, #162131ba, #101824e6); padding: 28px; box-shadow: 0 18px 50px #00000018; }
+      .local-panel { border-color: #37716f80; background: radial-gradient(ellipse at top left, #214c4a55, transparent 80%), linear-gradient(145deg, #13232c, #101824); }
+      .card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
+      .sensor-icon { width: 46px; height: 46px; display: grid; place-items: center; border: 1px solid #42576b60; border-radius: 13px; background: #94b4d00a; color: #a4b9d6; }
+      .local-panel .sensor-icon { color: #69e5d2; border-color: #69e5d233; background: #69e5d20c; }
+      .sensor-icon svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+      .badge { font-size: 10px; color: #80d9c9; background: #51ddba0c; border: 1px solid #51ddba25; padding: 5px 9px; border-radius: 20px; letter-spacing: .025em; }
+      .remote-label { color: #7f91a9; font-size: 11px; }
+      .mode-title { margin: 0 0 8px; font-size: 21px; font-weight: 620; letter-spacing: -.025em; }
+      .mode-copy { font-size: 13px; }
+      .features { display: grid; gap: 13px; list-style: none; padding: 0; margin: 25px 0 28px; color: #b3c5d4; font-size: 12px; }
+      .features li { display: flex; gap: 10px; align-items: center; }
+      .features li::before { content: "✓"; color: #69dcc9; font-size: 13px; }
+      .form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(105px, .65fr); gap: 15px 12px; margin-top: 23px; }
+      .field { display: grid; gap: 7px; min-width: 0; }
+      .field.full { grid-column: 1 / -1; }
+      label { color: #a3b3c7; font-size: 11px; font-weight: 550; }
+      input, select { width: 100%; min-width: 0; height: 42px; border: 1px solid #2a3749; border-radius: 9px; background: #0a121ed9; color: #e1ecf8; padding: 0 12px; font-size: 13px; transition: border-color .2s, box-shadow .2s; }
+      input::placeholder { color: #667a93; }
+      input:focus, select:focus { outline: none; border-color: #69dcc9; box-shadow: 0 0 0 3px #69dcc916; }
+      .actions { display: flex; margin-top: auto; padding-top: 8px; }
+      .form-grid .actions { margin-top: 4px; }
+      button.primary, button.secondary { width: 100%; height: 44px; display: flex; align-items: center; justify-content: space-between; border: 1px solid transparent; border-radius: 9px; padding: 0 16px; color: #092320; background: #6ae1ce; font-size: 13px; font-weight: 650; cursor: pointer; transition: background .2s, border-color .2s; }
+      button.secondary { color: #d9e6f5; background: #243247; border-color: #3b4b62; }
+      button.primary:hover { background: #90f0df; }
+      button.secondary:hover { background: #2e4059; border-color: #7087a6; }
+      button:focus-visible { outline: 2px solid #90f0df; outline-offset: 4px; }
+      button:disabled { cursor: wait; opacity: .58; }
+      .arrow { font-size: 19px; font-weight: 400; }
+      .status { position: relative; margin-top: 22px; display: flex; align-items: center; gap: 9px; padding: 16px 0 0; border-top: 1px solid #ffffff0b; }
+      .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #6b8196; flex-shrink: 0; }
+      .status-row { position: absolute; top: -1px; left: 0; right: 0; height: 2px; overflow: hidden; border-radius: 9px; }
+      .status-row.active::before { content: ""; display: block; width: 38%; height: 100%; background: linear-gradient(90deg, transparent, #69dcc9); animation: loading 1.2s ease-in-out infinite; }
+      .log { color: #8497ae; font-size: 11px; overflow-wrap: anywhere; }
+      .footer-note { margin-left: auto; color: #566b83; font-size: 10px; letter-spacing: .03em; }
+      @keyframes loading { from { transform: translateX(-110%); } to { transform: translateX(280%); } }
+      @media (max-width: 680px) {
+        .content { padding: 28px 18px; }
+        .brand { margin-bottom: 26px; }
+        .mode-grid { grid-template-columns: 1fr; }
+        .mode-panel { padding: 23px; }
+        .footer-note { display: none; }
       }
-
-      body {
-        margin: 0;
-        min-height: 100vh;
-        overflow: hidden;
-        background: linear-gradient(180deg, rgba(15, 29, 45, 0.96), rgba(6, 17, 29, 0.98)), #06111d;
-      }
-
-      .titlebar {
-        height: 38px;
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        border-bottom: 1px solid rgba(132, 171, 207, 0.14);
-        background: #0b1725;
-        -webkit-app-region: drag;
-      }
-
-      .window-actions {
-        display: flex;
-        height: 100%;
-        -webkit-app-region: no-drag;
-      }
-
-      .window-action {
-        width: 46px;
-        height: 100%;
-        border: 0;
-        color: #c9d7e6;
-        background: transparent;
-        font: inherit;
-      }
-
-      .window-action:hover {
-        background: rgba(255, 255, 255, 0.08);
-      }
-
-      .window-action.close:hover {
-        background: #d84040;
-        color: #fff;
-      }
-
-      main {
-        min-height: calc(100vh - 38px);
-        display: grid;
-        grid-template-columns: 58px 1fr;
-      }
-
-      .activity-bar {
-        background: #07101b;
-        border-right: 1px solid rgba(132, 171, 207, 0.14);
-        display: flex;
-        align-items: flex-start;
-        justify-content: center;
-        padding-top: 18px;
-      }
-
-      .mark {
-        width: 34px;
-        height: 34px;
-        border-radius: 8px;
-        object-fit: cover;
-        box-shadow: 0 0 0 1px rgba(15, 232, 255, 0.24), 0 10px 28px rgba(15, 232, 255, 0.18);
-      }
-
-      .content {
-        display: grid;
-        place-items: center;
-        padding: 36px;
-      }
-
-      .panel {
-        width: min(780px, 100%);
-      }
-
-      .kicker {
-        color: #0fe8ff;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-      }
-
-      h1 {
-        margin: 10px 0 8px;
-        font-size: 28px;
-        line-height: 1.12;
-        letter-spacing: 0;
-      }
-
-      p {
-        margin: 0;
-        color: rgba(216, 231, 245, 0.76);
-        line-height: 1.6;
-      }
-
-      .mode-grid {
-        margin-top: 24px;
-        display: grid;
-        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-        gap: 14px;
-      }
-
-      .mode-panel {
-        border: 1px solid rgba(132, 171, 207, 0.16);
-        border-radius: 8px;
-        background: rgba(7, 16, 27, 0.86);
-        padding: 18px;
-      }
-
-      .mode-title {
-        margin: 0 0 8px;
-        font-size: 16px;
-        font-weight: 720;
-      }
-
-      .mode-copy {
-        min-height: 48px;
-        font-size: 13px;
-      }
-
-      .form-grid {
-        display: grid;
-        grid-template-columns: 1fr 92px;
-        gap: 10px;
-        margin-top: 14px;
-      }
-
-      .field {
-        display: grid;
-        gap: 6px;
-      }
-
-      .field.full {
-        grid-column: 1 / -1;
-      }
-
-      label {
-        color: rgba(216, 231, 245, 0.68);
-        font-size: 12px;
-      }
-
-      input,
-      select {
-        width: 100%;
-        height: 36px;
-        border: 1px solid rgba(132, 171, 207, 0.22);
-        border-radius: 6px;
-        outline: none;
-        background: rgba(1, 7, 13, 0.72);
-        color: #e7f2fd;
-        padding: 0 10px;
-        font: inherit;
-      }
-
-      input:focus,
-      select:focus {
-        border-color: rgba(15, 232, 255, 0.7);
-        box-shadow: 0 0 0 3px rgba(15, 232, 255, 0.1);
-      }
-
-      .actions {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-top: 16px;
-      }
-
-      button.primary,
-      button.secondary {
-        height: 38px;
-        border: 1px solid transparent;
-        border-radius: 6px;
-        padding: 0 14px;
-        color: #031018;
-        background: #0fe8ff;
-        font: inherit;
-        font-weight: 720;
-        cursor: pointer;
-      }
-
-      button.secondary {
-        color: #d8e7f5;
-        background: rgba(255, 255, 255, 0.06);
-        border-color: rgba(132, 171, 207, 0.22);
-      }
-
-      button.primary:hover {
-        background: #5cf1ff;
-      }
-
-      button.secondary:hover {
-        border-color: rgba(15, 232, 255, 0.44);
-      }
-
-      button:disabled {
-        cursor: wait;
-        opacity: 0.58;
-      }
-
-      .status {
-        margin-top: 18px;
-        display: grid;
-        gap: 10px;
-      }
-
-      .status-row {
-        height: 7px;
-        overflow: hidden;
-        border-radius: 999px;
-        background: rgba(132, 171, 207, 0.14);
-      }
-
-      .status-row.active::before {
-        content: "";
-        display: block;
-        width: 38%;
-        height: 100%;
-        border-radius: inherit;
-        background: linear-gradient(90deg, #0fe8ff, #8e63ff);
-        animation: loading 1.2s ease-in-out infinite;
-      }
-
-      .log {
-        min-height: 20px;
-        color: rgba(216, 231, 245, 0.62);
-        font-size: 13px;
-      }
-
-      @keyframes loading {
-        0% {
-          transform: translateX(-110%);
-        }
-        100% {
-          transform: translateX(280%);
-        }
-      }
-
-      @media (max-width: 840px) {
-        .mode-grid {
-          grid-template-columns: 1fr;
-        }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before { transition: none !important; animation: none !important; }
+        .status-row.active::before { width: 100%; background: #69dcc9; }
       }
     </style>
   </head>
   <body>
     <div class="titlebar">
+      <span class="window-label">SNIFF4HOUND</span>
       <div class="window-actions">
         <button class="window-action" type="button" data-action="minimize" aria-label="Minimize">-</button>
         <button class="window-action" type="button" data-action="maximize" aria-label="Maximize">□</button>
@@ -275,29 +97,28 @@
       </aside>
       <section class="content">
         <div class="panel">
-          <div class="kicker">Sniff4Hound Desktop</div>
-          <h1>Choose sensor connection</h1>
-          <p>
-            Start the local runtime with capture engines stopped, or connect to a sensor
-            exposed through another address or tunnel.
-          </p>
+          <div class="brand"><img class="mark" src="assets/icon.png" alt="" /><div class="kicker">SNIFF4HOUND<span class="edition">DESKTOP CONSOLE</span></div></div>
+          <h1>Connect your sensor</h1>
+          <p class="intro">Your network, in focus. Start a sensor on this device or connect to a remote instance to open your console.</p>
 
           <div class="mode-grid">
-            <section class="mode-panel">
+            <section class="mode-panel local-panel">
+              <div class="card-top"><div class="sensor-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8M12 16v5M7 10h3l2-3 2 6 2-3h2"/></svg></div><span class="badge">On this device</span></div>
               <h2 class="mode-title">Local sensor</h2>
               <p class="mode-copy">
-                Uses the bundled Python venv and keeps sniffer/honeypot engines off until
-                you start them inside the console.
+                Launch your local workspace. You choose when to start monitoring.
               </p>
+              <ul class="features"><li>No connection setup needed</li><li>Capture engines start paused</li><li>Sniffer &amp; honeypot controls in console</li></ul>
               <div class="actions">
-                <button id="local-start" class="primary" type="button">Start local</button>
+                <button id="local-start" class="primary" type="button">Start local sensor <span class="arrow" aria-hidden="true">→</span></button>
               </div>
             </section>
 
             <section class="mode-panel">
+              <div class="card-top"><div class="sensor-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="6" rx="1.5"/><rect x="2" y="16" width="7" height="5" rx="1.5"/><rect x="15" y="16" width="7" height="5" rx="1.5"/><path d="M12 9v4M5.5 16v-3h13v3"/></svg></div><span class="remote-label">Over your network</span></div>
               <h2 class="mode-title">Remote sensor</h2>
               <p class="mode-copy">
-                Connect to an existing Sniff4Hound backend by host, port, and security code.
+                Access an existing sensor using its network address and security code.
               </p>
               <form id="remote-form" class="form-grid">
                 <div class="field">
@@ -320,7 +141,7 @@
                   <input id="remote-code" name="securityCode" autocomplete="one-time-code" spellcheck="false" />
                 </div>
                 <div class="actions field full">
-                  <button id="remote-connect" class="secondary" type="submit">Connect remote</button>
+                  <button id="remote-connect" class="secondary" type="submit">Connect to sensor <span class="arrow" aria-hidden="true">→</span></button>
                 </div>
               </form>
             </section>
@@ -328,7 +149,8 @@
 
           <div class="status">
             <div id="status-row" class="status-row"></div>
-            <div id="log" class="log">Ready.</div>
+            <div id="log" class="log" role="status" aria-live="polite">Ready to connect</div>
+            <span class="footer-note">NETWORK VISIBILITY STARTS HERE</span>
           </div>
         </div>
       </section>

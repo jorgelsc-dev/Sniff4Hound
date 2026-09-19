@@ -68,29 +68,38 @@
       </div>
       <v-row dense>
         <v-col cols="12" md="6">
-          <div class="d-flex align-center justify-space-between">
+          <div class="d-flex align-center justify-space-between flex-wrap ga-2">
             <div class="text-caption text-medium-emphasis">Capas ocultas y neuronas por capa</div>
-            <v-btn
-              size="x-small"
-              variant="tonal"
-              color="primary"
-              prepend-icon="mdi-plus"
-              :disabled="learningDraft.hidden_sizes.length >= maxHiddenLayers"
-              @click="addHiddenLayer"
-            >
-              Añadir capa
-            </v-btn>
+            <div class="d-flex align-center ga-2">
+              <v-text-field
+                :model-value="learningDraft.hidden_sizes.length"
+                type="number"
+                min="1"
+                step="1"
+                density="compact"
+                variant="outlined"
+                hide-details
+                class="layer-count-field"
+                aria-label="Número de capas ocultas"
+                @update:model-value="setHiddenLayerCount"
+              />
+              <v-btn size="x-small" variant="tonal" color="primary" prepend-icon="mdi-plus" @click="addHiddenLayer">
+                Añadir capa
+              </v-btn>
+            </div>
           </div>
           <div v-for="(size, index) in learningDraft.hidden_sizes" :key="index" class="hidden-layer-row">
             <span class="hidden-layer-row__label">Capa {{ index + 1 }}</span>
-            <v-slider
+            <v-text-field
               :model-value="size"
-              :min="3"
-              :max="16"
-              :step="1"
-              thumb-label="always"
-              hide-details
+              type="number"
+              min="1"
+              step="1"
               density="compact"
+              variant="outlined"
+              hide-details
+              class="neuron-count-field"
+              :aria-label="`Neuronas de la capa ${index + 1}`"
               @update:model-value="(value) => setHiddenLayerSize(index, value)"
             />
             <v-btn
@@ -105,6 +114,10 @@
               <v-icon icon="mdi-close" size="16" />
             </v-btn>
           </div>
+          <p class="text-caption text-medium-emphasis mt-1">
+            Sin límite de capas ni de neuronas por capa. Cambiar la forma reentrena el modelo desde tus
+            ejemplos guardados.
+          </p>
         </v-col>
         <v-col cols="12" md="6">
           <div class="text-caption text-medium-emphasis">Tamaño mínimo de grupo (LOF)</div>
@@ -136,6 +149,12 @@
 import store from "../../state/appStore";
 import DataPanel from "../ui/DataPanel.vue";
 
+// Layer count and width have no upper bound (sniff4hound.ai_learning -
+// MIN_HIDDEN_NEURONS/MIN_HIDDEN_LAYERS is the only floor, both 1); the
+// backend re-validates on save regardless of what's typed here.
+const MIN_HIDDEN_NEURONS = 1;
+const DEFAULT_HIDDEN_NEURONS = 6;
+
 export default {
   name: "AiSettingsPanel",
   components: { DataPanel },
@@ -152,7 +171,6 @@ export default {
       learningDraft: { hidden_sizes: [6], min_cohort: 20 },
       savingLearning: false,
       learningError: "",
-      maxHiddenLayers: 4,
       exportingModel: false,
       importingModel: false,
       modelIoMessage: "",
@@ -183,15 +201,28 @@ export default {
       this.learningError = "";
     },
     addHiddenLayer() {
-      if (this.learningDraft.hidden_sizes.length >= this.maxHiddenLayers) return;
-      this.learningDraft.hidden_sizes.push(6);
+      this.learningDraft.hidden_sizes.push(DEFAULT_HIDDEN_NEURONS);
     },
     removeHiddenLayer(index) {
       if (this.learningDraft.hidden_sizes.length <= 1) return;
       this.learningDraft.hidden_sizes.splice(index, 1);
     },
+    clampNeurons(value) {
+      const parsed = Math.round(Number(value));
+      return Number.isFinite(parsed) && parsed >= MIN_HIDDEN_NEURONS ? parsed : MIN_HIDDEN_NEURONS;
+    },
     setHiddenLayerSize(index, value) {
-      this.learningDraft.hidden_sizes.splice(index, 1, value);
+      this.learningDraft.hidden_sizes.splice(index, 1, this.clampNeurons(value));
+    },
+    setHiddenLayerCount(value) {
+      const count = this.clampNeurons(value);
+      const sizes = this.learningDraft.hidden_sizes;
+      if (count === sizes.length) return;
+      if (count < sizes.length) {
+        sizes.splice(count);
+      } else {
+        sizes.push(...Array(count - sizes.length).fill(DEFAULT_HIDDEN_NEURONS));
+      }
     },
     triggerImport() {
       this.$refs.importInput?.click();
@@ -290,4 +321,6 @@ export default {
 <style scoped>
 .hidden-layer-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
 .hidden-layer-row__label { flex: 0 0 56px; font-size: 0.76rem; color: var(--text-dim); }
+.neuron-count-field { max-width: 92px; }
+.layer-count-field { max-width: 76px; }
 </style>

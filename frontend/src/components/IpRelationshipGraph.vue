@@ -1,6 +1,11 @@
 <template>
-  <v-card variant="tonal" class="pa-4 mb-6 ip-graph-card" rounded="lg">
-    <div class="d-flex flex-wrap ga-3 align-center justify-space-between">
+  <v-card
+    variant="tonal"
+    class="ip-graph-card"
+    :class="canvasOnly ? 'ip-graph-card--canvas' : expanded ? 'pa-4 ip-graph-card--expanded' : 'pa-4 mb-6'"
+    rounded="lg"
+  >
+    <div v-if="!canvasOnly" class="d-flex flex-wrap ga-3 align-center justify-space-between">
       <div>
         <h2 class="text-subtitle-1 font-weight-bold">Mapa de relaciones</h2>
       </div>
@@ -14,7 +19,7 @@
       {{ error }}
     </v-alert>
 
-    <div class="ip-graph-toolbar mt-3">
+    <div v-if="!canvasOnly" class="ip-graph-toolbar mt-3">
       <v-btn icon size="x-small" variant="tonal" aria-label="Alejar" :disabled="zoom <= MIN_ZOOM" @click="zoomOut">
         <v-icon icon="mdi-magnify-minus-outline" size="16" />
       </v-btn>
@@ -35,7 +40,7 @@
     <div
       ref="viewport"
       class="ip-graph-viewport"
-      :class="{ 'is-panning': panning }"
+      :class="{ 'is-panning': panning, 'ip-graph-viewport--expanded': expanded }"
       @wheel="onWheel"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
@@ -54,34 +59,83 @@
       <svg
         v-else
         ref="svg"
-        :viewBox="`0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`"
+        :viewBox="`0 0 ${canvasWidth} ${canvasHeight}`"
         class="ip-graph-svg"
         role="img"
         aria-label="Mapa de relaciones entre direcciones IP observadas"
       >
-        <g ref="graphGroup" :transform="`translate(${pan.x} ${pan.y}) scale(${zoom})`">
-          <line
-            v-for="edge in layoutEdges"
-            :key="edge.id"
-            :x1="edge.from.x"
-            :y1="edge.from.y"
-            :x2="edge.to.x"
-            :y2="edge.to.y"
-            :stroke-width="edge.strokeWidth"
-            class="ip-graph-edge"
-            :class="{ 'is-dimmed': selectedIp && !edge.touches(selectedIp) }"
+        <defs>
+          <linearGradient id="ip-graph-edge-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="rgba(93, 204, 255, 0.72)" />
+            <stop offset="55%" stop-color="rgba(112, 232, 190, 0.78)" />
+            <stop offset="100%" stop-color="rgba(255, 190, 116, 0.72)" />
+          </linearGradient>
+          <filter id="ip-graph-node-glow" x="-65%" y="-65%" width="230%" height="230%">
+            <feGaussianBlur stdDeviation="4.8" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          <marker
+            id="ip-graph-arrow"
+            markerWidth="8"
+            markerHeight="8"
+            refX="7"
+            refY="4"
+            orient="auto"
+            markerUnits="strokeWidth"
           >
-            <title>{{ edge.from.ip }} ↔ {{ edge.to.ip }} · {{ edge.weight }} paquetes · {{ edge.flowCount }} flujo(s)</title>
-          </line>
+            <path d="M0,0 L8,4 L0,8 Z" fill="rgba(152, 231, 255, 0.58)" />
+          </marker>
+        </defs>
+        <g ref="graphGroup" :transform="`translate(${pan.x} ${pan.y}) scale(${zoom})`">
+          <g class="ip-graph-edge-layer">
+            <g
+              v-for="edge in layoutEdges"
+              :key="edge.id"
+              class="ip-graph-edge-shell"
+              :class="{ 'is-dimmed': edge.isDimmed, 'is-highlighted': edge.isHighlighted }"
+              @pointerenter="hoveredEdgeId = edge.id"
+              @pointerleave="hoveredEdgeId = hoveredEdgeId === edge.id ? null : hoveredEdgeId"
+            >
+              <title>{{ edge.from.ip }} → {{ edge.to.ip }} · {{ edge.weight }} paquetes · {{ edge.flowCount }} flujo(s)</title>
+              <path :d="edge.path" :stroke-width="edge.glowWidth" class="ip-graph-edge__glow" />
+              <path
+                :d="edge.path"
+                :stroke-width="edge.strokeWidth"
+                :marker-end="edge.markerEnd"
+                :style="{ opacity: edge.opacity }"
+                class="ip-graph-edge"
+              />
+            </g>
+            <circle
+              v-for="edge in animatedEdges"
+              :key="`packet-${edge.id}`"
+              :r="edge.packetRadius"
+              class="ip-graph-edge-packet"
+              aria-hidden="true"
+            >
+              <animateMotion
+                :path="edge.path"
+                :dur="edge.packetDuration"
+                :begin="edge.packetDelay"
+                repeatCount="indefinite"
+                rotate="auto"
+              />
+            </circle>
+          </g>
           <g
             v-for="node in layoutNodes"
             :key="node.ip"
             class="ip-graph-node"
             :class="{
               'is-selected': selectedIp === node.ip,
+              'is-hovered': hoveredIp === node.ip,
               'is-dimmed': selectedIp && selectedIp !== node.ip && !isNeighbor(node.ip),
               'is-dragging': draggingIp === node.ip,
             }"
+            :style="node.styleVars"
             tabindex="0"
             role="button"
             :aria-label="`Inspeccionar ${node.ip}`"
@@ -95,7 +149,9 @@
             @pointerenter="hoveredIp = node.ip"
             @pointerleave="hoveredIp = hoveredIp === node.ip ? null : hoveredIp"
           >
-            <title>{{ node.ip }} · {{ node.display.label }}{{ node.display.detail ? ` (${node.display.detail})` : "" }} · {{ node.hit_count }} hits</title>
+            <title>{{ node.ip }} · {{ node.display.label }}{{ node.display.detail ? ` (${node.display.detail})` : "" }} · {{ node.scopeLabel }} · {{ node.hit_count }} hits · {{ node.degree }} enlaces</title>
+            <circle :cx="node.x" :cy="node.y" :r="node.radius + 13" class="ip-graph-node__halo" />
+            <circle :cx="node.x" :cy="node.y" :r="node.radius + 4" class="ip-graph-node__ring" />
             <circle
               :cx="node.x"
               :cy="node.y"
@@ -105,23 +161,51 @@
               :class="`text-${node.display.color}`"
               :stroke="selectedIp === node.ip ? '#fff' : 'rgba(255,255,255,0.35)'"
             />
-            <foreignObject :x="node.x - 9" :y="node.y - 9" width="18" height="18" style="pointer-events: none">
+            <circle
+              v-if="node.degree"
+              :cx="node.x + node.radius * 0.72"
+              :cy="node.y - node.radius * 0.72"
+              :r="node.degreeBadgeRadius"
+              class="ip-graph-node__degree"
+            />
+            <foreignObject :x="node.x - 10" :y="node.y - 10" width="20" height="20" style="pointer-events: none">
               <div class="ip-graph-node__icon">
                 <span class="mdi" :class="node.display.icon"></span>
               </div>
             </foreignObject>
-            <text
-              v-if="visibleLabels.has(node.ip)"
-              :x="node.x"
-              :y="node.y + node.radius + 12"
-              text-anchor="middle"
-              class="ip-graph-node__label mono"
-            >
-              {{ node.ip }}
-            </text>
+            <g v-if="visibleLabels.has(node.ip)" class="ip-graph-node__label-group">
+              <text
+                :x="node.x"
+                :y="node.y + node.radius + 13"
+                text-anchor="middle"
+                class="ip-graph-node__label ip-graph-node__label--shadow mono"
+              >
+                {{ node.ip }}
+              </text>
+              <text
+                :x="node.x"
+                :y="node.y + node.radius + 13"
+                text-anchor="middle"
+                class="ip-graph-node__label mono"
+              >
+                {{ node.ip }}
+              </text>
+            </g>
           </g>
         </g>
       </svg>
+      <div v-if="nodes.length && !canvasOnly" class="ip-graph-hud">
+        <span><strong>{{ nodes.length }}</strong> nodos</span>
+        <span><strong>{{ edges.length }}</strong> relaciones</span>
+        <span v-if="hubNode">Hub <span class="mono">{{ hubNode.ip }}</span></span>
+      </div>
+      <div v-if="focusedNode" class="ip-graph-focus-card">
+        <v-icon :icon="focusedNode.display.icon" :color="focusedNode.display.color" size="16" />
+        <span class="mono">{{ focusedNode.ip }}</span>
+        <span>{{ focusedNode.display.label }}</span>
+        <span>{{ focusedNode.hit_count }} hits</span>
+        <span>{{ focusedNode.degree }} enlaces</span>
+      </div>
     </div>
 
     <v-dialog :model-value="Boolean(selectedNode)" max-width="460" @update:model-value="(open) => !open && closeInspector()">
@@ -250,6 +334,17 @@
 </template>
 
 <script>
+import {
+  forceCenter,
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  forceX,
+  forceY,
+  scaleLinear,
+  scaleSqrt,
+} from "d3";
 import store from "../state/appStore";
 import { deviceIcon, deviceColor, deviceDisplay } from "../utils/devices";
 import { formatTimestamp } from "../utils/traffic";
@@ -257,6 +352,8 @@ import { formatTimestamp } from "../utils/traffic";
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 520;
 const NODE_LIMIT = 150;
+const NODE_RADIUS_MIN = 8;
+const NODE_RADIUS_MAX = 24;
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.25;
@@ -278,84 +375,204 @@ const NODE_MARGIN = 10;
 // every tap and swallow the click that opens the inspector.
 const DRAG_THRESHOLD = 3;
 
-// A compact Fruchterman-Reingold force layout: nodes repel each other,
-// edges pull their endpoints together, both effects shrink each pass
-// ("cooling") so the layout settles instead of oscillating forever. Cheap
-// enough to just rerun from scratch whenever the node/edge set changes -
-// no incremental physics loop needed for a few hundred nodes.
-function computeLayout(nodes, edges) {
+const GRAPH_PADDING = 42;
+const EDGE_CURVE_MIN = 14;
+const EDGE_CURVE_MAX = 76;
+
+const SCOPE_THEMES = {
+  private: {
+    fill: "rgba(88, 208, 157, 0.94)",
+    ring: "rgba(143, 255, 218, 0.74)",
+    glow: "rgba(88, 208, 157, 0.24)",
+    badge: "Privada",
+  },
+  public: {
+    fill: "rgba(86, 178, 255, 0.95)",
+    ring: "rgba(149, 220, 255, 0.82)",
+    glow: "rgba(86, 178, 255, 0.24)",
+    badge: "Publica",
+  },
+  local: {
+    fill: "rgba(255, 181, 92, 0.95)",
+    ring: "rgba(255, 224, 164, 0.82)",
+    glow: "rgba(255, 181, 92, 0.24)",
+    badge: "Local",
+  },
+  multicast: {
+    fill: "rgba(176, 139, 255, 0.94)",
+    ring: "rgba(220, 201, 255, 0.78)",
+    glow: "rgba(176, 139, 255, 0.22)",
+    badge: "Multicast",
+  },
+  reserved: {
+    fill: "rgba(238, 128, 154, 0.94)",
+    ring: "rgba(255, 189, 204, 0.78)",
+    glow: "rgba(238, 128, 154, 0.22)",
+    badge: "Reservada",
+  },
+  unknown: {
+    fill: "rgba(176, 188, 202, 0.9)",
+    ring: "rgba(226, 233, 241, 0.6)",
+    glow: "rgba(176, 188, 202, 0.18)",
+    badge: "Sin ambito",
+  },
+};
+
+function stableHash(value) {
+  const text = String(value || "");
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash * 33) + text.charCodeAt(index)) >>> 0;
+  }
+  return hash || 1;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function nodeHitCount(node) {
+  return Number(node && node.hit_count) || 0;
+}
+
+function edgeWeight(edge) {
+  return Number(edge && edge.weight) || 0;
+}
+
+function normalizedScope(scope) {
+  const value = String(scope || "").toLowerCase();
+  return SCOPE_THEMES[value] ? value : "unknown";
+}
+
+function graphScopeTheme(scope) {
+  return SCOPE_THEMES[normalizedScope(scope)] || SCOPE_THEMES.unknown;
+}
+
+function computeDegrees(edges, allowedIps = null) {
+  const degree = new Map();
+  edges.forEach((edge) => {
+    const src = String(edge.src_ip || "");
+    const dst = String(edge.dst_ip || "");
+    if (!src || !dst) return;
+    if (allowedIps && (!allowedIps.has(src) || !allowedIps.has(dst))) return;
+    degree.set(src, (degree.get(src) || 0) + 1);
+    degree.set(dst, (degree.get(dst) || 0) + 1);
+  });
+  return degree;
+}
+
+function clusterTarget(node, maxDegree, width, height) {
+  const scope = normalizedScope(node.scope);
+  const type = String(node.device_type || "").toLowerCase();
+  const degreeShare = maxDegree ? (node._layoutDegree || 0) / maxDegree : 0;
+  if (degreeShare >= 0.34 || type === "router" || type === "switch") {
+    return { x: width * 0.46, y: height * 0.52, strength: 0.15 };
+  }
+  if (scope === "public") return { x: width * 0.73, y: height * 0.25, strength: 0.13 };
+  if (scope === "private") return { x: width * 0.39, y: height * 0.58, strength: 0.1 };
+  if (scope === "local") return { x: width * 0.2, y: height * 0.72, strength: 0.12 };
+  if (scope === "multicast" || scope === "reserved") {
+    return { x: width * 0.76, y: height * 0.72, strength: 0.12 };
+  }
+  return { x: width * 0.5, y: height * 0.48, strength: 0.06 };
+}
+
+function edgePath(from, to, edge, index) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const distance = Math.hypot(dx, dy) || 1;
+  const normalX = -dy / distance;
+  const normalY = dx / distance;
+  const direction = stableHash(`${edge.src_ip}->${edge.dst_ip}:${index}`) % 2 ? 1 : -1;
+  const curve = clamp(distance * (0.11 + (1 - edge.weightShare) * 0.07), EDGE_CURVE_MIN, EDGE_CURVE_MAX);
+  const mx = (from.x + to.x) / 2 + normalX * curve * direction;
+  const my = (from.y + to.y) / 2 + normalY * curve * direction;
+  return `M${from.x.toFixed(1)} ${from.y.toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${to.x.toFixed(1)} ${to.y.toFixed(1)}`;
+}
+
+// D3 gives this graph a calmer network-map feel than the old circular seed:
+// hubs gravitate toward the center, public/private/local scopes drift toward
+// different zones, and edge weights pull busy conversations closer together.
+function computeLayout(nodes, edges, width = CANVAS_WIDTH, height = CANVAS_HEIGHT) {
   const positions = new Map();
   const n = nodes.length;
   if (!n) return positions;
-  const cx = CANVAS_WIDTH / 2;
-  const cy = CANVAS_HEIGHT / 2;
-  const radius = Math.min(CANVAS_WIDTH, CANVAS_HEIGHT) / 2 - 50;
-  nodes.forEach((node, i) => {
-    const angle = (2 * Math.PI * i) / n;
-    positions.set(node.ip, {
-      x: cx + radius * Math.cos(angle) * Math.sqrt((i + 1) / n),
-      y: cy + radius * Math.sin(angle) * Math.sqrt((i + 1) / n),
+
+  const allowedIps = new Set(nodes.map((node) => String(node.ip || "")));
+  const degreeByIp = computeDegrees(edges, allowedIps);
+  const maxDegree = Math.max(1, ...degreeByIp.values());
+  const maxHitCount = Math.max(1, ...nodes.map((node) => nodeHitCount(node)));
+  const maxWeight = Math.max(1, ...edges.map((edge) => edgeWeight(edge)));
+  const radiusScale = scaleSqrt()
+    .domain([0, maxHitCount])
+    .range([NODE_RADIUS_MIN, NODE_RADIUS_MAX])
+    .clamp(true);
+
+  const layoutNodes = nodes.map((node, index) => {
+    const id = String(node.ip || "");
+    const degree = degreeByIp.get(id) || 0;
+    const target = clusterTarget({ ...node, _layoutDegree: degree }, maxDegree, width, height);
+    const seed = stableHash(`${id}:${index}`);
+    const angle = ((seed % 720) / 720) * Math.PI * 2;
+    const orbit = 36 + (1 - degree / maxDegree) * 118;
+    const spiral = 0.42 + Math.sqrt((index + 1) / n) * 0.62;
+    return {
+      ...node,
+      id,
+      degree,
+      hitCount: nodeHitCount(node),
+      cluster: target,
+      x: clamp(target.x + Math.cos(angle) * orbit * spiral, GRAPH_PADDING, width - GRAPH_PADDING),
+      y: clamp(target.y + Math.sin(angle) * orbit * spiral * 0.78, GRAPH_PADDING, height - GRAPH_PADDING),
+    };
+  });
+
+  const links = edges
+    .map((edge) => {
+      const source = String(edge.src_ip || "");
+      const target = String(edge.dst_ip || "");
+      if (!allowedIps.has(source) || !allowedIps.has(target)) return null;
+      return {
+        ...edge,
+        source,
+        target,
+        weight: edgeWeight(edge),
+        weightShare: edgeWeight(edge) / maxWeight,
+      };
+    })
+    .filter(Boolean);
+
+  const simulation = forceSimulation(layoutNodes)
+    .force(
+      "link",
+      forceLink(links)
+        .id((node) => node.id)
+        .distance((link) => {
+          const sourceDegree = link.source && link.source.degree ? link.source.degree : 0;
+          const targetDegree = link.target && link.target.degree ? link.target.degree : 0;
+          const degreeLift = ((sourceDegree + targetDegree) / maxDegree) * 28;
+          return clamp(158 - link.weightShare * 84 + degreeLift, 54, 180);
+        })
+        .strength((link) => clamp(0.12 + link.weightShare * 0.32, 0.12, 0.46))
+    )
+    .force("charge", forceManyBody().strength((node) => -118 - Math.sqrt(node.degree + 1) * 46).distanceMax(360))
+    .force("collide", forceCollide((node) => radiusScale(node.hitCount) + 20).strength(0.94).iterations(4))
+    .force("x", forceX((node) => node.cluster.x).strength((node) => node.cluster.strength))
+    .force("y", forceY((node) => node.cluster.y).strength((node) => node.cluster.strength))
+    .force("center", forceCenter(width / 2, height / 2))
+    .stop();
+
+  const ticks = n > 120 ? 260 : n > 60 ? 310 : 360;
+  for (let tick = 0; tick < ticks; tick += 1) simulation.tick();
+
+  layoutNodes.forEach((node) => {
+    const margin = radiusScale(node.hitCount) + 24;
+    positions.set(node.id, {
+      x: clamp(node.x, margin, width - margin),
+      y: clamp(node.y, margin, height - margin),
+      degree: node.degree,
     });
   });
-  if (n === 1) return positions;
-  const area = CANVAS_WIDTH * CANVAS_HEIGHT;
-  // A bit stronger than the "textbook" sqrt(area/n) repulsion constant -
-  // with labels drawn under each node, purely area-proportional spacing
-  // still left many pairs closer than their label widths, which is what
-  // produced the wall of overlapping text this was tuned against.
-  const k = Math.sqrt(area / n) * 1.35;
-  const iterations = n > 200 ? 70 : n > 80 ? 110 : 160;
-  let temperature = CANVAS_WIDTH / 10;
-  const disp = new Map();
-  for (let iter = 0; iter < iterations; iter++) {
-    nodes.forEach((node) => disp.set(node.ip, { x: 0, y: 0 }));
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const a = nodes[i];
-        const b = nodes[j];
-        const pa = positions.get(a.ip);
-        const pb = positions.get(b.ip);
-        let dx = pa.x - pb.x;
-        let dy = pa.y - pb.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
-        const force = (k * k) / dist;
-        dx = (dx / dist) * force;
-        dy = (dy / dist) * force;
-        const da = disp.get(a.ip);
-        const db = disp.get(b.ip);
-        da.x += dx;
-        da.y += dy;
-        db.x -= dx;
-        db.y -= dy;
-      }
-    }
-    edges.forEach((edge) => {
-      const pa = positions.get(edge.src_ip);
-      const pb = positions.get(edge.dst_ip);
-      if (!pa || !pb) return;
-      let dx = pa.x - pb.x;
-      let dy = pa.y - pb.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
-      const force = (dist * dist) / k;
-      dx = (dx / dist) * force;
-      dy = (dy / dist) * force;
-      const da = disp.get(edge.src_ip);
-      const db = disp.get(edge.dst_ip);
-      da.x -= dx;
-      da.y -= dy;
-      db.x += dx;
-      db.y += dy;
-    });
-    nodes.forEach((node) => {
-      const d = disp.get(node.ip);
-      const dist = Math.sqrt(d.x * d.x + d.y * d.y) || 0.01;
-      const limited = Math.min(dist, temperature);
-      const p = positions.get(node.ip);
-      p.x = Math.min(CANVAS_WIDTH - 34, Math.max(34, p.x + (d.x / dist) * limited));
-      p.y = Math.min(CANVAS_HEIGHT - 34, Math.max(34, p.y + (d.y / dist) * limited));
-    });
-    temperature *= 0.94;
-  }
   return positions;
 }
 
@@ -365,6 +582,12 @@ export default {
     // Address-scope filter from the parent view (public/private/local/...),
     // kept in sync so the graph shows the same slice as the table below it.
     scopes: { type: Array, default: () => [] },
+    // Full-bleed dashboard mode: taller viewport, and the layout's own
+    // coordinate space tracks the measured element instead of the fixed
+    // 900x520 default - otherwise a wide viewport just letterboxes the
+    // same small graph with empty space on both sides.
+    expanded: { type: Boolean, default: false },
+    canvasOnly: { type: Boolean, default: false },
   },
   data() {
     return {
@@ -374,12 +597,17 @@ export default {
       error: "",
       nodes: [],
       edges: [],
+      canvasWidth: CANVAS_WIDTH,
+      canvasHeight: CANVAS_HEIGHT,
+      resizeObserver: null,
+      resizeApplyTimer: null,
       zoom: 1,
       pan: { x: 0, y: 0 },
       panning: false,
       panStart: null,
       selectedIp: null,
       hoveredIp: null,
+      hoveredEdgeId: null,
       blacklisting: false,
       whitelisting: false,
       actionError: "",
@@ -401,20 +629,59 @@ export default {
   },
   computed: {
     positions() {
-      return computeLayout(this.nodes, this.edges);
+      return computeLayout(this.nodes, this.edges, this.canvasWidth, this.canvasHeight);
+    },
+    degreeByIp() {
+      const ips = new Set(this.nodes.map((node) => String(node.ip || "")));
+      return computeDegrees(this.edges, ips);
     },
     maxHitCount() {
-      return this.nodes.reduce((max, node) => Math.max(max, Number(node.hit_count) || 0), 1);
+      return this.nodes.reduce((max, node) => Math.max(max, nodeHitCount(node)), 1);
     },
     maxWeight() {
-      return this.edges.reduce((max, edge) => Math.max(max, Number(edge.weight) || 0), 1);
+      return this.edges.reduce((max, edge) => Math.max(max, edgeWeight(edge)), 1);
+    },
+    nodeRadiusScale() {
+      return scaleSqrt()
+        .domain([0, this.maxHitCount])
+        .range([NODE_RADIUS_MIN, NODE_RADIUS_MAX])
+        .clamp(true);
+    },
+    edgeWidthScale() {
+      return scaleLinear()
+        .domain([0, this.maxWeight])
+        .range([0.8, 4.25])
+        .clamp(true);
+    },
+    edgeOpacityScale() {
+      return scaleLinear()
+        .domain([0, this.maxWeight])
+        .range([0.3, 0.82])
+        .clamp(true);
     },
     layoutNodes() {
       return this.nodes.map((node) => {
         const pos = this.manualPositions.get(node.ip) ||
-          this.positions.get(node.ip) || { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 };
-        const share = (Number(node.hit_count) || 0) / this.maxHitCount;
-        return { ...node, x: pos.x, y: pos.y, radius: 9 + share * 11, display: deviceDisplay(node) };
+          this.positions.get(node.ip) || { x: this.canvasWidth / 2, y: this.canvasHeight / 2 };
+        const theme = graphScopeTheme(node.scope);
+        const hitCount = nodeHitCount(node);
+        const degree = this.degreeByIp.get(node.ip) || pos.degree || 0;
+        return {
+          ...node,
+          hit_count: hitCount,
+          x: pos.x,
+          y: pos.y,
+          degree,
+          radius: this.nodeRadiusScale(hitCount),
+          degreeBadgeRadius: clamp(Math.sqrt(degree + 1) + 2.4, 3.6, 7),
+          display: deviceDisplay(node),
+          scopeLabel: theme.badge,
+          styleVars: {
+            "--node-fill": theme.fill,
+            "--node-ring": theme.ring,
+            "--node-glow": theme.glow,
+          },
+        };
       });
     },
     nodesByIp() {
@@ -426,18 +693,48 @@ export default {
           const from = this.nodesByIp.get(edge.src_ip);
           const to = this.nodesByIp.get(edge.dst_ip);
           if (!from || !to) return null;
-          const share = (Number(edge.weight) || 0) / this.maxWeight;
+          const weight = edgeWeight(edge);
+          const weightShare = weight / this.maxWeight;
+          const id = `${edge.src_ip}->${edge.dst_ip}-${i}`;
+          const touches = (ip) => edge.src_ip === ip || edge.dst_ip === ip;
+          const highlighted = this.hoveredEdgeId === id ||
+            (this.selectedIp && touches(this.selectedIp)) ||
+            (this.hoveredIp && touches(this.hoveredIp));
           return {
-            id: `${edge.src_ip}->${edge.dst_ip}-${i}`,
+            id,
             from,
             to,
-            weight: edge.weight,
-            flowCount: edge.flow_count,
-            strokeWidth: 0.6 + share * 3,
-            touches: (ip) => edge.src_ip === ip || edge.dst_ip === ip,
+            weight,
+            weightShare,
+            flowCount: Number(edge.flow_count) || 0,
+            strokeWidth: this.edgeWidthScale(weight),
+            glowWidth: this.edgeWidthScale(weight) + 5,
+            opacity: this.edgeOpacityScale(weight),
+            path: edgePath(from, to, { ...edge, weightShare }, i),
+            markerEnd: this.selectedIp && !touches(this.selectedIp) ? null : "url(#ip-graph-arrow)",
+            isDimmed: Boolean(this.selectedIp && !touches(this.selectedIp)),
+            isHighlighted: Boolean(highlighted),
+            touches,
           };
         })
         .filter(Boolean);
+    },
+    animatedEdges() {
+      const pool = this.selectedIp
+        ? this.layoutEdges.filter((edge) => edge.touches(this.selectedIp))
+        : [...this.layoutEdges].sort((a, b) => b.weight - a.weight).slice(0, 18);
+      return pool
+        .filter((edge) => !edge.isDimmed)
+        .slice(0, this.selectedIp ? 28 : 18)
+        .map((edge) => {
+          const jitter = (stableHash(edge.id) % 1100) / 1000;
+          return {
+            ...edge,
+            packetRadius: clamp(edge.strokeWidth * 0.72, 1.5, 3.3),
+            packetDuration: `${(6.6 - edge.weightShare * 3 + jitter).toFixed(1)}s`,
+            packetDelay: `${(-jitter * 4).toFixed(2)}s`,
+          };
+        });
     },
     // Greedy label placement: bigger nodes (by radius, i.e. more hits)
     // claim their label first; a smaller node whose label box would
@@ -450,7 +747,7 @@ export default {
     visibleLabels() {
       const visible = new Set();
       const placed = [];
-      const sorted = [...this.layoutNodes].sort((a, b) => b.radius - a.radius);
+      const sorted = [...this.layoutNodes].sort((a, b) => b.degree - a.degree || b.radius - a.radius);
       for (const node of sorted) {
         const focused = this.selectedIp === node.ip || this.hoveredIp === node.ip;
         const width = Math.max(20, node.ip.length * LABEL_CHAR_WIDTH);
@@ -476,6 +773,13 @@ export default {
     },
     selectedNode() {
       return this.selectedIp ? this.nodesByIp.get(this.selectedIp) || null : null;
+    },
+    focusedNode() {
+      const ip = this.hoveredIp || this.selectedIp;
+      return ip ? this.nodesByIp.get(ip) || null : null;
+    },
+    hubNode() {
+      return [...this.layoutNodes].sort((a, b) => b.degree - a.degree || b.hit_count - a.hit_count)[0] || null;
     },
     selectedNeighbors() {
       if (!this.selectedIp) return [];
@@ -512,14 +816,43 @@ export default {
       this.load({ silent: true });
       if (this.selectedIp) this.loadAssociations(this.selectedIp);
     }, AUTO_REFRESH_MS);
+    this.observeViewportSize();
   },
   beforeUnmount() {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
+      this.resizeObserver = null;
+    }
+    if (this.resizeApplyTimer) {
+      clearTimeout(this.resizeApplyTimer);
+      this.resizeApplyTimer = null;
+    }
   },
   methods: {
     deviceIconOf: deviceIcon,
     deviceColorOf: deviceColor,
     formatTimestamp,
+    // Keeps the graph's own coordinate space matching the rendered box so a
+    // wide viewport (the full-bleed dashboards) actually spreads the layout
+    // out instead of the SVG's default "meet" scaling letterboxing the same
+    // 900x520 graph with empty space on both sides.
+    observeViewportSize() {
+      const el = this.$refs.viewport;
+      if (!el || typeof ResizeObserver === "undefined") return;
+      this.applyViewportSize(el);
+      this.resizeObserver = new ResizeObserver(() => {
+        if (this.resizeApplyTimer) clearTimeout(this.resizeApplyTimer);
+        this.resizeApplyTimer = setTimeout(() => this.applyViewportSize(el), 150);
+      });
+      this.resizeObserver.observe(el);
+    },
+    applyViewportSize(el) {
+      const width = Math.round(el.clientWidth);
+      const height = Math.round(el.clientHeight);
+      if (width > 0) this.canvasWidth = Math.max(CANVAS_WIDTH, width);
+      if (height > 0) this.canvasHeight = Math.max(CANVAS_HEIGHT, height);
+    },
     confidenceLabel(value) {
       return ({ high: "alta", medium: "media", low: "baja" })[value] || "sin clasificar";
     },
@@ -536,6 +869,8 @@ export default {
             this.selectedIp = null;
           }
           const currentIps = new Set(this.nodes.map((node) => node.ip));
+          if (this.hoveredIp && !currentIps.has(this.hoveredIp)) this.hoveredIp = null;
+          this.hoveredEdgeId = null;
           for (const ip of this.manualPositions.keys()) {
             if (!currentIps.has(ip)) this.manualPositions.delete(ip);
           }
@@ -664,6 +999,7 @@ export default {
     resetView() {
       this.zoom = 1;
       this.pan = { x: 0, y: 0 };
+      this.hoveredEdgeId = null;
       this.manualPositions.clear();
     },
     // Converts a pointer event's screen coordinates into the <g>'s own
@@ -716,8 +1052,8 @@ export default {
       }
       const node = this.nodesByIp.get(this.draggingIp);
       const radius = node ? node.radius : 12;
-      const x = Math.min(CANVAS_WIDTH - radius, Math.max(radius, local.x - this.dragOffset.x));
-      const y = Math.min(CANVAS_HEIGHT - radius, Math.max(radius, local.y - this.dragOffset.y));
+      const x = Math.min(this.canvasWidth - radius, Math.max(radius, local.x - this.dragOffset.x));
+      const y = Math.min(this.canvasHeight - radius, Math.max(radius, local.y - this.dragOffset.y));
       this.manualPositions.set(this.draggingIp, { x, y });
       this.resolveOverlaps(this.draggingIp);
     },
@@ -757,8 +1093,8 @@ export default {
         const push = minDist - dist;
         dx /= dist;
         dy /= dist;
-        const x = Math.min(CANVAS_WIDTH - other.radius, Math.max(other.radius, other.x + dx * push));
-        const y = Math.min(CANVAS_HEIGHT - other.radius, Math.max(other.radius, other.y + dy * push));
+        const x = Math.min(this.canvasWidth - other.radius, Math.max(other.radius, other.x + dx * push));
+        const y = Math.min(this.canvasHeight - other.radius, Math.max(other.radius, other.y + dy * push));
         this.manualPositions.set(other.ip, { x, y });
       });
     },
@@ -831,17 +1167,36 @@ export default {
 .ip-graph-viewport {
   position: relative;
   margin-top: 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(var(--brand-sky-rgb), 0.16);
-  background: rgba(3, 8, 14, 0.5);
+  border-radius: 8px;
+  border: 1px solid rgba(var(--brand-sky-rgb), 0.2);
+  background:
+    linear-gradient(rgba(148, 190, 226, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 190, 226, 0.045) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(6, 14, 24, 0.96), rgba(9, 18, 27, 0.92));
+  background-size: 32px 32px, 32px 32px, auto;
   height: 480px;
   overflow: hidden;
   cursor: grab;
   touch-action: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), inset 0 -40px 80px rgba(0, 0, 0, 0.22);
+}
+
+.ip-graph-viewport::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(102, 212, 255, 0.1), transparent 34%, rgba(94, 244, 186, 0.06));
+  z-index: 1;
 }
 
 .ip-graph-viewport.is-panning {
   cursor: grabbing;
+}
+
+.ip-graph-viewport--expanded {
+  height: calc(100vh - 250px);
+  min-height: 560px;
 }
 
 .ip-graph-empty {
@@ -860,64 +1215,180 @@ export default {
   width: 100%;
   height: 100%;
   display: block;
+  position: relative;
+  z-index: 0;
+}
+
+.ip-graph-edge-layer,
+.ip-graph-edge-shell {
+  pointer-events: stroke;
+}
+
+.ip-graph-edge-shell {
+  transition: opacity 0.15s ease;
 }
 
 .ip-graph-edge {
-  stroke: rgba(102, 212, 255, 0.35);
-  transition: opacity 0.15s ease, stroke-width 0.15s ease;
+  fill: none;
+  stroke: url(#ip-graph-edge-gradient);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: opacity 0.15s ease, stroke-width 0.15s ease, stroke 0.15s ease;
 }
 
-.ip-graph-edge.is-dimmed {
-  opacity: 0.12;
+.ip-graph-edge__glow {
+  fill: none;
+  stroke: rgba(102, 212, 255, 0.25);
+  stroke-linecap: round;
+  opacity: 0.16;
+}
+
+.ip-graph-edge-shell.is-dimmed {
+  opacity: 0.13;
+}
+
+.ip-graph-edge-shell.is-highlighted .ip-graph-edge {
+  opacity: 1 !important;
+  stroke: rgba(152, 235, 255, 0.96);
+}
+
+.ip-graph-edge-shell.is-highlighted .ip-graph-edge__glow {
+  opacity: 0.44;
+}
+
+.ip-graph-edge-packet {
+  fill: rgba(222, 252, 255, 0.94);
+  filter: drop-shadow(0 0 4px rgba(126, 229, 255, 0.9));
+  pointer-events: none;
 }
 
 .ip-graph-node {
   cursor: grab;
   touch-action: none;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.15s ease, filter 0.15s ease;
 }
 
 .ip-graph-node.is-dimmed {
-  opacity: 0.3;
+  opacity: 0.24;
 }
 
 .ip-graph-node.is-dragging {
   cursor: grabbing;
+  filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.34));
 }
 
 .ip-graph-node:focus {
   outline: none;
 }
 
-.ip-graph-node:focus .ip-graph-node__circle {
+.ip-graph-node:focus .ip-graph-node__ring,
+.ip-graph-node.is-selected .ip-graph-node__ring {
   stroke: white;
-  stroke-width: 3;
+  stroke-width: 2;
+  opacity: 0.95;
+}
+
+.ip-graph-node__halo {
+  fill: var(--node-glow);
+  filter: url(#ip-graph-node-glow);
+  opacity: 0.72;
+  transition: opacity 0.15s ease;
+}
+
+.ip-graph-node__ring {
+  fill: none;
+  stroke: var(--node-ring);
+  stroke-width: 1.1;
+  stroke-dasharray: 2.6 4.2;
+  opacity: 0.62;
+  transition: opacity 0.15s ease, stroke-width 0.15s ease;
 }
 
 .ip-graph-node__circle {
   stroke-width: 1.5;
-  opacity: 0.92;
+  opacity: 0.95;
+  filter: drop-shadow(0 5px 10px rgba(0, 0, 0, 0.32));
+  transition: opacity 0.15s ease, stroke-width 0.15s ease;
+}
+
+.ip-graph-node.is-hovered .ip-graph-node__halo,
+.ip-graph-node.is-selected .ip-graph-node__halo {
+  opacity: 1;
 }
 
 .ip-graph-node.is-selected .ip-graph-node__circle {
   stroke-width: 2.5;
 }
 
+.ip-graph-node__degree {
+  fill: var(--node-fill);
+  stroke: rgba(6, 13, 21, 0.86);
+  stroke-width: 1.2;
+}
+
 .ip-graph-node__icon {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: white;
-  font-size: 11px;
+  font-size: 12px;
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.55);
   pointer-events: none;
 }
 
 .ip-graph-node__label {
-  font-size: 8px;
-  fill: rgba(210, 223, 238, 0.8);
+  font-size: 8.5px;
+  fill: rgba(222, 234, 246, 0.9);
   pointer-events: none;
+}
+
+.ip-graph-node__label--shadow {
+  stroke: rgba(2, 8, 14, 0.82);
+  stroke-width: 3.5;
+  paint-order: stroke;
+}
+
+.ip-graph-hud,
+.ip-graph-focus-card {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  pointer-events: none;
+  border: 1px solid rgba(174, 218, 255, 0.14);
+  background: rgba(5, 13, 22, 0.74);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(10px);
+}
+
+.ip-graph-hud {
+  top: 12px;
+  left: 12px;
+  max-width: calc(100% - 24px);
+  gap: 9px;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 0.72rem;
+  color: rgba(224, 236, 247, 0.86);
+}
+
+.ip-graph-hud strong {
+  color: white;
+  font-weight: 700;
+}
+
+.ip-graph-focus-card {
+  right: 12px;
+  bottom: 12px;
+  max-width: min(520px, calc(100% - 24px));
+  gap: 8px;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.72rem;
+  color: rgba(225, 238, 248, 0.92);
 }
 
 .ip-graph-popup__body {
@@ -945,7 +1416,7 @@ export default {
 .ip-graph-popup__metric-label {
   font-size: 0.68rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   color: var(--text-dim);
 }
 
@@ -1009,5 +1480,48 @@ export default {
 
 .mono {
   font-family: var(--font-mono);
+}
+
+@media (max-width: 700px) {
+  .ip-graph-viewport {
+    height: 390px;
+  }
+
+  .ip-graph-hud {
+    right: 10px;
+    left: 10px;
+    top: 10px;
+  }
+
+  .ip-graph-focus-card {
+    right: 10px;
+    left: 10px;
+    bottom: 10px;
+  }
+}
+
+.ip-graph-card.ip-graph-card--canvas {
+  height: calc(100dvh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
+  padding: 0;
+  border: 0;
+  border-radius: 0 !important;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ip-graph-card--canvas .ip-graph-viewport {
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.ip-graph-card--canvas > .v-alert {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 5;
 }
 </style>

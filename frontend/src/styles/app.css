@@ -216,6 +216,12 @@ body::before {
   color: rgba(188, 206, 229, 0.9) !important;
 }
 
+.v-field input::placeholder,
+.v-field textarea::placeholder {
+  color: rgba(188, 206, 229, 0.62) !important;
+  opacity: 1 !important;
+}
+
 .v-field .v-chip,
 .v-field .v-chip .v-chip__content {
   color: rgba(233, 243, 255, 0.96);

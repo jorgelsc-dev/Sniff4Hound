@@ -18,24 +18,52 @@ import copy
 import hashlib
 import math
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 
 from .packet_ai import packet_bytes
 from .utils import utc_now
 
 FEATURES = ['Intensidad media', 'Desviación', 'Entropía', 'Bytes cero',
             'Texto imprimible', 'Contraste horizontal', 'Contraste vertical', 'Ocupación']
-MAX_EXAMPLES = 200
+# Capped per label, not as one shared pool: auto-labelled training feedback
+# (sniffer._store_packet, when training_enabled is on) produces benign
+# examples far more often than malicious ones - real high/critical alerts
+# are rare - so a single shared FIFO cap would let a burst of benign
+# examples evict every retained malicious one long before real attack
+# traffic ever shows up again. See _trim_examples_per_class().
+MAX_EXAMPLES_PER_CLASS = 500
 ONLINE_BATCH_SIZE = 8
 ONLINE_EPOCHS = 8
 ONLINE_LEARNING_RATE = 0.04
 DEFAULT_HIDDEN_NEURONS = 6
-MIN_HIDDEN_NEURONS = 3
-MAX_HIDDEN_NEURONS = 16
+# Depth and width are the operator's own call - the only floor is what keeps
+# a layer mathematically meaningful (at least 1 neuron, at least 1 hidden
+# layer so this never degrades into a linear model - see
+# normalize_hidden_sizes). There is deliberately no ceiling: pick an
+# extreme shape and you pay for it in training time (this trainer is plain
+# Python, O(total weights * examples * epochs) per retrain), not in a
+# rejected request.
+MIN_HIDDEN_NEURONS = 1
 MIN_HIDDEN_LAYERS = 1
-MAX_HIDDEN_LAYERS = 4
 DEFAULT_HIDDEN_SIZES = [DEFAULT_HIDDEN_NEURONS]
 MAX_IMPORTED_WEIGHT_ABS = 1_000_000.0
+# How often (in newly retained examples) a feedback event re-runs the
+# architecture search, and how much accuracy a candidate shape has to beat
+# the current one by before it's worth surfacing as a suggestion - small
+# enough to catch a real improvement, large enough that noise from one extra
+# example doesn't flip the recommendation every review.
+SUGGESTION_CHECK_INTERVAL = 5
+SUGGESTION_MIN_IMPROVEMENT = 0.03
+# Candidates scoring within this margin of the best one are considered a
+# wash, and the smallest of them wins instead - otherwise, with hidden_sizes
+# now unbounded, a negligible accuracy blip would always push the
+# recommendation toward the biggest shape tried.
+SUGGESTION_TIE_MARGIN = 0.015
+# Below this many examples of EACH class, a train/validation split would
+# leave too few held-out examples per class to score reliably, so the search
+# falls back to measuring every candidate on the same examples it trained on.
+VALIDATION_MIN_PER_CLASS = 6
+VALIDATION_FRACTION = 0.3
 
 
 def features(data):
@@ -58,13 +86,13 @@ def fingerprint(packet):
 
 
 def normalize_hidden_sizes(hidden_sizes):
-    """Coerce to a valid, bounded list of layer widths - never empty (an
-    all-linear network with no hidden layer isn't what "capar neuronas" was
-    asking for), never absurdly deep or wide."""
+    """Coerce to a valid list of layer widths - never empty (an all-linear
+    network with no hidden layer isn't what "capar neuronas" was asking
+    for) and never non-positive, but otherwise uncapped - see the module
+    constants above."""
     sizes = list(hidden_sizes) if hidden_sizes else list(DEFAULT_HIDDEN_SIZES)
-    sizes = [max(MIN_HIDDEN_NEURONS, min(MAX_HIDDEN_NEURONS, int(size))) for size in sizes]
-    sizes = sizes[:MAX_HIDDEN_LAYERS] or list(DEFAULT_HIDDEN_SIZES)
-    return sizes
+    sizes = [max(MIN_HIDDEN_NEURONS, int(size)) for size in sizes]
+    return sizes or list(DEFAULT_HIDDEN_SIZES)
 
 
 def initial_model(hidden_sizes=None):
@@ -263,6 +291,138 @@ def model_effectiveness(state):
     return {'ready': True, 'accuracy': round(correct / len(examples), 4), 'correct': correct, 'total': len(examples)}
 
 
+def _accuracy_for(model, examples):
+    if not examples:
+        return None
+    correct = sum(
+        1 for example in examples
+        if ('malicious' if forward(model, example['features'])[1] >= 0.5 else 'benign') == example['label']
+    )
+    return round(correct / len(examples), 4)
+
+
+def _hidden_size_candidates(hidden_sizes):
+    """A handful of neighbouring shapes - a layer widened/narrowed by a step
+    proportional to its own size, the network made one layer deeper/
+    shallower - rather than an exhaustive search: every candidate here means
+    a full retrain, so this stays a bounded coordinate-descent step instead
+    of a combinatorial sweep over every possible width/depth. Proportional
+    steps (instead of a flat +/-3) keep the search meaningful whether the
+    current shape is a 6-neuron layer or a 200-neuron one."""
+    seen = {tuple(hidden_sizes)}
+    candidates = []
+
+    def add(sizes):
+        sizes = [max(MIN_HIDDEN_NEURONS, int(s)) for s in sizes]
+        key = tuple(sizes)
+        if not sizes or key in seen:
+            return
+        seen.add(key)
+        candidates.append(sizes)
+
+    for i in range(len(hidden_sizes)):
+        step = max(3, round(hidden_sizes[i] * 0.5))
+        wider, narrower = list(hidden_sizes), list(hidden_sizes)
+        wider[i] += step
+        narrower[i] -= step
+        add(wider)
+        add(narrower)
+    add(hidden_sizes + [round(sum(hidden_sizes) / len(hidden_sizes))])
+    if len(hidden_sizes) > MIN_HIDDEN_LAYERS:
+        add(hidden_sizes[:-1])
+    return candidates
+
+
+def _split_train_validation(examples):
+    """Stratified holdout split (by label): a deterministic (seeded)
+    shuffle so repeated calls over the same examples agree, then the same
+    proportion held out from each class so the split doesn't skew the
+    benign/malicious balance the classifier is scored on.
+
+    Used by suggest_architecture so a bigger/deeper candidate is scored on
+    examples it never trained on, rather than on resubstitution accuracy
+    alone - which would just reward whichever candidate memorized the
+    training set best, an increasingly real risk now that hidden layer
+    count/width has no upper bound.
+    """
+    by_label = defaultdict(list)
+    for example in examples:
+        by_label[example['label']].append(example)
+    rng = random.Random(0)
+    train_examples, validation_examples = [], []
+    for label_examples in by_label.values():
+        shuffled = list(label_examples)
+        rng.shuffle(shuffled)
+        cut = max(1, round(len(shuffled) * (1 - VALIDATION_FRACTION)))
+        cut = min(cut, len(shuffled) - 1) if len(shuffled) > 1 else len(shuffled)
+        train_examples.extend(shuffled[:cut])
+        validation_examples.extend(shuffled[cut:])
+    return train_examples, validation_examples
+
+
+def suggest_architecture(state, hidden_sizes, dismissed=(), report=None):
+    """Try a bounded set of neighbouring hidden-layer shapes against the
+    operator's own retained labels and report the best one, if any, that
+    beats the current shape by a real margin.
+
+    Once each class has enough retained examples (VALIDATION_MIN_PER_CLASS),
+    the current shape and every candidate are trained on the same held-out
+    split (_split_train_validation) and scored on the portion they didn't
+    train on, so the comparison reflects generalization rather than just
+    fit-to-training-data - with hidden_sizes now unbounded, resubstitution
+    accuracy alone would systematically favor the biggest candidate tried.
+    Below that threshold there isn't enough data to hold any out reliably,
+    so it falls back to scoring every shape on the same examples it trained
+    on, same as before. A candidate has to beat the current shape by
+    SUGGESTION_MIN_IMPROVEMENT to be worth surfacing at all, and among
+    candidates within SUGGESTION_TIE_MARGIN of the best score, the smallest
+    one wins (Occam's razor) rather than always the top-scoring one, so the
+    recommendation doesn't drift toward ever-larger networks for noise-level
+    gains. Never applied automatically - see NeuralNetworkConfigPanel.vue's
+    suggestion banner - only surfaced for an operator to accept or dismiss.
+    """
+    examples = state.get('examples', [])
+    counts = Counter(e['label'] for e in examples)
+    if report is not None:
+        report.update(status='waiting_labels', candidates=[], checked_at=utc_now(), revision=state.get('revision', 0))
+    if counts['benign'] < 3 or counts['malicious'] < 3:
+        return None
+    current_shape = normalize_hidden_sizes(hidden_sizes)
+    use_holdout = counts['benign'] >= VALIDATION_MIN_PER_CLASS and counts['malicious'] >= VALIDATION_MIN_PER_CLASS
+    train_examples, eval_examples = _split_train_validation(examples) if use_holdout else (examples, examples)
+    current_model, _ = train(train_examples, hidden_sizes=current_shape)
+    current_accuracy = _accuracy_for(current_model, eval_examples)
+    if current_accuracy is None:
+        return None
+    if report is not None:
+        report.update(status='complete', current_hidden_sizes=current_shape, current_accuracy=current_accuracy)
+    dismissed_keys = {tuple(normalize_hidden_sizes(d)) for d in dismissed}
+    scored = []
+    for candidate in _hidden_size_candidates(current_shape):
+        if tuple(candidate) in dismissed_keys:
+            continue
+        model, _ = train(train_examples, hidden_sizes=candidate)
+        accuracy = _accuracy_for(model, eval_examples)
+        if accuracy is None:
+            continue
+        if report is not None:
+            report['candidates'].append({'hidden_sizes': candidate, 'accuracy': accuracy})
+        scored.append({'hidden_sizes': candidate, 'accuracy': accuracy})
+    if not scored:
+        return None
+    best_accuracy = max(c['accuracy'] for c in scored)
+    if best_accuracy < current_accuracy + SUGGESTION_MIN_IMPROVEMENT:
+        return None
+    contenders = [c for c in scored if c['accuracy'] >= best_accuracy - SUGGESTION_TIE_MARGIN]
+    best = min(contenders, key=lambda c: (sum(c['hidden_sizes']), len(c['hidden_sizes'])))
+    return {
+        'hidden_sizes': best['hidden_sizes'],
+        'current_hidden_sizes': current_shape,
+        'current_accuracy': current_accuracy,
+        'suggested_accuracy': best['accuracy'],
+    }
+
+
 def export_model(state):
     """Structure + weights only (Settings > IA > Exportar) - not the
     labelled examples, which are the operator's own review history rather
@@ -323,11 +483,9 @@ def _validate_imported_model(payload):
     hidden_sizes = sizes[1:-1]
     if not hidden_sizes:
         raise ValueError('El modelo debe tener al menos una capa oculta.')
-    if len(hidden_sizes) > MAX_HIDDEN_LAYERS:
-        raise ValueError(f'Máximo {MAX_HIDDEN_LAYERS} capas ocultas.')
     for size in hidden_sizes:
-        if not (MIN_HIDDEN_NEURONS <= size <= MAX_HIDDEN_NEURONS):
-            raise ValueError(f'Cada capa oculta debe tener entre {MIN_HIDDEN_NEURONS} y {MAX_HIDDEN_NEURONS} neuronas.')
+        if size < MIN_HIDDEN_NEURONS:
+            raise ValueError(f'Cada capa oculta debe tener al menos {MIN_HIDDEN_NEURONS} neurona(s).')
     return {'layers': normalized_layers}, hidden_sizes
 
 
@@ -358,6 +516,29 @@ def import_model(state, payload):
                 audit=state.get('audit', []), training=training, updated_at=now), hidden_sizes
 
 
+def _trim_examples_per_class(examples, limit):
+    """Evict down to `limit` examples of EACH label independently, oldest
+    first within a label, instead of one shared FIFO over the whole list -
+    see MAX_EXAMPLES_PER_CLASS. The overall chronological order is
+    preserved (only the excess oldest rows of an over-limit label are
+    dropped) since update_feedback's online mini-batch takes "the most
+    recent N examples" off the end of this same list and needs that
+    ordering to actually mean recency."""
+    counts = Counter(e['label'] for e in examples)
+    overflow = {label: max(0, count - limit) for label, count in counts.items()}
+    if not any(overflow.values()):
+        return examples
+    dropped = defaultdict(int)
+    trimmed = []
+    for example in examples:
+        label = example['label']
+        if dropped[label] < overflow.get(label, 0):
+            dropped[label] += 1
+            continue
+        trimmed.append(example)
+    return trimmed
+
+
 def update_feedback(state, packet, label, confidence, note, *, hidden_sizes=None):
     data, _, _ = packet_bytes(packet)
     if not data:
@@ -376,7 +557,7 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_sizes=None
         changed_example = dict(key=key, packet_id=packet['id'], proto=packet.get('proto'), features=features(data),
                                label=label, confidence=confidence, note=note, updated_at=now)
         examples.append(changed_example)
-    examples = examples[-MAX_EXAMPLES:]
+    examples = _trim_examples_per_class(examples, MAX_EXAMPLES_PER_CLASS)
     revision = state.get('revision', 0) + 1
     previous_training = state.get('training', {}) if isinstance(state.get('training'), dict) else {}
     existing_model = state.get('model')
@@ -417,7 +598,7 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_sizes=None
     else:
         # The corrected/new example is always in the batch, accompanied by a
         # few recent labels to reduce catastrophic forgetting.  Work stays
-        # bounded even when the retained audit set reaches MAX_EXAMPLES.
+        # bounded even when the retained audit set reaches MAX_EXAMPLES_PER_CLASS.
         batch = examples[-ONLINE_BATCH_SIZE:]
         if all(example['key'] != key for example in batch):
             batch = [*batch[1:], changed_example]
@@ -476,7 +657,7 @@ def learning_snapshot(state, packets, analysis, hidden_sizes=None):
     model_id = 'x'.join(str(n) for n in ([len(FEATURES)] + hidden_sizes_of(model) + [1]))
     analysis['learning'] = dict(model=f'byte-mlp-{model_id}-v1', revision=state.get('revision', 0),
                                ready=ready, status='experimental' if ready else 'warming_up', counts=dict(counts),
-                               total=len(examples), capacity=MAX_EXAMPLES, updated_at=state.get('updated_at'),
+                               total=len(examples), capacity=MAX_EXAMPLES_PER_CLASS * 2, updated_at=state.get('updated_at'),
                                parameters=model, hidden_sizes=hidden_sizes_of(model), feature_names=FEATURES,
                                history=state.get('history', []), audit=state.get('audit', [])[-10:],
                                threshold=analysis['threshold'] / 100, effectiveness=model_effectiveness(state),

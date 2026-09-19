@@ -1,6 +1,7 @@
 import { reactive } from "vue";
 import { apiBaseEnv } from "../utils/runtimeEnv.js";
 import { buildExportFilename, downloadTextFile } from "../utils/exporters.js";
+import router from "../router/index.js";
 
 const AUTH_SESSION_PATH = "/api/auth/session";
 const STORAGE_KEY_API = "sniff4hound.apiBase";
@@ -34,7 +35,6 @@ const WS_REFRESH_EVENT_TYPES = new Set([
 // What counts as "important enough for a popup" - everything else stays
 // available in the regular views (Monitors/SOC/etc.) without interrupting.
 const NOTIFY_MONITOR_SEVERITIES = new Set(["high", "critical"]);
-const NOTIFICATION_HISTORY_LIMIT = 30;
 
 const state = reactive({
   apiBase: "",
@@ -50,7 +50,6 @@ const state = reactive({
   authError: "",
   authPromptOpen: false,
   shutdownPending: false,
-  notifications: [],
   notifySoundEnabled: true,
   // Incremented on every inbound chat frame; ChatView watches it.
   chatRevision: 0,
@@ -72,7 +71,7 @@ let wsRefreshTimer = null;
 let wsPendingRefreshPayload = null;
 let wsCoalescedEventCount = 0;
 let wsConnectAttempt = 0;
-let notificationIdSeq = 0;
+let notificationPermissionRequested = false;
 let audioContext = null;
 let lastRuntimeForNotify = null;
 let hasEverConnectedRealtime = false;
@@ -1305,6 +1304,42 @@ function playNotificationSound(severity) {
   }
 }
 
+// Best-effort: only matters in a plain browser tab (a user gesture may be
+// required before the prompt is even allowed to show). Electron's default
+// session auto-grants permission requests, so this is a no-op there -
+// Notification.permission already reads "granted" before this ever runs.
+function ensureNotificationPermission() {
+  if (typeof Notification === "undefined" || notificationPermissionRequested) return;
+  notificationPermissionRequested = true;
+  if (Notification.permission === "default") {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+
+// Native OS notification via the standard Web Notification API - inside
+// Electron's renderer this surfaces as a real system notification with no
+// extra main-process plumbing needed. `silent: true` because the app's own
+// severity-based tone (playNotificationSound) is the intended audio cue;
+// without it the OS would layer its own default "ding" on top.
+function showSystemNotification({ title, body, tag, href }) {
+  ensureNotificationPermission();
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  try {
+    const notification = new Notification(title, { body, tag, silent: true });
+    if (href) {
+      notification.onclick = () => {
+        try { window.focus(); } catch { /* not focusable in this context */ }
+        router.push(href).catch(() => {});
+        notification.close();
+      };
+    }
+  } catch {
+    // Best-effort only - an unsupported platform or a stale permission edge
+    // case must never break the underlying alert (the sound already covers
+    // it) or the caller.
+  }
+}
+
 function pushNotification({
   kind = "info",
   severity = "info",
@@ -1317,81 +1352,14 @@ function pushNotification({
   if (!cleanTitle) return null;
   const normalizedSeverity = String(severity || "info").trim().toLowerCase();
   const normalizedHref = String(href || "").trim();
-  const now = Date.now();
-  // Every notification belongs to a group (defaulting to kind+title); a
-  // second hit for the same group never adds a second entry - it bumps the
-  // existing one's counter and moves it back to the top instead. This is
-  // what keeps a noisy, repeatedly-firing monitor (or a flapping
-  // connection) from flooding the list with near-duplicates.
-  const key = groupKey || `${kind}:${cleanTitle}`;
-  const existingIndex = state.notifications.findIndex((item) => item.groupKey === key);
-  if (existingIndex >= 0) {
-    const existing = state.notifications[existingIndex];
-    existing.count += 1;
-    existing.severity = normalizedSeverity;
-    existing.title = cleanTitle;
-    existing.message = String(message || "").trim();
-    existing.href = normalizedHref || existing.href;
-    existing.createdAt = now;
-    // A repeat occurrence is new information even if the entry itself
-    // isn't - bring it back as a popup if the toast had already faded.
-    existing.toastDismissed = false;
-    if (existingIndex !== 0) {
-      state.notifications.splice(existingIndex, 1);
-      state.notifications.unshift(existing);
-    }
-    playNotificationSound(normalizedSeverity);
-    return existing;
-  }
-  const item = {
-    id: `notif-${++notificationIdSeq}-${now}`,
-    kind: String(kind || "info"),
-    severity: normalizedSeverity,
-    title: cleanTitle,
-    message: String(message || "").trim(),
-    href: normalizedHref,
-    groupKey: key,
-    count: 1,
-    createdAt: now,
-    toastDismissed: false,
-  };
-  state.notifications.unshift(item);
-  if (state.notifications.length > NOTIFICATION_HISTORY_LIMIT) {
-    state.notifications.length = NOTIFICATION_HISTORY_LIMIT;
-  }
+  // Reusing the same tag for a repeat occurrence (a noisy monitor, a
+  // flapping connection) lets the OS/browser coalesce it into the existing
+  // notification instead of piling up duplicates - same intent as the old
+  // in-app list's "bump an existing entry's counter".
+  const tag = groupKey || `${kind}:${cleanTitle}`;
   playNotificationSound(normalizedSeverity);
-  return item;
-}
-
-// Hides a notification from the popup toast stack only - it stays in the
-// bell/notification-center history. Used by the toast's own auto-dismiss
-// timer and its close button, neither of which should erase history the
-// user might still want to review.
-function dismissToast(id) {
-  const item = state.notifications.find((entry) => entry.id === id);
-  if (item) {
-    item.toastDismissed = true;
-  }
-}
-
-// Toast stack's own "Clear all" - hides currently-popped-up toasts without
-// wiping the bell's history (that's what the bell's own "Clear all" is for).
-function dismissAllToasts() {
-  state.notifications.forEach((item) => {
-    item.toastDismissed = true;
-  });
-}
-
-// Fully removes a notification from history (bell "x" / "Clear all").
-function dismissNotification(id) {
-  const index = state.notifications.findIndex((item) => item.id === id);
-  if (index >= 0) {
-    state.notifications.splice(index, 1);
-  }
-}
-
-function clearNotifications() {
-  state.notifications = [];
+  showSystemNotification({ title: cleanTitle, body: String(message || "").trim(), tag, href: normalizedHref });
+  return { kind, severity: normalizedSeverity, title: cleanTitle, message, href: normalizedHref };
 }
 
 function parsePacketTags(packet) {
@@ -2107,8 +2075,4 @@ export default {
   initNotifySound,
   setNotifySoundEnabled,
   pushNotification,
-  dismissNotification,
-  dismissToast,
-  dismissAllToasts,
-  clearNotifications,
 };

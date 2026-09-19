@@ -14,6 +14,12 @@ MAX_BYTES = 4096
 MIN_COHORT = 20
 MIN_COHORT_FLOOR = 5
 MIN_COHORT_CEILING = 200
+# How far around the current min_cohort candidate values are tried, and how
+# much LOF-score separation (benign vs. malicious, on the 0-100 score scale)
+# a candidate has to beat the current setting by before it's worth
+# suggesting - see suggest_min_cohort() below.
+MIN_COHORT_CANDIDATE_STEPS = (-20, -10, 10, 20)
+MIN_COHORT_MIN_IMPROVEMENT = 5.0
 
 
 def packet_bytes(packet):
@@ -116,3 +122,53 @@ def analyze_packets(packets, threshold=50, min_cohort=MIN_COHORT):
     return {"model": "byte-image-lof-v1", "threshold": threshold, "minimum_cohort": min_cohort,
             "analyzed": sum(row["score"] is not None for row in rows),
             "candidates": sum(row["candidate"] for row in rows), "rows": rows}
+
+
+def _separation(packets, min_cohort, labels_by_id):
+    """Mean LOF score of operator-labelled malicious packets minus that of
+    labelled benign ones, at a given min_cohort - the only ground truth this
+    unsupervised detector has to check itself against. None when either side
+    doesn't have at least 3 scored, labelled packets to average (the same
+    "mín. 3 benignos y 3 maliciosos" bar the classifier's own effectiveness
+    metric uses), since a couple of points otherwise swings wildly."""
+    analysis = analyze_packets(packets, min_cohort=min_cohort)
+    benign, malicious = [], []
+    for row in analysis["rows"]:
+        label = labels_by_id.get(row["id"])
+        if label is None or row["score"] is None:
+            continue
+        (malicious if label == "malicious" else benign).append(row["score"])
+    if len(benign) < 3 or len(malicious) < 3:
+        return None
+    return (sum(malicious) / len(malicious)) - (sum(benign) / len(benign))
+
+
+def suggest_min_cohort(packets, labels_by_id, current_min_cohort, dismissed=()):
+    """Try a bounded set of neighbouring min_cohort values and report the
+    one, if any, that separates the operator's own labelled benign/malicious
+    packets by a real margin better than the current setting - never applied
+    automatically, only surfaced for an operator to accept or dismiss (see
+    suggest_architecture() in ai_learning.py for the classifier's half of
+    this)."""
+    current = _separation(packets, current_min_cohort, labels_by_id)
+    if current is None:
+        return None
+    dismissed_values = set(dismissed)
+    best = None
+    for step in MIN_COHORT_CANDIDATE_STEPS:
+        candidate = min(MIN_COHORT_CEILING, max(MIN_COHORT_FLOOR, current_min_cohort + step))
+        if candidate == current_min_cohort or candidate in dismissed_values:
+            continue
+        separation = _separation(packets, candidate, labels_by_id)
+        if separation is None:
+            continue
+        if best is None or separation > best["separation"]:
+            best = {"min_cohort": candidate, "separation": separation}
+    if not best or best["separation"] < current + MIN_COHORT_MIN_IMPROVEMENT:
+        return None
+    return {
+        "min_cohort": best["min_cohort"],
+        "current_min_cohort": current_min_cohort,
+        "current_separation": round(current, 2),
+        "suggested_separation": round(best["separation"], 2),
+    }

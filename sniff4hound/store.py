@@ -2046,8 +2046,6 @@ class SniffStore:
 
     def set_ai_learning_config(self, config):
         from .ai_learning import (
-            MAX_HIDDEN_LAYERS,
-            MAX_HIDDEN_NEURONS,
             MIN_HIDDEN_LAYERS,
             MIN_HIDDEN_NEURONS,
             rebuild_for_hidden_sizes,
@@ -2061,15 +2059,13 @@ class SniffStore:
             raw = data.get("hidden_sizes")
             if not isinstance(raw, (list, tuple)) or not raw:
                 raise ValueError("hidden_sizes debe ser una lista con al menos una capa.")
-            if len(raw) > MAX_HIDDEN_LAYERS:
-                raise ValueError(f"Máximo {MAX_HIDDEN_LAYERS} capas ocultas.")
             if len(raw) < MIN_HIDDEN_LAYERS:
                 raise ValueError("Se necesita al menos una capa oculta.")
             hidden_sizes = []
             for item in raw:
                 size = safe_int(item, -1)
-                if not (MIN_HIDDEN_NEURONS <= size <= MAX_HIDDEN_NEURONS):
-                    raise ValueError(f"Cada capa debe tener entre {MIN_HIDDEN_NEURONS} y {MAX_HIDDEN_NEURONS} neuronas.")
+                if size < MIN_HIDDEN_NEURONS:
+                    raise ValueError(f"Cada capa debe tener al menos {MIN_HIDDEN_NEURONS} neurona(s).")
                 hidden_sizes.append(size)
         min_cohort = current["min_cohort"]
         if "min_cohort" in data:
@@ -2087,7 +2083,111 @@ class SniffStore:
                 state = rebuild_for_hidden_sizes(self.ai_learning_state(), hidden_sizes)
                 self.set_runtime_config("ai_learning_state", json_dumps(state))
             self.set_runtime_config("ai_learning_config", json_dumps(normalized))
+            # A manual change is the operator's own call, and takes priority
+            # over whatever the background architecture/cohort search was
+            # suggesting - clear that axis's pending suggestion (and its
+            # dismissal memory) rather than let a stale recommendation from
+            # before this edit resurface later.
+            suggestion = self._ai_learning_suggestion_raw()
+            changed = False
+            if hidden_sizes != current["hidden_sizes"] and (suggestion.get("architecture") or suggestion.get("dismissed_architectures")):
+                suggestion["architecture"] = None
+                suggestion["dismissed_architectures"] = []
+                changed = True
+            if min_cohort != current["min_cohort"] and (suggestion.get("cohort") or suggestion.get("dismissed_cohorts")):
+                suggestion["cohort"] = None
+                suggestion["dismissed_cohorts"] = []
+                changed = True
+            if changed:
+                self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
         return normalized
+
+    def _ai_learning_suggestion_raw(self):
+        data = json_loads(self.get_runtime_config("ai_learning_suggestion", ""), default={})
+        if not isinstance(data, dict):
+            data = {}
+        data.setdefault("architecture", None)
+        data.setdefault("cohort", None)
+        data.setdefault("dismissed_architectures", [])
+        data.setdefault("dismissed_cohorts", [])
+        data.setdefault("checked_at_examples", 0)
+        return data
+
+    def get_ai_learning_suggestion(self):
+        """Pending auto-tuning recommendations, if any - see
+        ai_learning.suggest_architecture() and packet_ai.suggest_min_cohort().
+        Generated opportunistically from save_ai_feedback(), never applied on
+        its own; an operator accepts or dismisses each axis independently
+        from the "Ajustes del motor" panel."""
+        data = self._ai_learning_suggestion_raw()
+        from .ai_learning import SUGGESTION_CHECK_INTERVAL
+        revision = int(self.ai_learning_state().get("revision", 0))
+        progress = min(SUGGESTION_CHECK_INTERVAL, max(0, revision - int(data.get("checked_at_revision", 0))))
+        return {"architecture": data["architecture"], "cohort": data["cohort"],
+                "search": data.get("search"),
+                "next_check": {"completed": progress, "required": SUGGESTION_CHECK_INTERVAL}}
+
+    def _refresh_ai_learning_suggestion(self, state):
+        """Re-runs the architecture/cohort search after enough feedback
+        updates, including when the retained example set is full (see
+        SUGGESTION_CHECK_INTERVAL) and persists whatever it finds. Called
+        from inside save_ai_feedback()'s lock, right after a review is
+        recorded, so it always sees the state that was just written."""
+        from .ai_learning import SUGGESTION_CHECK_INTERVAL, suggest_architecture
+        from .packet_ai import suggest_min_cohort
+
+        examples = state.get("examples", [])
+        suggestion = self._ai_learning_suggestion_raw()
+        revision = int(state.get("revision", 0))
+        if revision - int(suggestion.get("checked_at_revision", 0)) < SUGGESTION_CHECK_INTERVAL:
+            return
+        suggestion["checked_at_examples"] = len(examples)
+        suggestion["checked_at_revision"] = revision
+        config = self.get_ai_learning_config()
+        if suggestion["architecture"] is None:
+            report = {}
+            suggestion["architecture"] = suggest_architecture(
+                state, config["hidden_sizes"], dismissed=suggestion["dismissed_architectures"], report=report
+            )
+            suggestion["search"] = report
+        if suggestion["cohort"] is None:
+            labels_by_id = {e["packet_id"]: e["label"] for e in examples}
+            packets = self.list_ai_packets()
+            suggestion["cohort"] = suggest_min_cohort(
+                packets, labels_by_id, config["min_cohort"], dismissed=suggestion["dismissed_cohorts"]
+            )
+        self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
+
+    def apply_ai_learning_suggestion(self, kind):
+        if kind not in ("architecture", "cohort"):
+            raise ValueError("kind debe ser 'architecture' o 'cohort'.")
+        with self._lock:
+            suggestion = self._ai_learning_suggestion_raw()
+            pending = suggestion.get(kind)
+            if not pending:
+                raise ValueError("No hay ninguna sugerencia pendiente para aplicar.")
+            patch = {"hidden_sizes": pending["hidden_sizes"]} if kind == "architecture" else {"min_cohort": pending["min_cohort"]}
+        # set_ai_learning_config takes its own lock and already clears this
+        # axis's suggestion/dismissal memory as a side effect of the change.
+        return self.set_ai_learning_config(patch)
+
+    def dismiss_ai_learning_suggestion(self, kind):
+        if kind not in ("architecture", "cohort"):
+            raise ValueError("kind debe ser 'architecture' o 'cohort'.")
+        with self._lock:
+            suggestion = self._ai_learning_suggestion_raw()
+            pending = suggestion.get(kind)
+            if not pending:
+                raise ValueError("No hay ninguna sugerencia pendiente para descartar.")
+            if kind == "architecture":
+                dismissed = suggestion["dismissed_architectures"] + [pending["hidden_sizes"]]
+                suggestion["dismissed_architectures"] = dismissed[-10:]
+            else:
+                dismissed = suggestion["dismissed_cohorts"] + [pending["min_cohort"]]
+                suggestion["dismissed_cohorts"] = dismissed[-10:]
+            suggestion[kind] = None
+            self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
+        return self.get_ai_learning_suggestion()
 
     def export_ai_model(self):
         from .ai_learning import export_model
@@ -2119,6 +2219,7 @@ class SniffStore:
                 self.ai_learning_state(), packets[0], label, confidence, note, hidden_sizes=hidden_sizes
             )
             self.set_runtime_config("ai_learning_state", json.dumps(state))
+            self._refresh_ai_learning_suggestion(state)
             return {"revision": state.get("revision", 0)}
 
     def count_packets(self, *, proto="", session_id=0, search="", interface="", mode="", since=""):
@@ -3213,6 +3314,22 @@ class SniffStore:
     def set_raw_retention_enabled(self, value: bool) -> bool:
         self.set_runtime_config("raw_retention_enabled", "1" if value else "0")
         return self.get_raw_retention_enabled()
+
+    def get_training_capture_enabled(self) -> bool:
+        """Whether clean (non-alert) packets are also persisted right now.
+
+        Off by default: normally only alerts/muted traffic reach the
+        packets table (see Sniffer._store_packet). Turning this on widens
+        that to every evaluated packet, tagged 'training_capture', so
+        there's benign data alongside the alerts to train the AI classifier
+        on; turning it back off purges exactly those benign rows (see
+        purge_training_capture_packets) while leaving real alerts in place.
+        """
+        return self.get_runtime_config("training_capture_enabled", "0") == "1"
+
+    def set_training_capture_enabled(self, value: bool) -> bool:
+        self.set_runtime_config("training_capture_enabled", "1" if value else "0")
+        return self.get_training_capture_enabled()
 
     def get_monitor_min_severity(self) -> str:
         value = str(self.get_runtime_config("monitor_min_severity", MONITOR_MIN_SEVERITY_DEFAULT) or "").strip().lower()
@@ -5329,6 +5446,41 @@ class SniffStore:
             "flows": max(0, flows_deleted),
             "domains": max(0, domains_deleted),
             "paths": max(0, paths_deleted),
+        }
+
+    def purge_training_capture_packets(self) -> dict:
+        """Delete packets kept only because training-capture mode was
+        persisting every clean packet, not just alerts.
+
+        A row qualifies only if it carries the 'training_capture' tag
+        *and* never earned a real 'monitor' alert tag - a packet that
+        happened to both train-capture and alert (rare, but possible if a
+        detector fires on it slightly out of order) stays, same as any
+        other alert. Deletes packets first, then sweeps the now-orphaned
+        tags/payloads, mirroring enforce_retention's order (deleting tags
+        first would blind the packets query to which rows still qualify).
+        """
+        with self._lock:
+            packets_deleted = self._conn.execute(
+                """
+                DELETE FROM packets
+                WHERE id IN (SELECT packet_id FROM tags WHERE key = 'training_capture')
+                  AND id NOT IN (
+                    SELECT packet_id FROM tags WHERE key = 'monitor' AND severity != ''
+                  )
+                """
+            ).rowcount
+            tags_deleted = self._conn.execute(
+                "DELETE FROM tags WHERE packet_id NOT IN (SELECT id FROM packets)"
+            ).rowcount
+            payloads_deleted = self._conn.execute(
+                "DELETE FROM payloads WHERE packet_id NOT IN (SELECT id FROM packets)"
+            ).rowcount
+            self._conn.commit()
+        return {
+            "packets": max(0, packets_deleted),
+            "tags": max(0, tags_deleted),
+            "payloads": max(0, payloads_deleted),
         }
 
     def read_catalog_file(self, filename: str) -> list[dict]:

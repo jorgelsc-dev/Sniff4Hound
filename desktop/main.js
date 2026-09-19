@@ -348,8 +348,9 @@ function createWindow() {
 function routeUrl(routePath) {
   if (!backendReady) return "";
   const base = new URL(backendReady.url);
-  base.pathname = routePath;
-  base.search = "";
+  const target = new URL(String(routePath || "/"), "http://sniff4hound.local");
+  base.pathname = target.pathname || "/";
+  base.search = target.search || "";
   if (backendReady.auth_required && backendReady.security_code) {
     base.searchParams.set("code", backendReady.security_code);
   }

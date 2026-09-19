@@ -2,18 +2,34 @@
   <div>
     <ViewHeader
       overline="Operations"
-      title="Dashboard"
-      description="Runtime control, live telemetry metrics, and the latest captured traffic."
+      title="Resumen"
+      description="Live telemetry metrics and AI alerts."
       :refresh-loading="loading"
       :show-time-range="true"
       @refresh="load"
     >
       <template #actions-prepend>
+        <v-btn size="small" variant="text" prepend-icon="mdi-view-dashboard-outline" to="/">
+          Dashboards
+        </v-btn>
         <ClearDataButton @cleared="load" />
       </template>
     </ViewHeader>
 
-    <IpRelationshipGraph />
+    <v-row density="compact" class="metric-row mb-4">
+      <v-col v-for="metric in metricCards" :key="metric.key" cols="6" sm="4" lg="2">
+        <v-card variant="tonal" class="pa-2 metric-card">
+          <div class="d-flex align-center justify-space-between ga-2">
+            <div>
+              <div class="text-caption metric-label text-medium-emphasis">{{ metric.label }}</div>
+              <div class="text-subtitle-1 font-weight-bold metric-value" :class="metric.colorClass">{{ metric.value }}</div>
+            </div>
+            <v-icon :icon="metric.icon" class="metric-icon" size="18" :class="metric.colorClass" />
+          </div>
+          <div class="text-caption text-medium-emphasis metric-caption">{{ metric.caption }}</div>
+        </v-card>
+      </v-col>
+    </v-row>
 
     <EntityTablePanel
       title="Alertas y detecciones IA"
@@ -78,369 +94,10 @@
       </template>
     </EntityTablePanel>
 
-    <v-row density="compact" class="metric-row">
-      <v-col v-for="metric in metricCards" :key="metric.key" cols="6" sm="4" lg="2">
-        <v-card variant="tonal" class="pa-2 metric-card">
-          <div class="d-flex align-center justify-space-between ga-2">
-            <div>
-              <div class="text-caption metric-label text-medium-emphasis">{{ metric.label }}</div>
-              <div class="text-subtitle-1 font-weight-bold metric-value" :class="metric.colorClass">{{ metric.value }}</div>
-            </div>
-            <v-icon :icon="metric.icon" class="metric-icon" size="18" :class="metric.colorClass" />
-          </div>
-          <div class="text-caption text-medium-emphasis metric-caption">{{ metric.caption }}</div>
-        </v-card>
-      </v-col>
-    </v-row>
-
     <v-alert v-if="error" type="error" variant="tonal" class="my-3">
       {{ error }}
     </v-alert>
 
-    <v-row class="mt-3" density="compact">
-      <v-col cols="12" md="6">
-        <DataPanel
-          title="Runtime Posture"
-          subtitle="Both engines start stopped. Sniffer blockers and service-listener readiness are surfaced here."
-          v-model:live-enabled="liveRefreshEnabled"
-          :loading="loading"
-          :error="''"
-          :last-updated="lastUpdated"
-          :live-refresh="true"
-          @refresh="load"
-        >
-          <div class="runtime-grid">
-            <div class="runtime-state-card">
-              <div class="runtime-state-card__topline">
-                <div>
-                  <div class="text-subtitle-2">Sniffer</div>
-                  <div class="text-caption text-medium-emphasis">
-                    {{ snifferSummary }}
-                  </div>
-                </div>
-                <div class="d-flex align-center ga-2">
-                  <v-chip size="small" :color="snifferChipColor" variant="tonal" :prepend-icon="snifferStatusIcon">
-                    {{ snifferStatusLabel }}
-                  </v-chip>
-                  <v-switch
-                    :model-value="snifferRunning"
-                    color="success"
-                    density="compact"
-                    hide-details
-                    inset
-                    :loading="engineBusy.sniffer"
-                    :disabled="engineBusy.sniffer"
-                    aria-label="Run the sniffer"
-                    @update:model-value="(value) => toggleEngine('sniffer', value)"
-                  />
-                </div>
-              </div>
-              <div class="runtime-state-card__body">
-                <div class="runtime-stat">
-                  <span class="runtime-stat__label">Packets seen</span>
-                  <span class="runtime-stat__value">{{ snifferPacketsSeen }}</span>
-                </div>
-                <div class="runtime-stat">
-                  <span class="runtime-stat__label">Interfaces</span>
-                  <span class="runtime-stat__value">{{ snifferInterfacesLabel }}</span>
-                </div>
-                <div v-if="snifferUnparseable > 0" class="runtime-stat">
-                  <span class="runtime-stat__label">Unparseable frames</span>
-                  <span class="runtime-stat__value text-warning">{{ snifferUnparseable }}</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="runtime-state-card runtime-state-card--warm">
-              <div class="runtime-state-card__topline">
-                <div>
-                  <div class="text-subtitle-2">Honeypot</div>
-                  <div class="text-caption text-medium-emphasis">
-                    {{ honeypotSummary }}
-                  </div>
-                </div>
-                <div class="d-flex align-center ga-2">
-                  <v-chip size="small" :color="honeypotChipColor" variant="tonal" :prepend-icon="honeypotStatusIcon">
-                    {{ honeypotStatusLabel }}
-                  </v-chip>
-                  <v-switch
-                    :model-value="honeypotRunning"
-                    color="warning"
-                    density="compact"
-                    hide-details
-                    inset
-                    :loading="engineBusy.honeypot"
-                    :disabled="engineBusy.honeypot"
-                    aria-label="Run the honeypot"
-                    @update:model-value="(value) => toggleEngine('honeypot', value)"
-                  />
-                </div>
-              </div>
-              <div class="runtime-state-card__body">
-                <div class="runtime-stat">
-                  <span class="runtime-stat__label">Events seen</span>
-                  <span class="runtime-stat__value">{{ honeypotPacketsSeen }}</span>
-                </div>
-                <div class="runtime-stat">
-                  <span class="runtime-stat__label">Listeners</span>
-                  <span class="runtime-stat__value">{{ honeypotListenersLabel }}</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="runtime-state-card runtime-state-card--ai">
-              <div class="runtime-state-card__topline">
-                <div>
-                  <div class="text-subtitle-2">Monitors</div>
-                  <div class="text-caption text-medium-emphasis">
-                    {{ aiSamplingSummary }}
-                  </div>
-                </div>
-                <div class="d-flex align-center ga-2">
-                  <v-chip size="small" :color="aiSamplingEnabled ? 'success' : 'secondary'" variant="tonal" :prepend-icon="aiSamplingEnabled ? 'mdi-play-circle-outline' : 'mdi-stop-circle-outline'">
-                    {{ aiSamplingEnabled ? "Running" : "Stopped" }}
-                  </v-chip>
-                  <v-switch
-                    :model-value="aiSamplingEnabled"
-                    color="secondary"
-                    density="compact"
-                    hide-details
-                    inset
-                    :loading="aiSamplingBusy"
-                    :disabled="aiSamplingBusy"
-                    aria-label="Run Monitors (labeling/training phase)"
-                    @update:model-value="toggleAiSampling"
-                  />
-                </div>
-              </div>
-              <div class="runtime-state-card__body">
-                <div class="runtime-stat">
-                  <span class="runtime-stat__label">Analizados</span>
-                  <span class="runtime-stat__value">{{ aiSummary.analyzed }}</span>
-                </div>
-                <div class="runtime-stat">
-                  <span class="runtime-stat__label">Posibles falsos negativos</span>
-                  <span class="runtime-stat__value">{{ aiSummary.candidates }}</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="runtime-state-card runtime-state-card--ai">
-              <div class="runtime-state-card__topline">
-                <div>
-                  <div class="text-subtitle-2">IA</div>
-                  <div class="text-caption text-medium-emphasis">
-                    {{ aiAlertModeSummary }}
-                  </div>
-                </div>
-                <div class="d-flex align-center ga-2">
-                  <v-chip size="small" :color="aiAlertModeEnabled ? 'success' : 'secondary'" variant="tonal" :prepend-icon="aiAlertModeEnabled ? 'mdi-play-circle-outline' : 'mdi-stop-circle-outline'">
-                    {{ aiAlertModeEnabled ? "Running" : "Stopped" }}
-                  </v-chip>
-                  <v-switch
-                    :model-value="aiAlertModeEnabled"
-                    color="secondary"
-                    density="compact"
-                    hide-details
-                    inset
-                    :loading="aiAlertModeBusy"
-                    :disabled="aiAlertModeBusy || !rawRetentionEnabled"
-                    :aria-label="rawRetentionEnabled ? 'Run the AI alert engine' : 'AI alert engine requires raw packet retention'"
-                    @update:model-value="toggleAiAlertMode"
-                  />
-                </div>
-              </div>
-              <div class="runtime-state-card__body">
-                <div class="runtime-stat">
-                  <span class="runtime-stat__label">Bytes crudos</span>
-                  <div class="d-flex align-center ga-2">
-                    <span class="runtime-stat__value">{{ rawRetentionEnabled ? "Retenidos" : "No retenidos" }}</span>
-                    <v-switch
-                      :model-value="rawRetentionEnabled"
-                      color="warning"
-                      density="compact"
-                      hide-details
-                      inset
-                      :loading="rawRetentionBusy"
-                      :disabled="rawRetentionBusy"
-                      aria-label="Toggle raw packet retention"
-                      @update:model-value="toggleRawRetention"
-                    />
-                  </div>
-                </div>
-                <div v-if="!rawRetentionEnabled" class="runtime-stat">
-                  <span class="runtime-stat__value text-warning">
-                    El clasificador de IA necesita los bytes crudos del paquete para puntuar. Activa la retencion arriba.
-                  </span>
-                </div>
-                <div v-else class="runtime-stat">
-                  <span class="runtime-stat__label">Modo</span>
-                  <span class="runtime-stat__value">{{ aiSamplingEnabled ? "IA + Monitors" : "Solo IA" }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <v-alert
-            v-if="engineError"
-            type="error"
-            variant="tonal"
-            density="comfortable"
-            class="mt-4"
-          >
-            {{ engineError }}
-          </v-alert>
-
-          <v-alert
-            v-if="bothEnginesRunning"
-            type="info"
-            variant="tonal"
-            density="comfortable"
-            class="mt-4"
-          >
-            Both engines are running. The sniffer also captures the traffic reaching the
-            honeypot, so those connections appear twice: once from raw capture and once as
-            a <span class="mono">honeypot:&lt;port&gt;</span> row.
-          </v-alert>
-
-          <v-alert
-            v-if="snifferBlocked"
-            type="error"
-            variant="tonal"
-            density="comfortable"
-            class="mt-4"
-          >
-            {{ snifferErrorSummary }}
-          </v-alert>
-        </DataPanel>
-      </v-col>
-
-      <v-col cols="12" md="6">
-        <DataPanel
-          title="Protocol Pressure"
-          subtitle="Top observed protocols and quick entry points into the dedicated traffic views."
-          v-model:live-enabled="liveRefreshEnabled"
-          :loading="loading"
-          :last-updated="lastUpdated"
-          :live-refresh="true"
-          @refresh="load"
-        >
-          <div class="d-flex flex-wrap ga-2">
-            <v-btn color="primary" variant="flat" icon to="/soc"
-              aria-label="Open SOC"
-            >
-              <v-icon icon="mdi-shield-search" />
-              <v-tooltip activator="parent" location="bottom">Open SOC</v-tooltip>
-            </v-btn>
-            <v-btn color="info" variant="outlined" icon to="/investigate"
-              aria-label="Investigate Host"
-            >
-              <v-icon icon="mdi-magnify-scan" />
-              <v-tooltip activator="parent" location="bottom">Investigate Host</v-tooltip>
-            </v-btn>
-            <v-btn color="secondary" variant="outlined" icon to="/protocols"
-              aria-label="Protocols"
-            >
-              <v-icon icon="mdi-swap-horizontal" />
-              <v-tooltip activator="parent" location="bottom">Protocols</v-tooltip>
-            </v-btn>
-            <v-btn color="primary" variant="outlined" icon to="/sniffer" aria-label="Open Sniffer">
-              <v-icon icon="mdi-ethernet" />
-              <v-tooltip activator="parent" location="bottom">Open Sniffer</v-tooltip>
-            </v-btn>
-            <v-btn color="warning" variant="outlined" icon to="/honeypot" aria-label="Open Honeypot">
-              <v-icon icon="mdi-spider-web" />
-              <v-tooltip activator="parent" location="bottom">Open Honeypot</v-tooltip>
-            </v-btn>
-          </div>
-
-          <v-divider class="my-4" />
-
-          <div class="text-subtitle-2">Observed protocols</div>
-          <div class="d-flex flex-wrap ga-2 mt-3">
-            <v-chip
-              v-for="item in protocolSeries"
-              :key="item.label"
-              size="small"
-              variant="tonal"
-              color="info"
-            >
-              {{ item.label.toUpperCase() }}: {{ item.value }}
-            </v-chip>
-            <span v-if="!protocolSeries.length" class="text-body-2 text-medium-emphasis">
-              No packets recorded yet.
-            </span>
-          </div>
-
-          <v-divider class="my-4" />
-
-          <div class="text-subtitle-2">WebSocket clients</div>
-          <div class="text-body-2 text-medium-emphasis mt-2">
-            {{ wsClientCount }} dashboards connected to realtime updates.
-          </div>
-        </DataPanel>
-      </v-col>
-    </v-row>
-
-    <v-row class="mt-3" density="compact">
-      <v-col cols="12">
-        <EntityTablePanel
-          title="Latest Packets"
-          subtitle="Newest captured frames from packet capture and honeypot listeners."
-          v-model:live-enabled="liveRefreshEnabled"
-          :rows="recentPackets"
-          :columns="packetColumns"
-          :search-enabled="true"
-          search-label="Search packets"
-          search-placeholder="IP, port, flow, summary..."
-          :search-fields="packetSearchFields"
-          :filter-definitions="packetFilterDefinitions"
-          :expandable-rows="true"
-          :loading="loading"
-          :error="error"
-          :last-updated="lastUpdated"
-          :live-refresh="true"
-          empty-text="No packets visible"
-          :page-size="8"
-          :total-available="packetsMeta.totalAvailable"
-          :truncated="packetsMeta.truncated"
-          :range-label="timeRangeLabel"
-          @refresh="load"
-          @load-more="loadMorePackets"
-        >
-          <template #cell-updated_at="{ value }">
-            {{ formatTimestamp(value) }}
-          </template>
-          <template #cell-interface="{ value }">
-            <v-chip size="x-small" :color="interfaceChipColor(value)" variant="tonal">
-              {{ value || "unknown" }}
-            </v-chip>
-          </template>
-          <template #cell-proto="{ value }">
-            <v-chip size="x-small" color="primary" variant="tonal">
-              {{ String(value || "unknown").toUpperCase() }}
-            </v-chip>
-          </template>
-          <template #cell-state="{ value }">
-            <v-chip size="x-small" :color="statusColor(value)" variant="tonal">
-              {{ value || "unknown" }}
-            </v-chip>
-          </template>
-          <template #cell-src_ip="{ value }">
-            <span class="mono">{{ value || "-" }}</span>
-          </template>
-          <template #cell-dst_ip="{ value }">
-            <span class="mono">{{ value || "-" }}</span>
-          </template>
-          <template #cell-size="{ item }">
-            <span class="meta-cell">{{ buildPacketSizeSummary(item) }}</span>
-          </template>
-          <template #cell-summary="{ item }">
-            <span class="summary-cell">{{ buildPacketSummary(item, 120) || "-" }}</span>
-          </template>
-        </EntityTablePanel>
-      </v-col>
-    </v-row>
 
   </div>
 </template>
@@ -448,10 +105,8 @@
 <script>
 import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
-import DataPanel from "../components/ui/DataPanel.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import ClearDataButton from "../components/ui/ClearDataButton.vue";
-import IpRelationshipGraph from "../components/IpRelationshipGraph.vue";
 import {
   buildPacketSizeSummary,
   buildPacketSummary,
@@ -465,10 +120,8 @@ export default {
   name: "DashboardView",
   components: {
     ViewHeader,
-    DataPanel,
     EntityTablePanel,
     ClearDataButton,
-    IpRelationshipGraph,
   },
   data() {
     return {
@@ -843,7 +496,8 @@ export default {
     // it is a persistent flag on the capture pipeline: every packet that
     // passes exclusions/whitelist gets evaluated by Monitors (rules +
     // anomalies) as usual, and whatever raises an alert is auto-fed to the
-    // IA trainer, labeled "malicious" from that verdict. Turning Monitors
+    // IA trainer: high/critical hits are malicious, other evaluated samples
+    // are benign. Turning Monitors
     // off hands alerting over to the IA classifier alone (see "solo IA"
     // below), which is the point once it has learned enough to run solo.
     toggleAiSampling(enabled) {
@@ -1056,67 +710,6 @@ export default {
   line-height: 1.25;
 }
 
-.runtime-grid {
-  display: grid;
-  /* 4 cards now (Sniffer/Honeypot/Monitors/IA) - a fixed 2-column grid left
-     an odd card alone on its own row with an empty cell beside it. Auto-fit
-     lets it settle into as many columns as fit on wide layouts and wrap
-     down as space shrinks, same as the media-query fallback below already
-     does. */
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 8px;
-}
-
-.runtime-state-card {
-  padding: 8px;
-  border-radius: 8px;
-  border: 1px solid rgba(104, 184, 229, 0.16);
-  background: linear-gradient(180deg, rgba(12, 21, 33, 0.88), rgba(8, 14, 23, 0.84));
-}
-
-.runtime-state-card--warm {
-  border-color: rgba(246, 179, 87, 0.16);
-  background: linear-gradient(180deg, rgba(32, 22, 11, 0.76), rgba(15, 13, 10, 0.82));
-}
-
-.runtime-state-card--ai {
-  border-color: rgba(166, 133, 246, 0.18);
-  background: linear-gradient(180deg, rgba(24, 16, 34, 0.8), rgba(13, 10, 20, 0.84));
-}
-
-.runtime-state-card__topline {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.runtime-state-card__body {
-  display: grid;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.runtime-stat {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 7px;
-  border-radius: 6px;
-  background: rgba(4, 10, 18, 0.44);
-}
-
-.runtime-stat__label {
-  color: rgba(176, 199, 220, 0.76);
-  font-size: 0.7rem;
-}
-
-.runtime-stat__value {
-  font-weight: 700;
-  font-size: 0.8rem;
-}
-
 .flow-cell {
   display: inline-flex;
   align-items: center;
@@ -1158,19 +751,4 @@ export default {
   white-space: nowrap;
 }
 
-/* The panel is now only ~50% of the viewport from md up (it used to be
-   full-width until xl), so the sniffer/honeypot/training/IA grid needs to
-   collapse to one column across that whole md-to-xl range or its cards get
-   cramped - not just below the old single 1264px cutoff. */
-@media (max-width: 1900px) and (min-width: 600px) {
-  .runtime-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 600px) {
-  .runtime-grid {
-    grid-template-columns: 1fr;
-  }
-}
 </style>

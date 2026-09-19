@@ -136,7 +136,6 @@ FRONTEND_DIST_DIR = _resolve_frontend_dist_dir()
 SPA_ROUTES = (
     "/ai",
     "/dashboard",
-    "/radar",
     "/investigate",
     "/sniffer",
     "/honeypot",
@@ -605,10 +604,11 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ai/packets/", "desc": "Local byte-image anomaly analysis of the latest 200 packets."},
     {"method": "POST", "path": "/api/ai/feedback", "desc": "Learn from a reviewed packet: label, confidence and note."},
     {"method": "POST", "path": "/api/packets/review", "desc": "Label any captured packet benign, malicious or unreviewed."},
-    {"method": "GET", "path": "/api/ai/config", "desc": "Current training/AI-alert-mode flags, raw_retention_enabled and learning config (hidden_sizes, min_cohort)."},
-    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable training_enabled (store+auto-train on every evaluated packet, replaces the old sampling_enabled) and/or ai_alert_mode_enabled (AI decides alerts instead of the rule catalog when training is off; requires SNIFF4HOUND_STORE_RAW_PACKET=1), and/or set learning_config: hidden_sizes (classifier hidden-layer widths, one entry per layer, up to 4 layers) and/or min_cohort (minimum group size the LOF outlier detector needs before it scores a protocol/source cohort)."},
+    {"method": "GET", "path": "/api/ai/config", "desc": "Current training/training-capture/AI-alert-mode flags, raw_retention_enabled and learning config (hidden_sizes, min_cohort)."},
+    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable training_enabled (store+auto-train on every evaluated packet, replaces the old sampling_enabled), training_capture_enabled (also persist clean/non-alert packets, tagged training_capture, while on; disabling purges just those rows) and/or ai_alert_mode_enabled (AI decides alerts instead of the rule catalog when training is off; requires SNIFF4HOUND_STORE_RAW_PACKET=1), and/or set learning_config: hidden_sizes (classifier hidden-layer widths, one entry per layer, any number of layers) and/or min_cohort (minimum group size the LOF outlier detector needs before it scores a protocol/source cohort)."},
     {"method": "GET", "path": "/api/ai/model", "desc": "Export the classifier's current architecture and weights."},
     {"method": "POST", "path": "/api/ai/model", "desc": "Import a previously exported classifier architecture and weights."},
+    {"method": "POST", "path": "/api/ai/suggestion", "desc": "Apply or dismiss a pending auto-tuning suggestion (kind: 'architecture' or 'cohort', action: 'apply' or 'dismiss') - see learning_suggestion on /api/ai/packets/."},
     {"method": "GET", "path": "/api/detection/exclusions", "desc": "Shared exclusion filter (IP type, CIDR, port, protocol)."},
     {"method": "POST", "path": "/api/detection/exclusions", "desc": "Set the shared exclusion filter - matching traffic is silenced from Sniffer detection, Monitors and AI sampling (raw capture/storage is unaffected)."},
     {"method": "POST", "path": "/api/console/execute", "desc": "Execute a safe registered Sniff4Hound operation from the dashboard console."},
@@ -2497,10 +2497,12 @@ def _ai_snapshot(threshold=50):
     training_enabled = _get_training_enabled()
     result["sampling_enabled"] = training_enabled
     result["training_enabled"] = training_enabled
+    result["training_capture_enabled"] = store.get_training_capture_enabled()
     result["ai_alert_mode_enabled"] = store.get_runtime_config("ai_alert_mode_enabled", "0") == "1"
     result["raw_retention_enabled"] = store.get_raw_retention_enabled()
     result["exclusion_filters"] = store.get_exclusion_filters()
     result["learning_config"] = learning_config
+    result["learning_suggestion"] = store.get_ai_learning_suggestion()
     return result
 
 
@@ -2521,17 +2523,28 @@ def ai_config(request):
         return {
             "sampling_enabled": training_enabled,
             "training_enabled": training_enabled,
+            "training_capture_enabled": store.get_training_capture_enabled(),
             "ai_alert_mode_enabled": store.get_runtime_config("ai_alert_mode_enabled", "0") == "1",
             "raw_retention_enabled": store.get_raw_retention_enabled(),
             "learning_config": store.get_ai_learning_config(),
         }
     payload = _read_json_body(request)
     has_training = "training_enabled" in payload or "sampling_enabled" in payload
+    has_training_capture = "training_capture_enabled" in payload
     has_raw_retention = "raw_retention_enabled" in payload
     has_ai_alert_mode = "ai_alert_mode_enabled" in payload
     has_learning_config = "learning_config" in payload
-    if not has_training and not has_raw_retention and not has_ai_alert_mode and not has_learning_config:
-        raise ValueError("training_enabled, raw_retention_enabled, ai_alert_mode_enabled or learning_config is required")
+    if (
+        not has_training
+        and not has_training_capture
+        and not has_raw_retention
+        and not has_ai_alert_mode
+        and not has_learning_config
+    ):
+        raise ValueError(
+            "training_enabled, training_capture_enabled, raw_retention_enabled, "
+            "ai_alert_mode_enabled or learning_config is required"
+        )
     response = {}
     if has_training:
         enabled = payload.get("training_enabled", payload.get("sampling_enabled"))
@@ -2540,6 +2553,13 @@ def ai_config(request):
         store.set_runtime_config("training_enabled", "1" if enabled else "0")
         response["sampling_enabled"] = enabled
         response["training_enabled"] = enabled
+    if has_training_capture:
+        enabled = payload.get("training_capture_enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("training_capture_enabled must be a boolean")
+        response["training_capture_enabled"] = store.set_training_capture_enabled(enabled)
+        if not enabled:
+            response["purged"] = store.purge_training_capture_packets()
     if has_raw_retention:
         enabled = payload.get("raw_retention_enabled")
         if not isinstance(enabled, bool):
@@ -2586,6 +2606,24 @@ def ai_model(request):
         return store.export_ai_model()
     payload = _read_json_body(request)
     return store.import_ai_model(payload)
+
+
+@app.api("/api/ai/suggestion", methods=("POST",))
+def ai_suggestion(request):
+    """Accept or dismiss a pending architecture/LOF-cohort auto-tuning
+    suggestion (see ai_learning.suggest_architecture and
+    packet_ai.suggest_min_cohort) - these are only ever proposed, never
+    applied on their own, so this is the one place they take effect."""
+    payload = _read_json_body(request)
+    action = str(payload.get("action") or "").strip().lower()
+    kind = str(payload.get("kind") or "").strip().lower()
+    if kind not in ("architecture", "cohort"):
+        raise ValueError("kind debe ser 'architecture' o 'cohort'.")
+    if action == "apply":
+        return {"learning_config": store.apply_ai_learning_suggestion(kind)}
+    if action == "dismiss":
+        return {"learning_suggestion": store.dismiss_ai_learning_suggestion(kind)}
+    raise ValueError("action debe ser 'apply' o 'dismiss'.")
 
 
 @app.api("/api/ai/feedback", methods=("POST",))

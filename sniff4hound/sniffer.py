@@ -620,6 +620,7 @@ class Sniffer:
         self._anomaly = AnomalyEngine()
         self._rule_throttle = RuleAlertThrottle()
         self._training_enabled = False
+        self._training_capture_enabled = False
         self._ai_alert_mode_enabled = False
         self._ai_model = None
         # Bounded so a training-mode burst at wire speed can never make the
@@ -1006,6 +1007,7 @@ class Sniffer:
             if stored_training == "":
                 stored_training = callable(get_config) and get_config("ai_sampling_enabled", "0")
             self._training_enabled = stored_training == "1"
+            self._training_capture_enabled = callable(get_config) and get_config("training_capture_enabled", "0") == "1"
             self._ai_alert_mode_enabled = callable(get_config) and get_config("ai_alert_mode_enabled", "0") == "1"
             ai_model = None
             if self._ai_alert_mode_enabled:
@@ -1279,6 +1281,7 @@ class Sniffer:
         # que son contadores de tasa independientes del catalogo declarativo.
         ai_only_mode = self._ai_alert_mode_enabled and not self._training_enabled
         monitor_matched = False
+        training_hits = []
         if detection_muted:
             matches = []
             monitor_hits = []
@@ -1291,6 +1294,7 @@ class Sniffer:
                 verdict = self._classify_with_ai(packet)
                 if verdict and verdict.get("is_alert"):
                     ai_hits = [self._ai_hit_from_verdict(verdict)]
+            training_hits = list(catalog_hits)
             combined_hits = catalog_hits + ai_hits
             monitor_matched = bool(combined_hits)
             monitor_hits = self._filter_monitor_hits(combined_hits)
@@ -1304,9 +1308,19 @@ class Sniffer:
             except Exception:
                 LOGGER.exception("Anomaly detection failed")
                 anomaly_hits = []
+            training_hits.extend(anomaly_hits)
             if anomaly_hits:
                 monitor_hits = list(monitor_hits) + list(anomaly_hits)
+        is_alert = bool(monitor_hits)
+        # Training mode wants benign examples alongside alerts, so a clean
+        # (non-muted, non-alerting) packet gets persisted too while it's on,
+        # marked so purge_training_capture_packets() can find and drop
+        # exactly these rows again once training mode goes back off -
+        # without touching the alerts also captured during that window.
+        training_sample = self._training_capture_enabled and not detection_muted and not is_alert
         tags = self._build_packet_tags(packet, matches, monitor_hits)
+        if training_sample:
+            tags.append({"key": "training_capture", "value": "1"})
         packet["rule_hits"] = matches
         packet["monitor_hits"] = monitor_hits
         packet["tags"] = tags
@@ -1333,9 +1347,12 @@ class Sniffer:
         # untagged - "mute detection without hiding capture" is its own,
         # separately relied-on contract (see ExcludedTrafficPipelineTests),
         # not a case of "checked and clean". Whitelisted traffic already
-        # returned above and never reaches this point at all.
-        is_alert = bool(monitor_hits)
-        should_persist = detection_muted or is_alert
+        # returned above and never reaches this point at all. Training
+        # mode (training_sample, computed above) is the one deliberate
+        # exception to "clean traffic is dropped": it persists otherwise-
+        # clean packets on purpose, tagged 'training_capture', to give the
+        # AI classifier benign examples to learn from.
+        should_persist = detection_muted or is_alert or training_sample
         packet["ai_sample"] = False
         if should_persist:
             # Muted/excluded traffic (detection_muted, no is_alert) is
@@ -1343,19 +1360,33 @@ class Sniffer:
             # treatment meant for traffic that actually alerted - it still
             # persists untagged (see the comment above), just without
             # payload_hex/raw_packet, regardless of the global toggle.
-            saved = self.store.register_packet(packet, allow_raw_retention=is_alert)
+            # Training-capture samples get the same raw-bytes treatment as
+            # alerts (still gated by the global raw-retention toggle inside
+            # register_packet) since bytes are the whole point of capturing
+            # them.
+            saved = self.store.register_packet(packet, allow_raw_retention=is_alert or training_sample)
             self._touch_packet(saved or packet, stored=True)
             self._broadcast_packet(saved or packet, persisted=True)
             self._record_intel(packet)
             if (
                 self._training_enabled
                 and not detection_muted
+                and filter_enabled
                 and self._store_raw_packet_bytes
                 and saved
                 and saved.get("id")
             ):
-                confidence = self._training_confidence(monitor_hits)
-                self._enqueue_ai_training(saved["id"], "malicious", confidence, "auto:training")
+                # Labels use the actual monitor verdict before notification
+                # suppression/throttling. Only red (high/critical) hits are
+                # positive training examples; informational/lesser hits and
+                # evaluated clean capture samples are benign by policy.
+                malicious = any(
+                    str(hit.get("severity") or "info").strip().lower() in {"high", "critical"}
+                    for hit in training_hits
+                )
+                label = "malicious" if malicious else "benign"
+                confidence = self._training_confidence(training_hits) if malicious else 0.6
+                self._enqueue_ai_training(saved["id"], label, confidence, "auto:training")
         else:
             # Clean traffic can arrive at wire speed; broadcasting a full
             # "packet" event for every one of them would flood connected

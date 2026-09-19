@@ -7,6 +7,7 @@ otherwise the device stays ``Unknown`` instead of presenting a guess as fact.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 
 
@@ -65,6 +66,22 @@ _PROTOCOL_HINTS = {
     "mqtt": ("IoT", 5), "coap": ("IoT", 6), "rtsp": ("Camera", 4),
 }
 
+# Whole-token matching, not "keyword in text": a plain substring check let
+# short/common keywords fire on unrelated text that merely happened to
+# contain them (e.g. "ios" inside "servicios"/"radios", "ipp" inside
+# "shipping", "cdp" inside a random hex/base64 run) - the classifier looked
+# confident while actually guessing. A keyword now only counts when it is
+# not glued to another letter/digit on either side, so it has to appear as
+# its own token/phrase in the observed metadata to count as evidence.
+def _compile_keyword(keyword: str) -> "re.Pattern[str]":
+    return re.compile(r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])")
+
+
+_KEYWORD_PATTERNS = {
+    kind: [(keyword, _compile_keyword(keyword), weight) for keyword, weight in keywords.items()]
+    for kind, keywords in _KEYWORDS.items()
+}
+
 
 def infer_device_profile(observations) -> dict:
     """Return a label, confidence and short evidence list.
@@ -108,11 +125,11 @@ def infer_device_profile(observations) -> dict:
             evidence[kind].append(f"{proto.upper()} protocol")
 
     searchable = " ".join(text_parts)[:20000]
-    for kind, keywords in _KEYWORDS.items():
-        for keyword, weight in keywords.items():
-            if keyword in searchable:
+    for kind, patterns in _KEYWORD_PATTERNS.items():
+        for keyword, pattern, weight in patterns:
+            if pattern.search(searchable):
                 scores[kind] += weight
-                evidence[kind].append(f'metadata “{keyword}”')
+                evidence[kind].append(f'metadata "{keyword}"')
 
     if not scores:
         return {"device_type": "Unknown", "device_confidence": "unknown", "device_evidence": []}

@@ -35,93 +35,13 @@
       </v-alert>
     </v-card>
 
-    <v-card class="pa-5 mb-4" variant="tonal">
-      <div class="d-flex align-center flex-wrap ga-3 mb-2">
-        <h2 class="text-h6 mb-0">Ajustes del motor</h2>
-        <v-chip v-if="learningConfig" size="small" color="primary">
-          {{ learningConfig.hidden_sizes.length }} capa(s) oculta(s) · {{ learningConfig.hidden_sizes.join('-') }}
-        </v-chip>
-        <v-chip v-if="effectiveness.ready" size="small" :color="effectivenessColor">
-          Efectividad {{ Math.round(effectiveness.accuracy * 100) }}% ({{ effectiveness.correct }}/{{ effectiveness.total }})
-        </v-chip>
-        <v-chip v-else size="small" color="warning">Efectividad: faltan revisiones (mín. 3 benignos y 3 maliciosos)</v-chip>
-      </div>
-      <p class="text-body-2 text-medium-emphasis mb-3">
-        La red neuronal aprende de tus revisiones (abajo); el detector LOF agrupa paquetes del mismo
-        protocolo para medir cuáles son atípicos. Ambos motores tienen parámetros reales que puedes
-        ajustar - capas y neuronas por capa para la red, tamaño mínimo de grupo para el LOF. El LOF no puntúa grupos por debajo de ese mínimo.
-      </p>
-      <v-alert v-if="learningConfigError" type="error" density="comfortable" class="mb-3">{{ learningConfigError }}</v-alert>
-      <v-row dense v-if="learningConfigDraft">
-        <v-col cols="12" md="6">
-          <div class="d-flex align-center justify-space-between">
-            <div class="text-caption text-medium-emphasis">Capas ocultas y neuronas por capa</div>
-            <v-btn
-              size="x-small"
-              variant="tonal"
-              color="primary"
-              prepend-icon="mdi-plus"
-              :disabled="learningConfigDraft.hidden_sizes.length >= maxHiddenLayers"
-              @click="addHiddenLayer"
-            >
-              Añadir capa
-            </v-btn>
-          </div>
-          <div v-for="(size, index) in learningConfigDraft.hidden_sizes" :key="index" class="hidden-layer-row">
-            <span class="hidden-layer-row__label">Capa {{ index + 1 }}</span>
-            <v-slider
-              :model-value="size"
-              :min="hiddenNeuronsMin"
-              :max="hiddenNeuronsMax"
-              :step="1"
-              thumb-label="always"
-              hide-details
-              density="compact"
-              @update:model-value="(value) => setHiddenLayerSize(index, value)"
-            />
-            <v-btn
-              icon
-              size="x-small"
-              variant="text"
-              color="error"
-              :disabled="learningConfigDraft.hidden_sizes.length <= 1"
-              aria-label="Quitar capa"
-              @click="removeHiddenLayer(index)"
-            >
-              <v-icon icon="mdi-close" size="16" />
-            </v-btn>
-          </div>
-          <p class="text-caption text-medium-emphasis mt-1">
-            Más capas/neuronas: puede aprender patrones más complejos con más ejemplos, pero requiere más
-            revisiones para no sobreajustar. Cambiar la forma reentrena el modelo desde tus ejemplos guardados.
-          </p>
-        </v-col>
-        <v-col cols="12" md="6">
-          <div class="text-caption text-medium-emphasis">Tamaño mínimo de grupo (detector LOF)</div>
-          <v-slider v-model="learningConfigDraft.min_cohort" :min="minCohortMin" :max="minCohortMax" :step="1"
-            thumb-label="always" hide-details />
-          <p class="text-caption text-medium-emphasis mt-1">
-            Cuántos paquetes del mismo protocolo hacen falta antes de que el LOF empiece a puntuar ese grupo.
-            Más bajo: cubre protocolos poco frecuentes antes, pero con puntuaciones menos estables.
-          </p>
-        </v-col>
-      </v-row>
-      <div class="d-flex flex-wrap ga-2 mt-3">
-        <v-btn color="primary" :loading="savingLearningConfig" @click="saveLearningConfig">Guardar y reentrenar</v-btn>
-        <v-btn variant="text" :disabled="savingLearningConfig" @click="resetLearningConfigDraft">Descartar cambios</v-btn>
-        <v-spacer />
-        <v-btn variant="outlined" color="secondary" prepend-icon="mdi-tray-arrow-down" :loading="exportingModel" @click="exportModel">
-          Exportar modelo
-        </v-btn>
-        <v-btn variant="outlined" color="secondary" prepend-icon="mdi-tray-arrow-up" :loading="importingModel" @click="triggerImport">
-          Importar modelo
-        </v-btn>
-        <input ref="importInput" type="file" accept="application/json" class="d-none" @change="importModel" />
-      </div>
-      <v-alert v-if="modelIoMessage" :type="modelIoError ? 'error' : 'success'" density="comfortable" class="mt-3">
-        {{ modelIoMessage }}
-      </v-alert>
-    </v-card>
+    <NeuralNetworkConfigPanel
+      :learning-config="learningConfig"
+      :effectiveness="effectiveness"
+      :suggestion="suggestion"
+      @config-saved="handleConfigSaved"
+      @reload-requested="load"
+    />
     <template v-if="result.learning">
       <NeuralGraph ref="graph" :learning="result.learning" :packet="selectedPacket" />
       <v-card class="pa-5 mb-4" variant="tonal">
@@ -156,35 +76,56 @@
     <v-alert v-if="!loading && !visibleRows.length" type="info" variant="tonal">
       {{ result.rows.length ? 'No hay candidatos con el umbral aplicado. Esto no demuestra ausencia de amenazas.' : 'Todavía no hay paquetes. Activa la captura y el muestreo para incluir tráfico sin alertas.' }}
     </v-alert>
-    <v-row>
-      <v-col v-for="packet in visibleRows" :key="packet.id" cols="12" sm="6" lg="4">
-        <v-card class="pa-4 h-100" variant="tonal">
-          <div class="d-flex align-center justify-space-between ga-2 mb-3">
-            <strong>#{{ packet.id }} · {{ packet.proto || 'unknown' }}</strong>
-            <v-chip :color="packet.candidate ? 'warning' : 'primary'" size="small">Prioridad {{ packet.priority_score ?? packet.score ?? '—' }}/100</v-chip>
-          </div>
-          <div class="packet-image">
-            <img v-if="packet.image" :src="packet.image" :alt="`Bytes del paquete ${packet.id} en escala de grises`" />
-            <span v-else>Sin bytes disponibles</span>
-          </div>
-          <div class="d-flex flex-wrap ga-2 mt-3">
-            <v-chip size="small">LOF {{ packet.score ?? '—' }}</v-chip>
-            <v-chip size="small">Neuronal {{ packet.neural_score ?? '—' }}</v-chip>
-            <v-chip v-if="packet.feedback" color="success" size="small">Revisado: {{ packet.feedback.label }}</v-chip>
-          </div>
-          <p class="endpoints mt-3">{{ packet.src_ip || '?' }}:{{ packet.src_port || 0 }} → {{ packet.dst_ip || '?' }}:{{ packet.dst_port || 0 }}</p>
-          <div class="text-caption text-medium-emphasis mt-2">{{ packet.byte_count }} bytes · {{ packet.width }} × {{ packet.height }} píxeles · {{ packet.partial ? 'Imagen parcial' : 'Trama completa' }}</div>
-          <div class="text-caption text-medium-emphasis">{{ packet.created_at }} · Grupo: {{ packet.cohort_size }} imágenes</div>
-          <v-progress-linear v-if="packet.score !== null" :model-value="packet.score" :color="packet.candidate ? 'warning' : 'primary'" class="my-3" rounded height="6" />
-          <p class="text-body-2 mt-3">{{ statusLabel(packet) }}</p>
-          <div class="d-flex flex-wrap ga-2 mt-3">
-            <v-btn size="small" :variant="selectedId === packet.id ? 'flat' : 'outlined'" @click="inspectPacket(packet)">Ver neuronas</v-btn>
-            <v-btn size="small" color="primary" :disabled="!packet.byte_count" @click="openReview(packet)">Revisar / enseñar</v-btn>
-          </div>
-          <p v-if="packet.lof !== null" class="text-caption mt-2">Densidad relativa LOF: {{ packet.lof }}. Valores mayores indican un patrón más aislado.</p>
-        </v-card>
-      </v-col>
-    </v-row>
+    <v-card v-else class="pa-0 mb-4 packet-table-card" variant="tonal">
+      <v-table density="compact" class="packet-table">
+        <thead>
+          <tr>
+            <th>Imagen</th>
+            <th>Paquete</th>
+            <th>Puntuación</th>
+            <th>Origen → Destino</th>
+            <th>Detalle</th>
+            <th>Estado</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="packet in visibleRows" :key="packet.id" :class="{ 'is-selected': selectedId === packet.id }">
+            <td>
+              <div class="packet-thumb">
+                <img v-if="packet.image" :src="packet.image" :alt="`Bytes del paquete ${packet.id} en escala de grises`" />
+                <span v-else class="packet-thumb__empty">—</span>
+              </div>
+            </td>
+            <td>
+              <div><strong>#{{ packet.id }}</strong> · {{ packet.proto || 'unknown' }}</div>
+              <v-chip :color="packet.candidate ? 'warning' : 'primary'" size="x-small" class="mt-1">Prioridad {{ packet.priority_score ?? packet.score ?? '—' }}/100</v-chip>
+            </td>
+            <td>
+              <div class="d-flex flex-wrap ga-1">
+                <v-chip size="x-small">LOF {{ packet.score ?? '—' }}</v-chip>
+                <v-chip size="x-small">Neuronal {{ packet.neural_score ?? '—' }}</v-chip>
+                <v-chip v-if="packet.feedback" color="success" size="x-small">Revisado: {{ packet.feedback.label }}</v-chip>
+              </div>
+              <v-progress-linear v-if="packet.score !== null" :model-value="packet.score" :color="packet.candidate ? 'warning' : 'primary'" class="mt-2" rounded height="4" />
+              <div v-if="packet.lof !== null" class="text-caption text-medium-emphasis mt-1">LOF rel. {{ packet.lof }}</div>
+            </td>
+            <td class="endpoints">{{ packet.src_ip || '?' }}:{{ packet.src_port || 0 }} → {{ packet.dst_ip || '?' }}:{{ packet.dst_port || 0 }}</td>
+            <td class="text-caption text-medium-emphasis">
+              <div>{{ packet.byte_count }} bytes · {{ packet.width }}×{{ packet.height }} px · {{ packet.partial ? 'parcial' : 'completa' }}</div>
+              <div>{{ packet.created_at }} · grupo {{ packet.cohort_size }}</div>
+            </td>
+            <td class="text-body-2 packet-status">{{ statusLabel(packet) }}</td>
+            <td>
+              <div class="d-flex flex-column ga-1">
+                <v-btn size="x-small" :variant="selectedId === packet.id ? 'flat' : 'outlined'" @click="inspectPacket(packet)">Ver neuronas</v-btn>
+                <v-btn size="x-small" color="primary" :disabled="!packet.byte_count" @click="openReview(packet)">Revisar / enseñar</v-btn>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </v-table>
+    </v-card>
     <v-dialog v-model="reviewOpen" max-width="560" :persistent="savingFeedback">
       <v-card class="pa-5">
         <h2 class="text-h6">Revisar paquete #{{ reviewPacket?.id }}</h2>
@@ -203,6 +144,7 @@
 import { computed, onMounted, onBeforeUnmount, ref } from "vue";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import NeuralGraph from "../components/NeuralGraph.vue";
+import NeuralNetworkConfigPanel from "../components/ai/NeuralNetworkConfigPanel.vue";
 import store from "../state/appStore";
 
 const result = ref({ rows: [], sampling_enabled: false, learning_config: null });
@@ -231,135 +173,21 @@ const savingFeedback = ref(false);
 const feedbackError = ref("");
 const labels = [{ title: "Benigno", value: "benign" }, { title: "Malicioso", value: "malicious" }, { title: "Retirar etiqueta", value: "unreviewed" }];
 
-// Server-clamped bounds (sniff4hound.ai_learning / sniff4hound.packet_ai) -
-// mirrored here only for the slider range; the backend re-validates on save.
-const hiddenNeuronsMin = 3;
-const hiddenNeuronsMax = 16;
-const maxHiddenLayers = 4;
-const minCohortMin = 5;
-const minCohortMax = 200;
-
 const learningConfig = computed(() => result.value.learning_config);
-const learningConfigDraft = ref(null);
-const learningConfigLoaded = ref(false);
-const savingLearningConfig = ref(false);
-const learningConfigError = ref("");
 const effectiveness = computed(() => result.value.learning?.effectiveness || { ready: false, accuracy: null, correct: 0, total: 0 });
-const effectivenessColor = computed(() => {
-  const accuracy = effectiveness.value.accuracy;
-  if (accuracy === null) return "warning";
-  if (accuracy >= 0.8) return "success";
-  if (accuracy >= 0.5) return "warning";
-  return "error";
-});
-
-function resetLearningConfigDraft() {
-  const source = learningConfig.value || { hidden_sizes: [6], min_cohort: 20 };
-  learningConfigDraft.value = { hidden_sizes: [...source.hidden_sizes], min_cohort: source.min_cohort };
-  learningConfigError.value = "";
-}
-
-function addHiddenLayer() {
-  if (learningConfigDraft.value.hidden_sizes.length >= maxHiddenLayers) return;
-  learningConfigDraft.value.hidden_sizes.push(6);
-}
-
-function removeHiddenLayer(index) {
-  if (learningConfigDraft.value.hidden_sizes.length <= 1) return;
-  learningConfigDraft.value.hidden_sizes.splice(index, 1);
-}
-
-function setHiddenLayerSize(index, value) {
-  learningConfigDraft.value.hidden_sizes.splice(index, 1, value);
-}
-
-const importInput = ref(null);
-const exportingModel = ref(false);
-const importingModel = ref(false);
-const modelIoMessage = ref("");
-const modelIoError = ref(false);
-
-async function exportModel() {
-  exportingModel.value = true;
-  modelIoMessage.value = "";
-  modelIoError.value = false;
-  try {
-    const payload = await store.fetchJsonPromise("/api/ai/model");
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `sniff4hound-ai-model-${payload.hidden_sizes.join("-")}.json`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    modelIoMessage.value = "Modelo exportado.";
-  } catch (err) {
-    modelIoError.value = true;
-    modelIoMessage.value = err.message || "No se pudo exportar el modelo.";
-  } finally {
-    exportingModel.value = false;
-  }
-}
-
-function triggerImport() {
-  importInput.value?.click();
-}
-
-async function importModel(event) {
-  const file = event.target.files?.[0];
-  event.target.value = "";
-  if (!file) return;
-  importingModel.value = true;
-  modelIoMessage.value = "";
-  modelIoError.value = false;
-  try {
-    const text = await file.text();
-    const payload = JSON.parse(text);
-    const config = await store.fetchJsonPromise("/api/ai/model", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    modelIoMessage.value = `Modelo importado: ${config.hidden_sizes.join("-")}.`;
-    await load();
-  } catch (err) {
-    modelIoError.value = true;
-    modelIoMessage.value = err.message || "No se pudo importar el modelo.";
-  } finally {
-    importingModel.value = false;
-  }
-}
-
-async function saveLearningConfig() {
-  savingLearningConfig.value = true;
-  learningConfigError.value = "";
-  try {
-    const config = await store.fetchJsonPromise("/api/ai/config", {
-      method: "POST",
-      body: JSON.stringify({ learning_config: { hidden_sizes: learningConfigDraft.value.hidden_sizes, min_cohort: learningConfigDraft.value.min_cohort } }),
-    });
-    result.value.learning_config = config.learning_config;
-    resetLearningConfigDraft();
-    await load();
-  } catch (err) {
-    learningConfigError.value = err.message || "No se pudo guardar la configuración.";
-  } finally {
-    savingLearningConfig.value = false;
-  }
+const suggestion = computed(() => result.value.learning_suggestion || { architecture: null, cohort: null });
+function handleConfigSaved(config) {
+  result.value.learning_config = config;
 }
 
 function applySnapshot(snapshot) {
-  if (disposed || (snapshot.learning?.revision ?? 0) < (result.value.learning?.revision ?? 0)) return;
+  if (disposed || !snapshot) return;
+  if ((snapshot.learning?.revision ?? 0) < (result.value.learning?.revision ?? 0)) return;
   if (snapshot.generated_at < (result.value.generated_at || "")) return;
   result.value = snapshot;
   lastReceived = Date.now();
   lastUpdate.value = new Date(snapshot.generated_at).toLocaleTimeString();
   error.value = "";
-  if (!learningConfigLoaded.value && snapshot.learning_config) {
-    learningConfigLoaded.value = true;
-    resetLearningConfigDraft();
-  }
 }
 
 function openFeed() {
@@ -454,9 +282,43 @@ onBeforeUnmount(() => { disposed = true; feed?.close(); clearInterval(fallbackTi
 </script>
 
 <style scoped>
-.packet-image { height: 160px; display: flex; align-items: center; justify-content: center; background: #080c13; border: 1px solid #344054; border-radius: 8px; overflow: hidden; }
-.packet-image img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
-.endpoints { overflow-wrap: anywhere; font-family: monospace; }
-.hidden-layer-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
-.hidden-layer-row__label { flex: 0 0 56px; font-size: 0.76rem; color: var(--text-dim); }
+.endpoints { overflow-wrap: anywhere; font-family: monospace; font-size: 0.78rem; }
+.packet-status { max-width: 260px; }
+
+/* Vuetify's v-table__wrapper clips horizontal overflow by default, which
+   would crop the enlarged hover preview below - this table's content
+   otherwise fits the card width, so trading that clipping away is safe. */
+.packet-table :deep(.v-table__wrapper) { overflow: visible; }
+.packet-table :deep(td) { vertical-align: top; padding-top: 10px; padding-bottom: 10px; }
+
+.packet-thumb {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #080c13;
+  border: 1px solid #344054;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.packet-thumb:hover { overflow: visible; z-index: 20; }
+.packet-thumb__empty { font-size: 0.6rem; color: var(--text-dim); }
+.packet-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  transform-origin: top left;
+  transition: transform 0.15s ease;
+}
+/* Scaling (not resizing) keeps this a pure hover effect - it never shifts
+   row layout, only what paints on top once it's showing. */
+.packet-thumb:hover img {
+  transform: scale(6);
+  background: #080c13;
+  border-radius: 4px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px #344054;
+}
 </style>

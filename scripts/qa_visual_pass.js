@@ -29,7 +29,6 @@ const ROUTES = [
   { label: 'Monitors', path: '/monitors' },
   { label: 'Settings', path: '/settings' },
   { label: 'Chat', path: '/chat' },
-  { label: 'Radar', path: '/radar' },
 ];
 
 function fetchWsUrl() {

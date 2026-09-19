@@ -87,13 +87,34 @@ class LearningTests(unittest.TestCase):
         high, _ = train([dict(features=[1.0] * 8, label='malicious', confidence=3)])
         self.assertGreater(forward(high, [1.0] * 8)[1], forward(low, [1.0] * 8)[1])
 
-    def test_replay_capacity_evicts_oldest_example(self):
-        examples = [dict(key=str(i), features=[0.0] * 8, label='benign', confidence=1, note='') for i in range(200)]
+    def test_replay_capacity_evicts_oldest_example_of_the_same_class_only(self):
+        # A shared FIFO cap would let a flood of one class evict the other -
+        # exactly what happens when benign auto-labelled traffic vastly
+        # outnumbers real (malicious) alerts. The cap is per label instead
+        # (MAX_EXAMPLES_PER_CLASS), so a handful of retained malicious
+        # examples survive an arbitrarily large run of benign ones.
+        examples = [dict(key=f'benign-{i}', features=[0.0] * 8, label='benign', confidence=1, note='') for i in range(500)]
+        examples += [dict(key=f'malicious-{i}', features=[1.0] * 8, label='malicious', confidence=1, note='') for i in range(3)]
         with patch('sniff4hound.ai_learning.train', return_value=(initial_model(), [])):
-            state = update_feedback({'examples': examples}, packet(), 'malicious', 1, '')
-        self.assertEqual(len(state['examples']), 200)
-        self.assertEqual(state['examples'][0]['key'], '1')
+            state = update_feedback({'examples': examples}, packet(), 'benign', 1, '')
+        # The new benign example pushed benign over its 500 cap, evicting
+        # only the oldest benign one - all 3 malicious examples are intact.
+        self.assertEqual(len(state['examples']), 503)
+        self.assertEqual(sum(1 for e in state['examples'] if e['label'] == 'malicious'), 3)
+        self.assertEqual(sum(1 for e in state['examples'] if e['label'] == 'benign'), 500)
+        self.assertNotIn('benign-0', [e['key'] for e in state['examples']])
         self.assertEqual(state['examples'][-1]['key'], fingerprint(packet()))
+
+    def test_trim_examples_per_class_preserves_chronological_order(self):
+        from sniff4hound.ai_learning import _trim_examples_per_class
+
+        examples = [
+            dict(key='b0', label='benign'), dict(key='m0', label='malicious'),
+            dict(key='b1', label='benign'), dict(key='b2', label='benign'),
+            dict(key='m1', label='malicious'),
+        ]
+        trimmed = _trim_examples_per_class(examples, limit=1)
+        self.assertEqual([e['key'] for e in trimmed], ['b2', 'm1'])
 
     def test_warmup_does_not_present_untrained_score(self):
         rows = [packet()]
@@ -283,21 +304,25 @@ class LearningApiTests(unittest.TestCase):
         self.assertEqual(hidden_sizes_of(self.store.ai_learning_state()['model']), [6])
 
         with self.assertRaises(ValueError):
-            self.store.set_ai_learning_config({'hidden_sizes': [2]})
+            self.store.set_ai_learning_config({'hidden_sizes': [0]})
         with self.assertRaises(ValueError):
             self.store.set_ai_learning_config({'hidden_sizes': []})
         with self.assertRaises(ValueError):
-            self.store.set_ai_learning_config({'hidden_sizes': [6, 6, 6, 6, 6]})
-        with self.assertRaises(ValueError):
             self.store.set_ai_learning_config({'min_cohort': 1000})
 
-        updated = self.store.set_ai_learning_config({'hidden_sizes': [9, 5]})
-        self.assertEqual(updated, {'hidden_sizes': [9, 5], 'min_cohort': 20})
+        # Depth/width are the operator's own call now - no upper bound (see
+        # ai_learning.MIN_HIDDEN_NEURONS/MIN_HIDDEN_LAYERS), so a shape that
+        # used to be rejected (5 layers) and a single-neuron layer both save.
+        updated = self.store.set_ai_learning_config({'hidden_sizes': [9, 5, 6, 6, 6]})
+        self.assertEqual(updated, {'hidden_sizes': [9, 5, 6, 6, 6], 'min_cohort': 20})
         # Rebuilt immediately - not only on the next feedback event - so an
         # existing example's weights are never silently shape-mismatched.
         state = self.store.ai_learning_state()
-        self.assertEqual(hidden_sizes_of(state['model']), [9, 5])
+        self.assertEqual(hidden_sizes_of(state['model']), [9, 5, 6, 6, 6])
         self.assertEqual(len(state['examples']), 1)
+
+        updated = self.store.set_ai_learning_config({'hidden_sizes': [1]})
+        self.assertEqual(updated, {'hidden_sizes': [1], 'min_cohort': 20})
 
     def test_export_and_import_ai_model_via_store(self):
         self.store.save_ai_feedback(self.row['id'], 'malicious', 3, 'evidence')

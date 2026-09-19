@@ -2,10 +2,33 @@ import { createRouter, createWebHistory } from "vue-router";
 import { appBaseUrl } from "../utils/runtimeEnv";
 
 const routes = [
-  { path: "/ai", name: "ai", component: () => import("../views/AiView.vue") },
-  { path: "/", name: "dashboard", component: () => import("../views/DashboardView.vue") },
-  { path: "/chat", name: "chat", component: () => import("../views/ChatView.vue") },
-  { path: "/radar", name: "radar", component: () => import("../views/RadarView.vue") },
+  { path: "/ai", name: "ai", component: () => import("../views/AiHubView.vue") },
+  { path: "/ai/overview", name: "ai-overview", component: () => import("../views/AiView.vue") },
+  {
+    path: "/ai/neural-network",
+    name: "ai-neural-network",
+    component: () => import("../views/ai/NeuralNetworkView.vue"),
+    meta: { fullWidth: true, canvasOnly: true },
+  },
+  { path: "/", name: "dashboard", component: () => import("../views/DashboardHubView.vue") },
+  {
+    path: "/dashboard/overview",
+    name: "dashboard-overview",
+    component: () => import("../views/DashboardView.vue"),
+  },
+  {
+    path: "/dashboard/node-map",
+    name: "dashboard-node-map",
+    component: () => import("../views/dashboard/NodeMapDashboardView.vue"),
+    meta: { fullWidth: true, canvasOnly: true },
+  },
+  {
+    path: "/dashboard/live-map",
+    name: "dashboard-live-map",
+    component: () => import("../views/dashboard/LiveMapDashboardView.vue"),
+    meta: { fullWidth: true, canvasOnly: true },
+  },
+  { path: "/chat", name: "chat", component: () => import("../views/ChatView.vue"), meta: { fullWidth: true, canvasOnly: true } },
   { path: "/investigate", name: "investigate", component: () => import("../views/InvestigateView.vue") },
   { path: "/sniffer", name: "sniffer", component: () => import("../views/SnifferView.vue") },
   { path: "/soc", name: "soc", component: () => import("../views/SocView.vue") },

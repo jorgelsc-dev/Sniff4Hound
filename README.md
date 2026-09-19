@@ -32,8 +32,12 @@ Punto importante:
 - Persistencia SQLite para sesiones, flows, packets, payloads, tags y runtime config.
 - Modo `honeypot` con un catalogo de 10k+ listeners TCP/UDP; el set curado se habilita por defecto y el resto queda disponible para activar bajo demanda.
 - Dashboard Vue 3 + Vuetify servido por el mismo proceso.
+- La vista inicial muestra métricas de telemetría, actividad diaria, protocolos, hosts, puertos y etiquetas del período seleccionado. Incluye el estado actual de Sniffer/Honeypot y accesos a alertas IA y mapas; se actualiza con los eventos de captura y permite actualización manual.
 - Autenticacion por token de sesion y JWT HS256.
 - WebSocket en vivo para eventos `packet`, `stats_update`, `runtime_mode` y chat.
+- Chat con conversación centrada y herramientas permanentes arriba a la derecha: búsqueda, controles de motores y los 19 comandos. Seleccionar un comando lo coloca en el editor; Enter lo envía, Shift + Enter añade una línea y Tab autocompleta.
+- La vista de red neuronal ajusta el diagrama completo al ancho y alto disponibles. Los ajustes flotan en un contenedor transparente y compacto; el gráfico reserva su espacio automáticamente para evitar recortes. El zoom permite explorar detalles y «Ajustar vista» vuelve a la escala inicial.
+- El panel de aprendizaje muestra el mínimo de 3 ejemplos por clase, actualizaciones y curva de error. El ranking de arquitecturas muestra la última comparación sobre los ejemplos de entrenamiento (no validación independiente), su revisión y las actualizaciones hasta la próxima búsqueda. La búsqueda se comprueba cada 5 actualizaciones incluso con el historial de ejemplos lleno; las mejoras requieren aplicación manual. La API de sugerencias incluye `search` y `next_check`.
 - Catalogos editables para reglas, probes y presets desde API o archivos JSON.
 
 ## Requisitos
@@ -460,8 +464,15 @@ deterministically; an initial graph does **not** imply a trained model.
 Use **Revisar / enseñar** to label a packet benign or malicious, supply a
 confidence weight of 1–3, and record evidence. These are supervised labels,
 not autonomous reinforcement learning or a reward for agreeing with the model.
-Only explicit operator labels train the network; predictions never become
-training labels automatically. The last 200 distinct examples are retained.
+With Monitors training enabled and raw retention available, stored packets
+also receive automatic labels: high/critical monitor detections are malicious;
+info/low/medium detections and evaluated packets with no detections are benign.
+Labels use monitor hits before notification suppression or throttling. Muted,
+excluded, and monitor-disabled traffic does not receive automatic labels.
+Clean packets are available for training when training capture is enabled;
+this labeling policy does not enable additional packet retention. Existing
+examples are not relabeled retroactively. Predictions never become training
+labels automatically. The last 200 distinct examples are retained.
 Identical bounded bytes with the same protocol/source/completeness share one
 label, so repeating a click cannot multiply its reward. The latest operator
 revision wins; shared session authentication does not identify individual
