@@ -24,6 +24,10 @@ set -e
 VENDOR_DIR=/usr/lib/sniff4hound/vendor
 PYTHON_BIN=/usr/bin/python3
 REGEX_REQUIREMENT="regex>=2025.7.34"
+DESKTOP_DIR=/usr/lib/sniff4hound/desktop
+DESKTOP_ENTRY=/usr/share/applications/sniff4hound.desktop
+DESKTOP_ICON=/usr/share/icons/hicolor/512x512/apps/sniff4hound.png
+DESKTOP_BIN=/usr/bin/sniff4hound-desktop
 
 rebuild_regex_via_venv() {
   tmp_root="$(mktemp -d)"
@@ -51,6 +55,33 @@ rebuild_regex_via_venv() {
   find "$VENDOR_DIR"/regex -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 }
 
+# The package always ships both the CLI and the desktop app's files (dpkg
+# has no notion of "install this file only if..."), so this decides which
+# ones actually stick around. postinst runs as root during `dpkg -i`/`apt
+# install`, frequently from a plain non-graphical terminal even on a machine
+# that does have a desktop environment installed - so this checks whether
+# the SYSTEM is configured for a graphical session at all, not just whether
+# this particular shell happens to have one.
+machine_has_gui() {
+  if command -v systemctl >/dev/null 2>&1; then
+    if [ "$(systemctl get-default 2>/dev/null)" = "graphical.target" ]; then
+      return 0
+    fi
+  fi
+  for candidate in Xorg Xwayland X; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  # Covers an install run interactively from inside an already-graphical
+  # terminal, where neither of the checks above may apply (e.g. a minimal
+  # window manager with no display-manager/X-server package of its own).
+  if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    return 0
+  fi
+  return 1
+}
+
 case "$1" in
   configure)
     if [ -x "$PYTHON_BIN" ] && [ -d "$VENDOR_DIR" ]; then
@@ -59,6 +90,18 @@ case "$1" in
         if rebuild_regex_via_venv; then
           echo "sniff4hound: rebuilt 'regex' for $PYTHON_BIN." >&2
         fi
+      fi
+    fi
+
+    if [ -d "$DESKTOP_DIR" ]; then
+      if machine_has_gui; then
+        echo "sniff4hound: graphical environment detected - keeping the desktop app (run it with 'sniff4hound-desktop' or from the applications menu)." >&2
+        command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+      else
+        echo "sniff4hound: no graphical environment detected - removing the bundled desktop app, keeping only the 'sniff4hound' command." >&2
+        rm -rf "$DESKTOP_DIR"
+        rm -f "$DESKTOP_ENTRY" "$DESKTOP_ICON" "$DESKTOP_BIN"
       fi
     fi
     ;;

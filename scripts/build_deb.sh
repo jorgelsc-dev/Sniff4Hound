@@ -18,6 +18,20 @@ LAUNCHER_SOURCE="$ROOT_DIR/scripts/deb_launcher.py"
 WRAPPER_SOURCE="$ROOT_DIR/scripts/deb_wrapper.sh"
 POSTINST_SOURCE="$ROOT_DIR/scripts/deb_postinst.sh"
 POSTRM_SOURCE="$ROOT_DIR/scripts/deb_postrm.sh"
+DESKTOP_ENTRY_SOURCE="$ROOT_DIR/scripts/sniff4hound.desktop"
+DESKTOP_SOURCE_DIR="$ROOT_DIR/desktop"
+DESKTOP_ICON_SOURCE="$DESKTOP_SOURCE_DIR/assets/icon.png"
+DESKTOP_BIN_NAME="sniff4hound-desktop"
+# Set SNIFF4HOUND_SKIP_DESKTOP=1 to produce a CLI-only package without
+# building the Electron app at all (e.g. a constrained CI runner with no
+# Node/Electron download available). The normal, released package always
+# builds both - scripts/deb_postinst.sh decides at install time whether the
+# desktop half actually sticks around, based on whether the target machine
+# has a graphical environment.
+BUILD_DESKTOP="1"
+if [[ "${SNIFF4HOUND_SKIP_DESKTOP:-0}" == "1" ]]; then
+  BUILD_DESKTOP="0"
+fi
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -29,6 +43,9 @@ require_command() {
 require_command "$PYTHON_BIN"
 require_command dpkg-deb
 require_command sha256sum
+if [[ "$BUILD_DESKTOP" == "1" ]]; then
+  require_command npm
+fi
 
 if [[ ! -f "$LAUNCHER_SOURCE" ]]; then
   echo "Missing launcher template: $LAUNCHER_SOURCE" >&2
@@ -44,6 +61,10 @@ if [[ ! -f "$POSTINST_SOURCE" ]]; then
 fi
 if [[ ! -f "$POSTRM_SOURCE" ]]; then
   echo "Missing postrm template: $POSTRM_SOURCE" >&2
+  exit 1
+fi
+if [[ "$BUILD_DESKTOP" == "1" && ! -f "$DESKTOP_ENTRY_SOURCE" ]]; then
+  echo "Missing desktop entry template: $DESKTOP_ENTRY_SOURCE" >&2
   exit 1
 fi
 
@@ -75,12 +96,56 @@ find "$VENDOR_DIR" -type d -name "__pycache__" -exec rm -rf {} +
 find "$VENDOR_DIR" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 rm -rf "$VENDOR_DIR/bin"
 
-if find "$VENDOR_DIR" -type f \( -name "*.so" -o -name "*.pyd" \) | grep -q .; then
+DESKTOP_INSTALL_ROOT="$INSTALL_ROOT/desktop"
+APPLICATIONS_DIR="$PACKAGE_ROOT/usr/share/applications"
+ICON_DIR="$PACKAGE_ROOT/usr/share/icons/hicolor/512x512/apps"
+
+if [[ "$BUILD_DESKTOP" == "1" ]]; then
+  echo "[build] Building desktop (Electron) app..."
+  if [[ -f "$DESKTOP_SOURCE_DIR/package-lock.json" ]]; then
+    (cd "$DESKTOP_SOURCE_DIR" && npm ci)
+  else
+    (cd "$DESKTOP_SOURCE_DIR" && npm install)
+  fi
+  # Keeps the bundled Electron app reporting the same version as the .deb
+  # it ships inside.
+  (cd "$DESKTOP_SOURCE_DIR" && npm pkg set version="$PACKAGE_VERSION" >/dev/null)
+  rm -rf "$ROOT_DIR/dist/desktop"
+  # `--linux dir` (electron-builder's unpacked target): just the app binary
+  # and its resources, no AppImage/deb of its own - this script builds the
+  # one combined .deb everything ships in. It shares the vendored Python
+  # runtime above (see desktop/main.js's usingSharedVendorRuntime()) rather
+  # than bundling a second copy.
+  (cd "$DESKTOP_SOURCE_DIR" && npm run pack)
+
+  UNPACKED_DIR="$ROOT_DIR/dist/desktop/linux-unpacked"
+  if [[ ! -d "$UNPACKED_DIR" ]]; then
+    echo "Desktop build did not produce $UNPACKED_DIR" >&2
+    exit 1
+  fi
+
+  install -d "$DESKTOP_INSTALL_ROOT" "$APPLICATIONS_DIR" "$ICON_DIR"
+  cp -a "$UNPACKED_DIR"/. "$DESKTOP_INSTALL_ROOT"/
+  ln -sf "../lib/$PACKAGE_NAME/desktop/$DESKTOP_BIN_NAME" "$BIN_DIR/$DESKTOP_BIN_NAME"
+  install -m 0644 "$DESKTOP_ICON_SOURCE" "$ICON_DIR/sniff4hound.png"
+  install -m 0644 "$DESKTOP_ENTRY_SOURCE" "$APPLICATIONS_DIR/sniff4hound.desktop"
+fi
+
+# The bundled Electron binaries are always architecture-specific, even when
+# the vendored Python side happens to be pure-python ("all").
+if [[ "$BUILD_DESKTOP" == "1" ]] || find "$VENDOR_DIR" -type f \( -name "*.so" -o -name "*.pyd" \) | grep -q .; then
   PACKAGE_ARCH="$(dpkg --print-architecture)"
 else
   PACKAGE_ARCH="all"
 fi
 
+# The GUI libs and policykit-1/pkexec are only ever needed by the desktop
+# app, which scripts/deb_postinst.sh prunes entirely on a machine with no
+# graphical environment - Recommends (not Depends) so a headless install
+# isn't forced to pull in graphics libraries it will never use. `sudo` is
+# listed as a fallback for policykit-1/pkexec so the combined `sniff4hound`
+# command can still self-elevate (see sniff4hound/manage.py's
+# _ensure_running_as_root()) on a machine that skips both.
 cat > "$DEBIAN_DIR/control" <<EOF
 Package: $PACKAGE_NAME
 Version: $PACKAGE_VERSION
@@ -89,11 +154,13 @@ Priority: optional
 Architecture: $PACKAGE_ARCH
 Maintainer: JorgelSC Dev
 Depends: python3 (>= 3.12)
-Recommends: python3-venv
+Recommends: python3-venv, policykit-1 | pkexec | sudo, libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0
 Homepage: https://github.com/jorgelsc-dev/Sniff4Hound
-Description: Native Python network sniffer with bundled web dashboard
+Description: Native Python network sniffer with bundled web dashboard and desktop app
  Sniff4Hound captures local traffic, persists runtime data in SQLite, and
- serves the bundled dashboard and API from a single process.
+ serves the bundled dashboard and API from a single process. Installs the
+ sniff4hound command always; also installs the Electron desktop app when
+ the target machine has a graphical environment.
 EOF
 
 install -m 0644 "$LAUNCHER_SOURCE" "$INSTALL_ROOT/launcher.py"

@@ -31,16 +31,6 @@
       "assets/**",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "../build/desktop/runtime/python-venv",
-        "to": "python-venv"
-      },
-      {
-        "from": "../frontend/dist",
-        "to": "frontend-dist"
-      }
-    ],
     "linux": {
       "target": [
         "AppImage",

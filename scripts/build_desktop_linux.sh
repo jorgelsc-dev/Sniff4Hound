@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Local-dev convenience only: builds the Electron shell against a throwaway
+# venv so it can run without installing the system package. The *released*
+# desktop app is built as part of the single combined .deb by
+# scripts/build_deb.sh, which shares its Python runtime with the CLI instead
+# of bundling the venv this script creates - see desktop/README.md.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -9,6 +9,20 @@ const READY_PREFIX = "SNIFF4HOUND_DESKTOP_READY ";
 const DEFAULT_PORT = "45678";
 const CONNECTION_STATE_FILE = "connection.json";
 
+// Chromium's setuid sandbox helper needs a root-owned, setuid `chrome-sandbox`
+// binary (or an AppArmor profile permitting unprivileged user namespaces on
+// newer Debian/Ubuntu) to work at all. The combined .deb this app ships in
+// installs everything under /usr/lib/sniff4hound/desktop as regular files, so
+// that helper never has the permissions it needs - disable the sandbox
+// instead of shipping a setuid-root binary for it. The security cost is
+// modest here: this window only ever renders our own bundled frontend, never
+// arbitrary remote content, and the actual privileged engine (dashboard
+// server + packet capture) is a separate process elevated on its own - see
+// sniff4hound/manage.py's _ensure_running_as_root().
+if (process.platform === "linux") {
+  app.commandLine.appendSwitch("no-sandbox");
+}
+
 let mainWindow = null;
 let backendProcess = null;
 let backendReady = null;
@@ -58,9 +72,22 @@ function sendLauncherStatus(message) {
   mainWindow.webContents.send("desktop-runtime:status", String(message || ""));
 }
 
+// The merged .deb installs one Python runtime here, shared by both the CLI
+// (scripts/deb_wrapper.sh) and this app, instead of each bundling its own
+// copy - see scripts/build_deb.sh.
+const SHARED_VENDOR_DIR = "/usr/lib/sniff4hound/vendor";
+
+function usingSharedVendorRuntime() {
+  return !process.env.SNIFF4HOUND_DESKTOP_PYTHON && fs.existsSync(SHARED_VENDOR_DIR);
+}
+
 function resolvePython() {
   if (process.env.SNIFF4HOUND_DESKTOP_PYTHON) {
     return process.env.SNIFF4HOUND_DESKTOP_PYTHON;
+  }
+
+  if (usingSharedVendorRuntime()) {
+    return "/usr/bin/python3";
   }
 
   const packagedPython = path.join(process.resourcesPath || "", "python-venv", "bin", "python");
@@ -79,6 +106,14 @@ function resolvePython() {
 function resolveFrontendDist() {
   if (process.env.SNIFF4HOUND_FRONTEND_DIST) {
     return process.env.SNIFF4HOUND_FRONTEND_DIST;
+  }
+  if (usingSharedVendorRuntime()) {
+    // The shared vendor tree already carries its own _frontend_dist (built
+    // in by setup.py's custom build_py) - the Python backend resolves it on
+    // its own, same as the CLI does. Returning "" here leaves
+    // SNIFF4HOUND_FRONTEND_DIST unset instead of forcing a path that has no
+    // meaning once main.js is running from inside the installed package.
+    return "";
   }
   const packagedDist = path.join(process.resourcesPath || "", "frontend-dist");
   if (app.isPackaged && fs.existsSync(path.join(packagedDist, "index.html"))) {
@@ -102,8 +137,17 @@ function backendEnv(pythonPath) {
     SNIFF4HOUND_HOST: process.env.SNIFF4HOUND_HOST || "127.0.0.1",
     SNIFF4HOUND_PORT: process.env.SNIFF4HOUND_PORT || DEFAULT_PORT,
     SNIFF4HOUND_CAPTURE_AUTO_START: "0",
-    SNIFF4HOUND_FRONTEND_DIST: frontendDist,
   };
+  if (frontendDist) {
+    env.SNIFF4HOUND_FRONTEND_DIST = frontendDist;
+  }
+
+  if (usingSharedVendorRuntime()) {
+    // Mirrors scripts/deb_wrapper.sh: the shared vendor dir isn't on system
+    // site-packages, only importable via PYTHONPATH.
+    env.PYTHONPATH = env.PYTHONPATH ? `${SHARED_VENDOR_DIR}${path.delimiter}${env.PYTHONPATH}` : SHARED_VENDOR_DIR;
+    return env;
+  }
 
   const venvRoot = venvRootForPython(pythonPath);
   if (fs.existsSync(path.join(venvRoot, "pyvenv.cfg"))) {

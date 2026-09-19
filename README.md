@@ -53,6 +53,13 @@ Punto importante:
 
 El workflow `Package Debian` publica el `.deb` en **GitHub Releases** como asset descargable. La pestaña **Packages** puede seguir vacia: el canal soportado para distribucion binaria es **Releases**.
 
+Un solo `.deb` incluye tanto el comando `sniff4hound` como la app de
+escritorio (Electron); en la instalacion, `postinst` detecta si la maquina
+tiene un entorno grafico y descarta los archivos de la app de escritorio si
+no lo tiene, dejando solo el comando. Con GUI, ambos quedan instalados y
+comparten el mismo runtime de Python (no hay una copia separada por cada
+uno).
+
 Cada release publica dos assets equivalentes: el `.deb` versionado
 (`sniff4hound_<version>_<arch>.deb`) y una copia sin versionar,
 `sniff4hound_latest.deb`. La segunda existe para que la URL de descarga **no
@@ -133,6 +140,10 @@ sudo apt install ./dist/sniff4hound_<version>_<arch>.deb
 Notas del paquete:
 
 - incluye la app Python y los assets ya compilados del frontend;
+- tambien construye la app de escritorio (Electron, via `desktop/`) y la
+  incluye en el mismo `.deb`; usa `SNIFF4HOUND_SKIP_DESKTOP=1` para omitir
+  ese paso y generar un paquete solo-CLI (util en un entorno de build sin
+  Node/Electron);
 - requiere `python3 >= 3.12` en la maquina destino;
 - genera un archivo `.sha256` junto al `.deb` dentro de `dist/`;
 - la misma release publica el `.sha256` para verificar integridad antes de instalar.
@@ -154,7 +165,7 @@ python -m sniff4hound
 Notas del launcher:
 
 - Usa `45678` por defecto; si esta ocupado, prueba una ventana cercana de 100 puertos y avisa cual usa.
-- Si faltan privilegios para captura raw y corresponde elevar, intenta relanzarse con `sudo`.
+- Si no se invoca ya como root, se relanza a si mismo con `sudo` (te pedira la contrasena) antes de arrancar nada.
 - Si solo quieres abrir la UI sin autoarranque de captura, usa `SNIFF4HOUND_CAPTURE_AUTO_START=0`.
 
 Ejemplos utiles:
@@ -320,13 +331,15 @@ Variables practicas del runtime:
 - `SNIFF4HOUND_AUTH_FAILURE_WINDOW_SECONDS`
 - `SNIFF4HOUND_FRONTEND_DIST`
 
-El proceso web y la base de datos corren **como tu usuario normal**:
-`sniff4hound` se niega a arrancar bajo `sudo`. La captura raw de paquetes si
-requiere root siempre, pero ese privilegio vive solo en el proceso hijo
-`sniff4hound-capture`, que `sniff4hound` lanza por `sudo` y con el que habla por
-un socket Unix local `0600`. No hay variable de entorno para omitir la captura
-privilegiada: si `sudo` no esta disponible o la elevacion falla, el proceso
-termina sin arrancar el servidor.
+`sniff4hound` requiere root **desde el arranque**, no solo para la captura: si
+no se invoca ya como root, se relanza automaticamente a si mismo con `sudo`
+(o `pkexec` cuando lo lanza la app de escritorio) antes de hacer nada mas, y
+luego el servidor web y el proceso hijo `sniff4hound-capture` corren como el
+mismo arbol de procesos privilegiado, comunicados por un socket Unix local
+`0600`. No hay variable de entorno para omitir la captura privilegiada: si
+ni `sudo` ni `pkexec` estan disponibles, o la elevacion falla, el proceso
+termina sin arrancar. `sniff4hound-web` (el entrypoint standalone para
+despliegues separados web/captura) es la excepcion: sigue sin elevarse nunca.
 
 ## Componentes del repo
 

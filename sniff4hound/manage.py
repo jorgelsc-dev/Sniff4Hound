@@ -327,11 +327,14 @@ def _resolve_db_path() -> Path:
 
 
 def _print_db_permission_error(exc: sqlite3.OperationalError) -> None:
-    """Sniff4Hound's web process (this one) never runs as root - it opens
-    the SQLite database as the invoking user. A "readonly database" error
-    here almost always means the db file (or its -wal/-shm siblings) is
-    left over from a run under `sudo`, so this process can no longer write
-    to it."""
+    """The combined `sniff4hound` command always runs as root now (see
+    _ensure_running_as_root()), so a "readonly database" error there is rare.
+    It's still possible for the standalone `sniff4hound-web` split-deployment
+    entry point (main_web(), which never elevates - see its docstring): a
+    "readonly database" there almost always means the db file (or its
+    -wal/-shm siblings) was left root-owned by a `sniff4hound`/
+    `sniff4hound-capture` run, so this unprivileged process can no longer
+    write to it."""
     db_path = _resolve_db_path()
     print(f"\n[!] Cannot open the Sniff4Hound database: {exc}", file=sys.stderr)
     print(f"    Path: {db_path}", file=sys.stderr)
@@ -354,17 +357,19 @@ def _running_as_root() -> bool:
 
 
 def _print_root_invocation_error() -> None:
-    """Refusing to ever start this process as root is what makes the
-    permission error in _print_db_permission_error() unable to recur: as
-    long as Sniff4Hound.db is only ever created by an unprivileged run, no
-    future unprivileged run can find it root-owned and unwritable."""
+    """Used only by main_web() (the standalone `sniff4hound-web`
+    split-deployment entry point), which - unlike the combined `sniff4hound`
+    command - still refuses to run as root: it may run as a different user
+    than whatever `sniff4hound-capture` process it's pointed at, on a
+    different host entirely, so there's no single "the whole tree is root"
+    invariant to lean on the way main() now has."""
     print("\n[!] Do not run this with `sudo` / as root.", file=sys.stderr)
     print(
-        "    The web server and database are meant to run as your normal user - "
-        "it spawns the privileged capture child itself (via sudo) when it needs "
-        "raw-socket access. Running the whole process as root instead leaves "
-        "Sniff4Hound.db owned by root, which then breaks every later "
-        "unprivileged run with 'attempt to write a readonly database'.",
+        "    sniff4hound-web is meant to run as your normal user, talking to a "
+        "sniff4hound-capture process started separately (its own systemd unit, "
+        "a different user, a different host, ...). Running it as root instead "
+        "risks leaving its database root-owned, which then breaks later "
+        "unprivileged runs with 'attempt to write a readonly database'.",
         file=sys.stderr,
     )
     print("    Run it as yourself instead, without sudo.\n", file=sys.stderr)
@@ -372,79 +377,113 @@ def _print_root_invocation_error() -> None:
 
 # Policy: capture (raw-socket sniffing, honeypot low-port binds) always
 # requires root — a demo/no-capture mode that silently runs unprivileged is
-# more confusing than useful, and there is no env var to bypass this. This
-# process (the web server) never elevates itself anymore; it spawns
-# `sniff4hound-capture` as a privileged child and talks to it over the local
-# IPC socket (see sniff4hound/ipc.py,
-# sniff4hound/capture_service.py). If elevation of the child fails, this
-# process refuses to start rather than silently serving without capture.
+# more confusing than useful, and there is no env var to bypass this. Rather
+# than starting unprivileged and separately elevating just the capture child
+# (which used to mean the CLI and the desktop app each re-implemented their
+# own elevation prompt around a still-unprivileged parent), the whole
+# `sniff4hound` process now requires root itself - see
+# _ensure_running_as_root() below - and the capture child it spawns simply
+# inherits that privilege directly.
 
 
 # Environment variables that must never be forwarded as `sudo env KEY=VALUE`
-# arguments: everything on a process's command line is world-readable through
-# /proc/<pid>/cmdline for as long as it runs, so a secret passed that way is
-# readable by every local user on the box. The IPC token travels as a path to
-# a 0600 file instead (SNIFF4HOUND_IPC_TOKEN_FILE); the JWT signing secret has
-# no business in the capture child at all.
+# / `pkexec env KEY=VALUE` arguments: everything on a process's command line
+# is world-readable through /proc/<pid>/cmdline for as long as it runs, so a
+# secret passed that way is readable by every local user on the box. The IPC
+# token travels as a path to a 0600 file instead (SNIFF4HOUND_IPC_TOKEN_FILE);
+# the JWT signing secret has no business in the capture child at all.
 CAPTURE_ENV_DENYLIST = frozenset({"SNIFF4HOUND_IPC_TOKEN", "SNIFF4HOUND_JWT_SECRET"})
 
 
-def _capture_child_env_assignments(ipc_socket: str, ipc_token_file: str, owner_uid: int) -> list[str]:
+def _self_elevate_env_assignments(invoking_uid: int) -> list[str]:
     assignments = []
     for key in sorted(os.environ):
         if key.startswith("SNIFF4HOUND_") and key not in CAPTURE_ENV_DENYLIST:
             assignments.append(f"{key}={os.environ[key]}")
+    # DATA_DIR defaults to Path.home() (see settings.py), and both `sudo` and
+    # `pkexec` reset HOME to the target (root) account's home by default -
+    # pin it to what *this*, still-unprivileged process resolved so the
+    # re-executed root process keeps reading/writing the same database
+    # instead of silently starting a fresh one under /root.
+    assignments.append(f"SNIFF4HOUND_DATA_DIR={DATA_DIR}")
+    # Recovered on the other side by _resolve_owner_uid() so the capture
+    # child can chown the IPC socket/DB back to the human operator instead of
+    # to root - see the callers of resolve_ipc_owner_uid() in
+    # capture_service.py.
+    assignments.append(f"SNIFF4HOUND_INVOKING_UID={invoking_uid}")
     # The Debian package doesn't install `sniff4hound` into system
     # site-packages - it's only importable via PYTHONPATH pointing at the
     # vendored copy under /usr/lib/sniff4hound/vendor (see
-    # scripts/deb_wrapper.sh). `sudo env ...` does not inherit our
-    # PYTHONPATH on its own (sudo resets the environment by default), so it
-    # has to be forwarded explicitly or the privileged child can't import
+    # scripts/deb_wrapper.sh). `sudo env ...` / `pkexec env ...` do not
+    # inherit it on their own (both reset the environment by default), so it
+    # has to be forwarded explicitly or the re-executed process can't import
     # the package at all.
     pythonpath = os.environ.get("PYTHONPATH")
     if pythonpath:
         assignments.append(f"PYTHONPATH={pythonpath}")
-    assignments.append(f"SNIFF4HOUND_IPC_SOCKET={ipc_socket}")
-    assignments.append(f"SNIFF4HOUND_IPC_TOKEN_FILE={ipc_token_file}")
-    assignments.append(f"SNIFF4HOUND_IPC_OWNER_UID={owner_uid}")
     return assignments
 
 
-def _build_capture_relaunch_command(ipc_socket: str, ipc_token_file: str, owner_uid: int) -> list[str]:
-    command = ["sudo", "env"]
-    command.extend(_capture_child_env_assignments(ipc_socket, ipc_token_file, owner_uid))
-    command.extend([sys.executable, "-m", "sniff4hound.capture_service"])
+def _build_self_elevate_command(invoking_uid: int) -> list[str] | None:
+    assignments = _self_elevate_env_assignments(invoking_uid)
+    if _desktop_mode_enabled():
+        pkexec = shutil.which("pkexec")
+        if pkexec:
+            env_bin = shutil.which("env") or "/usr/bin/env"
+            command = [pkexec, env_bin]
+            command.extend(assignments)
+            command.extend([sys.executable, "-m", "sniff4hound.manage", *sys.argv[1:]])
+            return command
+    sudo = shutil.which("sudo")
+    if sudo is None:
+        return None
+    command = [sudo, "env"]
+    command.extend(assignments)
+    command.extend([sys.executable, "-m", "sniff4hound.manage", *sys.argv[1:]])
     return command
 
 
-def _build_desktop_capture_relaunch_command(ipc_socket: str, ipc_token_file: str, owner_uid: int) -> list[str]:
-    pkexec = shutil.which("pkexec")
-    if pkexec:
-        env_bin = shutil.which("env") or "/usr/bin/env"
-        command = [pkexec, env_bin]
-        command.extend(_capture_child_env_assignments(ipc_socket, ipc_token_file, owner_uid))
-        command.extend([sys.executable, "-m", "sniff4hound.capture_service"])
-        return command
-    return _build_capture_relaunch_command(ipc_socket, ipc_token_file, owner_uid)
+def _print_root_required_message() -> None:
+    print("[!] Sniff4Hound requires root/administrator privileges and will not start without them.", file=sys.stderr)
+    print("    Raw-socket packet capture and low-port honeypot listeners are not possible as a regular user.", file=sys.stderr)
+    print("    Install pkexec/sudo, or re-run this yourself as root.", file=sys.stderr)
 
 
-def _capture_elevation_available() -> bool:
-    if _desktop_mode_enabled() and shutil.which("pkexec"):
+def _ensure_running_as_root() -> bool:
+    """Self-elevate the whole process - web server and capture child alike -
+    instead of starting unprivileged and separately elevating just the
+    capture child. Replaces the process image in place via execvp() so the
+    CLI's terminal (sudo) and the desktop app's pkexec prompt both keep
+    talking to the same pid/stdio Electron or the shell already has open."""
+    if _running_as_root():
         return True
-    return shutil.which("sudo") is not None
+    command = _build_self_elevate_command(os.getuid())
+    if command is None:
+        _print_root_required_message()
+        return False
+    try:
+        os.execvp(command[0], command)
+    except OSError as exc:
+        print(f"[!] Unable to elevate automatically: {exc}", file=sys.stderr)
+        _print_root_required_message()
+        return False
+    return True  # unreachable when execvp succeeds
 
 
-def _build_capture_child_command(ipc_socket: str, ipc_token_file: str, owner_uid: int) -> list[str]:
-    if _desktop_mode_enabled():
-        return _build_desktop_capture_relaunch_command(ipc_socket, ipc_token_file, owner_uid)
-    return _build_capture_relaunch_command(ipc_socket, ipc_token_file, owner_uid)
-
-
-def _print_capture_elevation_error() -> None:
-    print("[!] The capture process requires root/administrator privileges and will not start without them.", file=sys.stderr)
-    print("    Raw-socket packet capture is not possible as a regular user.", file=sys.stderr)
-    print("    Install pkexec/sudo, or run `sniff4hound-capture` yourself as root and point this process at it", file=sys.stderr)
-    print("    with SNIFF4HOUND_IPC_SOCKET / SNIFF4HOUND_IPC_TOKEN.", file=sys.stderr)
+def _resolve_owner_uid() -> int:
+    """The human operator's uid, so the (now root) capture child can chown
+    the IPC socket/DB back to them - see capture_service.py's
+    resolve_ipc_owner_uid() callers. Prefers the uid this process itself
+    resolved before self-elevating; falls back to what `sudo`/`pkexec` set
+    automatically for a manual `sudo sniff4hound` / `pkexec sniff4hound`
+    invocation that skipped _ensure_running_as_root() entirely; falls back to
+    the current (root) uid when none of those are known, e.g. a direct root
+    login."""
+    for key in ("SNIFF4HOUND_INVOKING_UID", "SUDO_UID", "PKEXEC_UID"):
+        raw = os.environ.get(key, "").strip()
+        if raw.isdigit():
+            return int(raw)
+    return os.getuid()
 
 
 def _remove_ipc_token_file(path: str | None) -> None:
@@ -529,29 +568,25 @@ def _open_capture_log(ipc_socket: str):
 
 
 def _spawn_capture_child(ipc_socket: str, ipc_token_file: str):
-    if not _capture_elevation_available():
-        _print_capture_elevation_error()
-        return None
-    command = _build_capture_child_command(ipc_socket, ipc_token_file, os.getuid())
+    # This process is already root by the time _ensure_running_as_root() lets
+    # main() get here, so the capture child just inherits that privilege
+    # directly via a plain Popen - no separate sudo/pkexec hop needed.
+    command = [sys.executable, "-m", "sniff4hound.capture_service"]
+    child_env = {key: value for key, value in os.environ.items() if key not in CAPTURE_ENV_DENYLIST}
 
-    # The capture child (and the `sudo`/PAM prompt in front of it) must not
-    # inherit this process's stdout/stderr: both processes would then write
-    # to the same terminal concurrently and, since each does its own
-    # line-buffered flushing, their output interleaves unpredictably -
-    # producing exactly the garbled/staircased banner this fixes. `sudo`
-    # still shows its password/fingerprint prompt fine either way, since it
-    # talks to /dev/tty directly rather than through stdout/stderr.
+    # The capture child must not inherit this process's stdout/stderr: both
+    # processes would then write to the same terminal concurrently and,
+    # since each does its own line-buffered flushing, their output
+    # interleaves unpredictably - producing exactly the garbled/staircased
+    # banner this fixes.
     #
-    # stdin must be detached for the same reason, and it is not optional:
-    # since sudo 1.9.14 `use_pty` is the built-in default, so sudo runs the
-    # capture child on a pty of its own and spends the whole session relaying
-    # our terminal into it. With stdin inherited, sudo and the console's
-    # input() are two readers on one tty and every keystroke goes to whoever
-    # reads first - typing "/help" arrived as "[note] p" with the rest eaten.
+    # stdin must be detached too: with it inherited, this console's input()
+    # and the capture child would be two readers racing on one tty.
     log_file = _open_capture_log(ipc_socket)
     try:
         process = subprocess.Popen(
             command,
+            env=child_env,
             stdin=subprocess.DEVNULL,
             stdout=log_file if log_file is not None else subprocess.DEVNULL,
             stderr=log_file if log_file is not None else subprocess.DEVNULL,
@@ -684,12 +719,11 @@ def _stop_interactive_console(
 
 
 def main():
-    """Combined single-command entry point (`sniff4hound`). Runs the web
-    server + database as the invoking (unprivileged) user, and spawns a
-    privileged `sniff4hound-capture` child over local IPC for raw-socket
-    access. Only the capture child ever needs root - see CLAUDE.md."""
-    if _running_as_root():
-        _print_root_invocation_error()
+    """Combined single-command entry point (`sniff4hound`). Self-elevates to
+    root if needed (see _ensure_running_as_root()) and then runs the web
+    server + database and a `sniff4hound-capture` child - talking to it over
+    local IPC for raw-socket access - as a single privileged process tree."""
+    if not _ensure_running_as_root():
         return 1
     reset_process_shutdown_request()
     tty_attrs = _snapshot_tty_attrs()
@@ -722,23 +756,26 @@ def main():
                 return 1
             os.environ["SNIFF4HOUND_IPC_SOCKET"] = ipc_socket
             os.environ["SNIFF4HOUND_IPC_TOKEN_FILE"] = ipc_token_file
+            os.environ["SNIFF4HOUND_IPC_OWNER_UID"] = str(_resolve_owner_uid())
             os.environ.pop("SNIFF4HOUND_IPC_TOKEN", None)
             # DATA_DIR (and so the default DB_PATH, honeypot log/db/certs - see
             # settings.py and honeypot.py) defaults to this process's home
-            # directory. The capture child below is relaunched via `sudo`, which
-            # resets HOME to root's home by default, so without pinning this
-            # explicitly the two processes would silently compute two different
-            # paths and the privileged child would persist captured traffic where
-            # the web process never looks. setdefault() so an operator-provided
-            # SNIFF4HOUND_DATA_DIR/SNIFF4HOUND_DB_PATH still wins.
+            # directory. _ensure_running_as_root() already pins this before
+            # self-elevating, but a manual `sudo sniff4hound`/`pkexec
+            # sniff4hound` invocation skips that path entirely - setdefault()
+            # here guarantees the capture child below (which inherits this
+            # process's environment directly) always agrees with this process
+            # on where data lives, however root was reached. An
+            # operator-provided SNIFF4HOUND_DATA_DIR/SNIFF4HOUND_DB_PATH still
+            # wins either way.
             os.environ.setdefault("SNIFF4HOUND_DATA_DIR", str(DATA_DIR))
 
-            # Import (and so construct sniff4hound.app's SniffStore, as this
-            # unprivileged user) *before* spawning the privileged capture child.
-            # Both processes open the same SQLite file; whichever one creates it
-            # first owns it on disk, and a root-owned DB file/WAL is unwritable by
-            # this process afterwards. Importing first guarantees the web process
-            # wins that race regardless of how fast the capture child starts.
+            # Import (and so construct sniff4hound.app's SniffStore) *before*
+            # spawning the capture child - both processes open the same
+            # SQLite file, and importing first guarantees this process is the
+            # one that creates it (both run as root now, so no ownership race
+            # either way, but a single well-defined creator is simpler to
+            # reason about).
             try:
                 from .app import app, append_chat_message, bootstrap_capture, connect_capture_service, hub, runtime, shutdown_capture, store
             except sqlite3.OperationalError as exc:

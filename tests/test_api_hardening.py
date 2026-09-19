@@ -554,14 +554,18 @@ class ApiInputCoercionTests(unittest.TestCase):
 
 class CaptureIpcTokenTests(unittest.TestCase):
     """A-02: /proc/<pid>/cmdline is world-readable, so the shared IPC secret
-    must never travel as a `sudo env KEY=VALUE` argument."""
+    must never travel as a `sudo env KEY=VALUE` / `pkexec env KEY=VALUE`
+    argument - including on the whole-process self-elevation re-exec that
+    replaced the old capture-child-only relaunch."""
 
-    def test_the_token_is_not_on_the_capture_child_command_line(self):
+    def test_the_token_is_not_on_the_self_elevate_command_line(self):
         import sniff4hound.manage as manage
 
         token = "f" * 64
-        with patch.dict(os.environ, {"SNIFF4HOUND_IPC_TOKEN": token}, clear=False):
-            command = manage._build_capture_relaunch_command("/tmp/x.sock", "/tmp/x.token", 1000)
+        with patch.dict(
+            os.environ, {"SNIFF4HOUND_IPC_TOKEN": token, "SNIFF4HOUND_IPC_TOKEN_FILE": "/tmp/x.token"}, clear=False
+        ):
+            command = manage._build_self_elevate_command(1000)
         joined = " ".join(command)
         self.assertNotIn(token, joined)
         self.assertIn("SNIFF4HOUND_IPC_TOKEN_FILE=/tmp/x.token", command)
@@ -571,7 +575,7 @@ class CaptureIpcTokenTests(unittest.TestCase):
         import sniff4hound.manage as manage
 
         with patch.dict(os.environ, {"SNIFF4HOUND_JWT_SECRET": "s" * 64}, clear=False):
-            command = manage._build_capture_relaunch_command("/tmp/x.sock", "/tmp/x.token", 1000)
+            command = manage._build_self_elevate_command(1000)
         self.assertFalse(any(entry.startswith("SNIFF4HOUND_JWT_SECRET=") for entry in command))
 
     def test_capture_service_self_elevation_also_keeps_it_off_argv(self):

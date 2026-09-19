@@ -829,51 +829,68 @@ class SmokeTests(unittest.TestCase):
         )
 
     def test_manage_capture_child_does_not_inherit_the_console_stdin(self):
-        # Since sudo 1.9.14 `use_pty` is the default, so sudo puts the capture
-        # child on its own pty and relays our terminal into it for the whole
-        # session. With stdin inherited, sudo's relay and the console's
-        # input() are two readers racing on one tty and keystrokes go to
-        # whichever reads first - typing "/help" came out as "[note] p".
+        # With stdin inherited, this console's input() and the capture child
+        # would be two readers racing on the same tty.
         import sniff4hound.manage as manage_module
 
-        with patch.object(manage_module.shutil, "which", return_value="/usr/bin/sudo"), patch.object(
+        with patch.object(
             manage_module, "_open_capture_log", return_value=None
         ), patch.object(manage_module.subprocess, "Popen") as popen:
             manage_module._spawn_capture_child("/tmp/x.sock", "tok")
 
         self.assertEqual(popen.call_args.kwargs.get("stdin"), subprocess.DEVNULL)
 
-    def test_manage_capture_relaunch_command_forwards_pythonpath(self):
+    def test_manage_self_elevate_command_forwards_pythonpath(self):
         # The Debian package only makes `sniff4hound` importable via
         # PYTHONPATH pointing at its vendored copy (scripts/deb_wrapper.sh) -
-        # `sudo env ...` does not inherit it on its own, so it must be
-        # forwarded explicitly or the privileged child can't import the
-        # package at all.
+        # `sudo env ...` / `pkexec env ...` do not inherit it on their own,
+        # so it must be forwarded explicitly or the re-executed root process
+        # can't import the package at all.
         import sniff4hound.manage as manage_module
 
         with patch.dict(os.environ, {"PYTHONPATH": "/usr/lib/sniff4hound/vendor"}, clear=False):
-            command = manage_module._build_capture_relaunch_command("/tmp/x.sock", "tok", 1000)
+            command = manage_module._build_self_elevate_command(1000)
         self.assertIn("PYTHONPATH=/usr/lib/sniff4hound/vendor", command)
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PYTHONPATH", None)
-            command = manage_module._build_capture_relaunch_command("/tmp/x.sock", "tok", 1000)
+            command = manage_module._build_self_elevate_command(1000)
         self.assertFalse(any(entry.startswith("PYTHONPATH=") for entry in command))
 
-    def test_manage_capture_relaunch_command_forwards_data_dir(self):
+    def test_manage_self_elevate_command_pins_data_dir_and_invoking_uid(self):
         # Every SNIFF4HOUND_* var present in os.environ is forwarded verbatim
-        # to the sudo-relaunched capture child. Pin this for
-        # SNIFF4HOUND_DATA_DIR specifically (main() sets it via
-        # os.environ.setdefault() before spawning, see the test below) - a
-        # future refactor to an allowlist could easily forget it and
-        # silently reintroduce the two-databases bug this fixes.
+        # to the self-elevated re-exec, plus SNIFF4HOUND_DATA_DIR (always
+        # pinned explicitly, since `sudo`/`pkexec` reset HOME) and
+        # SNIFF4HOUND_INVOKING_UID (so the capture child can chown files back
+        # to the human operator instead of root). A future refactor to an
+        # allowlist could easily forget these and silently reintroduce the
+        # two-databases bug this fixes.
         import sniff4hound.manage as manage_module
 
         with patch.dict(
             os.environ, {"SNIFF4HOUND_DATA_DIR": "/home/example/.local/share/sniff4hound"}, clear=False
         ):
-            command = manage_module._build_capture_relaunch_command("/tmp/x.sock", "tok", 1000)
+            command = manage_module._build_self_elevate_command(1000)
         self.assertIn("SNIFF4HOUND_DATA_DIR=/home/example/.local/share/sniff4hound", command)
+        self.assertIn("SNIFF4HOUND_INVOKING_UID=1000", command)
+
+    def test_manage_ensure_running_as_root_refuses_without_sudo_or_pkexec(self):
+        import sniff4hound.manage as manage_module
+
+        output = io.StringIO()
+        with patch.object(manage_module, "_running_as_root", return_value=False), patch.object(
+            manage_module.shutil, "which", return_value=None
+        ), redirect_stderr(output):
+            result = manage_module._ensure_running_as_root()
+
+        self.assertFalse(result)
+        self.assertIn("requires root", output.getvalue())
+
+    def test_manage_ensure_running_as_root_proceeds_when_already_root(self):
+        import sniff4hound.manage as manage_module
+
+        with patch.object(manage_module, "_running_as_root", return_value=True):
+            self.assertTrue(manage_module._ensure_running_as_root())
 
     def test_clear_stale_capture_socket_removes_a_leftover_socket_file(self):
         # Regression: a capture child from a run whose parent never exited
@@ -976,6 +993,8 @@ class SmokeTests(unittest.TestCase):
             with patch.object(manage_module, "HOST", "127.0.0.1"), patch.object(
                 manage_module, "PORT", 45678
             ), patch.object(
+                manage_module, "_ensure_running_as_root", return_value=True
+            ), patch.object(
                 manage_module, "_select_listen_port", return_value=45678
             ), patch.object(
                 manage_module, "_spawn_capture_child", side_effect=_capture_spawn
@@ -997,20 +1016,6 @@ class SmokeTests(unittest.TestCase):
                 manage_module.main()
 
         self.assertEqual(observed.get("data_dir"), str(DATA_DIR))
-
-    def test_manage_refuses_to_spawn_capture_child_without_sudo(self):
-        # manage.py (the web process) never elevates itself anymore - it
-        # only needs `sudo` to spawn the privileged capture child. Actual
-        # "capture always requires root, no bypass" policy now lives in
-        # capture_service.py (see tests/test_capture_service.py).
-        import sniff4hound.manage as manage_module
-
-        output = io.StringIO()
-        with patch.object(manage_module.shutil, "which", return_value=None), redirect_stderr(output):
-            result = manage_module._spawn_capture_child("/tmp/sniff4hound-test.sock", "test-token")
-
-        self.assertIsNone(result)
-        self.assertIn("requires root", output.getvalue())
 
     def test_manage_restore_tty_attrs_undoes_raw_mode_left_by_sudo_prompt(self):
         # sudo's password/fingerprint (PAM) prompt for the capture child
@@ -1068,9 +1073,7 @@ class SmokeTests(unittest.TestCase):
                 captured_kwargs.update(kwargs)
                 return _FakeCaptureProcess()
 
-            with patch.object(manage_module.shutil, "which", return_value="/usr/bin/sudo"), patch.object(
-                manage_module.subprocess, "Popen", side_effect=_fake_popen
-            ):
+            with patch.object(manage_module.subprocess, "Popen", side_effect=_fake_popen):
                 result = manage_module._spawn_capture_child(ipc_socket, "test-token")
 
             self.assertIsNotNone(result)
@@ -1269,6 +1272,8 @@ class SmokeTests(unittest.TestCase):
         with patch.object(manage_module, "HOST", "127.0.0.1"), patch.object(
             manage_module, "PORT", 45678
         ), patch.object(
+            manage_module, "_ensure_running_as_root", return_value=True
+        ), patch.object(
             manage_module, "_select_listen_port", return_value=45670
         ), patch.object(
             manage_module, "_spawn_capture_child", return_value=fake_process
@@ -1301,6 +1306,8 @@ class SmokeTests(unittest.TestCase):
 
         with patch.object(manage_module, "HOST", "127.0.0.1"), patch.object(
             manage_module, "PORT", 45678
+        ), patch.object(
+            manage_module, "_ensure_running_as_root", return_value=True
         ), patch.object(
             manage_module, "_select_listen_port", return_value=None
         ), patch.object(
