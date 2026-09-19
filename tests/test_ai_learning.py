@@ -1,12 +1,14 @@
 import json
 import math
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from sniff4hound.ai_learning import (
     ONLINE_BATCH_SIZE,
+    TOURNAMENT_CANDIDATES_PER_ROUND,
     export_model,
     features,
     fingerprint,
@@ -17,6 +19,8 @@ from sniff4hound.ai_learning import (
     is_current_model_shape,
     model_effectiveness,
     rebuild_for_hidden_sizes,
+    run_tournament_round,
+    tournament_round_shapes,
     train,
     update_feedback,
     learning_snapshot,
@@ -156,6 +160,62 @@ class LearningTests(unittest.TestCase):
                     dict(features=[1.0] * 8, label='malicious', confidence=3)]
         model, _ = train(examples, hidden_sizes=[10, 4])
         self.assertEqual(hidden_sizes_of(model), [10, 4])
+
+    def test_train_invokes_on_epoch_every_epoch(self):
+        examples = [dict(features=[0.0] * 8, label='benign', confidence=3),
+                    dict(features=[1.0] * 8, label='malicious', confidence=3)]
+        calls = []
+        train(examples, hidden_sizes=[3], on_epoch=lambda epoch, total, loss: calls.append((epoch, total, loss)))
+        self.assertEqual(len(calls), 80)
+        self.assertEqual([c[0] for c in calls], list(range(1, 81)))
+        self.assertTrue(all(c[1] == 80 for c in calls))
+        # Loss generally trends down over training, same invariant as the
+        # sparser history entries train() already records.
+        self.assertLess(calls[-1][2], calls[0][2])
+
+    def test_train_on_epoch_not_called_without_examples(self):
+        calls = []
+        train([], hidden_sizes=[3], on_epoch=lambda *args: calls.append(args))
+        self.assertEqual(calls, [])
+
+    def test_run_tournament_round_trains_every_shape_and_keeps_weights(self):
+        examples = [dict(features=[0.0] * 8, label='benign', confidence=3),
+                    dict(features=[1.0] * 8, label='malicious', confidence=3)]
+        shapes = [[2], [3], [2, 2]]
+        results = run_tournament_round(examples, shapes)
+        self.assertEqual([r['hidden_sizes'] for r in results], shapes)
+        for result, shape in zip(results, shapes):
+            self.assertIsInstance(result['accuracy'], float)
+            self.assertEqual(hidden_sizes_of(result['parameters']), shape)
+
+    def test_run_tournament_round_reports_live_progress_per_candidate(self):
+        examples = [dict(features=[0.0] * 8, label='benign', confidence=3),
+                    dict(features=[1.0] * 8, label='malicious', confidence=3)]
+        progress = {}
+        lock = threading.Lock()
+        results = run_tournament_round(examples, [[2], [3]], progress=progress, progress_lock=lock)
+        self.assertEqual(set(progress.keys()), {0, 1})
+        for index, result in enumerate(results):
+            self.assertEqual(progress[index]['status'], 'done')
+            self.assertEqual(progress[index]['epoch'], 80)
+            self.assertEqual(progress[index]['hidden_sizes'], result['hidden_sizes'])
+
+    def test_tournament_round_shapes_round_one_excludes_the_seed_shape(self):
+        import random
+
+        shapes = tournament_round_shapes([6], random.Random(3), include_champion=False)
+        self.assertEqual(len(shapes), TOURNAMENT_CANDIDATES_PER_ROUND)
+        self.assertNotIn([6], shapes)
+
+    def test_tournament_round_shapes_later_round_leads_with_the_champion(self):
+        import random
+
+        shapes = tournament_round_shapes([6, 6], random.Random(3), include_champion=True)
+        self.assertEqual(shapes[0], [6, 6])
+        self.assertEqual(len(shapes), TOURNAMENT_CANDIDATES_PER_ROUND)
+        # Every slot is a distinct shape - no wasted round training a
+        # duplicate of the champion under a different index.
+        self.assertEqual(len({tuple(s) for s in shapes}), TOURNAMENT_CANDIDATES_PER_ROUND)
 
     def test_deep_network_still_learns_both_classes(self):
         examples = [dict(features=[0.0] * 8, label='benign', confidence=3),

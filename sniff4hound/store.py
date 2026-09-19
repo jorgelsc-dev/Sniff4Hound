@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import copy
 import ctypes
 import ctypes.util
 import ipaddress
 import json
+import random
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -558,6 +561,18 @@ class SniffStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._last_retention_at = 0.0
+        # Architecture tournament (see start_ai_tournament()): a *separate*,
+        # lightweight lock from self._lock on purpose - candidate training
+        # threads touch this every epoch to publish live progress, and it
+        # must never contend with self._lock (packet ingestion, every SQL
+        # write) or a running tournament would stall capture. Deliberately
+        # in-memory only, not persisted - see get_ai_tournament_state().
+        self._ai_tournament_lock = threading.RLock()
+        self._ai_tournament = {
+            "active": False, "round": 0, "champion": None,
+            "rounds_history": [], "stop_reason": None, "stop_requested": False,
+        }
+        self._ai_tournament_candidates = {}
         self._device_profile_cache = {}
         self._conn = self._open_connection()
         self._geoip_resolver = _GeoCountryResolver()
@@ -2189,6 +2204,218 @@ class SniffStore:
             self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
         return self.get_ai_learning_suggestion()
 
+    def get_ai_tournament_state(self):
+        """Live snapshot of an in-progress (or just-finished) architecture
+        tournament - see start_ai_tournament(). Deliberately in-memory only
+        (self._ai_tournament / self._ai_tournament_candidates), not persisted
+        to the database while running: this is per-epoch progress for a live
+        UI, not state that needs to survive a restart mid-tournament. Only
+        the final champion is persisted, through the normal
+        learning_suggestion path (see _run_ai_tournament())."""
+        with self._ai_tournament_lock:
+            state = copy.deepcopy(self._ai_tournament)
+            state["candidates"] = [
+                copy.deepcopy(self._ai_tournament_candidates[index])
+                for index in sorted(self._ai_tournament_candidates)
+            ]
+        state.pop("stop_requested", None)
+        return state
+
+    def get_training_enabled(self) -> bool:
+        """`training_enabled` replaces the old `ai_sampling_enabled` flag; an
+        installation upgrading from before that rename keeps its previous
+        choice honoured until it's next changed explicitly. The one place
+        this is read from - app.py's ai_config()/_get_training_enabled()
+        delegates here so the tournament loop below and the API agree on the
+        same flag without duplicating the fallback logic."""
+        stored = self.get_runtime_config("training_enabled", "")
+        if stored == "":
+            stored = self.get_runtime_config("ai_sampling_enabled", "0")
+        return stored == "1"
+
+    def start_ai_tournament(self):
+        """Kick off a background architecture tournament: TOURNAMENT_
+        CANDIDATES_PER_ROUND shapes train side by side each round (see
+        ai_learning.run_tournament_round()), the winner carries into the
+        next round with fresh random challengers. Runs continuously, round
+        after round, for as long as training_enabled stays on - it does not
+        stop on its own once it's found something good; see
+        _run_ai_tournament()'s training_enabled check for the only automatic
+        stop condition. stop_ai_tournament() is a separate, explicit
+        override for stopping it early.
+
+        Training itself runs off self._lock entirely - only this call and
+        each round's brief persist take it, to snapshot the labelled
+        examples and to record progress - so packet ingestion
+        (register_packet, which shares self._lock) is never blocked by a
+        running tournament, however long it runs."""
+        from .ai_learning import normalize_hidden_sizes
+
+        with self._ai_tournament_lock:
+            if self._ai_tournament.get("active"):
+                return self.get_ai_tournament_state()
+        with self._lock:
+            state = self.ai_learning_state()
+            examples = list(state.get("examples", []))
+            counts = Counter(e["label"] for e in examples)
+            if counts.get("benign", 0) < 3 or counts.get("malicious", 0) < 3:
+                raise ValueError("Hacen falta al menos 3 ejemplos benignos y 3 malignos para entrenar.")
+            current_hidden_sizes = normalize_hidden_sizes(self.get_ai_learning_config()["hidden_sizes"])
+        with self._ai_tournament_lock:
+            self._ai_tournament = {
+                "active": True, "round": 0, "champion": None,
+                "rounds_history": [], "stop_reason": None, "stop_requested": False,
+            }
+            self._ai_tournament_candidates = {}
+        threading.Thread(
+            target=self._run_ai_tournament, args=(examples, current_hidden_sizes), daemon=True
+        ).start()
+        print(f"[i] Architecture tournament started (seed shape {current_hidden_sizes}).", file=sys.stderr)
+        return self.get_ai_tournament_state()
+
+    def maybe_start_ai_tournament(self):
+        """Best-effort auto-start: the tournament is meant to run for as
+        long as training is on, not wait for an explicit "start" click - so
+        this is called whenever training_enabled might have just turned on
+        (see app.py's ai_config()) or new feedback might have just crossed
+        the "3 of each class" floor (see save_ai_feedback() below). Swallows
+        the "not enough labels yet" error rather than propagating it, since
+        this is opportunistic, not an explicit operator action - it'll just
+        try again next time."""
+        if not self.get_training_enabled():
+            return
+        with self._ai_tournament_lock:
+            if self._ai_tournament.get("active"):
+                return
+        try:
+            self.start_ai_tournament()
+        except ValueError as exc:
+            # Printed (not silently swallowed) specifically so "training is
+            # on but the tournament never shows up" is diagnosable from the
+            # desktop app's captured backend output / the CLI's own stderr,
+            # instead of looking like nothing happened at all - this is the
+            # one real reason maybe_start_ai_tournament() ever declines:
+            # fewer than 3 retained examples of one of the two classes.
+            print(f"[i] Architecture tournament not started yet: {exc}", file=sys.stderr)
+
+    def stop_ai_tournament(self):
+        """Request a stop. Takes effect at the next round boundary (not
+        mid-round). Also happens automatically once training_enabled turns
+        off (see _run_ai_tournament()) - this is for an explicit operator
+        override while training stays on."""
+        with self._ai_tournament_lock:
+            if self._ai_tournament.get("active"):
+                self._ai_tournament["stop_requested"] = True
+        return self.get_ai_tournament_state()
+
+    def _run_ai_tournament(self, examples, current_hidden_sizes):
+        from .ai_learning import (
+            SUGGESTION_MIN_IMPROVEMENT,
+            normalize_hidden_sizes,
+            run_tournament_round,
+            tournament_round_shapes,
+        )
+
+        rng = random.Random()
+        starting_shape = normalize_hidden_sizes(current_hidden_sizes)
+        champion_shape = starting_shape
+        champion_accuracy = None
+        round_num = 0
+        stop_reason = "training_disabled"
+
+        # The default 5ms GIL switch interval lets these CPU-bound pure-
+        # Python training threads starve everything else in the process of
+        # CPU time - measured register_packet() taking ~500ms instead of its
+        # normal sub-ms cost while 3 candidates trained concurrently. A
+        # shorter interval fixes that (measured down to ~20-50ms under the
+        # same load), but it's a process-wide interpreter setting that adds
+        # overhead to every thread everywhere, not just this one - scoped to
+        # just the training loop (restored in `finally`) rather than left on
+        # for the process's whole lifetime, which measurably slowed down
+        # everything else, tournament or not.
+        previous_switch_interval = sys.getswitchinterval()
+        sys.setswitchinterval(0.001)
+        try:
+            while True:
+                with self._ai_tournament_lock:
+                    if self._ai_tournament.get("stop_requested"):
+                        stop_reason = "manual"
+                        break
+                if not self.get_training_enabled():
+                    stop_reason = "training_disabled"
+                    break
+                round_num += 1
+                shapes = tournament_round_shapes(
+                    champion_shape, rng, include_champion=champion_accuracy is not None
+                )
+                with self._ai_tournament_lock:
+                    self._ai_tournament["round"] = round_num
+                    self._ai_tournament_candidates = {
+                        index: {
+                            "hidden_sizes": shape, "epoch": 0, "total_epochs": 80,
+                            "loss": None, "status": "queued",
+                        }
+                        for index, shape in enumerate(shapes)
+                    }
+                    progress = self._ai_tournament_candidates
+
+                results = run_tournament_round(
+                    examples, shapes, progress=progress, progress_lock=self._ai_tournament_lock
+                )
+                round_best = max(results, key=lambda r: r["accuracy"] if r["accuracy"] is not None else -1.0)
+                improved = champion_accuracy is None or (
+                    round_best["accuracy"] is not None
+                    and round_best["accuracy"] >= champion_accuracy + SUGGESTION_MIN_IMPROVEMENT
+                )
+                if improved:
+                    champion_shape = round_best["hidden_sizes"]
+                    champion_accuracy = round_best["accuracy"]
+                    # Surface every improvement live, as it's found, through
+                    # the existing suggestion accept/dismiss flow (POST
+                    # /api/ai/suggestion) - same UX as a single
+                    # suggest_architecture() result - rather than only once
+                    # the tournament stops, since it now runs indefinitely
+                    # and the operator shouldn't have to wait for that to
+                    # apply a better architecture. Re-running
+                    # set_ai_learning_config on accept retrains from the
+                    # retained examples deterministically (same examples,
+                    # same shape, no randomness in the training procedure
+                    # itself), so the trained weights don't need to be
+                    # persisted here to reproduce them.
+                    if champion_shape != starting_shape:
+                        with self._lock:
+                            suggestion = self._ai_learning_suggestion_raw()
+                            suggestion["architecture"] = {
+                                "hidden_sizes": champion_shape,
+                                "current_hidden_sizes": starting_shape,
+                                "current_accuracy": None,
+                                "suggested_accuracy": champion_accuracy,
+                            }
+                            self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
+
+                with self._ai_tournament_lock:
+                    for index, result in enumerate(results):
+                        won = result["hidden_sizes"] == round_best["hidden_sizes"]
+                        self._ai_tournament_candidates[index]["status"] = "champion" if won else "disqualified"
+                        self._ai_tournament_candidates[index]["accuracy"] = result["accuracy"]
+                    self._ai_tournament["rounds_history"] = (self._ai_tournament["rounds_history"] + [{
+                        "round": round_num,
+                        "candidates": [
+                            {"hidden_sizes": r["hidden_sizes"], "accuracy": r["accuracy"]} for r in results
+                        ],
+                        "champion_hidden_sizes": champion_shape,
+                        "champion_accuracy": champion_accuracy,
+                    }])[-20:]
+        finally:
+            sys.setswitchinterval(previous_switch_interval)
+
+        champion = {"hidden_sizes": champion_shape, "accuracy": champion_accuracy}
+        with self._ai_tournament_lock:
+            self._ai_tournament["active"] = False
+            self._ai_tournament["champion"] = champion
+            self._ai_tournament["stop_reason"] = stop_reason
+            self._ai_tournament["stop_requested"] = False
+
     def export_ai_model(self):
         from .ai_learning import export_model
 
@@ -2220,7 +2447,15 @@ class SniffStore:
             )
             self.set_runtime_config("ai_learning_state", json.dumps(state))
             self._refresh_ai_learning_suggestion(state)
-            return {"revision": state.get("revision", 0)}
+            revision = state.get("revision", 0)
+        # Outside the lock: this new example may have just crossed the "3 of
+        # each class" floor the tournament needs, so give it a chance to
+        # start if training is on and nothing's running yet (see
+        # maybe_start_ai_tournament()). Not inside self._lock - it briefly
+        # takes it itself, and there's no need to hold packet ingestion's
+        # lock any longer than the state write above needs.
+        self.maybe_start_ai_tournament()
+        return {"revision": revision}
 
     def count_packets(self, *, proto="", session_id=0, search="", interface="", mode="", since=""):
         where, params = self._packet_filter(

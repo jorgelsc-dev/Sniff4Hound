@@ -609,6 +609,7 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ai/model", "desc": "Export the classifier's current architecture and weights."},
     {"method": "POST", "path": "/api/ai/model", "desc": "Import a previously exported classifier architecture and weights."},
     {"method": "POST", "path": "/api/ai/suggestion", "desc": "Apply or dismiss a pending auto-tuning suggestion (kind: 'architecture' or 'cohort', action: 'apply' or 'dismiss') - see learning_suggestion on /api/ai/packets/."},
+    {"method": "POST", "path": "/api/ai/tournament", "desc": "Start or stop a background architecture tournament (action: 'start' or 'stop') - live progress on ai_tournament from /api/ai/packets/, final champion surfaces via /api/ai/suggestion like any other auto-tuning suggestion."},
     {"method": "GET", "path": "/api/detection/exclusions", "desc": "Shared exclusion filter (IP type, CIDR, port, protocol)."},
     {"method": "POST", "path": "/api/detection/exclusions", "desc": "Set the shared exclusion filter - matching traffic is silenced from Sniffer detection, Monitors and AI sampling (raw capture/storage is unaffected)."},
     {"method": "POST", "path": "/api/console/execute", "desc": "Execute a safe registered Sniff4Hound operation from the dashboard console."},
@@ -2503,17 +2504,12 @@ def _ai_snapshot(threshold=50):
     result["exclusion_filters"] = store.get_exclusion_filters()
     result["learning_config"] = learning_config
     result["learning_suggestion"] = store.get_ai_learning_suggestion()
+    result["ai_tournament"] = store.get_ai_tournament_state()
     return result
 
 
 def _get_training_enabled() -> bool:
-    # `training_enabled` replaces the old `ai_sampling_enabled` flag; an
-    # installation upgrading from before this change still has its previous
-    # choice honoured until it is next changed explicitly.
-    stored = store.get_runtime_config("training_enabled", "")
-    if stored == "":
-        stored = store.get_runtime_config("ai_sampling_enabled", "0")
-    return stored == "1"
+    return store.get_training_enabled()
 
 
 @app.api("/api/ai/config", methods=("GET", "POST"))
@@ -2553,6 +2549,14 @@ def ai_config(request):
         store.set_runtime_config("training_enabled", "1" if enabled else "0")
         response["sampling_enabled"] = enabled
         response["training_enabled"] = enabled
+        # The architecture tournament runs for as long as training stays on
+        # (see store.start_ai_tournament()) - it isn't a separate opt-in.
+        # maybe_start_ai_tournament() already swallows "not enough labels
+        # yet" - it just means it'll try again on the next feedback event.
+        if enabled:
+            store.maybe_start_ai_tournament()
+        else:
+            store.stop_ai_tournament()
     if has_training_capture:
         enabled = payload.get("training_capture_enabled")
         if not isinstance(enabled, bool):
@@ -2624,6 +2628,24 @@ def ai_suggestion(request):
     if action == "dismiss":
         return {"learning_suggestion": store.dismiss_ai_learning_suggestion(kind)}
     raise ValueError("action debe ser 'apply' o 'dismiss'.")
+
+
+@app.api("/api/ai/tournament", methods=("POST",))
+def ai_tournament(request):
+    """Start or stop a background architecture tournament (see
+    store.start_ai_tournament()): several candidate hidden-layer shapes
+    train side by side, the winner of each round carries into the next
+    alongside fresh random challengers, until accuracy stops improving. Live
+    progress rides the existing "ai" feed/`GET /api/ai/packets/` snapshot as
+    `ai_tournament`; the final champion surfaces through the normal
+    learning_suggestion accept/dismiss flow (see ai_suggestion above)."""
+    payload = _read_json_body(request)
+    action = str(payload.get("action") or "").strip().lower()
+    if action == "start":
+        return {"ai_tournament": store.start_ai_tournament()}
+    if action == "stop":
+        return {"ai_tournament": store.stop_ai_tournament()}
+    raise ValueError("action debe ser 'start' o 'stop'.")
 
 
 @app.api("/api/ai/feedback", methods=("POST",))

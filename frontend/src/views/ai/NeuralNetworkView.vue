@@ -1,7 +1,12 @@
 <template>
   <div class="rnn-stage">
+    <TournamentPanel
+      v-if="showTournament"
+      :tournament="tournament"
+      :feature-count="learning.feature_names.length"
+    />
     <NeuralGraph
-      v-if="learning"
+      v-else-if="learning"
       immersive
       :learning="learning"
       :packet="selectedPacket"
@@ -25,7 +30,7 @@
     </div>
 
     <div v-if="learning" class="rnn-charts">
-      <LearningProgressPanel :learning="learning" :suggestion="suggestion" />
+      <LearningProgressPanel :learning="learning" :suggestion="suggestion" :tournament="tournament" />
     </div>
   </div>
 </template>
@@ -33,6 +38,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import LearningProgressPanel from "../../components/ai/LearningProgressPanel.vue";
+import TournamentPanel from "../../components/ai/TournamentPanel.vue";
 import NeuralGraph from "../../components/NeuralGraph.vue";
 import store from "../../state/appStore";
 
@@ -41,6 +47,12 @@ const learning = computed(() => result.value.learning);
 const learningConfig = computed(() => result.value.learning_config);
 const suggestion = computed(() => result.value.learning_suggestion || { architecture: null, cohort: null });
 const selectedPacket = computed(() => result.value.rows?.[0] || null);
+const tournament = computed(() => result.value.ai_tournament || { active: false, round: 0, candidates: [], champion: null, rounds_history: [], stop_reason: null });
+// Stays on the tournament view through its last round even after `active`
+// flips false, so the operator sees which candidate won (and which got
+// disqualified) instead of the view silently swapping back to the single
+// production graph the instant training stops.
+const showTournament = computed(() => tournament.value.active || tournament.value.candidates.length > 0);
 const error = ref("");
 const streamStatus = ref("Conectando");
 let lastReceived = 0;

@@ -78,7 +78,13 @@ function sendLauncherStatus(message) {
 const SHARED_VENDOR_DIR = "/usr/lib/sniff4hound/vendor";
 
 function usingSharedVendorRuntime() {
-  return !process.env.SNIFF4HOUND_DESKTOP_PYTHON && fs.existsSync(SHARED_VENDOR_DIR);
+  // Only for the actual packaged/installed app: a machine can easily have
+  // an unrelated, stale sniff4hound .deb already installed at this same
+  // path from a previous release, and `npm run dev` unpackaged is
+  // specifically for testing the live source tree in this repo - silently
+  // running whatever happens to be installed system-wide instead would
+  // make dev mode indistinguishable from testing old, already-shipped code.
+  return app.isPackaged && !process.env.SNIFF4HOUND_DESKTOP_PYTHON && fs.existsSync(SHARED_VENDOR_DIR);
 }
 
 function resolvePython() {

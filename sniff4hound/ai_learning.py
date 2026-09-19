@@ -18,6 +18,7 @@ import copy
 import hashlib
 import math
 import random
+import threading
 from collections import Counter, defaultdict
 
 from .packet_ai import packet_bytes
@@ -64,6 +65,14 @@ SUGGESTION_TIE_MARGIN = 0.015
 # falls back to measuring every candidate on the same examples it trained on.
 VALIDATION_MIN_PER_CLASS = 6
 VALIDATION_FRACTION = 0.3
+# Tournament: TOURNAMENT_CANDIDATES_PER_ROUND shapes train side by side each
+# round (see run_tournament_round()); the winner carries into the next round
+# alongside fresh random challengers filling the remaining slots. This never
+# stops on its own - it keeps running, round after round, for as long as
+# training_enabled stays on (see store.py's _run_ai_tournament()), so a flat
+# stretch of rounds isn't a reason to give up, just bad luck on that round's
+# random challengers.
+TOURNAMENT_CANDIDATES_PER_ROUND = 3
 
 
 def features(data):
@@ -192,17 +201,25 @@ def _backprop_step(model, x, y, confidence, learning_rate):
     return output
 
 
-def train(examples, hidden_sizes=None):
+def train(examples, hidden_sizes=None, on_epoch=None):
+    """``on_epoch(epoch, total_epochs, loss)``, if given, is called after
+    every epoch (1-indexed) - used by run_tournament_round() to report live
+    per-candidate progress while a full 80-epoch retrain is still running,
+    without changing anything about the training itself."""
     model = initial_model(hidden_sizes)
     history = []
-    for epoch in range(80 if examples else 0):
+    total_epochs = 80 if examples else 0
+    for epoch in range(total_epochs):
         loss = 0.0
         for example in examples:
             x, y = example['features'], int(example['label'] == 'malicious')
             output = _backprop_step(model, x, y, example['confidence'], 0.08)
             loss -= y * math.log(max(output, 1e-12)) + (1 - y) * math.log(max(1 - output, 1e-12))
+        epoch_loss = round(loss / len(examples), 6)
         if epoch % 10 == 0 or epoch == 79:
-            history.append({'epoch': epoch + 1, 'loss': round(loss / len(examples), 6)})
+            history.append({'epoch': epoch + 1, 'loss': epoch_loss})
+        if on_epoch is not None:
+            on_epoch(epoch + 1, total_epochs, epoch_loss)
     return model, history
 
 
@@ -421,6 +438,100 @@ def suggest_architecture(state, hidden_sizes, dismissed=(), report=None):
         'current_accuracy': current_accuracy,
         'suggested_accuracy': best['accuracy'],
     }
+
+
+TOURNAMENT_STRUCTURE_DELTA_RANGE = (-2, -1, 1, 2)
+
+
+def _random_hidden_sizes(rng, seed_shape):
+    """A random neighbour of seed_shape for a tournament challenger - a
+    small, local mutation each round rather than a big structural jump:
+    both the layer count and each individual layer's neuron count move by
+    at most +/-2 from seed_shape (TOURNAMENT_STRUCTURE_DELTA_RANGE), never a
+    proportional/unbounded step. A layer beyond seed_shape's own depth (the
+    challenger grew deeper) is seeded from seed_shape's last layer width
+    before its own +/-2 mutation is applied."""
+    seed_shape = normalize_hidden_sizes(seed_shape)
+    new_layer_count = max(MIN_HIDDEN_LAYERS, len(seed_shape) + rng.choice(TOURNAMENT_STRUCTURE_DELTA_RANGE))
+    sizes = []
+    for i in range(new_layer_count):
+        base = seed_shape[i] if i < len(seed_shape) else seed_shape[-1]
+        sizes.append(max(MIN_HIDDEN_NEURONS, base + rng.choice(TOURNAMENT_STRUCTURE_DELTA_RANGE)))
+    return normalize_hidden_sizes(sizes)
+
+
+def tournament_round_shapes(champion_shape, rng, *, count=TOURNAMENT_CANDIDATES_PER_ROUND, include_champion=True):
+    """`count` shapes for one tournament round: the reigning champion (if
+    `include_champion`) plus fresh random neighbours filling the rest.
+    Round 1 has no reigning champion yet - pass include_champion=False (still
+    seeded from champion_shape, e.g. the production model's current shape,
+    as a neutral starting point) to draw every slot fresh."""
+    champion_shape = normalize_hidden_sizes(champion_shape)
+    shapes = [list(champion_shape)] if include_champion else []
+    seen = {tuple(champion_shape)}
+    attempts = 0
+    while len(shapes) < count and attempts < count * 20:
+        attempts += 1
+        candidate = _random_hidden_sizes(rng, champion_shape)
+        key = tuple(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        shapes.append(candidate)
+    return shapes
+
+
+def run_tournament_round(examples, shapes, progress=None, progress_lock=None):
+    """Train every shape in `shapes` side by side and return one
+    ``{hidden_sizes, accuracy, parameters}`` entry per shape, same order as
+    `shapes` - unlike suggest_architecture() above, the trained weights
+    (`parameters`) are kept so the caller can render each candidate live,
+    not just compare a final accuracy number.
+
+    Each candidate trains on its own `threading.Thread`. This trainer is
+    plain Python with no numpy, so under the GIL threads buy interleaved
+    progress rather than real CPU parallelism - that's fine here, nothing
+    depends on the candidates finishing at the same wall-clock time, only on
+    each reporting its own progress independently.
+
+    `progress`, if given, is a dict this function writes into - one entry per
+    candidate, keyed by its index in `shapes` - so a caller on another thread
+    can read live epoch/loss updates while training is still running.
+    `progress_lock` must be given whenever `progress` is, and guards every
+    read/write of it.
+    """
+    counts = Counter(e['label'] for e in examples)
+    use_holdout = counts['benign'] >= VALIDATION_MIN_PER_CLASS and counts['malicious'] >= VALIDATION_MIN_PER_CLASS
+    train_examples, eval_examples = _split_train_validation(examples) if use_holdout else (examples, examples)
+
+    results = [None] * len(shapes)
+
+    def _run_one(index, shape):
+        state = {'hidden_sizes': shape, 'epoch': 0, 'total_epochs': 80, 'loss': None, 'status': 'training'}
+        if progress is not None:
+            with progress_lock:
+                progress[index] = dict(state)
+
+        def _on_epoch(epoch, total_epochs, loss):
+            state.update(epoch=epoch, total_epochs=total_epochs, loss=loss)
+            if progress is not None:
+                with progress_lock:
+                    progress[index] = dict(state)
+
+        model, _ = train(train_examples, hidden_sizes=shape, on_epoch=_on_epoch)
+        accuracy = _accuracy_for(model, eval_examples)
+        results[index] = {'hidden_sizes': shape, 'accuracy': accuracy, 'parameters': model}
+        state.update(status='done', accuracy=accuracy)
+        if progress is not None:
+            with progress_lock:
+                progress[index] = dict(state)
+
+    threads = [threading.Thread(target=_run_one, args=(index, shape), daemon=True) for index, shape in enumerate(shapes)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return results
 
 
 def export_model(state):

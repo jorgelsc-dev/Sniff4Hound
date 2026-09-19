@@ -72,17 +72,6 @@
       </svg>
     </div>
     <p v-if="!immersive" class="text-body-2">Umbral de decisión: {{ (learning.threshold * 100).toFixed(0) }}/100. {{ learning.ready ? 'La salida participa en la prioridad de revisión.' : 'La salida aún no participa en el score: hacen falta 3 ejemplos benignos y 3 maliciosos distintos.' }}</p>
-    <v-expansion-panels v-model="openPanel" class="network-inspector" :class="{ 'mt-3': !immersive }">
-      <v-expansion-panel :title="`Inspección: ${selected?.label || 'selecciona una neurona'}`">
-        <v-expansion-panel-text>
-          <p v-if="selected">Activación: {{ selected.activation ?? 'sin paquete' }} · Sesgo: {{ selected.bias ?? 'no aplica' }} · Umbral de suma para activación cero (tanh) o 0.5 (sigmoide): {{ selected.bias === null ? 'no aplica' : -selected.bias }}</p>
-          <v-table density="compact">
-            <thead><tr><th>Entrada</th><th>Peso</th><th>Contribución al nodo</th></tr></thead>
-            <tbody><tr v-for="edge in incoming" :key="edge.from.id"><td>{{ edge.from.label }}</td><td>{{ edge.pending ? '—' : edge.weight.toFixed(6) }}</td><td>{{ edge.contribution?.toFixed(6) ?? '—' }}</td></tr></tbody>
-          </v-table>
-        </v-expansion-panel-text>
-      </v-expansion-panel>
-    </v-expansion-panels>
 
     <div v-if="editable && learningConfigDraft" class="network-editor-panel">
       <div class="network-editor-panel__head">
@@ -167,8 +156,7 @@ const editable = computed(() => props.immersive && !!props.learningConfig);
 
 const selectedId = ref("output");
 const hoveredId = ref(null);
-const openPanel = ref(null);
-function selectNode(id) { selectedId.value = id; openPanel.value = 0; }
+function selectNode(id) { selectedId.value = id; }
 
 // A column with many neurons (layer width has no upper bound, see the
 // editor controls below) packs its labels tightly enough at the default
@@ -695,9 +683,6 @@ const pulseDots = computed(() => {
   });
 });
 
-const selected = computed(() => nodes.value.find((n) => n.id === selectedId.value));
-const incoming = computed(() => edges.value.filter((e) => e.to.id === selectedId.value));
-
 // Drag-and-drop repositioning: converts pointer screen coordinates into the
 // SVG's own viewBox coordinate space via getScreenCTM(), so it stays correct
 // through the ctrl/cmd+wheel zoom (a CSS transform: scale on the svg) and
@@ -855,7 +840,7 @@ svg {
    below float as transparent overlays on top of it, they no longer reserve
    their own layout space, so the graph itself reads as truly full-screen. */
 /* Bottom clearance matches the corner overlay panels' own footprint (see
-   network-editor-panel/network-inspector/rnn-charts below) so the graph's
+   network-editor-panel/rnn-charts below) so the graph's
    own outer columns - which naturally reach the full height of whichever
    column is tallest - never render underneath a panel and become
    unreadable/unclickable there. A fixed px reserve (not vh) keeps the
@@ -900,20 +885,6 @@ svg {
   padding: 4px;
   background: transparent;
 }
-.neural-stage .network-inspector {
-  position: absolute;
-  bottom: 292px;
-  left: 16px;
-  width: min(320px, calc(50% - 24px));
-  max-height: 22vh;
-  overflow: auto;
-  z-index: 3;
-  background: transparent;
-}
-.neural-stage .network-inspector :deep(.v-expansion-panel) { background: rgba(8, 18, 29, .75); box-shadow: none; border: 1px solid #8acbdf22; }
-.neural-stage .network-inspector :deep(.v-expansion-panel-title) { min-height: 34px; padding: 8px 12px; font-size: .7rem; }
-.neural-stage .network-inspector :deep(.v-expansion-panel-text__wrapper) { padding: 8px 12px; font-size: .7rem; }
-
 /* Bottom-left floating architecture/LOF/save toolbar - the part of "Ajustes
    del motor" that isn't a direct graph interaction (LOF size, save/discard,
    import/export). Transparent background so the live graph stays visible
@@ -949,6 +920,5 @@ svg {
   .neural-stage .network-zoom-toolbar { top: auto; bottom: 380px; right: 10px; }
   .neural-stage .network-scroll { inset: 125px 8px 340px; }
   .neural-stage .network-editor-panel { left: 8px; right: 8px; width: auto; bottom: 8px; max-height: 220px; }
-  .neural-stage .network-inspector { left: 8px; right: 8px; width: auto; bottom: 236px; max-height: 18vh; }
 }
 </style>

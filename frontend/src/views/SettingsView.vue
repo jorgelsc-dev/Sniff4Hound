@@ -36,6 +36,10 @@
         <v-icon icon="mdi-brain" start />
         IA
       </v-tab>
+      <v-tab value="architecture">
+        <v-icon icon="mdi-sitemap-outline" start />
+        Arquitectura
+      </v-tab>
     </v-tabs>
 
     <v-window v-model="activeTab">
@@ -1017,6 +1021,12 @@
       <v-window-item value="ai">
         <AiSettingsPanel />
       </v-window-item>
+
+      <v-window-item value="architecture">
+        <DataPanel title="Arquitectura" subtitle="Cómo se relacionan los componentes de Sniff4Hound - haz click en un nodo para configurarlo.">
+          <ArchitectureGraphPanel @open-settings-tab="activeTab = $event" />
+        </DataPanel>
+      </v-window-item>
     </v-window>
   </div>
 </template>
@@ -1032,6 +1042,7 @@ import BlacklistPanel from "../components/settings/BlacklistPanel.vue";
 import ExclusionsPanel from "../components/settings/ExclusionsPanel.vue";
 import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 import AiSettingsPanel from "../components/settings/AiSettingsPanel.vue";
+import ArchitectureGraphPanel from "../components/settings/ArchitectureGraphPanel.vue";
 import { formatTimestamp, matchesSearch, uniqueSorted } from "../utils/traffic";
 
 const PROTOCOL_OPTIONS = [
@@ -1055,7 +1066,7 @@ const PROTOCOL_OPTIONS = [
   "llc-osi",
 ];
 const SEVERITY_OPTIONS = ["info", "low", "medium", "high", "critical"];
-const VALID_TABS = new Set(["capture", "honeypot", "detection", "blacklist", "notifications", "ai"]);
+const VALID_TABS = new Set(["capture", "honeypot", "detection", "blacklist", "notifications", "ai", "architecture"]);
 const GROUP_BY_OPTIONS = ["src_ip", "dst_ip", "src_ip+dst_port", "dst_ip+dst_port", "src_ip+dst_ip"];
 const MATCH_REGEX_KEYS = [
   "payload_regex",
@@ -1135,6 +1146,7 @@ export default {
     LocationPicker,
     RuleDetailDialog,
     AiSettingsPanel,
+    ArchitectureGraphPanel,
   },
   data() {
     const requested = String((this.$route && this.$route.query && this.$route.query.section) || "").trim();

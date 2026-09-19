@@ -17,15 +17,43 @@
       <p class="selection-note">{{ search.candidates.length }} alternativas evaluadas · acierto sobre ejemplos de entrenamiento, no validación independiente.</p>
     </template>
     <p v-else class="selection-note">{{ learning.ready ? 'La comparación aparecerá al completar la próxima búsqueda.' : 'La búsqueda necesita al menos 3 ejemplos benignos y 3 malignos.' }}</p>
-    <div v-if="suggestion.architecture" class="recommendation"><v-icon icon="mdi-auto-fix" size="14" /> Propuesta {{ suggestion.architecture.hidden_sizes.join(' → ') }} · +{{ ((suggestion.architecture.suggested_accuracy - suggestion.architecture.current_accuracy) * 100).toFixed(1) }} puntos. Puedes aplicarla en los ajustes.</div>
+    <div class="tournament-controls">
+      <span v-if="tournament.active" class="tournament-controls__status tournament-controls__status--active">
+        <v-icon icon="mdi-tournament" size="13" /> Torneo en curso · ronda {{ tournament.round }}
+      </span>
+      <span v-else-if="readyForTournament" class="tournament-controls__status">
+        Se inicia solo cuando hay ejemplos suficientes, mientras el entrenamiento esté activo.
+      </span>
+      <span v-else class="tournament-controls__hint">Necesita 3 ejemplos benignos y 3 malignos para empezar el torneo.</span>
+      <v-btn v-if="tournament.active" size="x-small" color="error" variant="tonal" :loading="tournamentBusy" @click="stopTournament">
+        Detener
+      </v-btn>
+    </div>
+    <p v-if="tournament.stop_reason === 'training_disabled'" class="selection-note">El torneo se detuvo porque el entrenamiento está apagado - se reanuda solo al reactivarlo.</p>
+    <v-alert v-if="tournamentError" type="error" density="compact" class="mt-2">{{ tournamentError }}</v-alert>
+    <div v-if="suggestion.architecture" class="recommendation">
+      <v-icon icon="mdi-auto-fix" size="14" /> Propuesta {{ suggestion.architecture.hidden_sizes.join(' → ') }}
+      <template v-if="suggestion.architecture.current_accuracy != null">
+        · +{{ ((suggestion.architecture.suggested_accuracy - suggestion.architecture.current_accuracy) * 100).toFixed(1) }} puntos
+      </template>
+      <template v-else>
+        · {{ (suggestion.architecture.suggested_accuracy * 100).toFixed(1) }}% de acierto
+      </template>
+      . Puedes aplicarla en los ajustes.
+    </div>
     <div v-else class="next-search"><span>Próxima comparación</span><v-progress-linear :model-value="nextProgress" height="3" color="secondary" rounded /><span>{{ suggestion.next_check?.completed ?? 0 }}/{{ suggestion.next_check?.required ?? 5 }} actualizaciones</span></div>
     <p v-if="search?.checked_at" class="search-date">Última búsqueda: {{ new Date(search.checked_at).toLocaleTimeString('es') }} · revisión {{ search.revision }}</p>
   </section>
 </template>
 
 <script setup>
-import { computed } from "vue";
-const props = defineProps({ learning: { type: Object, required: true }, suggestion: { type: Object, default: () => ({}) } });
+import { computed, ref } from "vue";
+import store from "../../state/appStore";
+const props = defineProps({
+  learning: { type: Object, required: true },
+  suggestion: { type: Object, default: () => ({}) },
+  tournament: { type: Object, default: () => ({ active: false, candidates: [] }) },
+});
 const classes = computed(() => [
   { label: "Benignos", count: props.learning.counts?.benign || 0, color: "success" },
   { label: "Malignos", count: props.learning.counts?.malicious || 0, color: "error" },
@@ -45,6 +73,24 @@ const ranked = computed(() => search.value?.status === "complete" ? [
 const selectionLabel = computed(() => props.suggestion.architecture ? "Mejora encontrada" : !props.learning.ready ? "Esperando ejemplos" : ranked.value.length ? "Comparación completada" : "Recopilando datos");
 const nextProgress = computed(() => Math.min(100, (props.suggestion.next_check?.completed || 0) / (props.suggestion.next_check?.required || 5) * 100));
 function number(value) { return Number(value || 0).toLocaleString("es"); }
+
+// The tournament starts itself once training is on and there are enough
+// labelled examples (see store.maybe_start_ai_tournament()) - no manual
+// start here, only a stop override while training stays on.
+const readyForTournament = computed(() => classes.value.every((item) => item.count >= 3));
+const tournamentBusy = ref(false);
+const tournamentError = ref("");
+async function stopTournament() {
+  tournamentBusy.value = true;
+  tournamentError.value = "";
+  try {
+    await store.fetchJsonPromise("/api/ai/tournament", { method: "POST", body: JSON.stringify({ action: "stop" }) });
+  } catch (err) {
+    tournamentError.value = err.message || "No se pudo detener el torneo.";
+  } finally {
+    tournamentBusy.value = false;
+  }
+}
 </script>
 
 <style scoped>
@@ -72,4 +118,8 @@ p { font-size: .57rem; margin-top: 6px; line-height: 1.5; }
 .next-search > span { flex-shrink: 0; }
 .recommendation { color: #5ddbc7; background: #2ec9b30b; padding: 6px; border-radius: 5px; margin-top: 6px; font-size: .6rem; }
 .search-date { opacity: .65; font-size: .53rem; }
+.tournament-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.tournament-controls__hint { font-size: .56rem; color: var(--text-dim); }
+.tournament-controls__status { display: flex; align-items: center; gap: 4px; font-size: .58rem; color: var(--text-dim); }
+.tournament-controls__status--active { color: #5ddbc7; }
 </style>

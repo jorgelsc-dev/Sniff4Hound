@@ -425,15 +425,25 @@ def _self_elevate_env_assignments(invoking_uid: int) -> list[str]:
 
 
 def _build_self_elevate_command(invoking_uid: int) -> list[str] | None:
+    """`None` means "cannot self-elevate" and the caller refuses to start -
+    it never silently degrades to a mechanism that can't work in the
+    caller's context. In desktop mode this means pkexec or nothing: `sudo`
+    needs a controlling terminal to prompt on (its own PAM stack included,
+    e.g. a fingerprint reader), which an Electron-spawned process never has
+    - falling back to it here doesn't fail fast, it fails *slow and
+    confusing* (sudo blocks on a prompt nothing can ever answer, then times
+    out with "a terminal is required to read the password" written straight
+    to a log file instead of shown to the operator)."""
     assignments = _self_elevate_env_assignments(invoking_uid)
     if _desktop_mode_enabled():
         pkexec = shutil.which("pkexec")
-        if pkexec:
-            env_bin = shutil.which("env") or "/usr/bin/env"
-            command = [pkexec, env_bin]
-            command.extend(assignments)
-            command.extend([sys.executable, "-m", "sniff4hound.manage", *sys.argv[1:]])
-            return command
+        if not pkexec:
+            return None
+        env_bin = shutil.which("env") or "/usr/bin/env"
+        command = [pkexec, env_bin]
+        command.extend(assignments)
+        command.extend([sys.executable, "-m", "sniff4hound.manage", *sys.argv[1:]])
+        return command
     sudo = shutil.which("sudo")
     if sudo is None:
         return None
@@ -446,7 +456,11 @@ def _build_self_elevate_command(invoking_uid: int) -> list[str] | None:
 def _print_root_required_message() -> None:
     print("[!] Sniff4Hound requires root/administrator privileges and will not start without them.", file=sys.stderr)
     print("    Raw-socket packet capture and low-port honeypot listeners are not possible as a regular user.", file=sys.stderr)
-    print("    Install pkexec/sudo, or re-run this yourself as root.", file=sys.stderr)
+    if _desktop_mode_enabled():
+        print("    The desktop app needs pkexec (package policykit-1) to prompt for elevation graphically -", file=sys.stderr)
+        print("    it will not fall back to sudo, which cannot prompt without a terminal. Install pkexec and retry.", file=sys.stderr)
+    else:
+        print("    Install pkexec/sudo, or re-run this yourself as root.", file=sys.stderr)
 
 
 def _ensure_running_as_root() -> bool:
@@ -457,6 +471,12 @@ def _ensure_running_as_root() -> bool:
     talking to the same pid/stdio Electron or the shell already has open."""
     if _running_as_root():
         return True
+    desktop = _desktop_mode_enabled()
+    print(
+        f"[i] Elevating to root (desktop mode: {'on' if desktop else 'off'}, "
+        f"pkexec: {shutil.which('pkexec') or 'not found'}, sudo: {shutil.which('sudo') or 'not found'})...",
+        file=sys.stderr,
+    )
     command = _build_self_elevate_command(os.getuid())
     if command is None:
         _print_root_required_message()
