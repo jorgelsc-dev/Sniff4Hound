@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory, createMemoryHistory } from "vue-router";
+import { createRouter, createWebHashHistory, createMemoryHistory } from "vue-router";
 import { appBaseUrl } from "../utils/runtimeEnv.js";
 
 const routes = [
@@ -52,13 +52,22 @@ const routes = [
   { path: "/:pathMatch(.*)*", redirect: "/" },
 ];
 
-// vue-router's default history needs `window`/`document`. This module is
-// also reached from the plain-Node unit test runner (no DOM at all), which
+// Hash history, not createWebHistory(): the desktop shell now loads this
+// SPA from a local file (see desktop/main.js's loadShell()), and
+// history.pushState() throws a SecurityError under file:// for any
+// path-changing URL (verified empirically - Chromium refuses to rewrite a
+// file:// document's path via pushState, only its hash/query). The hash
+// portion has no such restriction, and vue-router's own createWebHashHistory
+// already ignores the `base` argument entirely for host-less (file://)
+// locations, so this needs no other change.
+//
+// vue-router's history needs `window`/`document`. This module is also
+// reached from the plain-Node unit test runner (no DOM at all), which
 // otherwise crashes at import time before a single test can run - swap to
 // the DOM-free memory history there; every real (browser/Electron) load
 // always has `window`.
 const router = createRouter({
-  history: typeof window !== "undefined" ? createWebHistory(appBaseUrl()) : createMemoryHistory(appBaseUrl()),
+  history: typeof window !== "undefined" ? createWebHashHistory(appBaseUrl()) : createMemoryHistory(appBaseUrl()),
   routes,
   scrollBehavior() {
     return { left: 0, top: 0 };

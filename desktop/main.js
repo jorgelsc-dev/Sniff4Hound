@@ -1,14 +1,37 @@
-const { app, BrowserWindow, Menu, ipcMain, shell, dialog } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog, protocol } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
 const https = require("node:https");
 const path = require("node:path");
-const { URL } = require("./lib/simple-url");
+const { URL, URLSearchParams } = require("./lib/simple-url");
 
 const READY_PREFIX = "SNIFF4HOUND_DESKTOP_READY ";
 const DEFAULT_PORT = "45678";
 const CONNECTION_STATE_FILE = "connection.json";
+const APP_SCHEME = "app";
+
+// The bundled SPA (frontend/dist, a Vite build with <script type="module">
+// entry points - see loadShell()/registerAppProtocol() below) can't be
+// loaded via a plain file:// URL: Chromium always fetches module scripts in
+// CORS mode regardless of any HTML attribute, and file: is a
+// "CorsDisabledScheme" - every module script failed to load and the app
+// never mounted (verified empirically against a real build). Registering
+// a privileged custom scheme instead gives the bundled UI a real origin
+// that supports fetch/CORS like http(s) does, which is the standard fix for
+// this exact Vite+Electron combination. Must run before the app is ready.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: APP_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+]);
 
 // Chromium's setuid sandbox helper needs a root-owned, setuid `chrome-sandbox`
 // binary (or an AppArmor profile permitting unprivileged user namespaces on
@@ -165,12 +188,13 @@ function resolveFrontendDist() {
     return process.env.SNIFF4HOUND_FRONTEND_DIST;
   }
   if (usingSharedVendorRuntime()) {
-    // The shared vendor tree already carries its own _frontend_dist (built
-    // in by setup.py's custom build_py) - the Python backend resolves it on
-    // its own, same as the CLI does. Returning "" here leaves
-    // SNIFF4HOUND_FRONTEND_DIST unset instead of forcing a path that has no
-    // meaning once main.js is running from inside the installed package.
-    return "";
+    // The shared vendor tree carries its own vendored copy at
+    // sniff4hound/_frontend_dist (setup.py's custom build_py copies
+    // frontend/dist there at package-build time - see PACKAGE_FRONTEND_DIR
+    // in setup.py) - Electron now loads this directly (loadShell()) instead
+    // of the Python backend serving it, so main.js has to know this path
+    // itself rather than delegating to the backend.
+    return path.join(SHARED_VENDOR_DIR, "sniff4hound", "_frontend_dist");
   }
   const packagedDist = path.join(process.resourcesPath || "", "frontend-dist");
   if (app.isPackaged && fs.existsSync(path.join(packagedDist, "index.html"))) {
@@ -185,7 +209,6 @@ function venvRootForPython(pythonPath) {
 }
 
 function backendEnv(pythonPath) {
-  const frontendDist = resolveFrontendDist();
   const env = {
     ...process.env,
     PYTHONUNBUFFERED: "1",
@@ -195,9 +218,6 @@ function backendEnv(pythonPath) {
     SNIFF4HOUND_PORT: process.env.SNIFF4HOUND_PORT || DEFAULT_PORT,
     SNIFF4HOUND_CAPTURE_AUTO_START: "0",
   };
-  if (frontendDist) {
-    env.SNIFF4HOUND_FRONTEND_DIST = frontendDist;
-  }
 
   if (usingSharedVendorRuntime()) {
     // Mirrors scripts/deb_wrapper.sh: the shared vendor dir isn't on system
@@ -468,25 +488,82 @@ function createWindow() {
   });
 }
 
-function routeUrl(routePath) {
+// Builds the query string the bundled SPA reads on boot (see appStore.js's
+// initApiBase()/readStartupAuthTokenFromUrl()): which backend to call
+// (api_base - local or a "connect to remote sensor" target, since both now
+// load the exact same local shell instead of the remote's own page) and the
+// security code. Which view to land on travels separately, as the URL's
+// hash (see loadShell()) - frontend/src/router/index.js runs in hash mode
+// precisely so this works under the app:// scheme (registerAppProtocol()
+// below), where a path-changing pushState() (what a root-relative query
+// value would need turning into a route) throws a SecurityError, same as
+// it would under a plain file:// load.
+function shellSearch() {
   if (!backendReady) return "";
-  const base = new URL(backendReady.url);
-  const target = new URL(String(routePath || "/"), "http://sniff4hound.local");
-  base.pathname = target.pathname || "/";
-  base.search = target.search || "";
+  const params = new URLSearchParams();
+  const backendProtocol = backendReady.protocol || "http";
+  params.set("api_base", `${backendProtocol}://${backendReady.host}:${backendReady.port}`);
   if (backendReady.auth_required && backendReady.security_code) {
-    base.searchParams.set("code", backendReady.security_code);
+    params.set("code", backendReady.security_code);
   }
-  base.searchParams.set("desktop", "1");
-  base.searchParams.set("desktop_backend", backendReady.connection === "remote" ? "remote" : "local");
-  return base.toString();
+  params.set("desktop", "1");
+  params.set("desktop_backend", backendReady.connection === "remote" ? "remote" : "local");
+  return params.toString();
+}
+
+// Extensions actually present in a Vite build of frontend/ (checked against
+// a real `npm run build` output) - not a general-purpose MIME database,
+// just enough for protocol.handle() below to answer each file with a
+// content type the renderer will actually execute/render as (a JS module
+// served as application/octet-stream, for instance, is silently refused).
+const DIST_MIME_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".geojson": "application/geo+json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".eot": "application/vnd.ms-fontobject",
+  ".txt": "text/plain; charset=utf-8",
+};
+
+function registerAppProtocol() {
+  const distDir = path.resolve(resolveFrontendDist());
+  protocol.handle(APP_SCHEME, (request) => {
+    const requestUrl = new URL(request.url);
+    let relativePath = decodeURIComponent(requestUrl.pathname || "/");
+    if (relativePath === "" || relativePath === "/") relativePath = "/index.html";
+    const filePath = path.join(distDir, relativePath);
+    // Refuses anything a "/../.." in the request path would resolve
+    // outside distDir - nothing legitimate ever needs that, this is our
+    // own bundled UI's fixed set of files, not a general file server.
+    if (filePath !== distDir && !filePath.startsWith(distDir + path.sep)) {
+      return new Response("Not Found", { status: 404 });
+    }
+    try {
+      const data = fs.readFileSync(filePath);
+      const contentType = DIST_MIME_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream";
+      return new Response(data, { status: 200, headers: { "Content-Type": contentType } });
+    } catch {
+      return new Response("Not Found", { status: 404 });
+    }
+  });
+}
+
+function loadShell(routePath) {
+  if (!mainWindow || mainWindow.isDestroyed() || !backendReady) return;
+  const search = shellSearch();
+  const hash = String(routePath || "/");
+  mainWindow.loadURL(`${APP_SCHEME}://shell/index.html${search ? `?${search}` : ""}#${hash}`);
 }
 
 function navigate(routePath) {
-  const url = routeUrl(routePath);
-  if (url && mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.loadURL(url);
-  }
+  loadShell(routePath);
 }
 
 function installMenu() {
@@ -540,7 +617,7 @@ function installMenu() {
 function loadBackendWindow() {
   if (!mainWindow || mainWindow.isDestroyed() || !backendReady) return;
   installMenu();
-  mainWindow.loadURL(backendReady.url);
+  loadShell("/");
 }
 
 function showConnectionChooser() {
@@ -657,6 +734,7 @@ ipcMain.handle("desktop-runtime:show-connection-chooser", () => {
 });
 
 app.whenReady().then(() => {
+  registerAppProtocol();
   createWindow();
 });
 

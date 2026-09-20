@@ -156,6 +156,65 @@ class AuthGuardHardeningTests(unittest.TestCase):
         )
         self.assertEqual(response.status, 200)
 
+    def _set_desktop_mode(self, value):
+        previous = os.environ.get("SNIFF4HOUND_DESKTOP")
+
+        def _restore():
+            if previous is None:
+                os.environ.pop("SNIFF4HOUND_DESKTOP", None)
+            else:
+                os.environ["SNIFF4HOUND_DESKTOP"] = previous
+
+        self.addCleanup(_restore)
+        if value is None:
+            os.environ.pop("SNIFF4HOUND_DESKTOP", None)
+        else:
+            os.environ["SNIFF4HOUND_DESKTOP"] = value
+
+    def test_null_origin_from_the_bundled_desktop_shell_is_allowed(self):
+        # The desktop shell now loads its UI from a local file (see
+        # desktop/main.js's loadShell()), an opaque origin browsers report
+        # literally as "null" - the one legitimate non-same-origin caller
+        # once the backend stops serving any page of its own.
+        # _desktop_mode_enabled() reads the env var live (it isn't a
+        # module-level constant like REQUIRE_AUTH), so no module reload is
+        # needed here, unlike _reload_app_stack above.
+        self._set_desktop_mode("1")
+        response = self.app.app.dispatch(
+            _request(
+                "/api/echo",
+                method="POST",
+                headers={
+                    "x-security-code": "Ab12Cd34",
+                    "host": "127.0.0.1:45678",
+                    "origin": "null",
+                },
+                body="{}",
+            )
+        )
+        self.assertEqual(response.status, 200)
+
+    def test_null_origin_is_still_rejected_outside_desktop_mode(self):
+        # A plain server/CLI deployment (no Electron shell involved) keeps
+        # today's exact behavior - "null" is not a magic bypass in general,
+        # only for a backend actually launched to serve the desktop shell.
+        self._set_desktop_mode(None)
+        response = self.app.app.dispatch(
+            _request(
+                "/api/echo",
+                method="POST",
+                headers={
+                    "x-security-code": "Ab12Cd34",
+                    "host": "127.0.0.1:45678",
+                    "origin": "null",
+                },
+                body="{}",
+            )
+        )
+        self.assertEqual(response.status, 403)
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["code"], "bad_origin")
+
     def test_the_session_endpoint_shares_the_limiter(self):
         # /api/auth/session is the one route the guard skips, which makes it
         # the only free "is this code right?" oracle if it is not limited.

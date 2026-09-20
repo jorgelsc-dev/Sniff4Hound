@@ -333,17 +333,6 @@ class SmokeTests(unittest.TestCase):
                 else:
                     os.environ["SNIFF4HOUND_DB_PATH"] = previous
 
-    def test_frontend_build_is_served(self):
-        import sniff4hound.app as app_module
-
-        response = app_module.root(None)
-
-        payload = response.body if isinstance(response.body, (bytes, bytearray)) else response.status
-        body = payload.decode("utf-8") if isinstance(payload, (bytes, bytearray)) else str(payload)
-        self.assertIn('<div id="app"></div>', body)
-        self.assertIn('/assets/index-', body)
-        self.assertIn('type="module"', body)
-
     def test_http_send_guard_suppresses_broken_pipe_noise(self):
         import sniff4hound.app as app_module
 
@@ -1360,19 +1349,6 @@ class SmokeTests(unittest.TestCase):
                 else:
                     os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = previous_auth
 
-    def test_static_file_response_uses_body(self):
-        import sniff4hound.app as app_module
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            file_path = Path(tmp_dir) / "asset.txt"
-            file_path.write_text("static payload", encoding="utf-8")
-
-            response = app_module._static_file_response(file_path)
-            self.assertIsNotNone(response)
-            self.assertEqual(response.status, 200)
-            self.assertEqual(response.body, b"static payload")
-            self.assertEqual(response.headers.get("Content-Type"), "text/plain")
-
     def test_chrome_devtools_workspace_probe_does_not_404(self):
         import sniff4hound.app as app_module
 
@@ -1389,29 +1365,6 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(json.loads(response.body.decode("utf-8")), {})
 
-    def test_frontend_dist_resolution_prefers_packaged_assets(self):
-        import sniff4hound.app as app_module
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            base = Path(tmp_dir)
-            packaged_dist = base / "site-packages" / "sniff4hound" / "_frontend_dist"
-            packaged_dist.mkdir(parents=True)
-            (packaged_dist / "index.html").write_text("packaged build", encoding="utf-8")
-
-            previous_source = app_module.SOURCE_FRONTEND_DIST_DIR
-            previous_package = app_module.PACKAGE_FRONTEND_DIST_DIR
-            previous_override = os.environ.pop("SNIFF4HOUND_FRONTEND_DIST", None)
-            try:
-                app_module.SOURCE_FRONTEND_DIST_DIR = base / "missing" / "frontend" / "dist"
-                app_module.PACKAGE_FRONTEND_DIST_DIR = packaged_dist
-
-                resolved = app_module._resolve_frontend_dist_dir()
-                self.assertEqual(resolved, packaged_dist)
-            finally:
-                app_module.SOURCE_FRONTEND_DIST_DIR = previous_source
-                app_module.PACKAGE_FRONTEND_DIST_DIR = previous_package
-                if previous_override is not None:
-                    os.environ["SNIFF4HOUND_FRONTEND_DIST"] = previous_override
 
     def test_ports_endpoint_exposes_rich_packet_context(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1599,77 +1552,4 @@ class SmokeTests(unittest.TestCase):
                 else:
                     os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = previous_auth
 
-    def test_every_vue_router_path_is_in_spa_routes(self):
-        # Regression: /chat was a real vue-router route (frontend/src/
-        # router/index.js) missing from app.SPA_ROUTES, so a refresh (F5),
-        # a bookmark, or a link pasted into a ticket for that view answered
-        # a bare-text 404 instead of the SPA - the exact failure mode the
-        # comment above SPA_ROUTES already describes for /settings,
-        # /domains, /paths and /ips. This walks the router file itself so a
-        # new view can't silently reintroduce the same gap.
-        #
-        # This used to `re.findall(r"\{[^{}]*\}", source)`, a flat regex that
-        # cannot see past a nested brace: a route with `meta: { ... }` (e.g.
-        # /ai/neural-network, /dashboard/node-map) only ever matched the
-        # inner meta object, so the route's own `path:` was never extracted
-        # and never checked - which is exactly how 5 nested routes reached
-        # SPA_ROUTES-less 404s (finding 1.1) without this test catching it.
-        # A small brace-depth walk finds each *complete* top-level route
-        # object instead of relying on there being no nesting inside one.
-        import re as _re
 
-        import sniff4hound.app as app_module
-
-        router_path = Path(__file__).resolve().parents[1] / "frontend" / "src" / "router" / "index.js"
-        source = router_path.read_text(encoding="utf-8")
-
-        start_marker = "const routes = ["
-        array_start = source.index(start_marker) + len(start_marker) - 1  # position of the '['
-        depth = 0
-        array_end = None
-        for index in range(array_start, len(source)):
-            char = source[index]
-            if char == "[":
-                depth += 1
-            elif char == "]":
-                depth -= 1
-                if depth == 0:
-                    array_end = index
-                    break
-        self.assertIsNotNone(array_end, "could not find the end of the routes array - router file format changed")
-        array_source = source[array_start:array_end + 1]
-
-        route_objects = []
-        depth = 0
-        obj_start = None
-        for index, char in enumerate(array_source):
-            if char == "{":
-                if depth == 0:
-                    obj_start = index
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0 and obj_start is not None:
-                    route_objects.append(array_source[obj_start:index + 1])
-                    obj_start = None
-        self.assertGreater(len(route_objects), 0, "no route objects extracted - router file format changed")
-
-        static_paths = []
-        for obj in route_objects:
-            if _re.search(r"\bredirect\s*:", obj):
-                continue
-            match = _re.search(r'path:\s*"([^"]+)"', obj)
-            if not match:
-                continue
-            path = match.group(1)
-            if path in ("/", "") or ":" in path or path.startswith("/:"):
-                continue
-            static_paths.append(path)
-
-        self.assertIn("/chat", static_paths, "test fixture itself is stale - /chat should still be a real route")
-        self.assertIn(
-            "/ai/neural-network", static_paths,
-            "test fixture itself is stale - a route with a nested meta object should still be extracted",
-        )
-        missing = [path for path in static_paths if path not in app_module.SPA_ROUTES]
-        self.assertEqual(missing, [], f"vue-router paths missing from app.SPA_ROUTES (will 404 on refresh): {missing}")

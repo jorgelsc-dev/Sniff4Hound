@@ -2,8 +2,9 @@
 
 // Hand-rolled stand-in for the parts of the WHATWG URL API main.js relies on
 // (absolute http(s)/mailto/file parsing, resolving an absolute path against
-// a base origin, .searchParams.set(), and rebuilding via toString()). Not a
-// general-purpose URL parser - only what those call sites in main.js need.
+// a base origin, .searchParams.set(), a standalone URLSearchParams for
+// building a query string from scratch, and rebuilding via toString()). Not
+// a general-purpose URL parser - only what those call sites in main.js need.
 //
 // Security note: main.js uses this to decide which URLs are safe to hand to
 // shell.openExternal() / allow in in-window navigation, so parsing must fail
@@ -162,4 +163,4 @@ class SimpleURL {
   }
 }
 
-module.exports = { URL: SimpleURL };
+module.exports = { URL: SimpleURL, URLSearchParams: SimpleSearchParams };

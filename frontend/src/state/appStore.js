@@ -8,6 +8,7 @@ const STORAGE_KEY_API = "sniff4hound.apiBase";
 const STORAGE_KEY_AUTH = "sniff4hound.securityCode";
 const LEGACY_STORAGE_KEY_AUTH = "sniff4hound.sessionToken";
 const QUERY_AUTH_KEYS = ["code"];
+const QUERY_API_BASE_KEY = "api_base";
 const STORAGE_KEY_NOTIFY_SOUND = "sniff4hound.notifySoundEnabled";
 const STORAGE_KEY_TIME_RANGE = "sniff4hound.timeRange";
 // Relative windows understood by the API's `since` query parameter. The empty
@@ -93,6 +94,36 @@ function suggestApiBaseFromLocation(locationLike = null) {
   return String(locationRef.origin || `${protocol}//${hostname}${port ? `:${port}` : ""}`);
 }
 
+// The desktop shell now loads this SPA natively from disk (file://, see
+// desktop/main.js's loadShell()) instead of the backend serving it over
+// HTTP, so the page's own origin no longer has anything to do with where
+// the API lives - main.js passes the real backend origin (local or a
+// "connect to remote sensor" target) as this query param on every load,
+// same pattern as the security code below. Takes priority over the stored/
+// guessed base since a fresh launch always knows the current backend
+// better than a stale localStorage value from a previous run.
+function readStartupApiBaseFromUrl() {
+  if (typeof window === "undefined" || !window.location) {
+    return "";
+  }
+  let parsed;
+  try {
+    parsed = new URL(window.location.href);
+  } catch {
+    return "";
+  }
+  const value = parsed.searchParams.get(QUERY_API_BASE_KEY);
+  if (!value) return "";
+  parsed.searchParams.delete(QUERY_API_BASE_KEY);
+  const cleanUrl = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  try {
+    window.history.replaceState(window.history.state, "", cleanUrl);
+  } catch {
+    // keeping a tidy address bar is helpful, not required
+  }
+  return String(value).trim();
+}
+
 function initApiBase() {
   if (typeof window === "undefined") {
     state.apiBase = "";
@@ -101,8 +132,16 @@ function initApiBase() {
   const storedApiBase = window.localStorage
     ? window.localStorage.getItem(STORAGE_KEY_API)
     : "";
-  const base = storedApiBase || apiBaseEnv() || suggestApiBaseFromLocation(window.location) || "";
+  const base =
+    readStartupApiBaseFromUrl() ||
+    storedApiBase ||
+    apiBaseEnv() ||
+    suggestApiBaseFromLocation(window.location) ||
+    "";
   state.apiBase = String(base || "").replace(/\/+$/, "");
+  if (window.localStorage && state.apiBase) {
+    window.localStorage.setItem(STORAGE_KEY_API, state.apiBase);
+  }
 }
 
 function setApiBase(value) {
@@ -637,9 +676,13 @@ function buildHttpError(res, text, data) {
 
 function applyAuthHeader(headers = {}, token = state.authToken) {
   const nextHeaders = { ...headers };
-  if (token && !nextHeaders["X-Security-Code"] && !nextHeaders["x-security-code"]) {
-    nextHeaders["X-Security-Code"] = token;
-  }
+  // Authorization only, not X-Security-Code: the desktop shell's requests
+  // are cross-origin now (file:// page, http(s):// API - see apiBase
+  // above), and X-Security-Code isn't in the backend's CORS preflight
+  // allow-list the way Authorization already is, so sending it would fail
+  // preflight and block the request entirely. The backend already checks
+  // Authorization first (see _extract_request_token in sniff4hound/app.py),
+  // so this loses nothing.
   if (
     token &&
     !nextHeaders.Authorization &&

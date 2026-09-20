@@ -5,7 +5,6 @@ import hashlib
 import json
 import secrets
 from urllib.parse import urlencode, urlparse
-import mimetypes
 import sys
 import time
 from functools import wraps
@@ -50,7 +49,6 @@ from .settings import (
 from .process_control import process_shutdown_requested, request_process_shutdown
 from .store import SniffStore
 from .utils import (
-    KNOWN_PROTOCOLS,
     bytes_to_hex_preview,
     clamp_int,
     coerce_bool,
@@ -67,9 +65,6 @@ from .utils import (
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
-SOURCE_FRONTEND_DIST_DIR = PROJECT_ROOT / "frontend" / "dist"
-PACKAGE_FRONTEND_DIST_DIR = PACKAGE_ROOT / "_frontend_dist"
-FRONTEND_PUBLIC_DIR = PROJECT_ROOT / "frontend" / "public"
 DOCS_DIR = PROJECT_ROOT / "docs"
 DEFAULT_SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -112,64 +107,6 @@ FAVICON_EXTENSION_BY_MIME = {
     "image/webp": "webp",
     "image/x-icon": "ico",
 }
-
-
-def _resolve_frontend_dist_dir() -> Path:
-    override = str(getenv("SNIFF4HOUND_FRONTEND_DIST", "")).strip()
-    candidates = []
-    if override:
-        candidates.append(Path(override).expanduser())
-    candidates.extend([SOURCE_FRONTEND_DIST_DIR, PACKAGE_FRONTEND_DIST_DIR])
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0]
-
-
-FRONTEND_DIST_DIR = _resolve_frontend_dist_dir()
-# Every path vue-router can land on has to be served index.html here too,
-# or a refresh (F5), a bookmark or a link pasted into a ticket - the basic
-# shift-handoff gesture - answers a bare-text 404 instead of the SPA.
-# /settings, /domains, /paths and /ips were missing and did exactly that.
-# Each entry is registered both with and without a trailing slash (see
-# _register_static_frontend), since "/soc/" used to 404 while "/soc" worked.
-SPA_ROUTES = (
-    "/ai",
-    "/ai/overview",
-    "/ai/neural-network",
-    "/dashboard",
-    "/dashboard/overview",
-    "/dashboard/node-map",
-    "/dashboard/live-map",
-    "/investigate",
-    "/sniffer",
-    "/honeypot",
-    "/protocols",
-    # Every protocol slice, generated from utils.KNOWN_PROTOCOLS - the page
-    # renders a card per protocol the sniffer can emit, and hand-listing a
-    # subset here meant /protocols/mdns, /protocols/igmp and even
-    # /protocols/unknown answered a bare 404 on refresh.
-    *(f"/protocols/{proto}" for proto in KNOWN_PROTOCOLS),
-    "/map",
-    "/charts",
-    "/explorer",
-    "/agents",
-    "/targets",
-    "/sessions",
-    "/intel",
-    "/ports",
-    "/banners",
-    "/tags",
-    "/catalog",
-    "/soc",
-    "/monitors",
-    "/settings",
-    "/domains",
-    "/paths",
-    "/ips",
-    "/chat",
-    "/api",
-)
 
 
 def _is_benign_http_send_error(exc: Exception) -> bool:
@@ -276,7 +213,14 @@ def _install_wsbuilder_http_send_guard():
 
 _install_wsbuilder_http_send_guard()
 
-app = App()
+# The desktop shell loads its UI natively (file://, an opaque "null" origin
+# - see desktop/main.js's loadShell()) and calls this API cross-origin; no
+# cookies are involved anywhere (auth is the Authorization header), so a
+# wildcard doesn't need Access-Control-Allow-Credentials and is safe here.
+# The real access control stays _guard_request_auth's security code and
+# _guard_request_origin's origin allowlist below - this only lets the
+# browser's CORS check itself pass so those guards get to run at all.
+app = App(cors_allow_origin="*")
 
 
 def _install_access_log():
@@ -684,7 +628,6 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/export/domains", "desc": "Domains seen in DNS/TLS-SNI/HTTP traffic, with address and port. ?format=csv|json"},
 ]
 
-_STATIC_ROUTES_REGISTERED = False
 _CHAT_MESSAGES: list[dict[str, Any]] = []
 
 
@@ -894,12 +837,32 @@ def _request_host_origin(request) -> tuple[str, str, int] | None:
     return _origin_tuple(f"{scheme}://{host}")
 
 
+def _desktop_mode_enabled() -> bool:
+    """Mirrors manage.py's `_desktop_mode_enabled()` - duplicated rather than
+    imported to avoid a manage.py <-> app.py coupling neither module
+    otherwise needs. Set by desktop/main.js's backendEnv() on every backend
+    it spawns, local or (via the same env forwarded through
+    _self_elevate_env_assignments) the elevated re-exec."""
+    return str(getenv("SNIFF4HOUND_DESKTOP", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _guard_request_origin(request) -> Response | None:
     method = str(getattr(request, "method", "GET") or "GET").upper()
     if method not in STATE_CHANGING_METHODS:
         return None
     supplied = _request_header(request, "Origin", "origin") or _request_header(request, "Referer", "referer")
     if not supplied:
+        return None
+    # The desktop shell's UI is loaded from a local file (see
+    # desktop/main.js's loadShell()), an opaque origin browsers report
+    # literally as "null" - the one legitimate non-same-origin caller now
+    # that this backend never serves a page of its own to navigate to.
+    # Scoped to desktop mode so a plain server/CLI deployment (no Electron
+    # shell in the picture) keeps rejecting a "null" origin exactly as
+    # before - see test_cross_origin_state_change_is_rejected_after_auth,
+    # which must keep failing a real cross-origin caller like
+    # http://evil.example even when correctly authenticated.
+    if _desktop_mode_enabled() and supplied.strip().lower() == "null":
         return None
     actual = _origin_tuple(supplied)
     expected = _request_host_origin(request)
@@ -1619,174 +1582,8 @@ def _banner_action(banner_row: dict, action: str, *, clean_results=False):
     raise ValueError(f"Unsupported action: {action}")
 
 
-def _static_file_response(path: Path):
-    if not path.exists() or not path.is_file():
-        return None
-    content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-    return Response(body=path.read_bytes(), headers={"Content-Type": content_type})
-
-
-def _frontend_index_html() -> str:
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{DEFAULT_DOCS_TITLE}</title>
-  <style>
-    :root {{
-      color-scheme: dark;
-      --bg: #0b1120;
-      --panel: rgba(9, 16, 30, 0.94);
-      --line: rgba(117, 171, 217, 0.22);
-      --ink: #eef6ff;
-      --muted: #9ab0c9;
-      --brand: #4cc9f0;
-      --accent: #06d6a0;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      min-height: 100vh;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background:
-        radial-gradient(circle at top left, rgba(76, 201, 240, 0.14), transparent 26%),
-        radial-gradient(circle at right bottom, rgba(6, 214, 160, 0.12), transparent 24%),
-        linear-gradient(180deg, #08101f, #0b1120 52%, #060a14);
-      color: var(--ink);
-    }}
-    .wrap {{
-      max-width: 1120px;
-      margin: 0 auto;
-      padding: 32px 18px 56px;
-    }}
-    .hero {{
-      border: 1px solid var(--line);
-      border-radius: 28px;
-      background: linear-gradient(135deg, rgba(13, 23, 40, 0.98), rgba(10, 16, 28, 0.9));
-      box-shadow: 0 20px 60px rgba(0,0,0,.28);
-      padding: 28px;
-    }}
-    h1 {{
-      margin: 0 0 12px;
-      font-size: clamp(2rem, 4vw, 3.6rem);
-      letter-spacing: -0.04em;
-      line-height: 1;
-    }}
-    p {{
-      color: var(--muted);
-      line-height: 1.65;
-      margin: 0 0 16px;
-      max-width: 75ch;
-    }}
-    .chips {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }}
-    .chip {{
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: rgba(255,255,255,.03);
-      color: var(--ink);
-      text-decoration: none;
-    }}
-    .grid {{
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-      margin-top: 18px;
-    }}
-    .card {{
-      border: 1px solid var(--line);
-      background: var(--panel);
-      border-radius: 22px;
-      padding: 18px;
-    }}
-    .k {{ color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .12em; }}
-    .v {{ font-size: 1.5rem; font-weight: 800; margin-top: 6px; letter-spacing: -.03em; }}
-    code {{
-      background: rgba(255,255,255,.05);
-      padding: 0 .35em;
-      border-radius: .35rem;
-    }}
-    @media (max-width: 780px) {{
-      .grid {{ grid-template-columns: 1fr; }}
-      .hero {{ padding: 20px; }}
-    }}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <section class="hero">
-      <h1>{DEFAULT_DOCS_TITLE}</h1>
-      <p>{DEFAULT_DOCS_DESCRIPTION}</p>
-      <div class="chips">
-        <a class="chip" href="/docs">Runtime docs</a>
-        <a class="chip" href="/api/dashboard/">API snapshot</a>
-        <a class="chip" href="/api/endpoints/">Endpoint catalog</a>
-        <a class="chip" href="/protocols/">Protocols</a>
-      </div>
-      <div class="grid">
-        <div class="card"><div class="k">Database</div><div class="v"><code>{DB_PATH}</code></div></div>
-        <div class="card"><div class="k">Capture</div><div class="v">live</div></div>
-        <div class="card"><div class="k">Version</div><div class="v">{__version__}</div></div>
-      </div>
-    </section>
-  </div>
-</body>
-</html>"""
-
-
 def _attach_runtime_docs():
     app.enable_docs(path="/docs", json_path="/docs.json", title=DEFAULT_DOCS_TITLE, description=DEFAULT_DOCS_DESCRIPTION)
-
-
-def _spa_route_paths() -> tuple[str, ...]:
-    """SPA_ROUTES plus a trailing-slash twin for each - "/soc" served the
-    app while "/soc/" 404'd, which is not a distinction anyone pasting a
-    link into a ticket is going to make. "/api" is left alone: it is a
-    prefix of the real API routes and must not grow an "/api/" view."""
-    paths = []
-    for route_path in SPA_ROUTES:
-        paths.append(route_path)
-        if route_path != "/api" and not route_path.endswith("/"):
-            paths.append(f"{route_path}/")
-    return tuple(paths)
-
-
-def _register_static_frontend():
-    global _STATIC_ROUTES_REGISTERED
-    if _STATIC_ROUTES_REGISTERED:
-        return
-    _STATIC_ROUTES_REGISTERED = True
-    if FRONTEND_DIST_DIR.exists():
-        for file_path in FRONTEND_DIST_DIR.rglob("*"):
-            if not file_path.is_file():
-                continue
-            route_path = "/" + file_path.relative_to(FRONTEND_DIST_DIR).as_posix()
-            if route_path.endswith("/index.html"):
-                route_path = route_path[:-11] or "/"
-            if route_path == "/":
-                continue
-
-            @app.view(route_path, methods=("GET",))
-            def _serve_static(_request, _file_path=file_path):
-                response = _static_file_response(_file_path)
-                return response or Response.text("Not Found", status=404)
-
-        for route_path in _spa_route_paths():
-            @app.view(route_path, methods=("GET",))
-            def _serve_spa(_request):
-                index_path = FRONTEND_DIST_DIR / "index.html"
-                response = _static_file_response(index_path)
-                if response:
-                    return response
-                return Response.html(_frontend_index_html())
-    else:
-        @app.view("/", methods=("GET",))
-        def _root(_request):
-            return Response.html(_frontend_index_html())
 
 
 def _make_ruleset_payloads(filename: str):
@@ -1806,30 +1603,9 @@ def _catalog_endpoint(name: str, filename: str):
     return _make_ruleset_payloads(filename)
 
 
-@app.view("/")
-def root(_request):
-    if FRONTEND_DIST_DIR.exists():
-        response = _static_file_response(FRONTEND_DIST_DIR / "index.html")
-        if response:
-            return response
-    return Response.html(_frontend_index_html())
-
-
 @app.view("/.well-known/appspecific/com.chrome.devtools.json", methods=("GET",))
 def chrome_devtools_workspace(_request):
     return Response.json({})
-
-
-@app.view("/favicon.ico")
-def favicon(_request):
-    for path in (
-        FRONTEND_DIST_DIR / "favicon.ico",
-        FRONTEND_PUBLIC_DIR / "favicon.ico",
-    ):
-        response = _static_file_response(path)
-        if response:
-            return response
-    return response or Response.text("", status=204)
 
 
 @app.api("/protocols/", methods=("GET",))
@@ -3952,7 +3728,6 @@ def websocket_handler(ws, request=None):
 # wrapped - which is exactly how they ended up reachable without a token.
 _attach_runtime_docs()
 _apply_api_auth_guards()
-_register_static_frontend()
 
 
 def bootstrap_capture():
