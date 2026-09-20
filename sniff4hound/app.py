@@ -46,6 +46,7 @@ from .settings import (
     resolve_ipc_socket,
     resolve_ipc_token,
 )
+from .tls import public_ca_pem
 from .process_control import process_shutdown_requested, request_process_shutdown
 from .store import SniffStore
 from .utils import (
@@ -71,6 +72,7 @@ DEFAULT_SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-Frame-Options": "DENY",
 }
+REQUIRED_CORS_HEADERS = ("X-Security-Code",)
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 FAVICON_SCAN_DEFAULT_LIMIT = min(API_MAX_LIMIT, 5000)
 FAVICON_MAX_BYTES = 512 * 1024
@@ -159,6 +161,15 @@ def _guarded_send_http_response(conn, response, *, send_body=True):
     if "connection" not in lowermap:
         headers["Connection"] = "close"
         lowermap = {k.lower(): v for k, v in headers.items()}
+    allow_headers = lowermap.get("access-control-allow-headers", "")
+    if allow_headers:
+        allowed = {item.strip().lower() for item in allow_headers.split(",") if item.strip()}
+        additions = [item for item in REQUIRED_CORS_HEADERS if item.lower() not in allowed]
+        if additions:
+            for name in list(headers):
+                if name.lower() == "access-control-allow-headers":
+                    headers[name] = f"{headers[name]}, {', '.join(additions)}"
+                    break
     status_line = f"HTTP/1.1 {status_code} {reason}\r\n"
     hdrs = ""
     for key, value in headers.items():
@@ -485,6 +496,7 @@ def connect_capture_service() -> bool:
     return True
 AUTH_SESSION_PATH = "/api/auth/session"
 DOCS_PATHS = ("/docs", "/docs.json")
+PUBLIC_CA_PATH = "/publicca"
 WS_AUTH_CLOSE_CODE = 4401
 WS_TICKET_TTL_SECONDS = 15.0
 _WS_TICKETS: dict[str, dict[str, Any]] = {}
@@ -514,6 +526,7 @@ WS_PONG_TIMEOUT_SECONDS = 10.0
 
 ENDPOINTS = [
     {"method": "GET", "path": "/", "desc": "Frontend SPA shell."},
+    {"method": "GET", "path": PUBLIC_CA_PATH, "desc": "Public runtime CA certificate for desktop TLS bootstrap."},
     {"method": "GET", "path": "/docs", "desc": "Automatic runtime documentation."},
     {"method": "GET", "path": "/docs.json", "desc": "Automatic runtime docs payload."},
     {"method": "GET", "path": "/protocols/", "desc": "Observed protocol list."},
@@ -1606,6 +1619,20 @@ def _catalog_endpoint(name: str, filename: str):
 @app.view("/.well-known/appspecific/com.chrome.devtools.json", methods=("GET",))
 def chrome_devtools_workspace(_request):
     return Response.json({})
+
+
+@app.view(PUBLIC_CA_PATH, methods=("GET",))
+def public_ca(_request):
+    pem = public_ca_pem()
+    if not pem:
+        return Response.text("Sniff4Hound runtime TLS is not enabled.", status=404)
+    return Response.text(
+        pem,
+        headers={
+            "Content-Type": "application/x-pem-file; charset=utf-8",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.api("/protocols/", methods=("GET",))
@@ -3084,7 +3111,7 @@ def _apply_api_auth_guards():
         path = getattr(route, "path", "")
         if getattr(route, "kind", "") != "api" and path not in DOCS_PATHS:
             continue
-        if path == AUTH_SESSION_PATH:
+        if path in {AUTH_SESSION_PATH, PUBLIC_CA_PATH}:
             continue
 
         current_handler = getattr(route, "handler", None)

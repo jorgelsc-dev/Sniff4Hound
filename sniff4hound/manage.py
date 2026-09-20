@@ -27,6 +27,7 @@ from .settings import (
     DEFAULT_PORT,
     HOST,
     PORT,
+    TLS_ENABLED,
     default_ipc_token_path,
     resolve_ipc_socket,
     resolve_ipc_token,
@@ -182,10 +183,14 @@ def _desktop_mode_enabled() -> bool:
     return str(os.environ.get("SNIFF4HOUND_DESKTOP", "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _runtime_scheme() -> str:
+    return "https" if TLS_ENABLED else "http"
+
+
 def _startup_frontend_url(host: str, port: int, *, desktop: bool = False) -> str:
     from .auth import REQUIRE_AUTH, get_security_code
 
-    base_url = f"http://{host}:{port}"
+    base_url = f"{_runtime_scheme()}://{host}:{port}"
     query = {}
     if REQUIRE_AUTH:
         query["code"] = get_security_code()
@@ -197,12 +202,19 @@ def _startup_frontend_url(host: str, port: int, *, desktop: bool = False) -> str
 def _emit_desktop_ready(host: str, port: int) -> None:
     from .auth import REQUIRE_AUTH, get_security_code
 
+    ca_pem = ""
+    if TLS_ENABLED:
+        from .tls import public_ca_pem
+
+        ca_pem = public_ca_pem()
     payload = {
         "url": _startup_frontend_url(host, port, desktop=True),
         "host": str(host),
         "port": int(port),
+        "protocol": _runtime_scheme(),
         "auth_required": bool(REQUIRE_AUTH),
         "security_code": get_security_code() if REQUIRE_AUTH else "",
+        "ca_pem": ca_pem,
     }
     print(f"{DESKTOP_READY_PREFIX}{json.dumps(payload, separators=(',', ':'))}", flush=True)
 
@@ -802,6 +814,12 @@ def main():
             # one that creates it (both run as root now, so no ownership race
             # either way, but a single well-defined creator is simpler to
             # reason about).
+            tls_material = None
+            if TLS_ENABLED:
+                from .tls import ensure_runtime_tls
+
+                tls_material = ensure_runtime_tls(host)
+
             try:
                 from .app import app, append_chat_message, bootstrap_capture, connect_capture_service, hub, runtime, shutdown_capture, store
             except sqlite3.OperationalError as exc:
@@ -843,7 +861,10 @@ def main():
                 store=store,
             )
         bootstrap_capture()
-        app.run(host, selected_port)
+        if tls_material:
+            app.run(host, selected_port, ssl_context=tls_material.ssl_context)
+        else:
+            app.run(host, selected_port)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
             _print_address_in_use_error(host, requested_port)
@@ -879,6 +900,12 @@ def main_web():
         _print_address_in_use_error(host, requested_port)
         return 1
 
+    tls_material = None
+    if TLS_ENABLED:
+        from .tls import ensure_runtime_tls
+
+        tls_material = ensure_runtime_tls(host)
+
     try:
         from .app import app, append_chat_message, bootstrap_capture, connect_capture_service, hub, runtime, shutdown_capture, store
     except sqlite3.OperationalError as exc:
@@ -902,7 +929,10 @@ def main_web():
             store=store,
         )
         bootstrap_capture()
-        app.run(host, selected_port)
+        if tls_material:
+            app.run(host, selected_port, ssl_context=tls_material.ssl_context)
+        else:
+            app.run(host, selected_port)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
             _print_address_in_use_error(host, requested_port)

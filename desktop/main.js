@@ -1,5 +1,6 @@
-const { app, BrowserWindow, Menu, ipcMain, shell, dialog, protocol } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog, protocol, session } = require("electron");
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const https = require("node:https");
@@ -95,6 +96,114 @@ let quitting = false;
 let stdoutBuffer = "";
 let stderrBuffer = "";
 const recentBackendLines = [];
+const trustedRuntimeCas = new Map();
+let certificateTrustInstalled = false;
+
+function normalizeOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return "";
+  }
+}
+
+function x509FromPemOrDer(value) {
+  if (!value) return null;
+  try {
+    return new crypto.X509Certificate(value);
+  } catch {
+    return null;
+  }
+}
+
+function certificateFingerprint(value) {
+  const cert = x509FromPemOrDer(value);
+  if (!cert) return "";
+  return crypto.createHash("sha256").update(cert.raw).digest("hex");
+}
+
+function registerTrustedRuntimeCa(config, caPem) {
+  const pem = String(caPem || "").trim();
+  if (!pem.includes("BEGIN CERTIFICATE")) return false;
+  const origin = normalizeOrigin(config.origin || config.url);
+  if (!origin) return false;
+  const caCert = x509FromPemOrDer(pem);
+  if (!caCert) return false;
+  trustedRuntimeCas.set(origin, {
+    origin,
+    host: String(config.host || new URL(origin).hostname),
+    caPem: pem,
+    caCert,
+    caFingerprint: certificateFingerprint(pem),
+    publicKey: caCert.publicKey,
+  });
+  return true;
+}
+
+function trustedCaForOrigin(origin) {
+  return trustedRuntimeCas.get(normalizeOrigin(origin));
+}
+
+function certificateIsSignedByTrustedCa(cert, trusted) {
+  const leaf = x509FromPemOrDer(cert);
+  if (!leaf || !trusted) return false;
+  try {
+    return leaf.verify(trusted.publicKey);
+  } catch {
+    return false;
+  }
+}
+
+function certificateMatchesTrustedCa(cert, trusted) {
+  return Boolean(trusted && cert && certificateFingerprint(cert) === trusted.caFingerprint);
+}
+
+function electronCertificateData(certificate) {
+  if (!certificate) return "";
+  if (certificate.data) return String(certificate.data);
+  return "";
+}
+
+function electronCertificateIsTrusted(certificate, trusted) {
+  const leaf = electronCertificateData(certificate);
+  if (certificateIsSignedByTrustedCa(leaf, trusted)) return true;
+  const issuer = certificate && certificate.issuerCert ? electronCertificateData(certificate.issuerCert) : "";
+  return certificateMatchesTrustedCa(issuer, trusted);
+}
+
+function installRuntimeCertificateTrust() {
+  if (certificateTrustInstalled) return;
+  certificateTrustInstalled = true;
+  session.defaultSession.setCertificateVerifyProc((request, callback) => {
+    if (request.verificationResult === "net::OK") {
+      callback(0);
+      return;
+    }
+    const origin = normalizeOrigin(request.url);
+    const trusted = trustedCaForOrigin(origin);
+    if (trusted && request.hostname === trusted.host) {
+      callback(0);
+      return;
+    }
+    callback(-2);
+  });
+  app.on("certificate-error", (event, _webContents, url, _error, certificate, callback) => {
+    const origin = normalizeOrigin(url);
+    const trusted = trustedCaForOrigin(origin);
+    let hostname = "";
+    try {
+      hostname = new URL(url).hostname;
+    } catch {
+      hostname = "";
+    }
+    if (trusted && hostname === trusted.host) {
+      event.preventDefault();
+      callback(true);
+      return;
+    }
+    callback(false);
+  });
+}
 
 function repoRoot() {
   return path.resolve(__dirname, "..");
@@ -217,6 +326,7 @@ function backendEnv(pythonPath) {
     SNIFF4HOUND_HOST: process.env.SNIFF4HOUND_HOST || "127.0.0.1",
     SNIFF4HOUND_PORT: process.env.SNIFF4HOUND_PORT || DEFAULT_PORT,
     SNIFF4HOUND_CAPTURE_AUTO_START: "0",
+    SNIFF4HOUND_TLS: process.env.SNIFF4HOUND_TLS || "1",
   };
 
   if (usingSharedVendorRuntime()) {
@@ -283,6 +393,11 @@ function startBackend() {
         try {
           backendReady = JSON.parse(line.slice(READY_PREFIX.length));
           backendReady.connection = "local";
+          backendReady.protocol = backendReady.protocol || "http";
+          backendReady.origin = new URL(backendReady.url).origin;
+          if (backendReady.ca_pem) {
+            registerTrustedRuntimeCa(backendReady, backendReady.ca_pem);
+          }
           writeConnectionState({ mode: "local" });
           loadBackendWindow();
         } catch (error) {
@@ -380,7 +495,18 @@ function parseRemoteTarget(payload) {
   };
 }
 
-function requestJson(url, headers = {}) {
+function validateTrustedPeer(response, trustedOrigin) {
+  const trusted = trustedCaForOrigin(trustedOrigin);
+  if (!trusted) return;
+  const peer = response.socket && response.socket.getPeerCertificate
+    ? response.socket.getPeerCertificate(true)
+    : null;
+  if (!peer || !peer.raw || !certificateIsSignedByTrustedCa(peer.raw, trusted)) {
+    throw new Error("Remote backend certificate was not signed by the advertised Sniff4Hound CA.");
+  }
+}
+
+function requestText(url, headers = {}, optionsOverride = {}) {
   return new Promise((resolve, reject) => {
     const client = url.protocol === "https:" ? https : http;
     // Built as a plain options object (hostname/port/path) rather than
@@ -396,6 +522,7 @@ function requestJson(url, headers = {}) {
       method: "GET",
       headers,
       timeout: 7000,
+      ...optionsOverride,
     };
     const request = client.request(
       options,
@@ -407,18 +534,17 @@ function requestJson(url, headers = {}) {
           if (body.length > 1024 * 1024) request.destroy(new Error("Response is too large."));
         });
         response.on("end", () => {
-          let payload = null;
           try {
-            payload = body ? JSON.parse(body) : {};
-          } catch {
-            reject(new Error("Remote backend did not return JSON."));
+            if (optionsOverride.trustedOrigin) validateTrustedPeer(response, optionsOverride.trustedOrigin);
+          } catch (error) {
+            reject(error);
             return;
           }
           if (response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new Error(payload.message || `Remote backend returned HTTP ${response.statusCode}.`));
+            reject(new Error(`Remote backend returned HTTP ${response.statusCode}.`));
             return;
           }
-          resolve(payload);
+          resolve(body);
         });
       },
     );
@@ -428,10 +554,33 @@ function requestJson(url, headers = {}) {
   });
 }
 
+async function requestJson(url, headers = {}, optionsOverride = {}) {
+  const body = await requestText(url, headers, optionsOverride);
+  try {
+    return body ? JSON.parse(body) : {};
+  } catch {
+    throw new Error("Remote backend did not return JSON.");
+  }
+}
+
+async function fetchRemotePublicCa(config) {
+  if (config.protocol !== "https") return "";
+  const caUrl = new URL("/publicca", config.origin);
+  const caPem = await requestText(caUrl, {}, { rejectUnauthorized: false });
+  if (!registerTrustedRuntimeCa(config, caPem)) {
+    throw new Error("Remote backend did not return a valid Sniff4Hound CA.");
+  }
+  return caPem;
+}
+
 async function verifyRemoteConnection(config) {
+  await fetchRemotePublicCa(config);
   const sessionUrl = new URL("/api/auth/session", config.origin);
   const headers = config.security_code ? { "X-Security-Code": config.security_code } : {};
-  const payload = await requestJson(sessionUrl, headers);
+  const tlsOptions = config.protocol === "https" && trustedCaForOrigin(config.origin)
+    ? { rejectUnauthorized: false, trustedOrigin: config.origin }
+    : {};
+  const payload = await requestJson(sessionUrl, headers, tlsOptions);
   const authRequired = Boolean(payload && payload.require_auth);
   if (authRequired && !(payload && payload.authenticated)) {
     throw new Error("Invalid or missing security code.");
@@ -734,6 +883,7 @@ ipcMain.handle("desktop-runtime:show-connection-chooser", () => {
 });
 
 app.whenReady().then(() => {
+  installRuntimeCertificateTrust();
   registerAppProtocol();
   createWindow();
 });
