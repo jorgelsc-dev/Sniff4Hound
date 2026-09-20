@@ -503,17 +503,6 @@ function parseRemoteTarget(payload) {
   };
 }
 
-function validateTrustedPeer(response, trustedOrigin) {
-  const trusted = trustedCaForOrigin(trustedOrigin);
-  if (!trusted) return;
-  const peer = response.socket && response.socket.getPeerCertificate
-    ? response.socket.getPeerCertificate(true)
-    : null;
-  if (!peer || !peer.raw || !certificateIsSignedByTrustedCa(peer.raw, trusted)) {
-    throw new Error("Remote backend certificate was not signed by the advertised Sniff4Hound CA.");
-  }
-}
-
 function requestText(url, headers = {}, optionsOverride = {}) {
   return new Promise((resolve, reject) => {
     const client = url.protocol === "https:" ? https : http;
@@ -542,12 +531,6 @@ function requestText(url, headers = {}, optionsOverride = {}) {
           if (body.length > 1024 * 1024) request.destroy(new Error("Response is too large."));
         });
         response.on("end", () => {
-          try {
-            if (optionsOverride.trustedOrigin) validateTrustedPeer(response, optionsOverride.trustedOrigin);
-          } catch (error) {
-            reject(error);
-            return;
-          }
           if (response.statusCode < 200 || response.statusCode >= 300) {
             reject(new Error(`Remote backend returned HTTP ${response.statusCode}.`));
             return;
@@ -580,7 +563,16 @@ async function fetchRemotePublicCa(config) {
     return config.ca_pem;
   }
   const caUrl = new URL("/publicca", config.origin);
-  const caPem = await requestText(caUrl, {}, { rejectUnauthorized: false });
+  const trusted = trustedCaForOrigin(config.origin);
+  const tlsOptions = trusted ? { ca: trusted.caPem } : {};
+  let caPem = "";
+  try {
+    caPem = await requestText(caUrl, {}, tlsOptions);
+  } catch (error) {
+    throw new Error(
+      "Paste the sensor /publicca PEM before connecting, or use a certificate trusted by this desktop.",
+    );
+  }
   if (!registerTrustedRuntimeCa(config, caPem)) {
     throw new Error("Remote backend did not return a valid Sniff4Hound CA.");
   }
@@ -591,8 +583,9 @@ async function verifyRemoteConnection(config) {
   await fetchRemotePublicCa(config);
   const sessionUrl = new URL("/api/auth/session", config.origin);
   const headers = config.security_code ? { "X-Security-Code": config.security_code } : {};
-  const tlsOptions = config.protocol === "https" && trustedCaForOrigin(config.origin)
-    ? { rejectUnauthorized: false, trustedOrigin: config.origin }
+  const trusted = trustedCaForOrigin(config.origin);
+  const tlsOptions = config.protocol === "https" && trusted
+    ? { ca: trusted.caPem }
     : {};
   const payload = await requestJson(sessionUrl, headers, tlsOptions);
   const authRequired = Boolean(payload && payload.require_auth);

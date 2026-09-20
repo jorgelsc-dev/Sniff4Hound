@@ -199,20 +199,20 @@ def _startup_frontend_url(host: str, port: int, *, desktop: bool = False) -> str
 
 
 def _emit_desktop_ready(host: str, port: int) -> None:
-    from .auth import REQUIRE_AUTH, get_security_code
+    from .auth import REQUIRE_AUTH
 
     ca_pem = ""
     if TLS_ENABLED:
         from .tls import public_ca_pem
 
         ca_pem = public_ca_pem()
+    base_url = f"{_runtime_scheme()}://{host}:{port}"
     payload = {
-        "url": _startup_frontend_url(host, port, desktop=True),
+        "url": f"{base_url}/?desktop=1",
         "host": str(host),
         "port": int(port),
         "protocol": _runtime_scheme(),
         "auth_required": bool(REQUIRE_AUTH),
-        "security_code": get_security_code() if REQUIRE_AUTH else "",
         "ca_pem": ca_pem,
     }
     print(f"{DESKTOP_READY_PREFIX}{json.dumps(payload, separators=(',', ':'))}", flush=True)
