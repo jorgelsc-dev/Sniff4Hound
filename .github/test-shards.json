@@ -6,7 +6,8 @@
       "tests.test_store_recovery",
       "tests.test_map_country_stats",
       "tests.test_capture_service",
-      "tests.test_ws_snapshot_channel"
+      "tests.test_ws_snapshot_channel",
+      "tests.test_runtime_tls"
     ],
     [
       "tests.test_monitors.TestLoadBuiltinMonitors",
@@ -25,7 +26,8 @@
       "tests.test_new_protocols",
       "tests.test_auth_hardening",
       "tests.test_ahocorasick",
-      "tests.test_terminal"
+      "tests.test_terminal",
+      "tests.test_learning_search_progress"
     ],
     [
       "tests.test_comprehensive",
@@ -51,7 +53,8 @@
       "tests.test_ip_scope_filter",
       "tests.test_anomaly",
       "tests.test_device_profiles",
-      "tests.test_blueteam_monitors"
+      "tests.test_blueteam_monitors",
+      "tests.test_faqa_regressions"
     ]
   ]
 }
