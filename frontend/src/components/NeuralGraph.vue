@@ -17,56 +17,56 @@
       <v-btn icon size="x-small" variant="tonal" aria-label="Acercar" :disabled="zoom >= MAX_ZOOM" @click="zoomBy(ZOOM_STEP)">
         <v-icon icon="mdi-magnify-plus-outline" size="16" />
       </v-btn>
-      <v-btn size="x-small" variant="text" class="ml-1" :disabled="zoom === 1" @click="resetZoom">Ajustar vista</v-btn>
+      <v-btn size="x-small" variant="text" class="ml-1" :disabled="isDefaultView" @click="resetZoom">Ajustar vista</v-btn>
     </div>
-    <div class="network-scroll" @wheel="onWheel">
-      <svg ref="svgRoot" :viewBox="`0 0 ${viewBoxWidth} ${viewBoxHeight}`" preserveAspectRatio="xMidYMid meet" :class="{ 'neural-svg--immersive': immersive }" :style="{ transform: `scale(${zoom})` }" role="img" aria-label="Red neuronal con pesos y activaciones reales, animada en tiempo real">
-        <text v-for="(label, i) in columnLabels" :key="label" :x="columnX(i)" y="14" text-anchor="middle" fill="currentColor" font-size="9">{{ label }}</text>
-        <line v-for="(edge, i) in edges" :key="`edge-${i}`" :x1="edge.from.x" :y1="edge.from.y" :x2="edge.to.x" :y2="edge.to.y"
-          :stroke="edge.color" :stroke-width="Math.min(4, 0.3 + edge.magnitude * 3.4)" :opacity="0.16 + edge.magnitude * 0.34"
-          :stroke-dasharray="edge.pending ? '4 3' : null">
-          <title>{{ edge.pending ? 'Conexión pendiente de guardar (sin pesos entrenados aún)' : `Peso ${edge.weight.toFixed(5)} · contribución ${edge.contribution === null ? 'sin paquete' : edge.contribution.toFixed(5)}` }}</title>
-        </line>
-        <circle v-for="dot in pulseDots" :key="dot.id" :cx="dot.x" :cy="dot.y" :r="dot.r" :fill="dot.color" :opacity="dot.opacity" class="signal-dot" />
-        <g v-for="node in nodes" :key="node.id" tabindex="0" role="button" :aria-label="`Inspeccionar ${node.label}`"
-          class="neuron" :class="{ 'is-dragging': draggingId === node.id, 'is-pending': node.pending }"
-          @click="onNodeClick(node)" @keydown.enter="selectNode(node.id)" @keydown.space.prevent="selectNode(node.id)"
-          @pointerdown="onNodePointerDown(node, $event)" @pointermove="onNodePointerMove($event)"
-          @pointerup="onNodePointerUp" @pointercancel="onNodePointerUp"
-          @pointerenter="hoveredId = node.id" @pointerleave="hoveredId = hoveredId === node.id ? null : hoveredId">
-          <title>{{ node.label }}{{ node.pending ? ' · pendiente de guardar' : '' }}{{ node.activation === null ? '' : ` · ${node.activation.toFixed(3)}` }}</title>
-          <circle class="neuron-halo" :cx="node.x" :cy="node.y" :r="haloRadius(node)" :fill="node.color" :opacity="node.glow" />
-          <circle :cx="node.x" :cy="node.y" :r="nodeRadius(node)" :fill="node.color"
-            :stroke="selectedId === node.id ? '#fff' : node.pending ? '#c9b8ff' : '#6c8197'" stroke-width="1.5"
-            :stroke-dasharray="node.pending ? '2 2' : null" />
-          <text v-if="nodeRadius(node) >= 9" :x="node.x" :y="node.y + 3" text-anchor="middle" fill="white" font-size="7">{{ node.activation === null ? '—' : node.activation.toFixed(2) }}</text>
-          <text v-if="labelVisible(node)" :x="node.x" :y="node.y + nodeRadius(node) + 10" text-anchor="middle" fill="currentColor" font-size="7.5">{{ node.label }}</text>
-        </g>
-        <g v-if="editable" class="rnn-editor-layer">
-          <g v-for="ctl in neuronAddControls" :key="ctl.id" class="editor-control editor-control--add"
-            tabindex="0" role="button" :aria-label="`Añadir neurona a la ${ctl.layerLabel}`"
-            @click="addNeuron(ctl.layerIdx)" @keydown.enter="addNeuron(ctl.layerIdx)" @keydown.space.prevent="addNeuron(ctl.layerIdx)">
-            <circle :cx="ctl.x" :cy="ctl.y" r="7" />
-            <text :x="ctl.x" :y="ctl.y + 3" text-anchor="middle">+</text>
+    <div class="network-scroll">
+      <svg ref="svgRoot" :viewBox="`0 0 ${viewBoxWidth} ${viewBoxHeight}`" preserveAspectRatio="xMidYMid meet" :class="{ 'neural-svg--immersive': immersive }" role="img" aria-label="Red neuronal con pesos y activaciones reales, animada en tiempo real">
+        <g ref="zoomLayer">
+          <text v-for="(label, i) in columnLabels" :key="label" :x="columnX(i)" y="14" text-anchor="middle" fill="currentColor" font-size="9">{{ label }}</text>
+          <line v-for="(edge, i) in edges" :key="`edge-${i}`" :x1="edge.from.x" :y1="edge.from.y" :x2="edge.to.x" :y2="edge.to.y"
+            :stroke="edge.color" :stroke-width="Math.min(4, 0.3 + edge.magnitude * 3.4)" :opacity="0.16 + edge.magnitude * 0.34"
+            :stroke-dasharray="edge.pending ? '4 3' : null">
+            <title>{{ edge.pending ? 'Conexión pendiente de guardar (sin pesos entrenados aún)' : `Peso ${edge.weight.toFixed(5)} · contribución ${edge.contribution === null ? 'sin paquete' : edge.contribution.toFixed(5)}` }}</title>
+          </line>
+          <circle v-for="dot in pulseDots" :key="dot.id" :cx="dot.x" :cy="dot.y" :r="dot.r" :fill="dot.color" :opacity="dot.opacity" class="signal-dot" />
+          <g v-for="node in nodes" :key="node.id" :ref="(el) => setNodeEl(node.id, el)" tabindex="0" role="button" :aria-label="`Inspeccionar ${node.label}`"
+            class="neuron" :class="{ 'is-dragging': draggingId === node.id, 'is-pending': node.pending }"
+            @click="selectNode(node.id)" @keydown.enter="selectNode(node.id)" @keydown.space.prevent="selectNode(node.id)"
+            @pointerenter="hoveredId = node.id" @pointerleave="hoveredId = hoveredId === node.id ? null : hoveredId">
+            <title>{{ node.label }}{{ node.pending ? ' · pendiente de guardar' : '' }}{{ node.activation === null ? '' : ` · ${node.activation.toFixed(3)}` }}</title>
+            <circle class="neuron-halo" :cx="node.x" :cy="node.y" :r="haloRadius(node)" :fill="node.color" :opacity="node.glow" />
+            <circle :cx="node.x" :cy="node.y" :r="nodeRadius(node)" :fill="node.color"
+              :stroke="selectedId === node.id ? '#fff' : node.pending ? '#c9b8ff' : '#6c8197'" stroke-width="1.5"
+              :stroke-dasharray="node.pending ? '2 2' : null" />
+            <text v-if="nodeRadius(node) >= 9" :x="node.x" :y="node.y + 3" text-anchor="middle" fill="white" font-size="7">{{ node.activation === null ? '—' : node.activation.toFixed(2) }}</text>
+            <text v-if="labelVisible(node)" :x="node.x" :y="node.y + nodeRadius(node) + 10" text-anchor="middle" fill="currentColor" font-size="7.5">{{ node.label }}</text>
           </g>
-          <g v-for="ctl in neuronRemoveControls" :key="ctl.id" class="editor-control editor-control--remove"
-            tabindex="0" role="button" :aria-label="`Quitar una neurona de la ${ctl.layerLabel}`"
-            @click.stop="removeNeuron(ctl.layerIdx)" @keydown.enter="removeNeuron(ctl.layerIdx)" @keydown.space.prevent="removeNeuron(ctl.layerIdx)">
-            <circle :cx="ctl.x" :cy="ctl.y" r="6" />
-            <text :x="ctl.x" :y="ctl.y + 3" text-anchor="middle">×</text>
-          </g>
-          <g v-if="layerRemoveControl" class="editor-control editor-control--remove-layer"
-            tabindex="0" role="button" aria-label="Quitar la última capa oculta"
-            @click="removeLastLayer" @keydown.enter="removeLastLayer" @keydown.space.prevent="removeLastLayer">
-            <circle :cx="layerRemoveControl.x" :cy="layerRemoveControl.y" r="6" />
-            <text :x="layerRemoveControl.x" :y="layerRemoveControl.y + 3" text-anchor="middle">×</text>
-          </g>
-          <g class="editor-control editor-control--add-layer"
-            tabindex="0" role="button" aria-label="Añadir una capa oculta al final de la red"
-            @click="addHiddenLayer" @keydown.enter="addHiddenLayer" @keydown.space.prevent="addHiddenLayer">
-            <circle :cx="addLayerControl.x" :cy="addLayerControl.y" r="9" />
-            <text :x="addLayerControl.x" :y="addLayerControl.y + 4" text-anchor="middle">+</text>
-            <text :x="addLayerControl.x" :y="addLayerControl.y + 19" text-anchor="middle" class="editor-control__label">Capa</text>
+          <g v-if="editable" class="rnn-editor-layer">
+            <g v-for="ctl in neuronAddControls" :key="ctl.id" class="editor-control editor-control--add"
+              tabindex="0" role="button" :aria-label="`Añadir neurona a la ${ctl.layerLabel}`"
+              @click="addNeuron(ctl.layerIdx)" @keydown.enter="addNeuron(ctl.layerIdx)" @keydown.space.prevent="addNeuron(ctl.layerIdx)">
+              <circle :cx="ctl.x" :cy="ctl.y" r="7" />
+              <text :x="ctl.x" :y="ctl.y + 3" text-anchor="middle">+</text>
+            </g>
+            <g v-for="ctl in neuronRemoveControls" :key="ctl.id" class="editor-control editor-control--remove"
+              tabindex="0" role="button" :aria-label="`Quitar una neurona de la ${ctl.layerLabel}`"
+              @click.stop="removeNeuron(ctl.layerIdx)" @keydown.enter="removeNeuron(ctl.layerIdx)" @keydown.space.prevent="removeNeuron(ctl.layerIdx)">
+              <circle :cx="ctl.x" :cy="ctl.y" r="6" />
+              <text :x="ctl.x" :y="ctl.y + 3" text-anchor="middle">×</text>
+            </g>
+            <g v-if="layerRemoveControl" class="editor-control editor-control--remove-layer"
+              tabindex="0" role="button" aria-label="Quitar la última capa oculta"
+              @click="removeLastLayer" @keydown.enter="removeLastLayer" @keydown.space.prevent="removeLastLayer">
+              <circle :cx="layerRemoveControl.x" :cy="layerRemoveControl.y" r="6" />
+              <text :x="layerRemoveControl.x" :y="layerRemoveControl.y + 3" text-anchor="middle">×</text>
+            </g>
+            <g class="editor-control editor-control--add-layer"
+              tabindex="0" role="button" aria-label="Añadir una capa oculta al final de la red"
+              @click="addHiddenLayer" @keydown.enter="addHiddenLayer" @keydown.space.prevent="addHiddenLayer">
+              <circle :cx="addLayerControl.x" :cy="addLayerControl.y" r="9" />
+              <text :x="addLayerControl.x" :y="addLayerControl.y + 4" text-anchor="middle">+</text>
+              <text :x="addLayerControl.x" :y="addLayerControl.y + 19" text-anchor="middle" class="editor-control__label">Capa</text>
+            </g>
           </g>
         </g>
       </svg>
@@ -130,8 +130,20 @@
   </v-card>
 </template>
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { forceCollide, forceSimulation, forceX, forceY, interpolateRgb, interval as d3Interval, scaleLinear } from "d3";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  drag as d3Drag,
+  forceCollide,
+  forceSimulation,
+  forceX,
+  forceY,
+  interpolateRgb,
+  interval as d3Interval,
+  scaleLinear,
+  select as d3Select,
+  zoom as d3Zoom,
+  zoomIdentity,
+} from "d3";
 import store from "../state/appStore";
 
 const props = defineProps({
@@ -178,23 +190,48 @@ function labelVisible(node) {
   return node.rowCount <= 8 || node.id === selectedId.value || node.id === hoveredId.value;
 }
 
+// Pan/zoom via d3-zoom, applied as a transform on the <g ref="zoomLayer">
+// wrapping the graph rather than a CSS scale() on the <svg> itself: that
+// lets d3 own both panning (drag) and zooming (wheel) together, in the same
+// coordinate space the neuron drag behavior already uses (see nodeDrag
+// below), instead of a wheel-only zoom with no way to pan except the
+// container's native scrollbars - the only way to reach a control on a wide
+// network like a 5-hidden-layer tournament graph.
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.25;
-const zoom = ref(1);
+const zoomLayer = ref(null);
+const viewTransform = ref(zoomIdentity);
+const zoom = computed(() => viewTransform.value.k);
+const isDefaultView = computed(() => viewTransform.value.k === 1 && viewTransform.value.x === 0 && viewTransform.value.y === 0);
+
+const zoomBehavior = d3Zoom()
+  .scaleExtent([MIN_ZOOM, MAX_ZOOM])
+  .filter((event) => {
+    // Plain wheel still scrolls the page/container as normal; only
+    // ctrl/cmd+wheel (the same modifier browsers use for page zoom) drives
+    // the graph zoom, so scrolling past the graph doesn't accidentally
+    // resize it - regardless of what's directly under the cursor.
+    if (event.type === "wheel") return event.ctrlKey || event.metaKey;
+    // A drag-to-pan gesture starting on a neuron or an editor +/× control
+    // must not also start a pan: neurons run their own d3-drag (see
+    // nodeDrag below) and the controls are plain clicks, either of which a
+    // competing pan gesture from the same pointerdown would race with.
+    if (event.target.closest(".editor-control, .neuron")) return false;
+    return !event.button;
+  })
+  .on("zoom", (event) => {
+    viewTransform.value = event.transform;
+    if (zoomLayer.value) zoomLayer.value.setAttribute("transform", event.transform.toString());
+  });
+let zoomSelection = null;
 function zoomBy(delta) {
-  zoom.value = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round((zoom.value + delta) * 100) / 100));
+  if (!zoomSelection) return;
+  const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round((zoom.value + delta) * 100) / 100));
+  zoomSelection.transition().duration(150).call(zoomBehavior.scaleTo, next);
 }
 function resetZoom() {
-  zoom.value = 1;
-}
-// Plain wheel still scrolls the page/container as normal; only
-// ctrl/cmd+wheel (the same modifier browsers use for page zoom) drives the
-// graph zoom, so scrolling past the graph doesn't accidentally resize it.
-function onWheel(event) {
-  if (!event.ctrlKey && !event.metaKey) return;
-  event.preventDefault();
-  zoomBy(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
+  zoomSelection?.transition().duration(200).call(zoomBehavior.transform, zoomIdentity);
 }
 
 // --- Architecture editing (immersive + learningConfig only) ---------------
@@ -464,7 +501,11 @@ const neuronRemoveControls = computed(() => {
 const layerRemoveControl = computed(() => {
   if (!editable.value || !learningConfigDraft.value || hiddenSizes.value.length <= 1) return null;
   const lastIdx = hiddenSizes.value.length - 1;
-  return { x: columnX(lastIdx + 1) + 26, y: 14 };
+  // y: 14 matches the column-label text's own baseline (see the <text> at
+  // y="14" above) - placing the control there put it directly on top of
+  // that label ("Oculta N (tanh)" rendered with an "×" badge stamped over
+  // the "h)"). Dropping it below the label's line clears the text instead.
+  return { x: columnX(lastIdx + 1) + 26, y: 26 };
 });
 const addLayerControl = computed(() => {
   const lastHiddenX = columnX(hiddenSizes.value.length);
@@ -587,15 +628,17 @@ function hashPhase(id) {
 // view (or reshaping the network, including a live edit) feels like the
 // network assembling itself rather than a diagram just appearing.
 const jitter = ref({});
-// id -> {x, y} overrides from manually dragging a neuron, layered on top of
-// the grid layout (see `nodes` below). Cleared whenever the network's shape
-// changes, since a resized layer reassigns what each id/index refers to and
-// a stale override would then land on the wrong neuron.
-const manualPositions = reactive(new Map());
 let simulation = null;
+// id -> the node's own live datum in the running d3-force simulation (the
+// `targets` array below) - kept around so the drag behavior can pin/release
+// a node's fx/fy directly on the same simulation that settles it, instead of
+// a separate absolute-position override. Rebuilt every restart since a
+// resized layer reassigns what each id/index refers to and a stale entry
+// would then point at the wrong neuron.
+const simNodesById = new Map();
 function restartSettleSimulation() {
   simulation?.stop();
-  manualPositions.clear();
+  simNodesById.clear();
   const targets = rawNodes.value.map((node) => ({
     id: node.id,
     fx0: node.x,
@@ -603,6 +646,7 @@ function restartSettleSimulation() {
     x: node.x + (Math.random() - 0.5) * 90,
     y: node.y + (Math.random() - 0.5) * 90,
   }));
+  for (const target of targets) simNodesById.set(target.id, target);
   simulation = forceSimulation(targets)
     .force("x", forceX((d) => d.fx0).strength(0.12))
     .force("y", forceY((d) => d.fy0).strength(0.12))
@@ -615,7 +659,16 @@ function restartSettleSimulation() {
       jitter.value = next;
     });
 }
-watch(() => rawNodes.value.map((n) => n.id).join("|"), restartSettleSimulation);
+watch(
+  () => rawNodes.value.map((n) => n.id).join("|"),
+  async () => {
+    restartSettleSimulation();
+    // New/removed neurons mean new/removed <g> elements - wait for Vue to
+    // actually render them before (re)binding drag to the current set.
+    await nextTick();
+    bindDragToNodes();
+  }
+);
 
 // Continuous ambient timer: a slow per-neuron "breathing" glow plus small
 // dots traveling input->output along the strongest connections, speed and
@@ -634,15 +687,14 @@ let ambientTimer = null;
 
 const nodes = computed(() =>
   rawNodes.value.map((node) => {
-    const manual = manualPositions.get(node.id);
     const j = jitter.value[node.id];
     const boost = Date.now() < flashUntil.value ? 0.5 : 0;
     const phase = hashPhase(node.id);
     const breathe = 0.32 + 0.22 * (0.5 + 0.5 * Math.sin(tick.value / 480 + phase)) + boost;
     return {
       ...node,
-      x: manual ? manual.x : node.x + (j?.dx || 0),
-      y: manual ? manual.y : node.y + (j?.dy || 0),
+      x: node.x + (j?.dx || 0),
+      y: node.y + (j?.dy || 0),
       color: node.pending ? PENDING_COLOR : node.activation === null ? NEUTRAL_COLOR : activationScale(node.activation),
       glow: Math.min(1, breathe),
     };
@@ -684,87 +736,78 @@ const pulseDots = computed(() => {
   });
 });
 
-// Drag-and-drop repositioning: converts pointer screen coordinates into the
-// SVG's own viewBox coordinate space via getScreenCTM(), so it stays correct
-// through the ctrl/cmd+wheel zoom (a CSS transform: scale on the svg) and
-// through the SVG's own responsive scaling - no separate math needed for
-// either. A small movement threshold (DRAG_THRESHOLD) keeps the inevitable
-// jitter of a real pointer "click" from being mistaken for a drag, and a
-// drag that *did* move suppresses the click that follows pointerup so it
-// doesn't also reopen/close the inspector.
+// Drag-and-drop repositioning, via d3-drag pinning the node's fx/fy on the
+// *same* force simulation that settles new/reshaped neurons into their grid
+// slot (see restartSettleSimulation above), rather than a separate absolute-
+// position override with its own bounds and no way back. That unification
+// is what makes release well-behaved: clearing fx/fy on drag end hands the
+// node back to the simulation's own forceX/forceY "home" springs, so it
+// visibly eases back to its slot instead of staying wherever it was
+// dropped - permanently detached, edges stretched in a long diagonal mess
+// disconnected from the rest of the layered network.
+//
+// d3-drag also replaces the screen-to-SVG coordinate math (getScreenCTM())
+// that hand-rolled pointer handling needed - `.container()` gives event.x/y
+// already in the svg's own viewBox space, correct through the ctrl/cmd+wheel
+// zoom (a CSS transform: scale) and the SVG's responsive scaling - and
+// `.clickDistance()` is d3's own equivalent of the old manual
+// movement-threshold + "suppress the click that follows a drag" logic.
 const DRAG_THRESHOLD = 3;
 const svgRoot = ref(null);
 const draggingId = ref(null);
-let dragMoved = false;
-let dragStartLocal = null;
-let dragOffset = { x: 0, y: 0 };
-let suppressClickId = null;
-
-function clientToLocal(event) {
-  const svgEl = svgRoot.value;
-  if (!svgEl) return null;
-  const ctm = svgEl.getScreenCTM();
-  if (!ctm) return null;
-  const pt = svgEl.createSVGPoint();
-  pt.x = event.clientX;
-  pt.y = event.clientY;
-  return pt.matrixTransform(ctm.inverse());
+const nodeEls = new Map();
+function setNodeEl(id, el) {
+  if (el) nodeEls.set(id, el);
+  else nodeEls.delete(id);
 }
 
-function onNodePointerDown(node, event) {
-  event.stopPropagation();
-  const local = clientToLocal(event);
-  if (!local) return;
-  draggingId.value = node.id;
-  dragMoved = false;
-  dragStartLocal = local;
-  const current = nodesById.value[node.id] || node;
-  dragOffset = { x: local.x - current.x, y: local.y - current.y };
-  if (event.pointerId != null && event.currentTarget.setPointerCapture) {
-    event.currentTarget.setPointerCapture(event.pointerId);
+const nodeDrag = d3Drag()
+  .container(() => svgRoot.value)
+  .clickDistance(DRAG_THRESHOLD)
+  .subject((event, id) => {
+    const target = simNodesById.get(id);
+    return { x: target ? target.x : 0, y: target ? target.y : 0 };
+  })
+  .on("start", (event, id) => {
+    draggingId.value = id;
+    // Reheat the simulation so it keeps ticking (and animating the eventual
+    // spring-back) for the duration of the drag instead of sitting idle at
+    // its already-settled alpha.
+    simulation?.alphaTarget(0.3).restart();
+  })
+  .on("drag", (event, id) => {
+    const target = simNodesById.get(id);
+    if (!target) return;
+    const radius = nodeRadius(nodesById.value[id] || { rowCount: 8 });
+    target.fx = Math.min(viewBoxWidth - radius, Math.max(radius, event.x));
+    target.fy = Math.min(viewBoxHeight.value - radius, Math.max(radius, event.y));
+  })
+  .on("end", (event, id) => {
+    const target = simNodesById.get(id);
+    if (target) {
+      target.fx = null;
+      target.fy = null;
+    }
+    simulation?.alphaTarget(0);
+    draggingId.value = null;
+  });
+
+function bindDragToNodes() {
+  for (const [id, el] of nodeEls) {
+    d3Select(el).datum(id).call(nodeDrag);
   }
-}
-function onNodePointerMove(event) {
-  if (!draggingId.value) return;
-  const local = clientToLocal(event);
-  if (!local) return;
-  if (!dragMoved) {
-    if (Math.hypot(local.x - dragStartLocal.x, local.y - dragStartLocal.y) < DRAG_THRESHOLD) return;
-    dragMoved = true;
-  }
-  const node = nodesById.value[draggingId.value];
-  const radius = node ? nodeRadius(node) : 12;
-  const x = Math.min(viewBoxWidth - radius, Math.max(radius, local.x - dragOffset.x));
-  const y = Math.min(viewBoxHeight.value - radius, Math.max(radius, local.y - dragOffset.y));
-  manualPositions.set(draggingId.value, { x, y });
-}
-function onNodePointerUp() {
-  if (!draggingId.value) return;
-  const id = draggingId.value;
-  if (dragMoved) {
-    suppressClickId = id;
-    // Safety net in case the click that normally follows pointerup never
-    // fires (release lands outside the element) - still runs after the
-    // browser's own click dispatch either way.
-    setTimeout(() => { if (suppressClickId === id) suppressClickId = null; }, 0);
-  }
-  draggingId.value = null;
-}
-function onNodeClick(node) {
-  if (suppressClickId === node.id) {
-    suppressClickId = null;
-    return;
-  }
-  selectNode(node.id);
 }
 
 onMounted(() => {
   restartSettleSimulation();
+  nextTick(() => bindDragToNodes());
   ambientTimer = d3Interval((elapsed) => { tick.value = elapsed; }, 60);
+  zoomSelection = d3Select(svgRoot.value).call(zoomBehavior);
 });
 onBeforeUnmount(() => {
   simulation?.stop();
   ambientTimer?.stop();
+  zoomSelection?.on(".zoom", null);
 });
 </script>
 <style scoped>
@@ -783,25 +826,30 @@ onBeforeUnmount(() => {
   color: var(--text-dim);
 }
 
-.network-scroll { overflow: auto; max-height: 360px; }
+/* Panning is now d3-zoom's own drag-the-canvas gesture (see the toolbar's
+   zoomBehavior above), applied as a transform on the <g ref="zoomLayer">
+   inside the SVG's fixed viewBox rather than the container scrolling a
+   CSS-enlarged element - overflow stays hidden so content panned past the
+   edge is clipped instead of growing the container's scrollbars. */
+.network-scroll { overflow: hidden; max-height: 360px; }
 /* The SVG's width:100% with no cap let it grow to fill a wide desktop
    viewport, and since the viewBox's aspect ratio is preserved, everything
    inside - circles, text, the whole layout - scaled up right along with it,
    which is what actually made the font/nodes look oversized. Capping the
    rendered width keeps it close to its designed (viewBox) scale on wide
-   screens; it can still shrink on narrow ones. Zooming past that base size
-   is a deliberate `transform: scale()` (see the toolbar above), not this
-   layout width - the scroll container picks up the extra visual size for
-   panning. */
+   screens; it can still shrink on narrow ones. touch-action: none hands
+   touch gestures on the graph to d3-zoom instead of the browser's own
+   scroll/pinch handling. */
 svg {
   width: 100%;
   max-width: 560px;
   min-width: 300px;
   display: block;
   margin: 0 auto;
-  transform-origin: top center;
-  transition: transform 0.12s ease;
+  touch-action: none;
+  cursor: grab;
 }
+svg:active { cursor: grabbing; }
 .neuron { cursor: grab; touch-action: none; }
 .neuron.is-dragging { cursor: grabbing; }
 .neuron:focus circle { stroke: white; stroke-width: 4; }

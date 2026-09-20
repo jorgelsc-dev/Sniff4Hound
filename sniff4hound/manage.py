@@ -440,7 +440,13 @@ def _build_self_elevate_command(invoking_uid: int) -> list[str] | None:
         if not pkexec:
             return None
         env_bin = shutil.which("env") or "/usr/bin/env"
-        command = [pkexec, env_bin]
+        # Without --keep-cwd, pkexec runs PROGRAM in root's home directory
+        # instead of the caller's cwd. That breaks a dev checkout: `python -m
+        # sniff4hound.manage` only resolves the package via the implicit ''
+        # sys.path entry `-m` adds for the current directory (there is no
+        # system/site-packages install to fall back on), so losing cwd here
+        # surfaces as "No module named 'sniff4hound'" on the elevated re-exec.
+        command = [pkexec, "--keep-cwd", env_bin]
         command.extend(assignments)
         command.extend([sys.executable, "-m", "sniff4hound.manage", *sys.argv[1:]])
         return command

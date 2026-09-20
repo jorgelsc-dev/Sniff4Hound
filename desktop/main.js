@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const https = require("node:https");
 const path = require("node:path");
+const { URL } = require("./lib/simple-url");
 
 const READY_PREFIX = "SNIFF4HOUND_DESKTOP_READY ";
 const DEFAULT_PORT = "45678";
@@ -143,6 +144,17 @@ function resolvePython() {
   const preparedPython = path.join(repoRoot(), "build", "desktop", "runtime", "python-venv", "bin", "python");
   if (fs.existsSync(preparedPython)) {
     return preparedPython;
+  }
+
+  // Dev checkout: prefer this repo's own virtualenv over a bare "python3"
+  // lookup on PATH. The latter resolves to whatever system interpreter
+  // happens to be first on PATH, which has none of this project's
+  // dependencies (wsbuilder, etc.) installed - only `sniff4hound` itself
+  // would appear importable there, and only via the cwd-relative `-m`
+  // lookup, which masked this for the package itself but not for its deps.
+  const repoVenvPython = path.join(repoRoot(), ".venv", "bin", "python3");
+  if (fs.existsSync(repoVenvPython)) {
+    return repoVenvPython;
   }
 
   return process.env.PYTHON || "python3";
@@ -288,6 +300,19 @@ function startBackend() {
       app.quit();
       return;
     }
+    // manage.py self-elevates via execvp() (see _ensure_running_as_root()),
+    // replacing its own process image with pkexec's - so this exit event
+    // carries pkexec's own exit code, and 126/127 mean the operator
+    // dismissed the polkit prompt or failed/declined authentication (see
+    // `man pkexec`), not a bug to diagnose. Quitting outright instead of
+    // parking the window behind a failure dialog matches canceling any
+    // other elevation prompt: the action just doesn't happen, rather than
+    // leaving the launcher stuck on screen for no obvious reason.
+    if (!backendReady && !signal && (code === 126 || code === 127)) {
+      quitting = true;
+      app.quit();
+      return;
+    }
     showBackendFailure(`Sniff4Hound backend exited (${signal || code}).`);
   });
 }
@@ -338,13 +363,22 @@ function parseRemoteTarget(payload) {
 function requestJson(url, headers = {}) {
   return new Promise((resolve, reject) => {
     const client = url.protocol === "https:" ? https : http;
+    // Built as a plain options object (hostname/port/path) rather than
+    // handing `url` straight to client.request(): that overload only
+    // special-cases Node's own `URL` instances, and our SimpleURL isn't one
+    // - passed directly it would silently be treated as the options
+    // argument and shift the real options (method/headers/timeout) into the
+    // callback slot instead.
+    const options = {
+      hostname: url.hostname,
+      port: url.port || (url.protocol === "https:" ? 443 : 80),
+      path: `${url.pathname}${url.search}`,
+      method: "GET",
+      headers,
+      timeout: 7000,
+    };
     const request = client.request(
-      url,
-      {
-        method: "GET",
-        headers,
-        timeout: 7000,
-      },
+      options,
       (response) => {
         let body = "";
         response.setEncoding("utf8");
