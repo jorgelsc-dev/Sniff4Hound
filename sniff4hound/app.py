@@ -525,7 +525,6 @@ WS_KEEPALIVE_INTERVAL_SECONDS = 25.0
 WS_PONG_TIMEOUT_SECONDS = 10.0
 
 ENDPOINTS = [
-    {"method": "GET", "path": "/", "desc": "Frontend SPA shell."},
     {"method": "GET", "path": PUBLIC_CA_PATH, "desc": "Public runtime CA certificate for desktop TLS bootstrap."},
     {"method": "GET", "path": "/docs", "desc": "Automatic runtime documentation."},
     {"method": "GET", "path": "/docs.json", "desc": "Automatic runtime docs payload."},
@@ -859,6 +858,11 @@ def _desktop_mode_enabled() -> bool:
     return str(getenv("SNIFF4HOUND_DESKTOP", "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _is_desktop_shell_origin(value: str) -> bool:
+    supplied = str(value or "").strip().lower()
+    return supplied == "null" or supplied == "app://shell"
+
+
 def _guard_request_origin(request) -> Response | None:
     method = str(getattr(request, "method", "GET") or "GET").upper()
     if method not in STATE_CHANGING_METHODS:
@@ -866,16 +870,16 @@ def _guard_request_origin(request) -> Response | None:
     supplied = _request_header(request, "Origin", "origin") or _request_header(request, "Referer", "referer")
     if not supplied:
         return None
-    # The desktop shell's UI is loaded from a local file (see
-    # desktop/main.js's loadShell()), an opaque origin browsers report
-    # literally as "null" - the one legitimate non-same-origin caller now
-    # that this backend never serves a page of its own to navigate to.
+    # The desktop shell's UI is loaded from app://shell (and older local-file
+    # builds reported the opaque origin literally as "null") - the one
+    # legitimate non-same-origin caller now that this backend never serves a
+    # page of its own to navigate to.
     # Scoped to desktop mode so a plain server/CLI deployment (no Electron
     # shell in the picture) keeps rejecting a "null" origin exactly as
     # before - see test_cross_origin_state_change_is_rejected_after_auth,
     # which must keep failing a real cross-origin caller like
     # http://evil.example even when correctly authenticated.
-    if _desktop_mode_enabled() and supplied.strip().lower() == "null":
+    if _desktop_mode_enabled() and _is_desktop_shell_origin(supplied):
         return None
     actual = _origin_tuple(supplied)
     expected = _request_host_origin(request)
@@ -1631,6 +1635,7 @@ def public_ca(_request):
         headers={
             "Content-Type": "application/x-pem-file; charset=utf-8",
             "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
         },
     )
 

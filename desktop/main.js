@@ -144,6 +144,11 @@ function trustedCaForOrigin(origin) {
   return trustedRuntimeCas.get(normalizeOrigin(origin));
 }
 
+function isLoopbackHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
 function certificateIsSignedByTrustedCa(cert, trusted) {
   const leaf = x509FromPemOrDer(cert);
   if (!leaf || !trusted) return false;
@@ -181,7 +186,7 @@ function installRuntimeCertificateTrust() {
     }
     const origin = normalizeOrigin(request.url);
     const trusted = trustedCaForOrigin(origin);
-    if (trusted && request.hostname === trusted.host) {
+    if ((trusted && request.hostname === trusted.host) || isLoopbackHost(request.hostname)) {
       callback(0);
       return;
     }
@@ -196,7 +201,7 @@ function installRuntimeCertificateTrust() {
     } catch {
       hostname = "";
     }
-    if (trusted && hostname === trusted.host) {
+    if ((trusted && hostname === trusted.host) || isLoopbackHost(hostname)) {
       event.preventDefault();
       callback(true);
       return;
@@ -453,10 +458,11 @@ function startBackend() {
 }
 
 function parseRemoteTarget(payload) {
-  const protocol = String(payload.protocol || "http").trim().toLowerCase() === "https" ? "https" : "http";
+  const protocol = "https";
   const rawHost = String(payload.host || "").trim();
   const rawPort = String(payload.port || "").trim();
   const securityCode = String(payload.securityCode || payload.code || "").trim();
+  const caPem = String(payload.caPem || payload.publicCa || "").trim();
   if (!rawHost) {
     throw new Error("Remote host is required.");
   }
@@ -464,6 +470,7 @@ function parseRemoteTarget(payload) {
   let url = null;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(rawHost)) {
     url = new URL(rawHost);
+    url.protocol = "https:";
     if (rawPort) url.port = rawPort;
   } else {
     url = new URL(`${protocol}://${rawHost}`);
@@ -488,9 +495,10 @@ function parseRemoteTarget(payload) {
     url: url.toString(),
     origin: url.origin,
     host: url.hostname,
-    port: url.port || (url.protocol === "https:" ? "443" : "80"),
-    protocol: url.protocol.replace(":", ""),
+    port: url.port || "443",
+    protocol,
     security_code: securityCode,
+    ca_pem: caPem,
     auth_required: Boolean(securityCode),
   };
 }
@@ -565,6 +573,12 @@ async function requestJson(url, headers = {}, optionsOverride = {}) {
 
 async function fetchRemotePublicCa(config) {
   if (config.protocol !== "https") return "";
+  if (config.ca_pem) {
+    if (!registerTrustedRuntimeCa(config, config.ca_pem)) {
+      throw new Error("The pasted /publicca certificate is not a valid PEM certificate.");
+    }
+    return config.ca_pem;
+  }
   const caUrl = new URL("/publicca", config.origin);
   const caPem = await requestText(caUrl, {}, { rejectUnauthorized: false });
   if (!registerTrustedRuntimeCa(config, caPem)) {

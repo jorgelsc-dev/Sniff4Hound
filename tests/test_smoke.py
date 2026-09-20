@@ -1223,7 +1223,7 @@ class SmokeTests(unittest.TestCase):
         manage_module._stop_interactive_console(DummyThread(), input_stream=input_stream, join_timeout=0.25)
         self.assertTrue(input_stream.closed)
 
-    def test_manage_startup_banner_uses_hound_icon_and_link_line(self):
+    def test_manage_startup_banner_uses_hound_icon_and_api_line(self):
         import sniff4hound.manage as manage_module
         import sniff4hound.auth as auth_module
 
@@ -1235,8 +1235,13 @@ class SmokeTests(unittest.TestCase):
 
         banner = output.getvalue()
         self.assertIn(f"🐕 SNIFF4HOUND v{sniff4hound.__version__}", banner)
-        self.assertIn("Link: http://127.0.0.1:45678/?code=Ab12Cd34", banner)
+        self.assertIn("API: http://127.0.0.1:45678", banner)
+        self.assertIn("UI: Electron desktop app only", banner)
         self.assertIn("SECURITY CODE: Ab12Cd34", banner)
+        self.assertIn("Use this code from the Electron app if prompted", banner)
+        self.assertNotIn("Link:", banner)
+        self.assertNotIn("?code=", banner)
+        self.assertNotIn("Open the link above", banner)
         self.assertNotIn("Dashboard:", banner)
         self.assertNotIn("URL:", banner)
 
@@ -1551,5 +1556,4 @@ class SmokeTests(unittest.TestCase):
                     os.environ.pop("SNIFF4HOUND_REQUIRE_AUTH", None)
                 else:
                     os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = previous_auth
-
 

@@ -12,7 +12,6 @@ import sys
 import threading
 import time
 import unicodedata
-import webbrowser
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -225,14 +224,15 @@ def _print_startup_banner(host: str, port: int):
     from . import __version__
 
     token = get_security_code()
-    frontend_url = _startup_frontend_url(host, port)
+    api_url = f"{_runtime_scheme()}://{host}:{port}"
     lines = [
         _banner_rule("╔", "═", "╗"),
         _banner_line(f"🐕 SNIFF4HOUND v{__version__}", align="center"),
         _banner_rule("╠", "═", "╣"),
         _banner_line(),
         _banner_line("  Starting server"),
-        _banner_line(f"  Link: {frontend_url}"),
+        _banner_line(f"  API: {api_url}"),
+        _banner_line("  UI: Electron desktop app only"),
         _banner_line(f"  Auth Required: {'YES' if REQUIRE_AUTH else 'NO'}"),
     ]
     if REQUIRE_AUTH:
@@ -240,7 +240,7 @@ def _print_startup_banner(host: str, port: int):
             [
                 _banner_line(),
                 _banner_line(f"  SECURITY CODE: {token}"),
-                _banner_line("  Open the link above to unlock the frontend automatically"),
+                _banner_line("  Use this code from the Electron app if prompted"),
             ]
         )
     lines.extend([

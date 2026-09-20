@@ -172,8 +172,7 @@ class AuthGuardHardeningTests(unittest.TestCase):
             os.environ["SNIFF4HOUND_DESKTOP"] = value
 
     def test_null_origin_from_the_bundled_desktop_shell_is_allowed(self):
-        # The desktop shell now loads its UI from a local file (see
-        # desktop/main.js's loadShell()), an opaque origin browsers report
+        # Older local-file desktop builds reported the opaque origin
         # literally as "null" - the one legitimate non-same-origin caller
         # once the backend stops serving any page of its own.
         # _desktop_mode_enabled() reads the env var live (it isn't a
@@ -188,6 +187,22 @@ class AuthGuardHardeningTests(unittest.TestCase):
                     "x-security-code": "Ab12Cd34",
                     "host": "127.0.0.1:45678",
                     "origin": "null",
+                },
+                body="{}",
+            )
+        )
+        self.assertEqual(response.status, 200)
+
+    def test_app_shell_origin_from_the_bundled_desktop_shell_is_allowed(self):
+        self._set_desktop_mode("1")
+        response = self.app.app.dispatch(
+            _request(
+                "/api/echo",
+                method="POST",
+                headers={
+                    "x-security-code": "Ab12Cd34",
+                    "host": "127.0.0.1:45678",
+                    "origin": "app://shell",
                 },
                 body="{}",
             )
