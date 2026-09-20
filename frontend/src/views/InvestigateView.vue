@@ -722,50 +722,54 @@ export default {
       }
       this.loading = true;
       this.error = "";
-      const search = encodeURIComponent(domain);
+      // Structured investigation (matches the packets.domain/http_host
+      // columns, mode=exact) instead of the old free-text `search=` against
+      // /ports/, /banners/, /tags/ - that missed evidence that only ever
+      // appeared in the structured field and could pick up an unrelated
+      // packet that merely mentioned the domain in its payload text
+      // (finding 1.29). The domains *catalog* lookup below is a distinct,
+      // intentionally free-text concern (matching names, not evidence).
+      const domainQuery = encodeURIComponent(domain);
       return Promise.allSettled([
         this.store.fetchJsonPromise("/api/charts/analytics"),
         this.store.listDomains({ search: domain, limit: 250 }),
-        this.store.fetchJsonPromise(`/ports/?search=${search}&limit=250`),
-        this.store.fetchJsonPromise(`/banners/?search=${search}&limit=250`),
-        this.store.fetchJsonPromise(`/tags/?search=${search}&limit=400`),
+        this.store.fetchJsonPromise(`/api/domain/intel/?domain=${domainQuery}&mode=exact`),
       ])
-        .then(([analyticsRes, domainsRes, packetsRes, bannersRes, tagsRes]) => {
+        .then(([analyticsRes, domainsRes, intelRes]) => {
           if (sequence !== this.loadSequence || this.targetKind !== "domain" || this.queryDomain.toLowerCase() !== domain) return;
           if (analyticsRes.status === "fulfilled") {
             this.analytics = analyticsRes.value || {};
           }
           const domains = domainsRes.status === "fulfilled" ? this.store.extractArray(domainsRes.value) : [];
-          const packets = packetsRes.status === "fulfilled" ? this.store.extractArray(packetsRes.value) : [];
-          const banners = bannersRes.status === "fulfilled" ? this.store.extractArray(bannersRes.value) : [];
-          const tags = tagsRes.status === "fulfilled" ? this.store.extractArray(tagsRes.value) : [];
-          this.intel = {
-            cached: false,
-            summary: {
-              packets: packets.length,
-              flows: 0,
-              payloads: banners.length,
-              tags: tags.length,
-            },
-            host: {
-              transport: {
-                services: packets,
-                banners,
-                flows: [],
-                tags,
+          if (intelRes.status === "fulfilled") {
+            const data = intelRes.value || {};
+            const packets = Array.isArray(data.packets) ? data.packets : [];
+            const banners = Array.isArray(data.payloads) ? data.payloads : [];
+            const tags = Array.isArray(data.tags) ? data.tags : [];
+            this.intel = {
+              cached: false,
+              summary: data.summary || { packets: packets.length, flows: 0, payloads: banners.length, tags: tags.length },
+              evidence: data.evidence || {},
+              host: {
+                transport: {
+                  services: packets,
+                  banners,
+                  flows: [],
+                  tags,
+                },
               },
-            },
-            host_profile: {
-              target: { scope: "domain" },
-              notes: [`Evidence connected to ${domain}`],
-              application: {},
-            },
-            domains: { domains },
-            ttl_path: { hops: [] },
-          };
-          const failed = [domainsRes, packetsRes, bannersRes, tagsRes].find((res) => res.status === "rejected");
-          if (failed) {
-            this.error = (failed.reason && failed.reason.message) || `Failed to investigate ${domain}`;
+              host_profile: {
+                target: { scope: "domain" },
+                notes: [`Matched by DNS/HTTP domain field (${data.mode || "exact"}), not free-text search`],
+                application: {},
+              },
+              domains: { domains },
+              ttl_path: { hops: [] },
+            };
+            this.error = "";
+          } else {
+            this.intel = {};
+            this.error = (intelRes.reason && intelRes.reason.message) || `Failed to investigate ${domain}`;
           }
           this.lastUpdated = new Date().toLocaleTimeString();
         })

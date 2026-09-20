@@ -1,8 +1,10 @@
 <template>
   <div>
     <v-alert type="info" variant="tonal" density="comfortable" class="mb-4">
-      Blacklist entries create monitor hits and alerts automatically. Whitelist entries keep matching
-      packets visible in capture, but skip rules, monitor hits and anomaly alerts.
+      Blacklist entries create monitor hits and alerts automatically. Whitelist entries stop matching
+      packets from being stored at all - not just muted from rules/alerts, dropped from capture
+      entirely, the same as an IP purged from Settings. Use exclusions (Settings &gt; Exclusiones)
+      instead if you want to silence detection while still keeping the traffic visible.
     </v-alert>
 
     <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>

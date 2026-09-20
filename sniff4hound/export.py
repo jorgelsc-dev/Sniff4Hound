@@ -136,7 +136,7 @@ def _int(value: Any) -> int:
         return 0
 
 
-def _alert_rows(store, *, limit: int, offset: int, since: str, severity: str) -> list[dict[str, Any]]:
+def _alert_rows(store, *, limit: int, offset: int, since: str, severity: str, search: str = "") -> list[dict[str, Any]]:
     """Monitor hits collapsed into indicators.
 
     `list_recent_alerts()` is per-packet, so a port scan shows up as
@@ -144,8 +144,12 @@ def _alert_rows(store, *, limit: int, offset: int, since: str, severity: str) ->
     per (rule, source, destination, port) with a count and a first/last
     seen instead - that is the shape a ticket, a SIEM or a blocklist can
     actually consume.
+
+    `search` scopes to one entity (exact IP or domain/http_host match, see
+    Store._alert_filter) - without it, exporting "alerts about this host"
+    silently returned alerts for the whole database (finding 1.21).
     """
-    raw = store.list_recent_alerts(limit=limit, offset=offset, since=since, severity=severity)
+    raw = store.list_recent_alerts(limit=limit, offset=offset, since=since, severity=severity, search=search)
     grouped: dict[tuple, dict[str, Any]] = {}
     for row in raw:
         key = (
@@ -195,14 +199,19 @@ def _alert_rows(store, *, limit: int, offset: int, since: str, severity: str) ->
     return rows
 
 
-def _alert_index(store, *, since: str) -> dict[str, dict[str, Any]]:
+def _alert_index(store, *, since: str) -> tuple[dict[str, dict[str, Any]], bool]:
     """ip -> worst severity / rule names, used to enrich the endpoint
-    export so an exported address says *why* it is interesting."""
+    export so an exported address says *why* it is interesting.
+
+    Returns `(index, partial)`. A read failure used to come back as an
+    empty index indistinguishable from "no alerts anywhere" (finding
+    1.22) - callers now get `partial=True` and must say so in the export
+    instead of silently implying a clean result."""
     index: dict[str, dict[str, Any]] = {}
     try:
         alerts = store.list_recent_alerts(limit=2000, offset=0, since=since, severity="")
     except Exception:
-        return index
+        return index, True
     for row in alerts:
         severity = _text(row.get("severity"))
         rule = _text(row.get("monitor"))
@@ -215,12 +224,15 @@ def _alert_index(store, *, since: str) -> dict[str, dict[str, Any]]:
                 entry["max_severity"] = severity
             if rule:
                 entry["rules"].add(rule)
-    return index
+    # The 2000-row cap above is a real limit, not a coincidence of what
+    # happened to exist - if it was hit, some ip's alert_count/max_severity
+    # here can be an undercount, so that counts as partial too.
+    return index, len(alerts) >= 2000
 
 
-def _endpoint_rows(store, *, limit: int, offset: int, since: str, search: str) -> list[dict[str, Any]]:
+def _endpoint_rows(store, *, limit: int, offset: int, since: str, search: str) -> tuple[list[dict[str, Any]], bool]:
     catalog = store.list_ip_catalog(search=search, limit=limit, offset=offset, since=since)
-    alerts = _alert_index(store, since=since)
+    alerts, alerts_partial = _alert_index(store, since=since)
     rows = []
     for row in catalog:
         ip = _text(row.get("ip"))
@@ -238,7 +250,7 @@ def _endpoint_rows(store, *, limit: int, offset: int, since: str, search: str) -
                 "last_seen": _text(row.get("last_seen")),
             }
         )
-    return rows
+    return rows, alerts_partial
 
 
 def _flow_rows(store, *, limit: int, offset: int, search: str, proto: str, since: str) -> list[dict[str, Any]]:
@@ -294,16 +306,39 @@ def build_export(
     search: str = "",
     proto: str = "",
 ) -> dict[str, Any]:
-    """Build one export payload: `{dataset, generated_at, fields, count, rows}`."""
+    """Build one export payload: `{dataset, generated_at, fields, count,
+    total_available, truncated, partial, rows}`.
+
+    `total_available` is how many rows in the store match the same filter
+    that produced `rows` (not just this page's length); `truncated` says
+    whether this export's `rows` is a subset of that; `partial` says a
+    dependent read (alert enrichment) failed or hit its own cap, so the
+    numbers above could be an undercount even where `truncated` is false
+    (finding 1.22)."""
     name = normalize_dataset(dataset)
+    partial = False
     if name == "alerts":
-        rows = _alert_rows(store, limit=limit, offset=offset, since=since, severity=severity)
+        # _alert_rows groups a paginated window of raw events - "count=1"
+        # here can mean "1 group from a full page of raw hits", not "this
+        # rule fired once ever". `total_available` is that raw-event total,
+        # so a caller can tell whether the grouped counts might be short.
+        total_available = store.count_recent_alerts(since=since, severity=severity, search=search)
+        rows = _alert_rows(store, limit=limit, offset=offset, since=since, severity=severity, search=search)
+        truncated = total_available > (offset + limit)
+        partial = truncated
     elif name == "endpoints":
-        rows = _endpoint_rows(store, limit=limit, offset=offset, since=since, search=search)
+        rows, alerts_partial = _endpoint_rows(store, limit=limit, offset=offset, since=since, search=search)
+        total_available = store.count_ip_catalog(search=search, since=since)
+        truncated = total_available > (offset + len(rows))
+        partial = alerts_partial
     elif name == "flows":
         rows = _flow_rows(store, limit=limit, offset=offset, search=search, proto=proto, since=since)
+        total_available = store.count_flows(proto=proto, search=search, since=since)
+        truncated = total_available > (offset + len(rows))
     else:
         rows = _domain_rows(store, limit=limit, offset=offset, since=since, search=search)
+        total_available = store.count_domains(search=search, since=since)
+        truncated = total_available > (offset + len(rows))
     return {
         "dataset": name,
         "generated_at": utc_now(),
@@ -313,6 +348,9 @@ def build_export(
         "counter_scope": "lifetime totals for flows active since cutoff" if name == "flows" else "retained evidence",
         "fields": list(EXPORT_FIELDS[name]),
         "count": len(rows),
+        "total_available": total_available,
+        "truncated": truncated,
+        "partial": partial,
         "rows": rows,
     }
 

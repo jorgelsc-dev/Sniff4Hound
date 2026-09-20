@@ -333,17 +333,6 @@ class SmokeTests(unittest.TestCase):
                 else:
                     os.environ["SNIFF4HOUND_DB_PATH"] = previous
 
-    def test_frontend_build_is_served(self):
-        import sniff4hound.app as app_module
-
-        response = app_module.root(None)
-
-        payload = response.body if isinstance(response.body, (bytes, bytearray)) else response.status
-        body = payload.decode("utf-8") if isinstance(payload, (bytes, bytearray)) else str(payload)
-        self.assertIn('<div id="app"></div>', body)
-        self.assertIn('/assets/index-', body)
-        self.assertIn('type="module"', body)
-
     def test_http_send_guard_suppresses_broken_pipe_noise(self):
         import sniff4hound.app as app_module
 
@@ -829,51 +818,68 @@ class SmokeTests(unittest.TestCase):
         )
 
     def test_manage_capture_child_does_not_inherit_the_console_stdin(self):
-        # Since sudo 1.9.14 `use_pty` is the default, so sudo puts the capture
-        # child on its own pty and relays our terminal into it for the whole
-        # session. With stdin inherited, sudo's relay and the console's
-        # input() are two readers racing on one tty and keystrokes go to
-        # whichever reads first - typing "/help" came out as "[note] p".
+        # With stdin inherited, this console's input() and the capture child
+        # would be two readers racing on the same tty.
         import sniff4hound.manage as manage_module
 
-        with patch.object(manage_module.shutil, "which", return_value="/usr/bin/sudo"), patch.object(
+        with patch.object(
             manage_module, "_open_capture_log", return_value=None
         ), patch.object(manage_module.subprocess, "Popen") as popen:
             manage_module._spawn_capture_child("/tmp/x.sock", "tok")
 
         self.assertEqual(popen.call_args.kwargs.get("stdin"), subprocess.DEVNULL)
 
-    def test_manage_capture_relaunch_command_forwards_pythonpath(self):
+    def test_manage_self_elevate_command_forwards_pythonpath(self):
         # The Debian package only makes `sniff4hound` importable via
         # PYTHONPATH pointing at its vendored copy (scripts/deb_wrapper.sh) -
-        # `sudo env ...` does not inherit it on its own, so it must be
-        # forwarded explicitly or the privileged child can't import the
-        # package at all.
+        # `sudo env ...` / `pkexec env ...` do not inherit it on their own,
+        # so it must be forwarded explicitly or the re-executed root process
+        # can't import the package at all.
         import sniff4hound.manage as manage_module
 
         with patch.dict(os.environ, {"PYTHONPATH": "/usr/lib/sniff4hound/vendor"}, clear=False):
-            command = manage_module._build_capture_relaunch_command("/tmp/x.sock", "tok", 1000)
+            command = manage_module._build_self_elevate_command(1000)
         self.assertIn("PYTHONPATH=/usr/lib/sniff4hound/vendor", command)
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PYTHONPATH", None)
-            command = manage_module._build_capture_relaunch_command("/tmp/x.sock", "tok", 1000)
+            command = manage_module._build_self_elevate_command(1000)
         self.assertFalse(any(entry.startswith("PYTHONPATH=") for entry in command))
 
-    def test_manage_capture_relaunch_command_forwards_data_dir(self):
+    def test_manage_self_elevate_command_pins_data_dir_and_invoking_uid(self):
         # Every SNIFF4HOUND_* var present in os.environ is forwarded verbatim
-        # to the sudo-relaunched capture child. Pin this for
-        # SNIFF4HOUND_DATA_DIR specifically (main() sets it via
-        # os.environ.setdefault() before spawning, see the test below) - a
-        # future refactor to an allowlist could easily forget it and
-        # silently reintroduce the two-databases bug this fixes.
+        # to the self-elevated re-exec, plus SNIFF4HOUND_DATA_DIR (always
+        # pinned explicitly, since `sudo`/`pkexec` reset HOME) and
+        # SNIFF4HOUND_INVOKING_UID (so the capture child can chown files back
+        # to the human operator instead of root). A future refactor to an
+        # allowlist could easily forget these and silently reintroduce the
+        # two-databases bug this fixes.
         import sniff4hound.manage as manage_module
 
         with patch.dict(
             os.environ, {"SNIFF4HOUND_DATA_DIR": "/home/example/.local/share/sniff4hound"}, clear=False
         ):
-            command = manage_module._build_capture_relaunch_command("/tmp/x.sock", "tok", 1000)
+            command = manage_module._build_self_elevate_command(1000)
         self.assertIn("SNIFF4HOUND_DATA_DIR=/home/example/.local/share/sniff4hound", command)
+        self.assertIn("SNIFF4HOUND_INVOKING_UID=1000", command)
+
+    def test_manage_ensure_running_as_root_refuses_without_sudo_or_pkexec(self):
+        import sniff4hound.manage as manage_module
+
+        output = io.StringIO()
+        with patch.object(manage_module, "_running_as_root", return_value=False), patch.object(
+            manage_module.shutil, "which", return_value=None
+        ), redirect_stderr(output):
+            result = manage_module._ensure_running_as_root()
+
+        self.assertFalse(result)
+        self.assertIn("requires root", output.getvalue())
+
+    def test_manage_ensure_running_as_root_proceeds_when_already_root(self):
+        import sniff4hound.manage as manage_module
+
+        with patch.object(manage_module, "_running_as_root", return_value=True):
+            self.assertTrue(manage_module._ensure_running_as_root())
 
     def test_clear_stale_capture_socket_removes_a_leftover_socket_file(self):
         # Regression: a capture child from a run whose parent never exited
@@ -976,6 +982,8 @@ class SmokeTests(unittest.TestCase):
             with patch.object(manage_module, "HOST", "127.0.0.1"), patch.object(
                 manage_module, "PORT", 45678
             ), patch.object(
+                manage_module, "_ensure_running_as_root", return_value=True
+            ), patch.object(
                 manage_module, "_select_listen_port", return_value=45678
             ), patch.object(
                 manage_module, "_spawn_capture_child", side_effect=_capture_spawn
@@ -997,20 +1005,6 @@ class SmokeTests(unittest.TestCase):
                 manage_module.main()
 
         self.assertEqual(observed.get("data_dir"), str(DATA_DIR))
-
-    def test_manage_refuses_to_spawn_capture_child_without_sudo(self):
-        # manage.py (the web process) never elevates itself anymore - it
-        # only needs `sudo` to spawn the privileged capture child. Actual
-        # "capture always requires root, no bypass" policy now lives in
-        # capture_service.py (see tests/test_capture_service.py).
-        import sniff4hound.manage as manage_module
-
-        output = io.StringIO()
-        with patch.object(manage_module.shutil, "which", return_value=None), redirect_stderr(output):
-            result = manage_module._spawn_capture_child("/tmp/sniff4hound-test.sock", "test-token")
-
-        self.assertIsNone(result)
-        self.assertIn("requires root", output.getvalue())
 
     def test_manage_restore_tty_attrs_undoes_raw_mode_left_by_sudo_prompt(self):
         # sudo's password/fingerprint (PAM) prompt for the capture child
@@ -1068,9 +1062,7 @@ class SmokeTests(unittest.TestCase):
                 captured_kwargs.update(kwargs)
                 return _FakeCaptureProcess()
 
-            with patch.object(manage_module.shutil, "which", return_value="/usr/bin/sudo"), patch.object(
-                manage_module.subprocess, "Popen", side_effect=_fake_popen
-            ):
+            with patch.object(manage_module.subprocess, "Popen", side_effect=_fake_popen):
                 result = manage_module._spawn_capture_child(ipc_socket, "test-token")
 
             self.assertIsNotNone(result)
@@ -1231,7 +1223,7 @@ class SmokeTests(unittest.TestCase):
         manage_module._stop_interactive_console(DummyThread(), input_stream=input_stream, join_timeout=0.25)
         self.assertTrue(input_stream.closed)
 
-    def test_manage_startup_banner_uses_hound_icon_and_link_line(self):
+    def test_manage_startup_banner_uses_hound_icon_and_api_line(self):
         import sniff4hound.manage as manage_module
         import sniff4hound.auth as auth_module
 
@@ -1243,8 +1235,13 @@ class SmokeTests(unittest.TestCase):
 
         banner = output.getvalue()
         self.assertIn(f"🐕 SNIFF4HOUND v{sniff4hound.__version__}", banner)
-        self.assertIn("Link: http://127.0.0.1:45678/?code=Ab12Cd34", banner)
+        self.assertIn("API: http://127.0.0.1:45678", banner)
+        self.assertIn("UI: Electron desktop app only", banner)
         self.assertIn("SECURITY CODE: Ab12Cd34", banner)
+        self.assertIn("Use this code from the Electron app if prompted", banner)
+        self.assertNotIn("Link:", banner)
+        self.assertNotIn("?code=", banner)
+        self.assertNotIn("Open the link above", banner)
         self.assertNotIn("Dashboard:", banner)
         self.assertNotIn("URL:", banner)
 
@@ -1268,6 +1265,8 @@ class SmokeTests(unittest.TestCase):
 
         with patch.object(manage_module, "HOST", "127.0.0.1"), patch.object(
             manage_module, "PORT", 45678
+        ), patch.object(
+            manage_module, "_ensure_running_as_root", return_value=True
         ), patch.object(
             manage_module, "_select_listen_port", return_value=45670
         ), patch.object(
@@ -1301,6 +1300,8 @@ class SmokeTests(unittest.TestCase):
 
         with patch.object(manage_module, "HOST", "127.0.0.1"), patch.object(
             manage_module, "PORT", 45678
+        ), patch.object(
+            manage_module, "_ensure_running_as_root", return_value=True
         ), patch.object(
             manage_module, "_select_listen_port", return_value=None
         ), patch.object(
@@ -1353,19 +1354,6 @@ class SmokeTests(unittest.TestCase):
                 else:
                     os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = previous_auth
 
-    def test_static_file_response_uses_body(self):
-        import sniff4hound.app as app_module
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            file_path = Path(tmp_dir) / "asset.txt"
-            file_path.write_text("static payload", encoding="utf-8")
-
-            response = app_module._static_file_response(file_path)
-            self.assertIsNotNone(response)
-            self.assertEqual(response.status, 200)
-            self.assertEqual(response.body, b"static payload")
-            self.assertEqual(response.headers.get("Content-Type"), "text/plain")
-
     def test_chrome_devtools_workspace_probe_does_not_404(self):
         import sniff4hound.app as app_module
 
@@ -1382,29 +1370,6 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(json.loads(response.body.decode("utf-8")), {})
 
-    def test_frontend_dist_resolution_prefers_packaged_assets(self):
-        import sniff4hound.app as app_module
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            base = Path(tmp_dir)
-            packaged_dist = base / "site-packages" / "sniff4hound" / "_frontend_dist"
-            packaged_dist.mkdir(parents=True)
-            (packaged_dist / "index.html").write_text("packaged build", encoding="utf-8")
-
-            previous_source = app_module.SOURCE_FRONTEND_DIST_DIR
-            previous_package = app_module.PACKAGE_FRONTEND_DIST_DIR
-            previous_override = os.environ.pop("SNIFF4HOUND_FRONTEND_DIST", None)
-            try:
-                app_module.SOURCE_FRONTEND_DIST_DIR = base / "missing" / "frontend" / "dist"
-                app_module.PACKAGE_FRONTEND_DIST_DIR = packaged_dist
-
-                resolved = app_module._resolve_frontend_dist_dir()
-                self.assertEqual(resolved, packaged_dist)
-            finally:
-                app_module.SOURCE_FRONTEND_DIST_DIR = previous_source
-                app_module.PACKAGE_FRONTEND_DIST_DIR = previous_package
-                if previous_override is not None:
-                    os.environ["SNIFF4HOUND_FRONTEND_DIST"] = previous_override
 
     def test_ports_endpoint_exposes_rich_packet_context(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1592,33 +1557,3 @@ class SmokeTests(unittest.TestCase):
                 else:
                     os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = previous_auth
 
-    def test_every_vue_router_path_is_in_spa_routes(self):
-        # Regression: /chat was a real vue-router route (frontend/src/
-        # router/index.js) missing from app.SPA_ROUTES, so a refresh (F5),
-        # a bookmark, or a link pasted into a ticket for that view answered
-        # a bare-text 404 instead of the SPA - the exact failure mode the
-        # comment above SPA_ROUTES already describes for /settings,
-        # /domains, /paths and /ips. This walks the router file itself so a
-        # new view can't silently reintroduce the same gap.
-        import re as _re
-
-        import sniff4hound.app as app_module
-
-        router_path = Path(__file__).resolve().parents[1] / "frontend" / "src" / "router" / "index.js"
-        source = router_path.read_text(encoding="utf-8")
-        route_objects = _re.findall(r"\{[^{}]*\}", source)
-        static_paths = []
-        for obj in route_objects:
-            if "redirect" in obj:
-                continue
-            match = _re.search(r'path:\s*"([^"]+)"', obj)
-            if not match:
-                continue
-            path = match.group(1)
-            if path in ("/", "") or ":" in path or path.startswith("/:"):
-                continue
-            static_paths.append(path)
-
-        self.assertIn("/chat", static_paths, "test fixture itself is stale - /chat should still be a real route")
-        missing = [path for path in static_paths if path not in app_module.SPA_ROUTES]
-        self.assertEqual(missing, [], f"vue-router paths missing from app.SPA_ROUTES (will 404 on refresh): {missing}")

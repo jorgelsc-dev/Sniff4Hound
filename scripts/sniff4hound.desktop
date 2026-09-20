@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Sniff4Hound
+Comment=Native packet sniffer desktop console
+Exec=sniff4hound-desktop %U
+Icon=sniff4hound
+Terminal=false
+Categories=Development;Network;Security;
+StartupWMClass=Sniff4Hound

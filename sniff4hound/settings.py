@@ -50,6 +50,8 @@ DEFAULT_PORT = 45678
 
 HOST = str(_env("SNIFF4HOUND_HOST", _env("HOST", "127.0.0.1"))).strip() or "127.0.0.1"
 PORT = _as_int(_env("SNIFF4HOUND_PORT", str(DEFAULT_PORT)), DEFAULT_PORT)
+TLS_ENABLED = _as_bool(_env("SNIFF4HOUND_TLS", "0"), default=False)
+TLS_CERT_DAYS = max(1, _as_int(_env("SNIFF4HOUND_TLS_CERT_DAYS", "1"), 1))
 
 
 def default_data_dir() -> Path:

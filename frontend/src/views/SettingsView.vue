@@ -36,6 +36,10 @@
         <v-icon icon="mdi-brain" start />
         IA
       </v-tab>
+      <v-tab value="architecture">
+        <v-icon icon="mdi-sitemap-outline" start />
+        Arquitectura
+      </v-tab>
     </v-tabs>
 
     <v-window v-model="activeTab">
@@ -398,9 +402,13 @@
             <div>
               <div class="text-subtitle-2 font-weight-medium">Store only detected traffic</div>
               <div class="text-caption text-medium-emphasis mt-1">
-                When enabled (recommended), packets that don't match any enabled monitor are never
-                written to SQLite - they're still counted live but not persisted or shown in
-                history/analytics. Turn this off to fall back to persisting everything captured.
+                Controls whether the monitor rule catalog runs. When enabled (recommended), packets
+                are evaluated against your monitors; a match is stored as an alert, everything else is
+                counted live but not written to SQLite. Turning this off does not switch to storing
+                everything captured - it skips the rule catalog entirely, so only anomaly detectors
+                (port scans, SYN floods, ...) can still trigger storage, and clean traffic stays
+                unpersisted either way. Training mode (below) is the setting that captures benign
+                traffic on purpose, independent of this toggle.
               </div>
             </div>
             <v-switch
@@ -1017,6 +1025,12 @@
       <v-window-item value="ai">
         <AiSettingsPanel />
       </v-window-item>
+
+      <v-window-item value="architecture">
+        <DataPanel title="Arquitectura" subtitle="Cómo se relacionan los componentes de Sniff4Hound - haz click en un nodo para configurarlo.">
+          <ArchitectureGraphPanel @open-settings-tab="activeTab = $event" />
+        </DataPanel>
+      </v-window-item>
     </v-window>
   </div>
 </template>
@@ -1032,6 +1046,7 @@ import BlacklistPanel from "../components/settings/BlacklistPanel.vue";
 import ExclusionsPanel from "../components/settings/ExclusionsPanel.vue";
 import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 import AiSettingsPanel from "../components/settings/AiSettingsPanel.vue";
+import ArchitectureGraphPanel from "../components/settings/ArchitectureGraphPanel.vue";
 import { formatTimestamp, matchesSearch, uniqueSorted } from "../utils/traffic";
 
 const PROTOCOL_OPTIONS = [
@@ -1055,7 +1070,9 @@ const PROTOCOL_OPTIONS = [
   "llc-osi",
 ];
 const SEVERITY_OPTIONS = ["info", "low", "medium", "high", "critical"];
-const VALID_TABS = new Set(["capture", "honeypot", "detection", "blacklist", "notifications", "ai"]);
+const VALID_TABS = new Set([
+  "capture", "honeypot", "detection", "blacklist", "exclusions", "notifications", "ai", "architecture",
+]);
 const GROUP_BY_OPTIONS = ["src_ip", "dst_ip", "src_ip+dst_port", "dst_ip+dst_port", "src_ip+dst_ip"];
 const MATCH_REGEX_KEYS = [
   "payload_regex",
@@ -1135,6 +1152,7 @@ export default {
     LocationPicker,
     RuleDetailDialog,
     AiSettingsPanel,
+    ArchitectureGraphPanel,
   },
   data() {
     const requested = String((this.$route && this.$route.query && this.$route.query.section) || "").trim();

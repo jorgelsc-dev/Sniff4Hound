@@ -433,8 +433,16 @@ class WsGetDispatchTests(unittest.TestCase):
         )
 
     def test_a_non_api_route_is_refused(self):
-        # A static or view route reached this way would answer with a page.
-        self.assertEqual(self.app._ws_get_result(self._authed(), "/", {})["status"], 405)
+        # A view route reached this way would answer with a page, not JSON -
+        # "/" itself is no longer a route at all now that the backend never
+        # serves the frontend (see app.py's removed _register_static_frontend),
+        # so this uses another still-registered @app.view (not @app.api) route.
+        self.assertEqual(
+            self.app._ws_get_result(
+                self._authed(), "/.well-known/appspecific/com.chrome.devtools.json", {}
+            )["status"],
+            405,
+        )
 
     def test_downloads_stay_on_http(self):
         result = self.app._ws_get_result(self._authed(), "/api/export/alerts", {})

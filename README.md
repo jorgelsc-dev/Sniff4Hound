@@ -32,8 +32,12 @@ Punto importante:
 - Persistencia SQLite para sesiones, flows, packets, payloads, tags y runtime config.
 - Modo `honeypot` con un catalogo de 10k+ listeners TCP/UDP; el set curado se habilita por defecto y el resto queda disponible para activar bajo demanda.
 - Dashboard Vue 3 + Vuetify servido por el mismo proceso.
+- La vista inicial muestra métricas de telemetría, actividad diaria, protocolos, hosts, puertos y etiquetas del período seleccionado. Incluye el estado actual de Sniffer/Honeypot y accesos a alertas IA y mapas; se actualiza con los eventos de captura y permite actualización manual.
 - Autenticacion por token de sesion y JWT HS256.
 - WebSocket en vivo para eventos `packet`, `stats_update`, `runtime_mode` y chat.
+- Chat con conversación centrada y herramientas permanentes arriba a la derecha: búsqueda, controles de motores y los 19 comandos. Seleccionar un comando lo coloca en el editor; Enter lo envía, Shift + Enter añade una línea y Tab autocompleta.
+- La vista de red neuronal ajusta el diagrama completo al ancho y alto disponibles. Los ajustes flotan en un contenedor transparente y compacto; el gráfico reserva su espacio automáticamente para evitar recortes. El zoom permite explorar detalles y «Ajustar vista» vuelve a la escala inicial.
+- El panel de aprendizaje muestra el mínimo de 3 ejemplos por clase, actualizaciones y curva de error. El ranking de arquitecturas muestra la última comparación sobre los ejemplos de entrenamiento (no validación independiente), su revisión y las actualizaciones hasta la próxima búsqueda. La búsqueda se comprueba cada 5 actualizaciones incluso con el historial de ejemplos lleno; las mejoras requieren aplicación manual. La API de sugerencias incluye `search` y `next_check`.
 - Catalogos editables para reglas, probes y presets desde API o archivos JSON.
 
 ## Requisitos
@@ -48,6 +52,13 @@ Punto importante:
 ### Desde el paquete Debian (`.deb`)
 
 El workflow `Package Debian` publica el `.deb` en **GitHub Releases** como asset descargable. La pestaña **Packages** puede seguir vacia: el canal soportado para distribucion binaria es **Releases**.
+
+Un solo `.deb` incluye tanto el comando `sniff4hound` como la app de
+escritorio (Electron); en la instalacion, `postinst` detecta si la maquina
+tiene un entorno grafico y descarta los archivos de la app de escritorio si
+no lo tiene, dejando solo el comando. Con GUI, ambos quedan instalados y
+comparten el mismo runtime de Python (no hay una copia separada por cada
+uno).
 
 Cada release publica dos assets equivalentes: el `.deb` versionado
 (`sniff4hound_<version>_<arch>.deb`) y una copia sin versionar,
@@ -129,6 +140,10 @@ sudo apt install ./dist/sniff4hound_<version>_<arch>.deb
 Notas del paquete:
 
 - incluye la app Python y los assets ya compilados del frontend;
+- tambien construye la app de escritorio (Electron, via `desktop/`) y la
+  incluye en el mismo `.deb`; usa `SNIFF4HOUND_SKIP_DESKTOP=1` para omitir
+  ese paso y generar un paquete solo-CLI (util en un entorno de build sin
+  Node/Electron);
 - requiere `python3 >= 3.12` en la maquina destino;
 - genera un archivo `.sha256` junto al `.deb` dentro de `dist/`;
 - la misma release publica el `.sha256` para verificar integridad antes de instalar.
@@ -150,7 +165,7 @@ python -m sniff4hound
 Notas del launcher:
 
 - Usa `45678` por defecto; si esta ocupado, prueba una ventana cercana de 100 puertos y avisa cual usa.
-- Si faltan privilegios para captura raw y corresponde elevar, intenta relanzarse con `sudo`.
+- Si no se invoca ya como root, se relanza a si mismo con `sudo` (te pedira la contrasena) antes de arrancar nada.
 - Si solo quieres abrir la UI sin autoarranque de captura, usa `SNIFF4HOUND_CAPTURE_AUTO_START=0`.
 
 Ejemplos utiles:
@@ -316,13 +331,15 @@ Variables practicas del runtime:
 - `SNIFF4HOUND_AUTH_FAILURE_WINDOW_SECONDS`
 - `SNIFF4HOUND_FRONTEND_DIST`
 
-El proceso web y la base de datos corren **como tu usuario normal**:
-`sniff4hound` se niega a arrancar bajo `sudo`. La captura raw de paquetes si
-requiere root siempre, pero ese privilegio vive solo en el proceso hijo
-`sniff4hound-capture`, que `sniff4hound` lanza por `sudo` y con el que habla por
-un socket Unix local `0600`. No hay variable de entorno para omitir la captura
-privilegiada: si `sudo` no esta disponible o la elevacion falla, el proceso
-termina sin arrancar el servidor.
+`sniff4hound` requiere root **desde el arranque**, no solo para la captura: si
+no se invoca ya como root, se relanza automaticamente a si mismo con `sudo`
+(o `pkexec` cuando lo lanza la app de escritorio) antes de hacer nada mas, y
+luego el servidor web y el proceso hijo `sniff4hound-capture` corren como el
+mismo arbol de procesos privilegiado, comunicados por un socket Unix local
+`0600`. No hay variable de entorno para omitir la captura privilegiada: si
+ni `sudo` ni `pkexec` estan disponibles, o la elevacion falla, el proceso
+termina sin arrancar. `sniff4hound-web` (el entrypoint standalone para
+despliegues separados web/captura) es la excepcion: sigue sin elevarse nunca.
 
 ## Componentes del repo
 
@@ -360,8 +377,11 @@ npm run dev
 Checks:
 
 ```bash
-python -m unittest discover -t . -s tests -q
-pytest tests/ -q
+# Requiere el entorno del proyecto (venv con `pip install -e .`), no el
+# Python global del sistema - de lo contrario falla en collection con
+# `ModuleNotFoundError: No module named 'wsbuilder'` antes de correr nada.
+.venv/bin/python -m unittest discover -t . -s tests -q
+.venv/bin/python -m pytest tests/ -q
 ```
 
 Frontend:
@@ -460,8 +480,15 @@ deterministically; an initial graph does **not** imply a trained model.
 Use **Revisar / enseñar** to label a packet benign or malicious, supply a
 confidence weight of 1–3, and record evidence. These are supervised labels,
 not autonomous reinforcement learning or a reward for agreeing with the model.
-Only explicit operator labels train the network; predictions never become
-training labels automatically. The last 200 distinct examples are retained.
+With Monitors training enabled and raw retention available, stored packets
+also receive automatic labels: high/critical monitor detections are malicious;
+info/low/medium detections and evaluated packets with no detections are benign.
+Labels use monitor hits before notification suppression or throttling. Muted,
+excluded, and monitor-disabled traffic does not receive automatic labels.
+Clean packets are available for training when training capture is enabled;
+this labeling policy does not enable additional packet retention. Existing
+examples are not relabeled retroactively. Predictions never become training
+labels automatically. The last 200 distinct examples are retained.
 Identical bounded bytes with the same protocol/source/completeness share one
 label, so repeating a click cannot multiply its reward. The latest operator
 revision wins; shared session authentication does not identify individual

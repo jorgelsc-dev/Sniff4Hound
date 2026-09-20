@@ -3,14 +3,20 @@
     <AppTopBar
       :shutdown-pending="shutdownPending"
       :shutdown-label="shutdownLabel"
+      :remote-backend="desktopRemoteBackend"
       @shutdown-app="shutdownApplication"
     />
-    <GlobalToolsMenu />
+    <GlobalToolsMenu
+      :shutdown-pending="shutdownPending"
+      :shutdown-label="shutdownLabel"
+      :remote-backend="desktopRemoteBackend"
+      @shutdown-app="shutdownApplication"
+    />
 
-    <v-main class="app-main">
-      <v-container class="app-container">
+    <v-main class="app-main" :class="{ 'app-main--canvas': $route.meta.canvasOnly && canRenderViews }">
+      <v-container class="app-container" :class="{ 'app-container--full': isFullWidthRoute }" :fluid="isFullWidthRoute">
         <div v-if="canRenderViews">
-          <div class="mt-3">
+          <div :class="{ 'mt-3': !$route.meta.canvasOnly }">
             <router-view v-slot="{ Component }">
               <transition name="view-fade" mode="out-in">
                 <component :is="Component" />
@@ -91,8 +97,6 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
-
-    <NotificationStack />
   </v-app>
 </template>
 
@@ -101,19 +105,27 @@ import { nextTick } from "vue";
 import store from "./state/appStore";
 import AppTopBar from "./components/layout/AppTopBar.vue";
 import GlobalToolsMenu from "./components/layout/GlobalToolsMenu.vue";
-import NotificationStack from "./components/ui/NotificationStack.vue";
 
 // Purely a UX beat: give the operator a moment to see the "shutting down"
 // state (and the backend a moment to actually stop) before the tab closes
 // itself out from under them.
 const SHUTDOWN_TAB_CLOSE_DELAY_MS = 4000;
 
+function readDesktopBackendMode() {
+  if (typeof window === "undefined" || !window.location) return "local";
+  try {
+    const parsed = new URL(window.location.href);
+    return String(parsed.searchParams.get("desktop_backend") || "local").trim().toLowerCase();
+  } catch {
+    return "local";
+  }
+}
+
 export default {
   name: "App",
   components: {
     AppTopBar,
     GlobalToolsMenu,
-    NotificationStack,
   },
   data() {
     return {
@@ -121,6 +133,7 @@ export default {
       accessTokenInput: "",
       authSubmitting: false,
       shutdownLabel: "",
+      desktopBackendMode: readDesktopBackendMode(),
     };
   },
   computed: {
@@ -146,6 +159,14 @@ export default {
     },
     shutdownPending() {
       return Boolean(this.store.state.shutdownPending);
+    },
+    desktopRemoteBackend() {
+      return this.desktopBackendMode === "remote";
+    },
+    // Dedicated map/graph dashboards ask to fill the whole viewport instead
+    // of sitting inside the app's usual 1560px-max content column.
+    isFullWidthRoute() {
+      return Boolean(this.$route.meta && this.$route.meta.fullWidth);
     },
   },
   watch: {
@@ -183,6 +204,21 @@ export default {
     },
     shutdownApplication() {
       if (this.shutdownPending) return;
+      if (this.desktopRemoteBackend) {
+        if (typeof window !== "undefined") {
+          const confirmed = window.confirm("Close Sniff4Hound Desktop?");
+          if (!confirmed) return;
+          const desktopApi = window.sniff4houndDesktop;
+          if (desktopApi && typeof desktopApi.close === "function") {
+            desktopApi.close();
+            return;
+          }
+          if (typeof window.close === "function") {
+            window.close();
+          }
+        }
+        return;
+      }
       if (typeof window !== "undefined") {
         const confirmed = window.confirm(
           "Stop Sniff4Hound and close the local dashboard process?"
@@ -219,8 +255,22 @@ export default {
   width: 100%;
 }
 
+.app-container--full {
+  max-width: none;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
 .app-main {
   padding-bottom: 40px;
+}
+
+.app-main--canvas {
+  padding-bottom: 0;
+}
+
+.app-main--canvas .app-container {
+  padding: 0;
 }
 
 .auth-stage {

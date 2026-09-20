@@ -1,12 +1,14 @@
 import json
 import math
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from sniff4hound.ai_learning import (
     ONLINE_BATCH_SIZE,
+    TOURNAMENT_CANDIDATES_PER_ROUND,
     export_model,
     features,
     fingerprint,
@@ -17,6 +19,8 @@ from sniff4hound.ai_learning import (
     is_current_model_shape,
     model_effectiveness,
     rebuild_for_hidden_sizes,
+    run_tournament_round,
+    tournament_round_shapes,
     train,
     update_feedback,
     learning_snapshot,
@@ -87,13 +91,34 @@ class LearningTests(unittest.TestCase):
         high, _ = train([dict(features=[1.0] * 8, label='malicious', confidence=3)])
         self.assertGreater(forward(high, [1.0] * 8)[1], forward(low, [1.0] * 8)[1])
 
-    def test_replay_capacity_evicts_oldest_example(self):
-        examples = [dict(key=str(i), features=[0.0] * 8, label='benign', confidence=1, note='') for i in range(200)]
+    def test_replay_capacity_evicts_oldest_example_of_the_same_class_only(self):
+        # A shared FIFO cap would let a flood of one class evict the other -
+        # exactly what happens when benign auto-labelled traffic vastly
+        # outnumbers real (malicious) alerts. The cap is per label instead
+        # (MAX_EXAMPLES_PER_CLASS), so a handful of retained malicious
+        # examples survive an arbitrarily large run of benign ones.
+        examples = [dict(key=f'benign-{i}', features=[0.0] * 8, label='benign', confidence=1, note='') for i in range(500)]
+        examples += [dict(key=f'malicious-{i}', features=[1.0] * 8, label='malicious', confidence=1, note='') for i in range(3)]
         with patch('sniff4hound.ai_learning.train', return_value=(initial_model(), [])):
-            state = update_feedback({'examples': examples}, packet(), 'malicious', 1, '')
-        self.assertEqual(len(state['examples']), 200)
-        self.assertEqual(state['examples'][0]['key'], '1')
+            state = update_feedback({'examples': examples}, packet(), 'benign', 1, '')
+        # The new benign example pushed benign over its 500 cap, evicting
+        # only the oldest benign one - all 3 malicious examples are intact.
+        self.assertEqual(len(state['examples']), 503)
+        self.assertEqual(sum(1 for e in state['examples'] if e['label'] == 'malicious'), 3)
+        self.assertEqual(sum(1 for e in state['examples'] if e['label'] == 'benign'), 500)
+        self.assertNotIn('benign-0', [e['key'] for e in state['examples']])
         self.assertEqual(state['examples'][-1]['key'], fingerprint(packet()))
+
+    def test_trim_examples_per_class_preserves_chronological_order(self):
+        from sniff4hound.ai_learning import _trim_examples_per_class
+
+        examples = [
+            dict(key='b0', label='benign'), dict(key='m0', label='malicious'),
+            dict(key='b1', label='benign'), dict(key='b2', label='benign'),
+            dict(key='m1', label='malicious'),
+        ]
+        trimmed = _trim_examples_per_class(examples, limit=1)
+        self.assertEqual([e['key'] for e in trimmed], ['b2', 'm1'])
 
     def test_warmup_does_not_present_untrained_score(self):
         rows = [packet()]
@@ -135,6 +160,62 @@ class LearningTests(unittest.TestCase):
                     dict(features=[1.0] * 8, label='malicious', confidence=3)]
         model, _ = train(examples, hidden_sizes=[10, 4])
         self.assertEqual(hidden_sizes_of(model), [10, 4])
+
+    def test_train_invokes_on_epoch_every_epoch(self):
+        examples = [dict(features=[0.0] * 8, label='benign', confidence=3),
+                    dict(features=[1.0] * 8, label='malicious', confidence=3)]
+        calls = []
+        train(examples, hidden_sizes=[3], on_epoch=lambda epoch, total, loss: calls.append((epoch, total, loss)))
+        self.assertEqual(len(calls), 80)
+        self.assertEqual([c[0] for c in calls], list(range(1, 81)))
+        self.assertTrue(all(c[1] == 80 for c in calls))
+        # Loss generally trends down over training, same invariant as the
+        # sparser history entries train() already records.
+        self.assertLess(calls[-1][2], calls[0][2])
+
+    def test_train_on_epoch_not_called_without_examples(self):
+        calls = []
+        train([], hidden_sizes=[3], on_epoch=lambda *args: calls.append(args))
+        self.assertEqual(calls, [])
+
+    def test_run_tournament_round_trains_every_shape_and_keeps_weights(self):
+        examples = [dict(features=[0.0] * 8, label='benign', confidence=3),
+                    dict(features=[1.0] * 8, label='malicious', confidence=3)]
+        shapes = [[2], [3], [2, 2]]
+        results = run_tournament_round(examples, shapes)
+        self.assertEqual([r['hidden_sizes'] for r in results], shapes)
+        for result, shape in zip(results, shapes):
+            self.assertIsInstance(result['accuracy'], float)
+            self.assertEqual(hidden_sizes_of(result['parameters']), shape)
+
+    def test_run_tournament_round_reports_live_progress_per_candidate(self):
+        examples = [dict(features=[0.0] * 8, label='benign', confidence=3),
+                    dict(features=[1.0] * 8, label='malicious', confidence=3)]
+        progress = {}
+        lock = threading.Lock()
+        results = run_tournament_round(examples, [[2], [3]], progress=progress, progress_lock=lock)
+        self.assertEqual(set(progress.keys()), {0, 1})
+        for index, result in enumerate(results):
+            self.assertEqual(progress[index]['status'], 'done')
+            self.assertEqual(progress[index]['epoch'], 80)
+            self.assertEqual(progress[index]['hidden_sizes'], result['hidden_sizes'])
+
+    def test_tournament_round_shapes_round_one_excludes_the_seed_shape(self):
+        import random
+
+        shapes = tournament_round_shapes([6], random.Random(3), include_champion=False)
+        self.assertEqual(len(shapes), TOURNAMENT_CANDIDATES_PER_ROUND)
+        self.assertNotIn([6], shapes)
+
+    def test_tournament_round_shapes_later_round_leads_with_the_champion(self):
+        import random
+
+        shapes = tournament_round_shapes([6, 6], random.Random(3), include_champion=True)
+        self.assertEqual(shapes[0], [6, 6])
+        self.assertEqual(len(shapes), TOURNAMENT_CANDIDATES_PER_ROUND)
+        # Every slot is a distinct shape - no wasted round training a
+        # duplicate of the champion under a different index.
+        self.assertEqual(len({tuple(s) for s in shapes}), TOURNAMENT_CANDIDATES_PER_ROUND)
 
     def test_deep_network_still_learns_both_classes(self):
         examples = [dict(features=[0.0] * 8, label='benign', confidence=3),
@@ -187,7 +268,7 @@ class LearningTests(unittest.TestCase):
             'model': {'w1': [[0.0] * 8] * 6, 'b1': [0.0] * 6, 'w2': [0.0] * 6, 'b2': 0.0},
             'history': [], 'audit': [], 'training': {},
         }
-        self.assertEqual(model_effectiveness(legacy_state), {'ready': False, 'accuracy': None, 'correct': 0, 'total': 1})
+        self.assertEqual(model_effectiveness(legacy_state), {'ready': False, 'accuracy': None, 'correct': 0, 'total': 1, 'evaluation_mode': 'resubstitution'})
         exported = export_model(legacy_state)
         self.assertEqual(exported['hidden_sizes'], [6])
         rows = [packet()]
@@ -246,7 +327,7 @@ class LearningTests(unittest.TestCase):
 
     def test_effectiveness_not_ready_without_both_classes(self):
         state = update_feedback({}, packet(1), 'malicious', 3, '')
-        self.assertEqual(model_effectiveness(state), {'ready': False, 'accuracy': None, 'correct': 0, 'total': 1})
+        self.assertEqual(model_effectiveness(state), {'ready': False, 'accuracy': None, 'correct': 0, 'total': 1, 'evaluation_mode': 'resubstitution'})
 
     def test_effectiveness_scores_agreement_with_operator_labels(self):
         # Perfectly separable examples: after training the model should
@@ -283,21 +364,25 @@ class LearningApiTests(unittest.TestCase):
         self.assertEqual(hidden_sizes_of(self.store.ai_learning_state()['model']), [6])
 
         with self.assertRaises(ValueError):
-            self.store.set_ai_learning_config({'hidden_sizes': [2]})
+            self.store.set_ai_learning_config({'hidden_sizes': [0]})
         with self.assertRaises(ValueError):
             self.store.set_ai_learning_config({'hidden_sizes': []})
         with self.assertRaises(ValueError):
-            self.store.set_ai_learning_config({'hidden_sizes': [6, 6, 6, 6, 6]})
-        with self.assertRaises(ValueError):
             self.store.set_ai_learning_config({'min_cohort': 1000})
 
-        updated = self.store.set_ai_learning_config({'hidden_sizes': [9, 5]})
-        self.assertEqual(updated, {'hidden_sizes': [9, 5], 'min_cohort': 20})
+        # Depth/width are the operator's own call now - no upper bound (see
+        # ai_learning.MIN_HIDDEN_NEURONS/MIN_HIDDEN_LAYERS), so a shape that
+        # used to be rejected (5 layers) and a single-neuron layer both save.
+        updated = self.store.set_ai_learning_config({'hidden_sizes': [9, 5, 6, 6, 6]})
+        self.assertEqual(updated, {'hidden_sizes': [9, 5, 6, 6, 6], 'min_cohort': 20})
         # Rebuilt immediately - not only on the next feedback event - so an
         # existing example's weights are never silently shape-mismatched.
         state = self.store.ai_learning_state()
-        self.assertEqual(hidden_sizes_of(state['model']), [9, 5])
+        self.assertEqual(hidden_sizes_of(state['model']), [9, 5, 6, 6, 6])
         self.assertEqual(len(state['examples']), 1)
+
+        updated = self.store.set_ai_learning_config({'hidden_sizes': [1]})
+        self.assertEqual(updated, {'hidden_sizes': [1], 'min_cohort': 20})
 
     def test_export_and_import_ai_model_via_store(self):
         self.store.save_ai_feedback(self.row['id'], 'malicious', 3, 'evidence')

@@ -154,8 +154,13 @@ class AiApiTests(unittest.TestCase):
             result = module.ai_config(request('POST', b'{"learning_config":{"hidden_sizes":[9,5],"min_cohort":30}}'))
             self.assertEqual(result['learning_config'], {'hidden_sizes': [9, 5], 'min_cohort': 30})
             self.assertEqual(self.store.get_ai_learning_config(), {'hidden_sizes': [9, 5], 'min_cohort': 30})
+            # Depth/width are uncapped now (see ai_learning.MIN_HIDDEN_NEURONS),
+            # so a large shape saves fine; only a non-positive width or an
+            # empty shape are rejected.
+            result = module.ai_config(request('POST', b'{"learning_config":{"hidden_sizes":[100]}}'))
+            self.assertEqual(result['learning_config']['hidden_sizes'], [100])
             with self.assertRaises(ValueError):
-                module.ai_config(request('POST', b'{"learning_config":{"hidden_sizes":[100]}}'))
+                module.ai_config(request('POST', b'{"learning_config":{"hidden_sizes":[0]}}'))
             with self.assertRaises(ValueError):
                 module.ai_config(request('POST', b'{"learning_config":{"hidden_sizes":[]}}'))
             with self.assertRaises(ValueError):

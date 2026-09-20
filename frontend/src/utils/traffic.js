@@ -185,3 +185,30 @@ export function groupSumSeries(rows, groupFn, valueFn, limit = 6) {
   const maxValue = ordered.length ? Math.max(...ordered.map((item) => item.value)) : 0;
   return ordered.map((item) => ({ ...item, width: widthFor(item.value, maxValue) }));
 }
+
+const ALERT_SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
+
+// Rolls recent alert rows (src_ip/dst_ip/severity, e.g. from
+// /api/alerts/recent) up into a per-IP { count, severity } map so a host
+// graph can badge every node currently involved in a monitor hit, counting
+// it against both the source and the destination endpoint.
+export function buildHostAlerts(rows) {
+  const alerts = {};
+  const bump = (ip, severity) => {
+    const key = String(ip || "").trim();
+    if (!key) return;
+    const entry = alerts[key] || { count: 0, severity: "low" };
+    entry.count += 1;
+    if ((ALERT_SEVERITY_RANK[severity] || 0) > (ALERT_SEVERITY_RANK[entry.severity] || 0)) {
+      entry.severity = severity;
+    }
+    alerts[key] = entry;
+  };
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const severity = String((row && row.severity) || "").trim().toLowerCase();
+    if (!ALERT_SEVERITY_RANK[severity]) return;
+    bump(row.src_ip, severity);
+    bump(row.dst_ip, severity);
+  });
+  return alerts;
+}

@@ -1172,7 +1172,7 @@ export default {
 
 .cell-filter-wrap__actions {
   display: inline-flex;
-  gap: 2px;
+  gap: 4px;
   flex: 0 0 auto;
   opacity: 0;
   transition: opacity 0.12s ease;
@@ -1187,13 +1187,21 @@ export default {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  /* WCAG 2.2 target-size-minimum (24x24 CSS px) - these were 16x16 with a
+     2px gap, well under it (finding 1.28). The icon itself stays small
+     (size="12" in the template); only the hit area grows. */
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: none;
-  border-radius: 3px;
+  border-radius: 4px;
   cursor: pointer;
   color: rgba(229, 241, 252, 0.92);
+}
+
+.cell-filter-btn:focus-visible {
+  outline: 2px solid rgba(96, 176, 255, 0.9);
+  outline-offset: 1px;
 }
 
 .cell-filter-btn--include {

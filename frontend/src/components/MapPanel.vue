@@ -1,5 +1,8 @@
 <template>
-  <DataPanel
+  <component
+    :is="canvasOnly ? 'section' : 'DataPanel'"
+    :class="{ 'map-canvas': canvasOnly }"
+    :style="canvasOnly ? { '--map-dock-height': `${dockHeight}px` } : undefined"
     :title="panelTitle"
     :subtitle="panelSubtitle"
     :loading="loading"
@@ -51,14 +54,28 @@
             variant="outlined"
             class="map-projection-toggle"
           >
-            <v-btn value="flat" size="small">Flat</v-btn>
+            <v-btn value="flat" size="small">Mercator</v-btn>
             <v-btn value="globe" size="small">Globe</v-btn>
           </v-btn-toggle>
         </div>
 
+        <div v-if="!isGlobeMode" class="map-zoom-controls">
+          <v-btn icon size="small" variant="text" aria-label="Alejar mapa" :disabled="mapZoom <= 1" @click="zoomMap(mapZoom / 1.25)"><v-icon icon="mdi-minus" /></v-btn>
+          <span>{{ Math.round(mapZoom * 100) }}%</span>
+          <v-btn icon size="small" variant="text" aria-label="Acercar mapa" :disabled="mapZoom >= 8" @click="zoomMap(mapZoom * 1.25)"><v-icon icon="mdi-plus" /></v-btn>
+          <v-btn icon size="small" variant="text" aria-label="Restablecer mapa" @click="resetMapView"><v-icon icon="mdi-fit-to-screen-outline" /></v-btn>
+        </div>
       </div>
 
       <svg
+        ref="mapSvg"
+        :class="{ 'map-interactive': !isGlobeMode }"
+        @wheel="onMapWheel"
+        @pointerdown="startMapPan"
+        @pointermove="moveMapPan"
+        @pointerup="endMapPan"
+        @pointercancel="endMapPan"
+        @click.capture="guardMapClick"
         :viewBox="`0 0 ${mapWidth} ${mapHeight}`"
         preserveAspectRatio="xMidYMid meet"
         role="img"
@@ -102,11 +119,13 @@
           fill="rgba(4, 10, 18, 0.94)"
         />
 
+        <g :transform="isGlobeMode ? undefined : `translate(${mapPan.x} ${mapPan.y}) scale(${mapZoom})`">
         <template v-if="!isGlobeMode">
           <!-- No ocean plate on the flat projection: the panel's own backdrop
                shows through instead. The inner frame below stays, since it is
                what still bounds the drawing area. -->
           <rect
+            v-if="!canvasOnly"
             :x="mapPadding + 6"
             :y="mapPadding + 6"
             :width="mapWidth - (mapPadding * 2) - 12"
@@ -274,6 +293,7 @@
           />
         </g>
 
+        </g>
       </svg>
 
       <!-- Selected country. Anchored over the map rather than below it so the
@@ -319,6 +339,18 @@
       </div>
     </div>
 
+    <section v-if="!mapOnly" ref="infoDock" :class="{ 'map-info-dock': canvasOnly }" aria-label="Telemetry information">
+      <div v-if="canvasOnly" class="map-info-dock__heading">
+        <div class="map-info-dock__status" role="status">
+          <span>{{ statusInfoText }}</span>
+          <span>{{ geoipInfoText }}</span>
+        </div>
+        <v-btn size="small" variant="text" :aria-expanded="detailsOpen" aria-controls="map-host-details" @click="detailsOpen = !detailsOpen">
+          Hosts <v-icon :icon="detailsOpen ? 'mdi-chevron-down' : 'mdi-chevron-up'" end />
+        </v-btn>
+      </div>
+      <v-alert v-if="canvasOnly && error" type="error" density="compact" variant="tonal">{{ error }}</v-alert>
+      <v-progress-linear v-if="canvasOnly && loading" indeterminate color="primary" aria-label="Loading map" />
     <!-- The same selection, reachable without hunting for a country on the
          map: a small country with heavy traffic is easier to find in a list
          than to click on a projection. -->
@@ -337,34 +369,39 @@
       </button>
     </div>
 
-    <v-row v-if="!mapOnly" class="mt-4" dense>
-      <v-col cols="12" md="3">
-        <v-card variant="tonal" class="pa-3">
+    <div v-if="!mapOnly" class="map-summary">
+      <div class="map-summary__item">
+        <div class="map-summary__metric">
           <div class="text-caption text-medium-emphasis">Total hosts</div>
           <div class="text-h6 font-weight-bold text-primary">{{ summary.total_hosts }}</div>
-        </v-card>
-      </v-col>
-      <v-col cols="12" md="3">
-        <v-card variant="tonal" class="pa-3">
+        </div>
+      </div>
+      <div class="map-summary__item">
+        <div class="map-summary__metric">
           <div class="text-caption text-medium-emphasis">Public hosts</div>
           <div class="text-h6 font-weight-bold text-success">{{ summary.public_hosts }}</div>
-        </v-card>
-      </v-col>
-      <v-col cols="12" md="3">
-        <v-card variant="tonal" class="pa-3">
+        </div>
+      </div>
+      <div class="map-summary__item">
+        <div class="map-summary__metric">
           <div class="text-caption text-medium-emphasis">Unmapped public</div>
           <div class="text-h6 font-weight-bold text-warning">{{ summary.unmapped_public_hosts }}</div>
-        </v-card>
-      </v-col>
-      <v-col cols="12" md="3">
-        <v-card variant="tonal" class="pa-3">
-          <div class="text-caption text-medium-emphasis">Active services</div>
+        </div>
+      </div>
+      <div class="map-summary__item">
+        <div class="map-summary__metric">
+          <!-- This counts stored packets with state='open' (sniff4hound/store.py),
+               not distinct services - a host answering the same port 500 times
+               is 500 here, not 1. "Active services" claimed a stronger, wrong
+               meaning for the same number (finding 1.13). A real distinct-service
+               count needs its own host+transport+port+window definition. -->
+          <div class="text-caption text-medium-emphasis">Open-port packets</div>
           <div class="text-h6 font-weight-bold text-secondary">{{ summary.total_open_ports }}</div>
-        </v-card>
-      </v-col>
-    </v-row>
+        </div>
+      </div>
+    </div>
 
-    <v-table v-if="!mapOnly" density="compact" class="mt-4">
+    <v-table v-if="!mapOnly && (!canvasOnly || detailsOpen)" id="map-host-details" density="compact" class="mt-4 map-host-details">
       <thead>
         <tr>
           <th>IP</th>
@@ -393,10 +430,12 @@
         </tr>
       </tbody>
     </v-table>
-  </DataPanel>
+    </section>
+  </component>
 </template>
 
 <script>
+import { geoArea, geoOrthographic, geoPath } from "d3";
 import store from "../state/appStore";
 import { appBaseUrl } from "../utils/runtimeEnv";
 import DataPanel from "./ui/DataPanel.vue";
@@ -405,10 +444,6 @@ const GLOBE_ROTATION_SPEED = 3.2;
 // ~25 fps: the ceiling on how often the globe re-projects, not how often
 // the browser paints.
 const GLOBE_FRAME_INTERVAL_MS = 40;
-// Minimum separation between consecutive outline points on the globe, in
-// degrees. The globe uses the low-detail geography too, so this keeps DOM
-// churn low without making coastlines look broken at dashboard size.
-const GLOBE_MIN_POINT_SEPARATION_DEG = 1.2;
 const GLOBE_FOCUS_OSCILLATION_DEG = 18;
 const GLOBE_FOCUS_OSCILLATION_SPEED = 0.38;
 
@@ -418,6 +453,7 @@ export default {
     DataPanel,
   },
   props: {
+    canvasOnly: { type: Boolean, default: false },
     mapOnly: {
       type: Boolean,
       default: false,
@@ -466,11 +502,18 @@ export default {
   data() {
     return {
       store,
+      detailsOpen: false,
+      dockHeight: 180,
+      dockObserver: null,
       error: "",
       loading: false,
       lastUpdated: "",
       liveRefreshEnabled: false,
       mapUid: this.buildMapUid(),
+      mapZoom: 1,
+      mapPan: { x: 0, y: 0 },
+      mapDrag: null,
+      mapDragged: false,
       flatMapWidth: 920,
       flatMapHeight: 470,
       globeMapSize: 720,
@@ -668,54 +711,21 @@ export default {
     // once here instead of on every point of every frame. What is left per
     // frame is the longitude pair, which is the only part rotation touches:
     // six trig calls per point become two.
-    globeRings() {
-      const collection = this.worldGeoJsonGlobe;
-      const features = Array.isArray(collection && collection.features) ? collection.features : [];
-      const ringsOf = (geometry) => {
-        const geom = geometry && typeof geometry === "object" ? geometry : null;
-        if (!geom || !Array.isArray(geom.coordinates)) return [];
-        if (geom.type === "Polygon") return geom.coordinates;
-        if (geom.type === "MultiPolygon") return geom.coordinates.flat();
-        return [];
+    globeFeatures() {
+      // Normalize each polygon independently; retain holes and island groups.
+      const normalize = (rings) => {
+        const polygon = { type: "Polygon", coordinates: rings };
+        return geoArea(polygon) > 2 * Math.PI
+          ? rings.map((ring) => [...ring].reverse())
+          : rings;
       };
-      return features.map((feature) => {
-        const properties = (feature && feature.properties) || {};
-        return {
-          iso: String(properties.iso_a2 || "").toUpperCase(),
-          name: String(properties.name || "").trim(),
-          rings: ringsOf(feature && feature.geometry)
-            .map((ring) => {
-              // Thinned to the resolution the globe can actually show. The
-              // source outlines carry detail for a full-width flat map; on a
-              // sphere a few hundred pixels across, consecutive points land
-              // under two pixels apart and cost a path segment each. Dropping
-              // them removes about a quarter of the geometry with no visible
-              // change, and it is the geometry - not the arithmetic - that
-              // decides how much DOM this animation rewrites per frame.
-              const points = [];
-              let lastLon = null;
-              let lastLat = null;
-              (Array.isArray(ring) ? ring : []).forEach((pair) => {
-                if (!Array.isArray(pair) || pair.length < 2) return;
-                const lon = Number(pair[0]) || 0;
-                const lat = Math.max(-89.5, Math.min(89.5, Number(pair[1]) || 0));
-                if (
-                  lastLon !== null
-                  && Math.abs(lon - lastLon) < GLOBE_MIN_POINT_SEPARATION_DEG
-                  && Math.abs(lat - lastLat) < GLOBE_MIN_POINT_SEPARATION_DEG
-                ) {
-                  return;
-                }
-                lastLon = lon;
-                lastLat = lat;
-                const phi = this.degToRad(lat);
-                points.push({ lon, cosPhi: Math.cos(phi), sinPhi: Math.sin(phi) });
-              });
-              return points;
-            })
-            // A ring left with fewer than three points is no longer a shape.
-            .filter((ring) => ring.length >= 3),
-        };
+      return (this.worldGeoJsonDetailed?.features || []).map((feature) => {
+        const geometry = feature.geometry;
+        if (!geometry) return feature;
+        const coordinates = geometry.type === "MultiPolygon"
+          ? geometry.coordinates.map(normalize)
+          : normalize(geometry.coordinates);
+        return { ...feature, geometry: { ...geometry, coordinates } };
       });
     },
     worldPaths() {
@@ -736,51 +746,18 @@ export default {
       };
 
       if (this.isGlobeMode) {
-        // Rotation invalidates this on every animation frame, so the loop is
-        // written for that: the tilt terms are hoisted out of it, the latitude
-        // terms come precomputed from globeRings, and coordinates are rounded
-        // with arithmetic rather than toFixed, which allocates a string per
-        // point. Only cos/sin of the rotated longitude are left per point.
-        const phi0 = this.degToRad(this.globeTilt);
-        const cosPhi0 = Math.cos(phi0);
-        const sinPhi0 = Math.sin(phi0);
-        const rotation = this.globeRotation;
-        const cx = this.globeCenterX;
-        const cy = this.globeCenterY;
-        const radius = this.globeRadius;
-        const toRad = Math.PI / 180;
-
-        this.globeRings.forEach((feature, featureIndex) => {
-          let pathIndex = 0;
-          feature.rings.forEach((ring) => {
-            let commands = "";
-            let count = 0;
-            const flush = () => {
-              if (count >= 2) push(featureIndex, pathIndex++, `${commands} Z`, feature.iso, feature.name);
-              commands = "";
-              count = 0;
-            };
-            for (let i = 0; i < ring.length; i += 1) {
-              const point = ring[i];
-              let delta = point.lon - rotation;
-              // Manual wrap instead of normalizeLongitude(): a function call
-              // and a modulo per point is measurable at ten thousand points a
-              // frame, and the value is always within one turn already.
-              if (delta > 180) delta -= 360;
-              else if (delta < -180) delta += 360;
-              const lambda = delta * toRad;
-              const cosLambda = Math.cos(lambda);
-              if ((sinPhi0 * point.sinPhi) + (cosPhi0 * point.cosPhi * cosLambda) <= 0) {
-                flush();
-                continue;
-              }
-              const x = cx + (radius * point.cosPhi * Math.sin(lambda));
-              const y = cy - (radius * ((cosPhi0 * point.sinPhi) - (sinPhi0 * point.cosPhi * cosLambda)));
-              commands += `${count === 0 ? "M" : "L"}${Math.round(x * 100) / 100},${Math.round(y * 100) / 100}`;
-              count += 1;
-            }
-            flush();
-          });
+        // Spherical clipping closes polygons along the horizon, not with
+        // straight chords between the last visible coastline vertices.
+        const projection = geoOrthographic()
+          .rotate([-this.globeRotation, -this.globeTilt])
+          .translate([this.globeCenterX, this.globeCenterY])
+          .scale(this.globeRadius)
+          .clipAngle(90)
+          .precision(0.5);
+        const path = geoPath(projection);
+        this.globeFeatures.forEach((feature, index) => {
+          const properties = feature.properties || {};
+          push(index, 0, path(feature), String(properties.iso_a2 || "").toUpperCase(), properties.name || "");
         });
         return paths;
       }
@@ -847,10 +824,18 @@ export default {
       this.setProjection(value);
     },
     projectionMode() {
+      this.resetMapView();
       this.syncProjectionAnimation();
     },
   },
   mounted() {
+    this.$nextTick(() => {
+      if (!this.canvasOnly || !this.$refs.infoDock) return;
+      this.dockObserver = new ResizeObserver(([entry]) => {
+        this.dockHeight = Math.ceil(entry.target.getBoundingClientRect().height);
+      });
+      this.dockObserver.observe(this.$refs.infoDock);
+    });
     this.loadWorldGeometry();
     this.syncProjectionAnimation();
     this.stopMapSnapshotSubscription = this.store.subscribeMapSnapshot(this.handleRealtimeMapSnapshot);
@@ -871,6 +856,7 @@ export default {
     }
   },
   beforeUnmount() {
+    this.dockObserver?.disconnect();
     this.stopGlobeRotation();
     if (typeof this.stopMapSnapshotSubscription === "function") {
       this.stopMapSnapshotSubscription();
@@ -878,6 +864,68 @@ export default {
     }
   },
   methods: {
+    mapPointer(event) {
+      const svg = this.$refs.mapSvg;
+      const matrix = svg && svg.getScreenCTM();
+      if (!matrix) return null;
+      return new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+    },
+    zoomMap(value, anchor = { x: this.mapWidth / 2, y: this.mapHeight / 2 }) {
+      const next = Math.max(1, Math.min(8, value));
+      const ratio = next / this.mapZoom;
+      this.mapPan = {
+        x: anchor.x - (anchor.x - this.mapPan.x) * ratio,
+        y: anchor.y - (anchor.y - this.mapPan.y) * ratio,
+      };
+      this.mapZoom = next;
+      this.clampMapPan();
+    },
+    clampMapPan() {
+      this.mapPan.x = Math.max(this.mapWidth * (1 - this.mapZoom), Math.min(0, this.mapPan.x));
+      // Mercator extends beyond the initial viewport towards both poles.
+      const extra = (this.mapWidth - this.mapPadding * 2 - this.mapHeight) / 2;
+      this.mapPan.y = Math.max(this.mapHeight * (1 - this.mapZoom) - extra * this.mapZoom, Math.min(extra * this.mapZoom, this.mapPan.y));
+    },
+    resetMapView() {
+      this.mapZoom = 1;
+      this.mapPan = { x: 0, y: 0 };
+    },
+    onMapWheel(event) {
+      if (this.isGlobeMode) return;
+      event.preventDefault();
+      const point = this.mapPointer(event);
+      if (point) this.zoomMap(this.mapZoom * Math.exp(-Math.max(-100, Math.min(100, event.deltaY)) * .003), point);
+    },
+    startMapPan(event) {
+      if (this.isGlobeMode || event.button !== 0) return;
+      const point = this.mapPointer(event);
+      if (!point) return;
+      this.mapDragged = false;
+      this.mapDrag = { id: event.pointerId, x: point.x, y: point.y, pan: { ...this.mapPan } };
+    },
+    moveMapPan(event) {
+      if (!this.mapDrag || this.mapDrag.id !== event.pointerId) return;
+      const point = this.mapPointer(event);
+      if (!point) return;
+      const dx = point.x - this.mapDrag.x;
+      const dy = point.y - this.mapDrag.y;
+      if (Math.hypot(dx, dy) > 3) {
+        this.mapDragged = true;
+        this.$refs.mapSvg.setPointerCapture(event.pointerId);
+      }
+      if (!this.mapDragged) return;
+      this.mapPan = { x: this.mapDrag.pan.x + dx, y: this.mapDrag.pan.y + dy };
+      this.clampMapPan();
+    },
+    endMapPan(event) {
+      if (this.$refs.mapSvg.hasPointerCapture(event.pointerId)) this.$refs.mapSvg.releasePointerCapture(event.pointerId);
+      this.mapDrag = null;
+    },
+    guardMapClick(event) {
+      if (!this.mapDragged) return;
+      event.stopPropagation();
+      this.mapDragged = false;
+    },
     buildMapUid() {
       if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
         return crypto.randomUUID().replace(/-/g, "").slice(0, 8);
@@ -989,9 +1037,11 @@ export default {
       this.globeOscillationTime = 0;
     },
     latitudeToY(lat) {
-      const clipped = Math.max(-85, Math.min(85, Number(lat) || 0));
-      const usableHeight = this.mapHeight - (this.mapPadding * 2);
-      return this.mapPadding + ((90 - clipped) / 180) * usableHeight;
+      // Spherical Mercator uses the same scale on both axes.
+      // Clamp at the Web Mercator latitude limit to keep the poles finite.
+      const clipped = Math.max(-85.05112878, Math.min(85.05112878, Number(lat) || 0));
+      const scale = (this.mapWidth - this.mapPadding * 2) / (2 * Math.PI);
+      return this.mapHeight / 2 - scale * Math.log(Math.tan(Math.PI / 4 + clipped * Math.PI / 360));
     },
     longitudeToX(lon) {
       const clipped = Math.max(-180, Math.min(180, Number(lon) || 0));
@@ -1687,5 +1737,124 @@ export default {
     gap: 10px;
   }
 
+}
+
+.map-canvas {
+  position: relative;
+  height: calc(100dvh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
+  overflow: hidden;
+  background: #040a12;
+}
+
+.map-canvas .map-wrapper {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  display: block;
+}
+
+.map-canvas .map-wrapper svg {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  aspect-ratio: auto;
+}
+
+.map-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.map-summary__metric {
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(10, 24, 36, .72);
+  border: 1px solid rgba(118, 201, 220, .16);
+}
+.map-info-dock {
+  position: absolute;
+  bottom: 12px;
+  left: 16px;
+  right: 16px;
+  z-index: 4;
+  max-height: min(50%, 400px);
+  overflow: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  scrollbar-width: thin;
+  pointer-events: none;
+}
+.map-info-dock > * { pointer-events: auto; }
+.map-info-dock__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.map-info-dock__heading > .v-btn {
+  background: rgba(6, 15, 25, .8);
+  border-radius: 10px;
+}
+.map-info-dock__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: #a0c1d7;
+  font-size: 10px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(6, 15, 25, .72);
+}
+.map-info-dock .map-country-rail {
+  display: flex;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.map-info-dock .map-country-rail__item {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 5px 9px;
+  font-size: 11px;
+  gap: 8px;
+  background: rgba(6, 15, 25, .72);
+}
+.map-info-dock .map-summary {
+  width: min(720px, 100%);
+  margin-top: 6px;
+  gap: 6px;
+}
+.map-info-dock .map-summary__metric { padding: 5px 10px; }
+.map-info-dock .map-summary .text-caption { font-size: 11px !important; line-height: 1.3; }
+.map-info-dock .map-summary .text-h6 { font-size: 14px !important; line-height: 1.4; }
+.map-info-dock .map-host-details { max-height: 220px; overflow: auto; background: rgba(6, 15, 25, .92); }
+@media (max-width: 600px) {
+  .map-info-dock { left: 8px; right: 8px; bottom: 8px; }
+  .map-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .map-info-dock__status { font-size: 9px; }
+}
+.map-interactive { touch-action: none; cursor: grab; }
+.map-interactive:active { cursor: grabbing; }
+.map-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid #69cad533;
+  border-radius: 24px;
+  background: #071321dd;
+  backdrop-filter: blur(12px);
+  font-size: 12px;
+}
+
+.map-canvas .map-wrapper--globe {
+  padding-bottom: calc(var(--map-dock-height, 180px) + 32px);
+  padding-top: 56px;
 }
 </style>

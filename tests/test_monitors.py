@@ -1011,8 +1011,8 @@ class TestTrainingAndAiAlertModes(unittest.TestCase):
 
     Every non-muted packet is fully evaluated, but only persists if that
     evaluation raised something - Training does not keep a "benign" feed of
-    its own any more, it only auto-feeds the IA trainer with "malicious"
-    labels for packets Monitors already alerted on. "solo IA"
+    its own unless training capture is enabled. High/critical monitor hits
+    train as malicious; lesser hits and evaluated clean samples as benign. "solo IA"
     (ai_alert_mode_enabled without training_enabled) skips the rule catalog
     and lets the IA classifier decide instead."""
 
@@ -1034,6 +1034,16 @@ class TestTrainingAndAiAlertModes(unittest.TestCase):
         self.addCleanup(self._refresh_patcher.stop)
 
     def tearDown(self):
+        # Several tests in this class enable training, which lazily starts
+        # the AI training worker thread (Sniffer._enqueue_ai_training) that
+        # writes to self.store on its own schedule. Without stopping it
+        # first, that write can still be in flight (or about to open the
+        # WAL/SHM files) when store.close() + temp_dir.cleanup() run right
+        # after, which is what made the intermittent
+        # `OSError: [Errno 39] Directory not empty` teardown failure
+        # (finding 1.5) possible - stop() now actually joins that thread
+        # (finding 1.24), so calling it here makes the ordering deterministic.
+        self.sniffer.stop()
         self.store.close()
         self.temp_dir.cleanup()
 
@@ -1115,7 +1125,7 @@ class TestTrainingAndAiAlertModes(unittest.TestCase):
         self.assertEqual(self.store.list_count("packets"), 0)
         save_feedback.assert_not_called()
 
-    def test_training_mode_labels_a_monitor_hit_malicious(self):
+    def test_training_mode_labels_medium_admin_port_hit_benign(self):
         with patch.object(self.sniffer, "_store_raw_packet_bytes", True):
             self.sniffer._training_enabled = True
             with patch.object(self.store, "save_ai_feedback") as save_feedback:
@@ -1123,8 +1133,45 @@ class TestTrainingAndAiAlertModes(unittest.TestCase):
                 self._wait_for_call(save_feedback)
         save_feedback.assert_called_once()
         _packet_id, label, confidence, _note = save_feedback.call_args[0]
-        self.assertEqual(label, "malicious")
-        self.assertGreaterEqual(confidence, 0.75)
+        self.assertEqual(label, "benign")
+        self.assertEqual(confidence, 0.6)
+
+    def test_training_labels_follow_monitor_severity(self):
+        self.sniffer._training_enabled = True
+        self.sniffer._training_capture_enabled = True
+        self.sniffer._store_raw_packet_bytes = True
+        for severity in (None, "info", "low", "medium", "high", "critical"):
+            with self.subTest(severity=severity):
+                hits = [] if severity is None else [{"id": "test", "name": "Test", "severity": severity}]
+                with patch("sniff4hound.sniffer.evaluate_packet", return_value=hits), \
+                     patch.object(self.sniffer._anomaly, "evaluate", return_value=[]), \
+                     patch.object(self.sniffer, "_get_monitor_context", return_value=([], True)), \
+                     patch.object(self.sniffer, "_enqueue_ai_training") as enqueue:
+                    self.sniffer._store_packet(self._base_packet())
+                enqueue.assert_called_once()
+                expected = "malicious" if severity in {"high", "critical"} else "benign"
+                self.assertEqual(enqueue.call_args.args[1], expected)
+
+    def test_suppressed_red_monitor_hit_is_not_trained_as_benign(self):
+        self.sniffer._training_enabled = True
+        self.sniffer._training_capture_enabled = True
+        self.sniffer._store_raw_packet_bytes = True
+        with patch("sniff4hound.sniffer.evaluate_packet", return_value=[{"severity": "critical"}]), \
+             patch.object(self.sniffer._anomaly, "evaluate", return_value=[]), \
+             patch.object(self.sniffer, "_get_monitor_context", return_value=([], True)), \
+             patch.object(self.sniffer, "_filter_monitor_hits", return_value=[]), \
+             patch.object(self.sniffer, "_enqueue_ai_training") as enqueue:
+            self.sniffer._store_packet(self._base_packet())
+        self.assertEqual(enqueue.call_args.args[1], "malicious")
+
+    def test_disabled_monitors_do_not_produce_benign_training_labels(self):
+        self.sniffer._training_enabled = True
+        self.sniffer._training_capture_enabled = True
+        self.sniffer._store_raw_packet_bytes = True
+        with patch.object(self.sniffer, "_get_monitor_context", return_value=([], False)), \
+             patch.object(self.sniffer, "_enqueue_ai_training") as enqueue:
+            self.sniffer._store_packet(self._base_packet())
+        enqueue.assert_not_called()
 
     def test_training_mode_without_raw_retention_skips_auto_feedback(self):
         # An alerting packet still persists without forensic bytes (that

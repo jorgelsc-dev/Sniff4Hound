@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import copy
 import ctypes
 import ctypes.util
 import ipaddress
 import json
+import random
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -12,6 +15,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from . import ip_registry
+from .logger import get_logger
 from .runtime_paths import ensure_data_dir, resolve_data_file
 from .honeypot_ports import listener_port_allowed, listener_port_policy_error
 from .monitors import builtin_monitor_seed_fields, describe_match, normalize_monitor
@@ -61,6 +65,8 @@ from .utils import (
     utc_now,
     utc_since,
 )
+
+LOGGER = get_logger("sniff4hound.store")
 
 
 # Row-count backstops. These are no longer the primary retention policy
@@ -234,6 +240,65 @@ def _ip_in_any_network(ip: str, networks: list) -> bool:
     except Exception:
         return False
     return any(ip_obj in network for network in networks)
+
+
+def _ip_entity_variants(ip: str) -> tuple:
+    """Validates `ip` as a real IPv4/IPv6 literal and returns every string
+    form that should be treated as the same address for an exact-identity
+    match (the raw input plus its canonical `str(ipaddress...)` form, which
+    can differ for IPv6). Raises ValueError for anything that isn't a valid
+    address, so a typo reads as "invalid target", never as "no evidence"
+    (which looks identical to a confirmed-clean host)."""
+    text = str(ip or "").strip()
+    if not text:
+        raise ValueError("ip is required")
+    try:
+        parsed = ipaddress.ip_address(text)
+    except ValueError as exc:
+        raise ValueError(f"'{text}' no es una direccion IP valida") from exc
+    return tuple({text, str(parsed)})
+
+
+def _normalize_domain_query(value: str) -> str:
+    """Lowercase, strip a trailing root-zone dot, and IDNA-encode so
+    "Needle.Example." and "needle.example" resolve to the same structured
+    match. Raises ValueError on an empty value."""
+    text = str(value or "").strip().lower().rstrip(".")
+    if not text:
+        raise ValueError("domain is required")
+    try:
+        text = text.encode("idna").decode("ascii")
+    except Exception:
+        pass
+    return text
+
+
+def _domain_match_clause(domain: str, mode: str, *, domain_column: str, host_column: str) -> tuple:
+    """Structured domain/host match against real DNS-query/HTTP-Host columns
+    (never a free-text substring over summaries/payloads). `host_column` is
+    compared with any `:port` suffix stripped first. `mode="subdomain"` also
+    matches `*.domain`; `mode="exact"` (default) does not."""
+    normalized = _normalize_domain_query(domain)
+    host_only = f"SUBSTR({host_column}, 1, INSTR({host_column} || ':', ':') - 1)"
+    if mode == "subdomain":
+        clause = (
+            f"(LOWER({domain_column}) = ? OR LOWER({domain_column}) LIKE ? OR "
+            f"LOWER({host_only}) = ? OR LOWER({host_only}) LIKE ?)"
+        )
+        params = [normalized, f"%.{normalized}", normalized, f"%.{normalized}"]
+    else:
+        clause = f"(LOWER({domain_column}) = ? OR LOWER({host_only}) = ?)"
+        params = [normalized, normalized]
+    return clause, params
+
+
+def _entity_ip_clause(columns: tuple, variants: tuple) -> tuple:
+    placeholders = ",".join("?" * len(variants))
+    parts = [f"{column} IN ({placeholders})" for column in columns]
+    params = []
+    for _ in columns:
+        params.extend(variants)
+    return f"({' OR '.join(parts)})", params
 
 
 def compile_exclusion_networks(filters: dict) -> list:
@@ -558,6 +623,18 @@ class SniffStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._last_retention_at = 0.0
+        # Architecture tournament (see start_ai_tournament()): a *separate*,
+        # lightweight lock from self._lock on purpose - candidate training
+        # threads touch this every epoch to publish live progress, and it
+        # must never contend with self._lock (packet ingestion, every SQL
+        # write) or a running tournament would stall capture. Deliberately
+        # in-memory only, not persisted - see get_ai_tournament_state().
+        self._ai_tournament_lock = threading.RLock()
+        self._ai_tournament = {
+            "active": False, "round": 0, "champion": None,
+            "rounds_history": [], "stop_reason": None, "stop_requested": False,
+        }
+        self._ai_tournament_candidates = {}
         self._device_profile_cache = {}
         self._conn = self._open_connection()
         self._geoip_resolver = _GeoCountryResolver()
@@ -846,6 +923,11 @@ class SniffStore:
             self._conn.commit()
             self._migrate_packets_columns()
             self._migrate_tags_columns()
+            # Must run before _create_indexes(): the unique index it adds on
+            # whitelist_entries/blacklist_entries would otherwise fail to
+            # create on a database that already has duplicate
+            # (category, match_type, value) rows from before this existed.
+            self._migrate_list_entry_duplicates()
             self._create_indexes()
             # Two processes (the unprivileged web process and the privileged
             # capture child) open this same file and both run migrations on
@@ -903,6 +985,61 @@ class SniffStore:
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_key_packet ON tags(key, packet_id)")
         self._conn.commit()
 
+    def _migrate_list_entry_duplicates(self):
+        """Collapse pre-existing duplicate (category, match_type, value)
+        rows in whitelist_entries/blacklist_entries before _create_indexes()
+        adds a UNIQUE index over that triple.
+
+        create_whitelist_entry()/create_blacklist_entry() never checked for
+        an existing row with the same value before this, so re-adding "the
+        same" entry (e.g. re-submitting a form, or two operators/scripts
+        racing) silently produced a second row instead of a conflict -
+        ambiguous to edit or disable, since the other one is still active
+        (finding 1.15). One row per group survives (earliest created_at,
+        ties broken by id), its label becomes the union of every duplicate's
+        non-empty label, and every merge is logged (never silently) instead
+        of just deleted."""
+        for table in ("whitelist_entries", "blacklist_entries"):
+            groups = self._fetchall(
+                f"""
+                SELECT category, match_type, value, COUNT(*) AS dupes
+                FROM {table}
+                GROUP BY category, match_type, value
+                HAVING COUNT(*) > 1
+                """
+            )
+            for group in groups:
+                rows = self._fetchall(
+                    f"""
+                    SELECT * FROM {table}
+                    WHERE category = ? AND match_type = ? AND value = ?
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (group["category"], group["match_type"], group["value"]),
+                )
+                if len(rows) < 2:
+                    continue
+                keeper, losers = rows[0], rows[1:]
+                merged_labels = unique_ordered(
+                    str(row.get("label") or "").strip() for row in rows if str(row.get("label") or "").strip()
+                )
+                merged_label = "; ".join(merged_labels)
+                loser_ids = [row["id"] for row in losers]
+                self._conn.execute(
+                    f"UPDATE {table} SET label = ?, updated_at = ? WHERE id = ?",
+                    (merged_label, utc_now(), keeper["id"]),
+                )
+                self._conn.execute(
+                    f"DELETE FROM {table} WHERE id IN ({','.join('?' * len(loser_ids))})",
+                    tuple(loser_ids),
+                )
+                LOGGER.info(
+                    "Merged %d duplicate %s row(s) (%s/%s/%s) into %s, label now %r",
+                    len(losers), table, group["category"], group["match_type"], group["value"],
+                    keeper["id"], merged_label,
+                )
+        self._conn.commit()
+
     def _create_indexes(self):
         # `packets` had no index at all beyond its implicit rowid, which
         # only went unnoticed because the table was capped at 2000 rows.
@@ -924,6 +1061,16 @@ class SniffStore:
             "CREATE INDEX IF NOT EXISTS idx_domains_ip ON domains(ip)",
             "CREATE INDEX IF NOT EXISTS idx_blacklist_category ON blacklist_entries(category, enabled)",
             "CREATE INDEX IF NOT EXISTS idx_whitelist_category ON whitelist_entries(category, enabled)",
+            # Enforced at the DB layer too (not just the pre-insert check in
+            # create_whitelist_entry()/create_blacklist_entry()) so two
+            # concurrent inserts of "the same" entry can't both win the
+            # pre-insert check and still land as two rows (finding 1.15).
+            # _migrate_list_entry_duplicates() above already cleared any
+            # pre-existing violation, so this always succeeds.
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_whitelist_unique_entry "
+            "ON whitelist_entries(category, match_type, value)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_blacklist_unique_entry "
+            "ON blacklist_entries(category, match_type, value)",
         ):
             self._conn.execute(statement)
         self._conn.commit()
@@ -1916,7 +2063,7 @@ class SniffStore:
         "hex(substr(raw_packet, 1, 4096)) AS frame_hex, length(raw_packet) AS frame_length"
     )
 
-    def list_ai_packets(self, packet_id=None):
+    def list_ai_packets(self, packet_id=None, *, since=""):
         # Convert the bounded BLOB in SQL: the normal row serializer limits
         # binary fields to a 256-byte preview and would lose image data.
         raw_retention_enabled = self.get_raw_retention_enabled()
@@ -1936,8 +2083,14 @@ class SniffStore:
         # classification isn't expressible in SQLite either way (same reason
         # `_grouped_ip_catalog` filters after the fetch).
         fetch_limit = 1000 if has_filters else 400
+        # The dashboard's selected time window has to apply here in SQL,
+        # before the LIMIT/200-row sample below, or a 15-minute window would
+        # still surface AI rows scored from hours-old packets (finding 1.17).
+        since_clause = "WHERE created_at >= ?" if since else ""
+        since_params = (str(since),) if since else ()
         rows = self._fetchall(
-            f"SELECT {self._AI_PACKET_COLUMNS} FROM packets ORDER BY id DESC LIMIT ?", (fetch_limit,)
+            f"SELECT {self._AI_PACKET_COLUMNS} FROM packets {since_clause} ORDER BY id DESC LIMIT ?",
+            (*since_params, fetch_limit),
         )
 
         def _is_muted(row):
@@ -2046,8 +2199,6 @@ class SniffStore:
 
     def set_ai_learning_config(self, config):
         from .ai_learning import (
-            MAX_HIDDEN_LAYERS,
-            MAX_HIDDEN_NEURONS,
             MIN_HIDDEN_LAYERS,
             MIN_HIDDEN_NEURONS,
             rebuild_for_hidden_sizes,
@@ -2061,15 +2212,13 @@ class SniffStore:
             raw = data.get("hidden_sizes")
             if not isinstance(raw, (list, tuple)) or not raw:
                 raise ValueError("hidden_sizes debe ser una lista con al menos una capa.")
-            if len(raw) > MAX_HIDDEN_LAYERS:
-                raise ValueError(f"Máximo {MAX_HIDDEN_LAYERS} capas ocultas.")
             if len(raw) < MIN_HIDDEN_LAYERS:
                 raise ValueError("Se necesita al menos una capa oculta.")
             hidden_sizes = []
             for item in raw:
                 size = safe_int(item, -1)
-                if not (MIN_HIDDEN_NEURONS <= size <= MAX_HIDDEN_NEURONS):
-                    raise ValueError(f"Cada capa debe tener entre {MIN_HIDDEN_NEURONS} y {MAX_HIDDEN_NEURONS} neuronas.")
+                if size < MIN_HIDDEN_NEURONS:
+                    raise ValueError(f"Cada capa debe tener al menos {MIN_HIDDEN_NEURONS} neurona(s).")
                 hidden_sizes.append(size)
         min_cohort = current["min_cohort"]
         if "min_cohort" in data:
@@ -2087,7 +2236,340 @@ class SniffStore:
                 state = rebuild_for_hidden_sizes(self.ai_learning_state(), hidden_sizes)
                 self.set_runtime_config("ai_learning_state", json_dumps(state))
             self.set_runtime_config("ai_learning_config", json_dumps(normalized))
+            # A manual change is the operator's own call, and takes priority
+            # over whatever the background architecture/cohort search was
+            # suggesting - clear that axis's pending suggestion (and its
+            # dismissal memory) rather than let a stale recommendation from
+            # before this edit resurface later.
+            suggestion = self._ai_learning_suggestion_raw()
+            changed = False
+            if hidden_sizes != current["hidden_sizes"] and (suggestion.get("architecture") or suggestion.get("dismissed_architectures")):
+                suggestion["architecture"] = None
+                suggestion["dismissed_architectures"] = []
+                changed = True
+            if min_cohort != current["min_cohort"] and (suggestion.get("cohort") or suggestion.get("dismissed_cohorts")):
+                suggestion["cohort"] = None
+                suggestion["dismissed_cohorts"] = []
+                changed = True
+            if changed:
+                self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
         return normalized
+
+    def _ai_learning_suggestion_raw(self):
+        data = json_loads(self.get_runtime_config("ai_learning_suggestion", ""), default={})
+        if not isinstance(data, dict):
+            data = {}
+        data.setdefault("architecture", None)
+        data.setdefault("cohort", None)
+        data.setdefault("dismissed_architectures", [])
+        data.setdefault("dismissed_cohorts", [])
+        data.setdefault("checked_at_examples", 0)
+        return data
+
+    def get_ai_learning_suggestion(self):
+        """Pending auto-tuning recommendations, if any - see
+        ai_learning.suggest_architecture() and packet_ai.suggest_min_cohort().
+        Generated opportunistically from save_ai_feedback(), never applied on
+        its own; an operator accepts or dismisses each axis independently
+        from the "Ajustes del motor" panel."""
+        data = self._ai_learning_suggestion_raw()
+        from .ai_learning import SUGGESTION_CHECK_INTERVAL
+        revision = int(self.ai_learning_state().get("revision", 0))
+        progress = min(SUGGESTION_CHECK_INTERVAL, max(0, revision - int(data.get("checked_at_revision", 0))))
+        return {"architecture": data["architecture"], "cohort": data["cohort"],
+                "search": data.get("search"),
+                "next_check": {"completed": progress, "required": SUGGESTION_CHECK_INTERVAL}}
+
+    def _refresh_ai_learning_suggestion(self, state):
+        """Re-runs the architecture/cohort search after enough feedback
+        updates, including when the retained example set is full (see
+        SUGGESTION_CHECK_INTERVAL) and persists whatever it finds. Called
+        from inside save_ai_feedback()'s lock, right after a review is
+        recorded, so it always sees the state that was just written."""
+        from .ai_learning import SUGGESTION_CHECK_INTERVAL, suggest_architecture
+        from .packet_ai import suggest_min_cohort
+
+        examples = state.get("examples", [])
+        suggestion = self._ai_learning_suggestion_raw()
+        revision = int(state.get("revision", 0))
+        if revision - int(suggestion.get("checked_at_revision", 0)) < SUGGESTION_CHECK_INTERVAL:
+            return
+        suggestion["checked_at_examples"] = len(examples)
+        suggestion["checked_at_revision"] = revision
+        config = self.get_ai_learning_config()
+        if suggestion["architecture"] is None:
+            report = {}
+            suggestion["architecture"] = suggest_architecture(
+                state, config["hidden_sizes"], dismissed=suggestion["dismissed_architectures"], report=report
+            )
+            suggestion["search"] = report
+        if suggestion["cohort"] is None:
+            labels_by_id = {e["packet_id"]: e["label"] for e in examples}
+            packets = self.list_ai_packets()
+            suggestion["cohort"] = suggest_min_cohort(
+                packets, labels_by_id, config["min_cohort"], dismissed=suggestion["dismissed_cohorts"]
+            )
+        self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
+
+    def apply_ai_learning_suggestion(self, kind):
+        if kind not in ("architecture", "cohort"):
+            raise ValueError("kind debe ser 'architecture' o 'cohort'.")
+        with self._lock:
+            suggestion = self._ai_learning_suggestion_raw()
+            pending = suggestion.get(kind)
+            if not pending:
+                raise ValueError("No hay ninguna sugerencia pendiente para aplicar.")
+            patch = {"hidden_sizes": pending["hidden_sizes"]} if kind == "architecture" else {"min_cohort": pending["min_cohort"]}
+        # set_ai_learning_config takes its own lock and already clears this
+        # axis's suggestion/dismissal memory as a side effect of the change.
+        return self.set_ai_learning_config(patch)
+
+    def dismiss_ai_learning_suggestion(self, kind):
+        if kind not in ("architecture", "cohort"):
+            raise ValueError("kind debe ser 'architecture' o 'cohort'.")
+        with self._lock:
+            suggestion = self._ai_learning_suggestion_raw()
+            pending = suggestion.get(kind)
+            if not pending:
+                raise ValueError("No hay ninguna sugerencia pendiente para descartar.")
+            if kind == "architecture":
+                dismissed = suggestion["dismissed_architectures"] + [pending["hidden_sizes"]]
+                suggestion["dismissed_architectures"] = dismissed[-10:]
+            else:
+                dismissed = suggestion["dismissed_cohorts"] + [pending["min_cohort"]]
+                suggestion["dismissed_cohorts"] = dismissed[-10:]
+            suggestion[kind] = None
+            self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
+        return self.get_ai_learning_suggestion()
+
+    def get_ai_tournament_state(self):
+        """Live snapshot of an in-progress (or just-finished) architecture
+        tournament - see start_ai_tournament(). Deliberately in-memory only
+        (self._ai_tournament / self._ai_tournament_candidates), not persisted
+        to the database while running: this is per-epoch progress for a live
+        UI, not state that needs to survive a restart mid-tournament. Only
+        the final champion is persisted, through the normal
+        learning_suggestion path (see _run_ai_tournament())."""
+        with self._ai_tournament_lock:
+            state = copy.deepcopy(self._ai_tournament)
+            state["candidates"] = [
+                copy.deepcopy(self._ai_tournament_candidates[index])
+                for index in sorted(self._ai_tournament_candidates)
+            ]
+        state.pop("stop_requested", None)
+        return state
+
+    def get_training_enabled(self) -> bool:
+        """`training_enabled` replaces the old `ai_sampling_enabled` flag; an
+        installation upgrading from before that rename keeps its previous
+        choice honoured until it's next changed explicitly. The one place
+        this is read from - app.py's ai_config()/_get_training_enabled()
+        delegates here so the tournament loop below and the API agree on the
+        same flag without duplicating the fallback logic."""
+        stored = self.get_runtime_config("training_enabled", "")
+        if stored == "":
+            stored = self.get_runtime_config("ai_sampling_enabled", "0")
+        return stored == "1"
+
+    def start_ai_tournament(self):
+        """Kick off a background architecture tournament: TOURNAMENT_
+        CANDIDATES_PER_ROUND shapes train side by side each round (see
+        ai_learning.run_tournament_round()), the winner carries into the
+        next round with fresh random challengers. Runs continuously, round
+        after round, for as long as training_enabled stays on - it does not
+        stop on its own once it's found something good; see
+        _run_ai_tournament()'s training_enabled check for the only automatic
+        stop condition. stop_ai_tournament() is a separate, explicit
+        override for stopping it early.
+
+        Training itself runs off self._lock entirely - only this call and
+        each round's brief persist take it, to snapshot the labelled
+        examples and to record progress - so packet ingestion
+        (register_packet, which shares self._lock) is never blocked by a
+        running tournament, however long it runs."""
+        from .ai_learning import normalize_hidden_sizes
+
+        with self._ai_tournament_lock:
+            if self._ai_tournament.get("active"):
+                return self.get_ai_tournament_state()
+        with self._lock:
+            state = self.ai_learning_state()
+            examples = list(state.get("examples", []))
+            counts = Counter(e["label"] for e in examples)
+            if counts.get("benign", 0) < 3 or counts.get("malicious", 0) < 3:
+                raise ValueError("Hacen falta al menos 3 ejemplos benignos y 3 malignos para entrenar.")
+            current_hidden_sizes = normalize_hidden_sizes(self.get_ai_learning_config()["hidden_sizes"])
+        with self._ai_tournament_lock:
+            self._ai_tournament = {
+                "active": True, "round": 0, "champion": None,
+                "rounds_history": [], "stop_reason": None, "stop_requested": False,
+            }
+            self._ai_tournament_candidates = {}
+        threading.Thread(
+            target=self._run_ai_tournament, args=(examples, current_hidden_sizes), daemon=True
+        ).start()
+        print(f"[i] Architecture tournament started (seed shape {current_hidden_sizes}).", file=sys.stderr)
+        return self.get_ai_tournament_state()
+
+    def maybe_start_ai_tournament(self):
+        """Best-effort auto-start: the tournament is meant to run for as
+        long as training is on, not wait for an explicit "start" click - so
+        this is called whenever training_enabled might have just turned on
+        (see app.py's ai_config()) or new feedback might have just crossed
+        the "3 of each class" floor (see save_ai_feedback() below). Swallows
+        the "not enough labels yet" error rather than propagating it, since
+        this is opportunistic, not an explicit operator action - it'll just
+        try again next time."""
+        if not self.get_training_enabled():
+            return
+        with self._ai_tournament_lock:
+            if self._ai_tournament.get("active"):
+                return
+        try:
+            self.start_ai_tournament()
+        except ValueError as exc:
+            # Printed (not silently swallowed) specifically so "training is
+            # on but the tournament never shows up" is diagnosable from the
+            # desktop app's captured backend output / the CLI's own stderr,
+            # instead of looking like nothing happened at all - this is the
+            # one real reason maybe_start_ai_tournament() ever declines:
+            # fewer than 3 retained examples of one of the two classes.
+            print(f"[i] Architecture tournament not started yet: {exc}", file=sys.stderr)
+
+    def stop_ai_tournament(self):
+        """Request a stop. Takes effect at the next round boundary (not
+        mid-round). Also happens automatically once training_enabled turns
+        off (see _run_ai_tournament()) - this is for an explicit operator
+        override while training stays on."""
+        with self._ai_tournament_lock:
+            if self._ai_tournament.get("active"):
+                self._ai_tournament["stop_requested"] = True
+        return self.get_ai_tournament_state()
+
+    def _run_ai_tournament(self, examples, current_hidden_sizes):
+        from .ai_learning import (
+            SUGGESTION_MIN_IMPROVEMENT,
+            normalize_hidden_sizes,
+            run_tournament_round,
+            tournament_round_shapes,
+        )
+
+        rng = random.Random()
+        starting_shape = normalize_hidden_sizes(current_hidden_sizes)
+        champion_shape = starting_shape
+        champion_accuracy = None
+        round_num = 0
+        stop_reason = "training_disabled"
+        round_evaluation_mode = "resubstitution"
+
+        # The default 5ms GIL switch interval lets these CPU-bound pure-
+        # Python training threads starve everything else in the process of
+        # CPU time - measured register_packet() taking ~500ms instead of its
+        # normal sub-ms cost while 3 candidates trained concurrently. A
+        # shorter interval fixes that (measured down to ~20-50ms under the
+        # same load), but it's a process-wide interpreter setting that adds
+        # overhead to every thread everywhere, not just this one - scoped to
+        # just the training loop (restored in `finally`) rather than left on
+        # for the process's whole lifetime, which measurably slowed down
+        # everything else, tournament or not.
+        previous_switch_interval = sys.getswitchinterval()
+        sys.setswitchinterval(0.001)
+        try:
+            while True:
+                with self._ai_tournament_lock:
+                    if self._ai_tournament.get("stop_requested"):
+                        stop_reason = "manual"
+                        break
+                if not self.get_training_enabled():
+                    stop_reason = "training_disabled"
+                    break
+                round_num += 1
+                shapes = tournament_round_shapes(
+                    champion_shape, rng, include_champion=champion_accuracy is not None
+                )
+                with self._ai_tournament_lock:
+                    self._ai_tournament["round"] = round_num
+                    self._ai_tournament_candidates = {
+                        index: {
+                            "hidden_sizes": shape, "epoch": 0, "total_epochs": 80,
+                            "loss": None, "status": "queued",
+                        }
+                        for index, shape in enumerate(shapes)
+                    }
+                    progress = self._ai_tournament_candidates
+
+                results = run_tournament_round(
+                    examples, shapes, progress=progress, progress_lock=self._ai_tournament_lock
+                )
+                round_best = max(results, key=lambda r: r["accuracy"] if r["accuracy"] is not None else -1.0)
+                improved = champion_accuracy is None or (
+                    round_best["accuracy"] is not None
+                    and round_best["accuracy"] >= champion_accuracy + SUGGESTION_MIN_IMPROVEMENT
+                )
+                if improved:
+                    champion_shape = round_best["hidden_sizes"]
+                    champion_accuracy = round_best["accuracy"]
+                    # Surface every improvement live, as it's found, through
+                    # the existing suggestion accept/dismiss flow (POST
+                    # /api/ai/suggestion) - same UX as a single
+                    # suggest_architecture() result - rather than only once
+                    # the tournament stops, since it now runs indefinitely
+                    # and the operator shouldn't have to wait for that to
+                    # apply a better architecture. Re-running
+                    # set_ai_learning_config on accept retrains from the
+                    # retained examples deterministically (same examples,
+                    # same shape, no randomness in the training procedure
+                    # itself), so the trained weights don't need to be
+                    # persisted here to reproduce them.
+                    if champion_shape != starting_shape:
+                        with self._lock:
+                            suggestion = self._ai_learning_suggestion_raw()
+                            suggestion["architecture"] = {
+                                "hidden_sizes": champion_shape,
+                                "current_hidden_sizes": starting_shape,
+                                "current_accuracy": None,
+                                "suggested_accuracy": champion_accuracy,
+                            }
+                            self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
+
+                # Uniform across every result in this round (see
+                # run_tournament_round) - read once instead of per-candidate.
+                round_evaluation_mode = results[0].get("evaluation_mode", "resubstitution") if results else "resubstitution"
+                with self._ai_tournament_lock:
+                    for index, result in enumerate(results):
+                        won = result["hidden_sizes"] == round_best["hidden_sizes"]
+                        self._ai_tournament_candidates[index]["status"] = "champion" if won else "disqualified"
+                        self._ai_tournament_candidates[index]["accuracy"] = result["accuracy"]
+                        self._ai_tournament_candidates[index]["evaluation_mode"] = result.get("evaluation_mode")
+                    self._ai_tournament["rounds_history"] = (self._ai_tournament["rounds_history"] + [{
+                        "round": round_num,
+                        "candidates": [
+                            {
+                                "hidden_sizes": r["hidden_sizes"], "accuracy": r["accuracy"],
+                                "evaluation_mode": r.get("evaluation_mode"),
+                            }
+                            for r in results
+                        ],
+                        "champion_hidden_sizes": champion_shape,
+                        "champion_accuracy": champion_accuracy,
+                        "evaluation_mode": round_evaluation_mode,
+                    }])[-20:]
+        finally:
+            sys.setswitchinterval(previous_switch_interval)
+
+        champion = {
+            "hidden_sizes": champion_shape, "accuracy": champion_accuracy,
+            # Which evaluation the reported accuracy actually is - the
+            # tournament UI previously implied every result was validated on
+            # unseen data; below VALIDATION_MIN_PER_CLASS it never was
+            # (finding 1.25).
+            "evaluation_mode": round_evaluation_mode,
+        }
+        with self._ai_tournament_lock:
+            self._ai_tournament["active"] = False
+            self._ai_tournament["champion"] = champion
+            self._ai_tournament["stop_reason"] = stop_reason
+            self._ai_tournament["stop_requested"] = False
 
     def export_ai_model(self):
         from .ai_learning import export_model
@@ -2119,7 +2601,16 @@ class SniffStore:
                 self.ai_learning_state(), packets[0], label, confidence, note, hidden_sizes=hidden_sizes
             )
             self.set_runtime_config("ai_learning_state", json.dumps(state))
-            return {"revision": state.get("revision", 0)}
+            self._refresh_ai_learning_suggestion(state)
+            revision = state.get("revision", 0)
+        # Outside the lock: this new example may have just crossed the "3 of
+        # each class" floor the tournament needs, so give it a chance to
+        # start if training is on and nothing's running yet (see
+        # maybe_start_ai_tournament()). Not inside self._lock - it briefly
+        # takes it itself, and there's no need to hold packet ingestion's
+        # lock any longer than the state write above needs.
+        self.maybe_start_ai_tournament()
+        return {"revision": revision}
 
     def count_packets(self, *, proto="", session_id=0, search="", interface="", mode="", since=""):
         where, params = self._packet_filter(
@@ -2183,7 +2674,7 @@ class SniffStore:
         )
         return int((row or {}).get("count") or 0)
 
-    def list_recent_alerts(self, *, limit=500, offset=0, since="", severity=""):
+    def list_recent_alerts(self, *, limit=500, offset=0, since="", severity="", search=""):
         """Lean feed of recent monitor hits for UI surfaces - like the Radar
         host graph badges - that need to know *which hosts got flagged, how
         badly, and why*, but not the full packet row
@@ -2197,7 +2688,7 @@ class SniffStore:
         served, and without `monitor_id` there was no way to get from an
         alert to /api/monitors/packets/, which keys on the id rather than
         the display name the alert carries."""
-        where, params = self._alert_filter(since=since, severity=severity)
+        where, params = self._alert_filter(since=since, severity=severity, search=search)
         params = list(params)
         params.extend([int(limit), int(offset)])
         # _build_packet_tags() writes one 'monitor' row immediately followed
@@ -2238,7 +2729,7 @@ class SniffStore:
             row["detail"] = str(row.get("detail") or "")
         return rows
 
-    def _alert_filter(self, *, since="", severity=""):
+    def _alert_filter(self, *, since="", severity="", search=""):
         clauses = ["tags.key = 'monitor'", "tags.severity != ''"]
         params = []
         if since:
@@ -2248,10 +2739,29 @@ class SniffStore:
         if wanted:
             clauses.append(f"LOWER(tags.severity) IN ({','.join('?' for _ in wanted)})")
             params.extend(wanted)
+        search = str(search or "").strip()
+        if search:
+            # Exact entity match - an investigator exporting "alerts about
+            # 203.0.113.250" must never get back a row for an unrelated
+            # host (finding 1.21). Not a free-text search: an IP-shaped
+            # value matches src/dst exactly, anything else matches the
+            # structured domain/http_host columns exactly.
+            try:
+                variants = _ip_entity_variants(search)
+            except ValueError:
+                variants = None
+            if variants is not None:
+                clause, entity_params = _entity_ip_clause(("packets.src_ip", "packets.dst_ip"), variants)
+            else:
+                clause, entity_params = _domain_match_clause(
+                    search, "exact", domain_column="packets.domain", host_column="packets.http_host"
+                )
+            clauses.append(clause)
+            params.extend(entity_params)
         return f"WHERE {' AND '.join(clauses)}", params
 
-    def count_recent_alerts(self, *, since="", severity=""):
-        where, params = self._alert_filter(since=since, severity=severity)
+    def count_recent_alerts(self, *, since="", severity="", search=""):
+        where, params = self._alert_filter(since=since, severity=severity, search=search)
         row = self._fetchone(
             f"""
             SELECT COUNT(*) AS count
@@ -2263,7 +2773,7 @@ class SniffStore:
         )
         return int((row or {}).get("count") or 0)
 
-    def list_flows(self, *, proto="", search="", limit=250, offset=0, since=""):
+    def _flow_filter(self, *, proto="", search="", since=""):
         clauses = []
         params = []
         if since:
@@ -2282,11 +2792,21 @@ class SniffStore:
             )
             params.extend([needle] * 5)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, params
+
+    def list_flows(self, *, proto="", search="", limit=250, offset=0, since=""):
+        where, params = self._flow_filter(proto=proto, search=search, since=since)
+        params = list(params)
         params.extend([int(limit), int(offset)])
         return self._fetchall(
             f"SELECT * FROM flows {where} ORDER BY packet_count DESC, id DESC LIMIT ? OFFSET ?",
             tuple(params),
         )
+
+    def count_flows(self, *, proto="", search="", since=""):
+        where, params = self._flow_filter(proto=proto, search=search, since=since)
+        row = self._fetchone(f"SELECT COUNT(*) AS count FROM flows {where}", tuple(params))
+        return int((row or {}).get("count") or 0)
 
     def _payload_filter(self, *, search="", proto="", interface="", mode="", since=""):
         clauses = []
@@ -3067,16 +3587,27 @@ class SniffStore:
             validate_regex_pattern(value)
         else:
             value = self._normalize_list_value(category, value, exact=True)
+        self._raise_if_duplicate_list_entry("blacklist_entries", category, match_type, value)
         entry_id = f"blacklist-{category}-{uuid.uuid4().hex[:12]}"
         now = utc_now()
-        self._execute(
-            """
-            INSERT INTO blacklist_entries (id, category, match_type, value, label, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-            """,
-            (entry_id, category, match_type, value, str(label or "").strip(), now, now),
-            commit=True,
-        )
+        try:
+            self._execute(
+                """
+                INSERT INTO blacklist_entries (id, category, match_type, value, label, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (entry_id, category, match_type, value, str(label or "").strip(), now, now),
+                commit=True,
+            )
+        except sqlite3.IntegrityError as exc:
+            # Two callers racing the pre-check above both pass it and only
+            # the DB's own UNIQUE index (see _create_indexes) catches the
+            # second insert - surfaced the same way as the pre-check so a
+            # caller never has to distinguish "checked and found" from
+            # "raced and lost".
+            raise ValueError(
+                f"Ya existe una entrada de blacklist para {category}/{match_type}: {value}"
+            ) from exc
         entry = self.get_blacklist_entry(entry_id)
         self._sync_blacklist_monitor(entry)
         return entry
@@ -3152,17 +3683,37 @@ class SniffStore:
             validate_regex_pattern(value)
         else:
             value = self._normalize_list_value(category, value, exact=True)
+        self._raise_if_duplicate_list_entry("whitelist_entries", category, match_type, value)
         entry_id = f"whitelist-{category}-{uuid.uuid4().hex[:12]}"
         now = utc_now()
-        self._execute(
-            """
-            INSERT INTO whitelist_entries (id, category, match_type, value, label, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-            """,
-            (entry_id, category, match_type, value, str(label or "").strip(), now, now),
-            commit=True,
-        )
+        try:
+            self._execute(
+                """
+                INSERT INTO whitelist_entries (id, category, match_type, value, label, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (entry_id, category, match_type, value, str(label or "").strip(), now, now),
+                commit=True,
+            )
+        except sqlite3.IntegrityError as exc:
+            # Two callers racing the pre-check above both pass it and only
+            # the DB's own UNIQUE index (see _create_indexes) catches the
+            # second insert - surfaced the same way as the pre-check so a
+            # caller never has to distinguish "checked and found" from
+            # "raced and lost" (finding 1.15).
+            raise ValueError(
+                f"Ya existe una entrada de whitelist para {category}/{match_type}: {value}"
+            ) from exc
         return self.get_whitelist_entry(entry_id)
+
+    def _raise_if_duplicate_list_entry(self, table: str, category: str, match_type: str, value: str) -> None:
+        existing = self._fetchone(
+            f"SELECT id FROM {table} WHERE category = ? AND match_type = ? AND value = ?",
+            (category, match_type, value),
+        )
+        if existing:
+            kind = "whitelist" if table == "whitelist_entries" else "blacklist"
+            raise ValueError(f"Ya existe una entrada de {kind} para {category}/{match_type}: {value}")
 
     def set_whitelist_entry_enabled(self, entry_id: str, enabled: bool) -> dict:
         existing = self.get_whitelist_entry(entry_id)
@@ -3213,6 +3764,22 @@ class SniffStore:
     def set_raw_retention_enabled(self, value: bool) -> bool:
         self.set_runtime_config("raw_retention_enabled", "1" if value else "0")
         return self.get_raw_retention_enabled()
+
+    def get_training_capture_enabled(self) -> bool:
+        """Whether clean (non-alert) packets are also persisted right now.
+
+        Off by default: normally only alerts/muted traffic reach the
+        packets table (see Sniffer._store_packet). Turning this on widens
+        that to every evaluated packet, tagged 'training_capture', so
+        there's benign data alongside the alerts to train the AI classifier
+        on; turning it back off purges exactly those benign rows (see
+        purge_training_capture_packets) while leaving real alerts in place.
+        """
+        return self.get_runtime_config("training_capture_enabled", "0") == "1"
+
+    def set_training_capture_enabled(self, value: bool) -> bool:
+        self.set_runtime_config("training_capture_enabled", "1" if value else "0")
+        return self.get_training_capture_enabled()
 
     def get_monitor_min_severity(self) -> str:
         value = str(self.get_runtime_config("monitor_min_severity", MONITOR_MIN_SEVERITY_DEFAULT) or "").strip().lower()
@@ -4634,20 +5201,342 @@ class SniffStore:
             "generated_at": utc_now(),
         }
 
-    def ip_intel(self, ip: str) -> dict:
+    # -- Exact-entity evidence lookups -------------------------------------
+    # `search=` on list_packets()/list_flows() etc. is a free-text LIKE match
+    # (it also matches payload/summary text) - fine for the operator's search
+    # box, wrong for "what did this specific host do": "10.0.0.1" would match
+    # stored rows for "10.0.0.10" as a substring. These variants apply exact
+    # `src_ip = ? OR dst_ip = ?` identity in SQL, before any LIMIT, so
+    # evidence for the target host can't be pushed out of a capped page by
+    # unrelated traffic (finding 1.18/1.19) and totals/pages agree.
+
+    def count_packets_for_entity_ip(self, ip: str, *, since="") -> int:
+        variants = _ip_entity_variants(ip)
+        clause, params = _entity_ip_clause(("src_ip", "dst_ip"), variants)
+        clauses = [clause]
+        if since:
+            clauses.append("created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        row = self._fetchone(f"SELECT COUNT(*) AS count FROM packets {where}", tuple(params))
+        return int((row or {}).get("count") or 0)
+
+    def list_packets_for_entity_ip(self, ip: str, *, limit=250, offset=0, since="") -> list:
+        variants = _ip_entity_variants(ip)
+        clause, params = _entity_ip_clause(("src_ip", "dst_ip"), variants)
+        clauses = [clause]
+        if since:
+            clauses.append("created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        params = list(params)
+        params.extend([int(limit), int(offset)])
+        rows = self._fetchall(
+            f"SELECT {PACKET_LIST_SELECT} FROM packets {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            tuple(params),
+        )
+        raw_retention_enabled = self.get_raw_retention_enabled()
+        rows = [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
+        return self._attach_review_labels(rows)
+
+    def count_flows_for_entity_ip(self, ip: str, *, since="") -> int:
+        variants = _ip_entity_variants(ip)
+        clause, params = _entity_ip_clause(("src_ip", "dst_ip"), variants)
+        clauses = [clause]
+        if since:
+            clauses.append("last_seen >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        row = self._fetchone(f"SELECT COUNT(*) AS count FROM flows {where}", tuple(params))
+        return int((row or {}).get("count") or 0)
+
+    def list_flows_for_entity_ip(self, ip: str, *, limit=100, offset=0, since="") -> list:
+        variants = _ip_entity_variants(ip)
+        clause, params = _entity_ip_clause(("src_ip", "dst_ip"), variants)
+        clauses = [clause]
+        if since:
+            clauses.append("last_seen >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        params = list(params)
+        params.extend([int(limit), int(offset)])
+        return self._fetchall(
+            f"SELECT * FROM flows {where} ORDER BY packet_count DESC, id DESC LIMIT ? OFFSET ?",
+            tuple(params),
+        )
+
+    def count_payloads_for_entity_ip(self, ip: str, *, since="") -> int:
+        variants = _ip_entity_variants(ip)
+        clause, params = _entity_ip_clause(("p.src_ip", "p.dst_ip"), variants)
+        clauses = [clause]
+        if since:
+            clauses.append("payloads.created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        row = self._fetchone(
+            f"SELECT COUNT(*) AS count FROM payloads LEFT JOIN packets AS p ON p.id = payloads.packet_id {where}",
+            tuple(params),
+        )
+        return int((row or {}).get("count") or 0)
+
+    def list_payloads_for_entity_ip(self, ip: str, *, limit=250, offset=0, since="") -> list:
+        variants = _ip_entity_variants(ip)
+        clause, params = _entity_ip_clause(("p.src_ip", "p.dst_ip"), variants)
+        clauses = [clause]
+        if since:
+            clauses.append("payloads.created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        params = list(params)
+        params.extend([int(limit), int(offset)])
+        rows = self._fetchall(
+            f"""
+            SELECT
+                payloads.*,
+                p.session_id AS session_id,
+                p.interface AS interface,
+                p.direction AS direction,
+                p.src_ip AS src_ip,
+                p.dst_ip AS dst_ip,
+                p.src_port AS src_port,
+                p.dst_port AS dst_port,
+                p.summary AS summary,
+                p.payload_hex AS payload_hex,
+                p.http_path AS http_path,
+                p.http_host AS http_host,
+                p.tags_json AS tags_json
+            FROM payloads
+            LEFT JOIN packets AS p
+                ON p.id = payloads.packet_id
+            {where}
+            ORDER BY payloads.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params),
+        )
+        return [
+            _sanitize_payload_forensic_fields(row, raw_retention_enabled=self.get_raw_retention_enabled())
+            for row in rows
+        ]
+
+    def count_tags_for_entity_ip(self, ip: str, *, since="") -> int:
+        variants = _ip_entity_variants(ip)
+        clause, params = _entity_ip_clause(("p.src_ip", "p.dst_ip"), variants)
+        clauses = [clause]
+        if since:
+            clauses.append("tags.created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        row = self._fetchone(
+            f"SELECT COUNT(*) AS count FROM tags LEFT JOIN packets AS p ON p.id = tags.packet_id {where}",
+            tuple(params),
+        )
+        return int((row or {}).get("count") or 0)
+
+    def list_tags_for_entity_ip(self, ip: str, *, limit=400, offset=0, since="") -> list:
+        variants = _ip_entity_variants(ip)
+        clause, params = _entity_ip_clause(("p.src_ip", "p.dst_ip"), variants)
+        clauses = [clause]
+        if since:
+            clauses.append("tags.created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        params = list(params)
+        params.extend([int(limit), int(offset)])
+        return self._fetchall(
+            f"""
+            SELECT tags.* FROM tags
+            LEFT JOIN packets AS p ON p.id = tags.packet_id
+            {where}
+            ORDER BY tags.id DESC LIMIT ? OFFSET ?
+            """,
+            tuple(params),
+        )
+
+    # -- Exact-entity evidence lookups: domain --------------------------
+    # Mirrors the IP entity lookups above, but matches the structured
+    # `packets.domain` (DNS query name) / `packets.http_host` columns
+    # instead of a free-text substring search - a domain that only ever
+    # appeared in a structured field, never spelled out in a summary or
+    # payload, still gets found (finding 1.29), and an unrelated packet that
+    # merely mentions the name in its body text does not.
+
+    def count_packets_for_domain(self, domain: str, *, mode: str = "exact", since: str = "") -> int:
+        clause, params = _domain_match_clause(domain, mode, domain_column="domain", host_column="http_host")
+        clauses = [clause]
+        if since:
+            clauses.append("created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        row = self._fetchone(f"SELECT COUNT(*) AS count FROM packets {where}", tuple(params))
+        return int((row or {}).get("count") or 0)
+
+    def list_packets_for_domain(self, domain: str, *, mode: str = "exact", limit=250, offset=0, since: str = "") -> list:
+        clause, params = _domain_match_clause(domain, mode, domain_column="domain", host_column="http_host")
+        clauses = [clause]
+        if since:
+            clauses.append("created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        params = list(params)
+        params.extend([int(limit), int(offset)])
+        rows = self._fetchall(
+            f"SELECT {PACKET_LIST_SELECT} FROM packets {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            tuple(params),
+        )
+        raw_retention_enabled = self.get_raw_retention_enabled()
+        rows = [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
+        return self._attach_review_labels(rows)
+
+    def count_payloads_for_domain(self, domain: str, *, mode: str = "exact", since: str = "") -> int:
+        clause, params = _domain_match_clause(domain, mode, domain_column="p.domain", host_column="p.http_host")
+        clauses = [clause]
+        if since:
+            clauses.append("payloads.created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        row = self._fetchone(
+            f"SELECT COUNT(*) AS count FROM payloads LEFT JOIN packets AS p ON p.id = payloads.packet_id {where}",
+            tuple(params),
+        )
+        return int((row or {}).get("count") or 0)
+
+    def list_payloads_for_domain(self, domain: str, *, mode: str = "exact", limit=250, offset=0, since: str = "") -> list:
+        clause, params = _domain_match_clause(domain, mode, domain_column="p.domain", host_column="p.http_host")
+        clauses = [clause]
+        if since:
+            clauses.append("payloads.created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        params = list(params)
+        params.extend([int(limit), int(offset)])
+        rows = self._fetchall(
+            f"""
+            SELECT
+                payloads.*,
+                p.session_id AS session_id,
+                p.interface AS interface,
+                p.direction AS direction,
+                p.src_ip AS src_ip,
+                p.dst_ip AS dst_ip,
+                p.src_port AS src_port,
+                p.dst_port AS dst_port,
+                p.summary AS summary,
+                p.payload_hex AS payload_hex,
+                p.http_path AS http_path,
+                p.http_host AS http_host,
+                p.domain AS domain,
+                p.tags_json AS tags_json
+            FROM payloads
+            LEFT JOIN packets AS p
+                ON p.id = payloads.packet_id
+            {where}
+            ORDER BY payloads.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params),
+        )
+        return [
+            _sanitize_payload_forensic_fields(row, raw_retention_enabled=self.get_raw_retention_enabled())
+            for row in rows
+        ]
+
+    def count_tags_for_domain(self, domain: str, *, mode: str = "exact", since: str = "") -> int:
+        clause, params = _domain_match_clause(domain, mode, domain_column="p.domain", host_column="p.http_host")
+        clauses = [clause]
+        if since:
+            clauses.append("tags.created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        row = self._fetchone(
+            f"SELECT COUNT(*) AS count FROM tags LEFT JOIN packets AS p ON p.id = tags.packet_id {where}",
+            tuple(params),
+        )
+        return int((row or {}).get("count") or 0)
+
+    def list_tags_for_domain(self, domain: str, *, mode: str = "exact", limit=400, offset=0, since: str = "") -> list:
+        clause, params = _domain_match_clause(domain, mode, domain_column="p.domain", host_column="p.http_host")
+        clauses = [clause]
+        if since:
+            clauses.append("tags.created_at >= ?")
+            params.append(str(since))
+        where = f"WHERE {' AND '.join(clauses)}"
+        params = list(params)
+        params.extend([int(limit), int(offset)])
+        return self._fetchall(
+            f"""
+            SELECT tags.* FROM tags
+            LEFT JOIN packets AS p ON p.id = tags.packet_id
+            {where}
+            ORDER BY tags.id DESC LIMIT ? OFFSET ?
+            """,
+            tuple(params),
+        )
+
+    def domain_intel(self, domain: str, *, mode: str = "exact", since: str = "") -> dict:
+        domain = str(domain or "").strip()
+        if not domain:
+            raise ValueError("domain is required")
+        mode = mode if mode in ("exact", "subdomain") else "exact"
+        _normalize_domain_query(domain)  # validates, raises ValueError on empty
+
+        total_packets = self.count_packets_for_domain(domain, mode=mode, since=since)
+        total_payloads = self.count_payloads_for_domain(domain, mode=mode, since=since)
+        total_tags = self.count_tags_for_domain(domain, mode=mode, since=since)
+
+        related_packets = self.list_packets_for_domain(domain, mode=mode, limit=250, since=since)
+        related_payloads = self.list_payloads_for_domain(domain, mode=mode, limit=250, since=since)
+        related_tags = self.list_tags_for_domain(domain, mode=mode, limit=400, since=since)
+
+        return {
+            "domain": domain,
+            "mode": mode,
+            "summary": {
+                "packets": total_packets,
+                "payloads": total_payloads,
+                "tags": total_tags,
+            },
+            "evidence": {
+                "packets": {
+                    "returned": len(related_packets),
+                    "total_available": total_packets,
+                    "truncated": total_packets > len(related_packets),
+                },
+                "payloads": {
+                    "returned": len(related_payloads),
+                    "total_available": total_payloads,
+                    "truncated": total_payloads > len(related_payloads),
+                },
+                "tags": {
+                    "returned": len(related_tags),
+                    "total_available": total_tags,
+                    "truncated": total_tags > len(related_tags),
+                },
+            },
+            "packets": related_packets,
+            "payloads": related_payloads,
+            "tags": related_tags,
+            "generated_at": utc_now(),
+        }
+
+    def ip_intel(self, ip: str, *, since: str = "") -> dict:
         ip = str(ip or "").strip()
         if not ip:
             raise ValueError("ip is required")
-        related_packets = self.list_packets(search=ip, limit=250)
-        related_flows = self.list_flows(search=ip, limit=100)
-        related_payloads = [
-            payload for payload in self.list_payloads(limit=250)
-            if payload.get("ip") == ip or ip in str(payload.get("flow_key") or "")
-        ]
-        related_tags = [
-            tag for tag in self.list_tags(limit=400)
-            if tag.get("ip") == ip or ip in str(tag.get("flow_key") or "")
-        ]
+        # Validates the address up front so a typo reads as "invalid target"
+        # rather than as "insufficient_data" (which looks identical to a
+        # confirmed-clean host with zero related evidence).
+        _ip_entity_variants(ip)
+
+        total_packets = self.count_packets_for_entity_ip(ip, since=since)
+        total_flows = self.count_flows_for_entity_ip(ip, since=since)
+        total_payloads = self.count_payloads_for_entity_ip(ip, since=since)
+        total_tags = self.count_tags_for_entity_ip(ip, since=since)
+
+        related_packets = self.list_packets_for_entity_ip(ip, limit=250, since=since)
+        related_flows = self.list_flows_for_entity_ip(ip, limit=100, since=since)
+        related_payloads = self.list_payloads_for_entity_ip(ip, limit=250, since=since)
+        related_tags = self.list_tags_for_entity_ip(ip, limit=400, since=since)
         services = []
         for row in related_packets:
             tags = json_loads(row.get("tags_json"), default=[]) or []
@@ -4683,9 +5572,9 @@ class SniffStore:
         # with zero evidence behind it. Say "insufficient_data" and show the
         # counts the (weak) inference is actually based on instead.
         firewall = {
-            "summary": "observed" if related_packets else "not observed",
-            "status": "mixed_filtering" if related_packets else "insufficient_data",
-            "evidence": {"packets": len(related_packets), "flows": len(related_flows)},
+            "summary": "observed" if total_packets else "not observed",
+            "status": "mixed_filtering" if total_packets else "insufficient_data",
+            "evidence": {"packets": total_packets, "flows": total_flows},
         }
         host_node = self._host_node(ip)
         geo = {
@@ -4697,13 +5586,41 @@ class SniffStore:
             "lon": host_node.get("lon"),
             "precision": host_node.get("geo_precision") or "",
         }
+        # `summary` now reports how much evidence actually exists for this
+        # host, not just how much fit in one page - a host with 900 payloads
+        # showed "1" here before if only one survived the old 250-row global
+        # cap (finding 1.19). `evidence` carries the returned/available/
+        # truncated triple per dataset so a UI can say "250 de 900" instead
+        # of presenting the page size as the total.
         return {
             "ip": ip,
             "summary": {
-                "packets": len(related_packets),
-                "flows": len(related_flows),
-                "payloads": len(related_payloads),
-                "tags": len(related_tags),
+                "packets": total_packets,
+                "flows": total_flows,
+                "payloads": total_payloads,
+                "tags": total_tags,
+            },
+            "evidence": {
+                "packets": {
+                    "returned": len(related_packets),
+                    "total_available": total_packets,
+                    "truncated": total_packets > len(related_packets),
+                },
+                "flows": {
+                    "returned": len(related_flows),
+                    "total_available": total_flows,
+                    "truncated": total_flows > len(related_flows),
+                },
+                "payloads": {
+                    "returned": len(related_payloads),
+                    "total_available": total_payloads,
+                    "truncated": total_payloads > len(related_payloads),
+                },
+                "tags": {
+                    "returned": len(related_tags),
+                    "total_available": total_tags,
+                    "truncated": total_tags > len(related_tags),
+                },
             },
             "host": {
                 "transport": transport,
@@ -5329,6 +6246,41 @@ class SniffStore:
             "flows": max(0, flows_deleted),
             "domains": max(0, domains_deleted),
             "paths": max(0, paths_deleted),
+        }
+
+    def purge_training_capture_packets(self) -> dict:
+        """Delete packets kept only because training-capture mode was
+        persisting every clean packet, not just alerts.
+
+        A row qualifies only if it carries the 'training_capture' tag
+        *and* never earned a real 'monitor' alert tag - a packet that
+        happened to both train-capture and alert (rare, but possible if a
+        detector fires on it slightly out of order) stays, same as any
+        other alert. Deletes packets first, then sweeps the now-orphaned
+        tags/payloads, mirroring enforce_retention's order (deleting tags
+        first would blind the packets query to which rows still qualify).
+        """
+        with self._lock:
+            packets_deleted = self._conn.execute(
+                """
+                DELETE FROM packets
+                WHERE id IN (SELECT packet_id FROM tags WHERE key = 'training_capture')
+                  AND id NOT IN (
+                    SELECT packet_id FROM tags WHERE key = 'monitor' AND severity != ''
+                  )
+                """
+            ).rowcount
+            tags_deleted = self._conn.execute(
+                "DELETE FROM tags WHERE packet_id NOT IN (SELECT id FROM packets)"
+            ).rowcount
+            payloads_deleted = self._conn.execute(
+                "DELETE FROM payloads WHERE packet_id NOT IN (SELECT id FROM packets)"
+            ).rowcount
+            self._conn.commit()
+        return {
+            "packets": max(0, packets_deleted),
+            "tags": max(0, tags_deleted),
+            "payloads": max(0, payloads_deleted),
         }
 
     def read_catalog_file(self, filename: str) -> list[dict]:

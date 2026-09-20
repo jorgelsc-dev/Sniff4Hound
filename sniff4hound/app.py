@@ -5,7 +5,6 @@ import hashlib
 import json
 import secrets
 from urllib.parse import urlencode, urlparse
-import mimetypes
 import sys
 import time
 from functools import wraps
@@ -47,10 +46,10 @@ from .settings import (
     resolve_ipc_socket,
     resolve_ipc_token,
 )
+from .tls import public_ca_pem
 from .process_control import process_shutdown_requested, request_process_shutdown
 from .store import SniffStore
 from .utils import (
-    KNOWN_PROTOCOLS,
     bytes_to_hex_preview,
     clamp_int,
     coerce_bool,
@@ -67,15 +66,13 @@ from .utils import (
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
-SOURCE_FRONTEND_DIST_DIR = PROJECT_ROOT / "frontend" / "dist"
-PACKAGE_FRONTEND_DIST_DIR = PACKAGE_ROOT / "_frontend_dist"
-FRONTEND_PUBLIC_DIR = PROJECT_ROOT / "frontend" / "public"
 DOCS_DIR = PROJECT_ROOT / "docs"
 DEFAULT_SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "X-Frame-Options": "DENY",
 }
+REQUIRED_CORS_HEADERS = ("X-Security-Code",)
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 FAVICON_SCAN_DEFAULT_LIMIT = min(API_MAX_LIMIT, 5000)
 FAVICON_MAX_BYTES = 512 * 1024
@@ -112,60 +109,6 @@ FAVICON_EXTENSION_BY_MIME = {
     "image/webp": "webp",
     "image/x-icon": "ico",
 }
-
-
-def _resolve_frontend_dist_dir() -> Path:
-    override = str(getenv("SNIFF4HOUND_FRONTEND_DIST", "")).strip()
-    candidates = []
-    if override:
-        candidates.append(Path(override).expanduser())
-    candidates.extend([SOURCE_FRONTEND_DIST_DIR, PACKAGE_FRONTEND_DIST_DIR])
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0]
-
-
-FRONTEND_DIST_DIR = _resolve_frontend_dist_dir()
-# Every path vue-router can land on has to be served index.html here too,
-# or a refresh (F5), a bookmark or a link pasted into a ticket - the basic
-# shift-handoff gesture - answers a bare-text 404 instead of the SPA.
-# /settings, /domains, /paths and /ips were missing and did exactly that.
-# Each entry is registered both with and without a trailing slash (see
-# _register_static_frontend), since "/soc/" used to 404 while "/soc" worked.
-SPA_ROUTES = (
-    "/ai",
-    "/dashboard",
-    "/radar",
-    "/investigate",
-    "/sniffer",
-    "/honeypot",
-    "/protocols",
-    # Every protocol slice, generated from utils.KNOWN_PROTOCOLS - the page
-    # renders a card per protocol the sniffer can emit, and hand-listing a
-    # subset here meant /protocols/mdns, /protocols/igmp and even
-    # /protocols/unknown answered a bare 404 on refresh.
-    *(f"/protocols/{proto}" for proto in KNOWN_PROTOCOLS),
-    "/map",
-    "/charts",
-    "/explorer",
-    "/agents",
-    "/targets",
-    "/sessions",
-    "/intel",
-    "/ports",
-    "/banners",
-    "/tags",
-    "/catalog",
-    "/soc",
-    "/monitors",
-    "/settings",
-    "/domains",
-    "/paths",
-    "/ips",
-    "/chat",
-    "/api",
-)
 
 
 def _is_benign_http_send_error(exc: Exception) -> bool:
@@ -218,6 +161,15 @@ def _guarded_send_http_response(conn, response, *, send_body=True):
     if "connection" not in lowermap:
         headers["Connection"] = "close"
         lowermap = {k.lower(): v for k, v in headers.items()}
+    allow_headers = lowermap.get("access-control-allow-headers", "")
+    if allow_headers:
+        allowed = {item.strip().lower() for item in allow_headers.split(",") if item.strip()}
+        additions = [item for item in REQUIRED_CORS_HEADERS if item.lower() not in allowed]
+        if additions:
+            for name in list(headers):
+                if name.lower() == "access-control-allow-headers":
+                    headers[name] = f"{headers[name]}, {', '.join(additions)}"
+                    break
     status_line = f"HTTP/1.1 {status_code} {reason}\r\n"
     hdrs = ""
     for key, value in headers.items():
@@ -272,7 +224,14 @@ def _install_wsbuilder_http_send_guard():
 
 _install_wsbuilder_http_send_guard()
 
-app = App()
+# The desktop shell loads its UI natively (file://, an opaque "null" origin
+# - see desktop/main.js's loadShell()) and calls this API cross-origin; no
+# cookies are involved anywhere (auth is the Authorization header), so a
+# wildcard doesn't need Access-Control-Allow-Credentials and is safe here.
+# The real access control stays _guard_request_auth's security code and
+# _guard_request_origin's origin allowlist below - this only lets the
+# browser's CORS check itself pass so those guards get to run at all.
+app = App(cors_allow_origin="*")
 
 
 def _install_access_log():
@@ -537,6 +496,7 @@ def connect_capture_service() -> bool:
     return True
 AUTH_SESSION_PATH = "/api/auth/session"
 DOCS_PATHS = ("/docs", "/docs.json")
+PUBLIC_CA_PATH = "/publicca"
 WS_AUTH_CLOSE_CODE = 4401
 WS_TICKET_TTL_SECONDS = 15.0
 _WS_TICKETS: dict[str, dict[str, Any]] = {}
@@ -565,7 +525,7 @@ WS_KEEPALIVE_INTERVAL_SECONDS = 25.0
 WS_PONG_TIMEOUT_SECONDS = 10.0
 
 ENDPOINTS = [
-    {"method": "GET", "path": "/", "desc": "Frontend SPA shell."},
+    {"method": "GET", "path": PUBLIC_CA_PATH, "desc": "Public runtime CA certificate for desktop TLS bootstrap."},
     {"method": "GET", "path": "/docs", "desc": "Automatic runtime documentation."},
     {"method": "GET", "path": "/docs.json", "desc": "Automatic runtime docs payload."},
     {"method": "GET", "path": "/protocols/", "desc": "Observed protocol list."},
@@ -601,14 +561,17 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ip/domains/", "desc": "Domain discovery for an IP."},
     {"method": "GET", "path": "/api/ip/ttl-path/", "desc": "TTL path estimate for an IP."},
     {"method": "GET", "path": "/api/ip/intel/", "desc": "Combined host intel."},
+    {"method": "GET", "path": "/api/domain/intel/", "desc": "Structured domain investigation: packets/payloads/tags matched by DNS query name or HTTP Host (never free-text substring). ?mode=exact|subdomain, ?since= applies the shared time window."},
     {"method": "GET", "path": "/api/soc/analysis/", "desc": "Iterative SOC triage analysis."},
     {"method": "GET", "path": "/api/ai/packets/", "desc": "Local byte-image anomaly analysis of the latest 200 packets."},
     {"method": "POST", "path": "/api/ai/feedback", "desc": "Learn from a reviewed packet: label, confidence and note."},
     {"method": "POST", "path": "/api/packets/review", "desc": "Label any captured packet benign, malicious or unreviewed."},
-    {"method": "GET", "path": "/api/ai/config", "desc": "Current training/AI-alert-mode flags, raw_retention_enabled and learning config (hidden_sizes, min_cohort)."},
-    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable training_enabled (store+auto-train on every evaluated packet, replaces the old sampling_enabled) and/or ai_alert_mode_enabled (AI decides alerts instead of the rule catalog when training is off; requires SNIFF4HOUND_STORE_RAW_PACKET=1), and/or set learning_config: hidden_sizes (classifier hidden-layer widths, one entry per layer, up to 4 layers) and/or min_cohort (minimum group size the LOF outlier detector needs before it scores a protocol/source cohort)."},
+    {"method": "GET", "path": "/api/ai/config", "desc": "Current training/training-capture/AI-alert-mode flags, raw_retention_enabled and learning config (hidden_sizes, min_cohort)."},
+    {"method": "POST", "path": "/api/ai/config", "desc": "Enable/disable training_enabled (store+auto-train on every evaluated packet, replaces the old sampling_enabled), training_capture_enabled (also persist clean/non-alert packets, tagged training_capture, while on; disabling purges just those rows) and/or ai_alert_mode_enabled (AI decides alerts instead of the rule catalog when training is off; requires SNIFF4HOUND_STORE_RAW_PACKET=1), and/or set learning_config: hidden_sizes (classifier hidden-layer widths, one entry per layer, any number of layers) and/or min_cohort (minimum group size the LOF outlier detector needs before it scores a protocol/source cohort)."},
     {"method": "GET", "path": "/api/ai/model", "desc": "Export the classifier's current architecture and weights."},
     {"method": "POST", "path": "/api/ai/model", "desc": "Import a previously exported classifier architecture and weights."},
+    {"method": "POST", "path": "/api/ai/suggestion", "desc": "Apply or dismiss a pending auto-tuning suggestion (kind: 'architecture' or 'cohort', action: 'apply' or 'dismiss') - see learning_suggestion on /api/ai/packets/."},
+    {"method": "POST", "path": "/api/ai/tournament", "desc": "Start or stop a background architecture tournament (action: 'start' or 'stop') - live progress on ai_tournament from /api/ai/packets/, final champion surfaces via /api/ai/suggestion like any other auto-tuning suggestion."},
     {"method": "GET", "path": "/api/detection/exclusions", "desc": "Shared exclusion filter (IP type, CIDR, port, protocol)."},
     {"method": "POST", "path": "/api/detection/exclusions", "desc": "Set the shared exclusion filter - matching traffic is silenced from Sniffer detection, Monitors and AI sampling (raw capture/storage is unaffected)."},
     {"method": "POST", "path": "/api/console/execute", "desc": "Execute a safe registered Sniff4Hound operation from the dashboard console."},
@@ -677,7 +640,6 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/export/domains", "desc": "Domains seen in DNS/TLS-SNI/HTTP traffic, with address and port. ?format=csv|json"},
 ]
 
-_STATIC_ROUTES_REGISTERED = False
 _CHAT_MESSAGES: list[dict[str, Any]] = []
 
 
@@ -887,12 +849,37 @@ def _request_host_origin(request) -> tuple[str, str, int] | None:
     return _origin_tuple(f"{scheme}://{host}")
 
 
+def _desktop_mode_enabled() -> bool:
+    """Mirrors manage.py's `_desktop_mode_enabled()` - duplicated rather than
+    imported to avoid a manage.py <-> app.py coupling neither module
+    otherwise needs. Set by desktop/main.js's backendEnv() on every backend
+    it spawns, local or (via the same env forwarded through
+    _self_elevate_env_assignments) the elevated re-exec."""
+    return str(getenv("SNIFF4HOUND_DESKTOP", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_desktop_shell_origin(value: str) -> bool:
+    supplied = str(value or "").strip().lower()
+    return supplied == "null" or supplied == "app://shell"
+
+
 def _guard_request_origin(request) -> Response | None:
     method = str(getattr(request, "method", "GET") or "GET").upper()
     if method not in STATE_CHANGING_METHODS:
         return None
     supplied = _request_header(request, "Origin", "origin") or _request_header(request, "Referer", "referer")
     if not supplied:
+        return None
+    # The desktop shell's UI is loaded from app://shell (and older local-file
+    # builds reported the opaque origin literally as "null") - the one
+    # legitimate non-same-origin caller now that this backend never serves a
+    # page of its own to navigate to.
+    # Scoped to desktop mode so a plain server/CLI deployment (no Electron
+    # shell in the picture) keeps rejecting a "null" origin exactly as
+    # before - see test_cross_origin_state_change_is_rejected_after_auth,
+    # which must keep failing a real cross-origin caller like
+    # http://evil.example even when correctly authenticated.
+    if _desktop_mode_enabled() and _is_desktop_shell_origin(supplied):
         return None
     actual = _origin_tuple(supplied)
     expected = _request_host_origin(request)
@@ -1612,174 +1599,8 @@ def _banner_action(banner_row: dict, action: str, *, clean_results=False):
     raise ValueError(f"Unsupported action: {action}")
 
 
-def _static_file_response(path: Path):
-    if not path.exists() or not path.is_file():
-        return None
-    content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-    return Response(body=path.read_bytes(), headers={"Content-Type": content_type})
-
-
-def _frontend_index_html() -> str:
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{DEFAULT_DOCS_TITLE}</title>
-  <style>
-    :root {{
-      color-scheme: dark;
-      --bg: #0b1120;
-      --panel: rgba(9, 16, 30, 0.94);
-      --line: rgba(117, 171, 217, 0.22);
-      --ink: #eef6ff;
-      --muted: #9ab0c9;
-      --brand: #4cc9f0;
-      --accent: #06d6a0;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      min-height: 100vh;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background:
-        radial-gradient(circle at top left, rgba(76, 201, 240, 0.14), transparent 26%),
-        radial-gradient(circle at right bottom, rgba(6, 214, 160, 0.12), transparent 24%),
-        linear-gradient(180deg, #08101f, #0b1120 52%, #060a14);
-      color: var(--ink);
-    }}
-    .wrap {{
-      max-width: 1120px;
-      margin: 0 auto;
-      padding: 32px 18px 56px;
-    }}
-    .hero {{
-      border: 1px solid var(--line);
-      border-radius: 28px;
-      background: linear-gradient(135deg, rgba(13, 23, 40, 0.98), rgba(10, 16, 28, 0.9));
-      box-shadow: 0 20px 60px rgba(0,0,0,.28);
-      padding: 28px;
-    }}
-    h1 {{
-      margin: 0 0 12px;
-      font-size: clamp(2rem, 4vw, 3.6rem);
-      letter-spacing: -0.04em;
-      line-height: 1;
-    }}
-    p {{
-      color: var(--muted);
-      line-height: 1.65;
-      margin: 0 0 16px;
-      max-width: 75ch;
-    }}
-    .chips {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }}
-    .chip {{
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: rgba(255,255,255,.03);
-      color: var(--ink);
-      text-decoration: none;
-    }}
-    .grid {{
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-      margin-top: 18px;
-    }}
-    .card {{
-      border: 1px solid var(--line);
-      background: var(--panel);
-      border-radius: 22px;
-      padding: 18px;
-    }}
-    .k {{ color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .12em; }}
-    .v {{ font-size: 1.5rem; font-weight: 800; margin-top: 6px; letter-spacing: -.03em; }}
-    code {{
-      background: rgba(255,255,255,.05);
-      padding: 0 .35em;
-      border-radius: .35rem;
-    }}
-    @media (max-width: 780px) {{
-      .grid {{ grid-template-columns: 1fr; }}
-      .hero {{ padding: 20px; }}
-    }}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <section class="hero">
-      <h1>{DEFAULT_DOCS_TITLE}</h1>
-      <p>{DEFAULT_DOCS_DESCRIPTION}</p>
-      <div class="chips">
-        <a class="chip" href="/docs">Runtime docs</a>
-        <a class="chip" href="/api/dashboard/">API snapshot</a>
-        <a class="chip" href="/api/endpoints/">Endpoint catalog</a>
-        <a class="chip" href="/protocols/">Protocols</a>
-      </div>
-      <div class="grid">
-        <div class="card"><div class="k">Database</div><div class="v"><code>{DB_PATH}</code></div></div>
-        <div class="card"><div class="k">Capture</div><div class="v">live</div></div>
-        <div class="card"><div class="k">Version</div><div class="v">{__version__}</div></div>
-      </div>
-    </section>
-  </div>
-</body>
-</html>"""
-
-
 def _attach_runtime_docs():
     app.enable_docs(path="/docs", json_path="/docs.json", title=DEFAULT_DOCS_TITLE, description=DEFAULT_DOCS_DESCRIPTION)
-
-
-def _spa_route_paths() -> tuple[str, ...]:
-    """SPA_ROUTES plus a trailing-slash twin for each - "/soc" served the
-    app while "/soc/" 404'd, which is not a distinction anyone pasting a
-    link into a ticket is going to make. "/api" is left alone: it is a
-    prefix of the real API routes and must not grow an "/api/" view."""
-    paths = []
-    for route_path in SPA_ROUTES:
-        paths.append(route_path)
-        if route_path != "/api" and not route_path.endswith("/"):
-            paths.append(f"{route_path}/")
-    return tuple(paths)
-
-
-def _register_static_frontend():
-    global _STATIC_ROUTES_REGISTERED
-    if _STATIC_ROUTES_REGISTERED:
-        return
-    _STATIC_ROUTES_REGISTERED = True
-    if FRONTEND_DIST_DIR.exists():
-        for file_path in FRONTEND_DIST_DIR.rglob("*"):
-            if not file_path.is_file():
-                continue
-            route_path = "/" + file_path.relative_to(FRONTEND_DIST_DIR).as_posix()
-            if route_path.endswith("/index.html"):
-                route_path = route_path[:-11] or "/"
-            if route_path == "/":
-                continue
-
-            @app.view(route_path, methods=("GET",))
-            def _serve_static(_request, _file_path=file_path):
-                response = _static_file_response(_file_path)
-                return response or Response.text("Not Found", status=404)
-
-        for route_path in _spa_route_paths():
-            @app.view(route_path, methods=("GET",))
-            def _serve_spa(_request):
-                index_path = FRONTEND_DIST_DIR / "index.html"
-                response = _static_file_response(index_path)
-                if response:
-                    return response
-                return Response.html(_frontend_index_html())
-    else:
-        @app.view("/", methods=("GET",))
-        def _root(_request):
-            return Response.html(_frontend_index_html())
 
 
 def _make_ruleset_payloads(filename: str):
@@ -1799,30 +1620,24 @@ def _catalog_endpoint(name: str, filename: str):
     return _make_ruleset_payloads(filename)
 
 
-@app.view("/")
-def root(_request):
-    if FRONTEND_DIST_DIR.exists():
-        response = _static_file_response(FRONTEND_DIST_DIR / "index.html")
-        if response:
-            return response
-    return Response.html(_frontend_index_html())
-
-
 @app.view("/.well-known/appspecific/com.chrome.devtools.json", methods=("GET",))
 def chrome_devtools_workspace(_request):
     return Response.json({})
 
 
-@app.view("/favicon.ico")
-def favicon(_request):
-    for path in (
-        FRONTEND_DIST_DIR / "favicon.ico",
-        FRONTEND_PUBLIC_DIR / "favicon.ico",
-    ):
-        response = _static_file_response(path)
-        if response:
-            return response
-    return response or Response.text("", status=204)
+@app.view(PUBLIC_CA_PATH, methods=("GET",))
+def public_ca(_request):
+    pem = public_ca_pem()
+    if not pem:
+        return Response.text("Sniff4Hound runtime TLS is not enabled.", status=404)
+    return Response.text(
+        pem,
+        headers={
+            "Content-Type": "application/x-pem-file; charset=utf-8",
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
 
 
 @app.api("/protocols/", methods=("GET",))
@@ -2414,7 +2229,7 @@ def ip_ttl_path(request):
 def ip_intel(request):
     ip = str(request.query.get("ip") or "").strip()
     refresh = safe_int(request.query.get("refresh"), 0)
-    payload = store.ip_intel(ip)
+    payload = store.ip_intel(ip, since=_normalize_since(request))
     # `payload["domains"]` and `payload["ttl_path"]` used to be overwritten
     # here with hardcoded empties and a constant estimated_ttl of 64, which
     # discarded the real values store.ip_intel() had just computed and told
@@ -2441,6 +2256,13 @@ def ip_intel(request):
         "notes": [],
     }
     return payload
+
+
+@app.api("/api/domain/intel/", methods=("GET",))
+def domain_intel(request):
+    domain = str(request.query.get("domain") or "").strip()
+    mode = str(request.query.get("mode") or "exact").strip().lower()
+    return store.domain_intel(domain, mode=mode, since=_normalize_since(request))
 
 
 def _host_application_profile(payload: dict) -> dict:
@@ -2481,15 +2303,18 @@ def soc_analysis(request):
 
 @app.api("/api/ai/packets/", methods=("GET",))
 def ai_packets(request):
-    return _ai_snapshot(clamp_int(request.query.get("threshold"), 1, 99, default=50))
+    return _ai_snapshot(
+        clamp_int(request.query.get("threshold"), 1, 99, default=50),
+        since=_normalize_since(request),
+    )
 
 
-def _ai_snapshot(threshold=50):
+def _ai_snapshot(threshold=50, since=""):
     from .packet_ai import analyze_packets
     from .ai_learning import learning_snapshot
 
     learning_config = store.get_ai_learning_config()
-    packets = store.list_ai_packets()
+    packets = store.list_ai_packets(since=since)
     analysis = analyze_packets(packets, threshold=threshold, min_cohort=learning_config["min_cohort"])
     result = learning_snapshot(
         store.ai_learning_state(), packets, analysis, hidden_sizes=learning_config["hidden_sizes"]
@@ -2497,21 +2322,19 @@ def _ai_snapshot(threshold=50):
     training_enabled = _get_training_enabled()
     result["sampling_enabled"] = training_enabled
     result["training_enabled"] = training_enabled
+    result["training_capture_enabled"] = store.get_training_capture_enabled()
     result["ai_alert_mode_enabled"] = store.get_runtime_config("ai_alert_mode_enabled", "0") == "1"
     result["raw_retention_enabled"] = store.get_raw_retention_enabled()
     result["exclusion_filters"] = store.get_exclusion_filters()
     result["learning_config"] = learning_config
+    result["learning_suggestion"] = store.get_ai_learning_suggestion()
+    result["ai_tournament"] = store.get_ai_tournament_state()
+    result["since"] = since
     return result
 
 
 def _get_training_enabled() -> bool:
-    # `training_enabled` replaces the old `ai_sampling_enabled` flag; an
-    # installation upgrading from before this change still has its previous
-    # choice honoured until it is next changed explicitly.
-    stored = store.get_runtime_config("training_enabled", "")
-    if stored == "":
-        stored = store.get_runtime_config("ai_sampling_enabled", "0")
-    return stored == "1"
+    return store.get_training_enabled()
 
 
 @app.api("/api/ai/config", methods=("GET", "POST"))
@@ -2521,17 +2344,28 @@ def ai_config(request):
         return {
             "sampling_enabled": training_enabled,
             "training_enabled": training_enabled,
+            "training_capture_enabled": store.get_training_capture_enabled(),
             "ai_alert_mode_enabled": store.get_runtime_config("ai_alert_mode_enabled", "0") == "1",
             "raw_retention_enabled": store.get_raw_retention_enabled(),
             "learning_config": store.get_ai_learning_config(),
         }
     payload = _read_json_body(request)
     has_training = "training_enabled" in payload or "sampling_enabled" in payload
+    has_training_capture = "training_capture_enabled" in payload
     has_raw_retention = "raw_retention_enabled" in payload
     has_ai_alert_mode = "ai_alert_mode_enabled" in payload
     has_learning_config = "learning_config" in payload
-    if not has_training and not has_raw_retention and not has_ai_alert_mode and not has_learning_config:
-        raise ValueError("training_enabled, raw_retention_enabled, ai_alert_mode_enabled or learning_config is required")
+    if (
+        not has_training
+        and not has_training_capture
+        and not has_raw_retention
+        and not has_ai_alert_mode
+        and not has_learning_config
+    ):
+        raise ValueError(
+            "training_enabled, training_capture_enabled, raw_retention_enabled, "
+            "ai_alert_mode_enabled or learning_config is required"
+        )
     response = {}
     if has_training:
         enabled = payload.get("training_enabled", payload.get("sampling_enabled"))
@@ -2540,6 +2374,21 @@ def ai_config(request):
         store.set_runtime_config("training_enabled", "1" if enabled else "0")
         response["sampling_enabled"] = enabled
         response["training_enabled"] = enabled
+        # The architecture tournament runs for as long as training stays on
+        # (see store.start_ai_tournament()) - it isn't a separate opt-in.
+        # maybe_start_ai_tournament() already swallows "not enough labels
+        # yet" - it just means it'll try again on the next feedback event.
+        if enabled:
+            store.maybe_start_ai_tournament()
+        else:
+            store.stop_ai_tournament()
+    if has_training_capture:
+        enabled = payload.get("training_capture_enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("training_capture_enabled must be a boolean")
+        response["training_capture_enabled"] = store.set_training_capture_enabled(enabled)
+        if not enabled:
+            response["purged"] = store.purge_training_capture_packets()
     if has_raw_retention:
         enabled = payload.get("raw_retention_enabled")
         if not isinstance(enabled, bool):
@@ -2586,6 +2435,42 @@ def ai_model(request):
         return store.export_ai_model()
     payload = _read_json_body(request)
     return store.import_ai_model(payload)
+
+
+@app.api("/api/ai/suggestion", methods=("POST",))
+def ai_suggestion(request):
+    """Accept or dismiss a pending architecture/LOF-cohort auto-tuning
+    suggestion (see ai_learning.suggest_architecture and
+    packet_ai.suggest_min_cohort) - these are only ever proposed, never
+    applied on their own, so this is the one place they take effect."""
+    payload = _read_json_body(request)
+    action = str(payload.get("action") or "").strip().lower()
+    kind = str(payload.get("kind") or "").strip().lower()
+    if kind not in ("architecture", "cohort"):
+        raise ValueError("kind debe ser 'architecture' o 'cohort'.")
+    if action == "apply":
+        return {"learning_config": store.apply_ai_learning_suggestion(kind)}
+    if action == "dismiss":
+        return {"learning_suggestion": store.dismiss_ai_learning_suggestion(kind)}
+    raise ValueError("action debe ser 'apply' o 'dismiss'.")
+
+
+@app.api("/api/ai/tournament", methods=("POST",))
+def ai_tournament(request):
+    """Start or stop a background architecture tournament (see
+    store.start_ai_tournament()): several candidate hidden-layer shapes
+    train side by side, the winner of each round carries into the next
+    alongside fresh random challengers, until accuracy stops improving. Live
+    progress rides the existing "ai" feed/`GET /api/ai/packets/` snapshot as
+    `ai_tournament`; the final champion surfaces through the normal
+    learning_suggestion accept/dismiss flow (see ai_suggestion above)."""
+    payload = _read_json_body(request)
+    action = str(payload.get("action") or "").strip().lower()
+    if action == "start":
+        return {"ai_tournament": store.start_ai_tournament()}
+    if action == "stop":
+        return {"ai_tournament": store.stop_ai_tournament()}
+    raise ValueError("action debe ser 'start' o 'stop'.")
 
 
 @app.api("/api/ai/feedback", methods=("POST",))
@@ -3231,7 +3116,7 @@ def _apply_api_auth_guards():
         path = getattr(route, "path", "")
         if getattr(route, "kind", "") != "api" and path not in DOCS_PATHS:
             continue
-        if path == AUTH_SESSION_PATH:
+        if path in {AUTH_SESSION_PATH, PUBLIC_CA_PATH}:
             continue
 
         current_handler = getattr(route, "handler", None)
@@ -3377,7 +3262,7 @@ def _feed_soc(p: dict):
 # every few seconds would be megabytes per client for data that is identical
 # each time. Both stay on HTTP, where they are read once.
 WS_FEEDS = {
-    "ai": lambda p: _ai_snapshot(p.get("threshold", 50)),
+    "ai": lambda p: _ai_snapshot(p.get("threshold", 50), since=p.get("since", "")),
     "protocols": _feed_protocols,
     "ips": _feed_ports,
     "ports": _feed_ports,
@@ -3875,7 +3760,6 @@ def websocket_handler(ws, request=None):
 # wrapped - which is exactly how they ended up reachable without a token.
 _attach_runtime_docs()
 _apply_api_auth_guards()
-_register_static_frontend()
 
 
 def bootstrap_capture():

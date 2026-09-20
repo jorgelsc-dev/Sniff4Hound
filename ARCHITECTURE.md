@@ -148,8 +148,9 @@ Entradas aceptadas:
   (**solo** en el handshake de `WS /ws/`, no en HTTP plano)
 
 El banner de arranque tambien imprime `/?code=<token>` para la SPA. Ese
-parametro lo consume el frontend, lo persiste en `localStorage` y lo retira de
-la barra de direcciones; no autentica rutas HTTP directamente.
+parametro lo consume el frontend, lo conserva solo en memoria del tab actual
+(nunca en `localStorage`; ver README.md "Copiar el token de sesion") y lo
+retira de la barra de direcciones; no autentica rutas HTTP directamente.
 
 Firma de los JWT:
 

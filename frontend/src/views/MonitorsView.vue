@@ -152,6 +152,13 @@
       </v-expansion-panel>
     </v-expansion-panels>
 
+    <!-- The 30k-monitor catalog can take a moment to arrive (see FAQA
+         finding 1.23) - showing "no monitor has matched" while that request
+         is still in flight reads as a confirmed empty result instead of a
+         still-loading one (finding 1.16). -->
+    <div v-else-if="loading" class="mb-6">
+      <v-skeleton-loader type="list-item-two-line@3" />
+    </div>
     <v-alert v-else type="info" variant="tonal" density="comfortable" class="mb-6">
       No monitor has matched any traffic yet. Monitors show up here automatically as soon as they
       have at least one match.
