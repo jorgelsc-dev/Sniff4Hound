@@ -12,7 +12,7 @@
     "test": "npm run lint"
   },
   "dependencies": {
-    "vue": "^3.5.40"
+    "vue": "^3.5.43"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
