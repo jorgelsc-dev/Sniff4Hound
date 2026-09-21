@@ -14,7 +14,7 @@
     "dist": "electron-builder --linux AppImage deb"
   },
   "devDependencies": {
-    "electron": "^38.0.0",
+    "electron": "^39.8.10",
     "electron-builder": "^26.0.12"
   },
   "build": {
@@ -29,6 +29,7 @@
       "preload.js",
       "splash.html",
       "assets/**",
+      "lib/**",
       "package.json"
     ],
     "linux": {

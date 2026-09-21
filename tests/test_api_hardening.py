@@ -156,6 +156,47 @@ class AuthGuardHardeningTests(unittest.TestCase):
         )
         self.assertEqual(response.status, 200)
 
+    def test_forwarded_host_alone_cannot_satisfy_the_origin_guard(self):
+        """X-Forwarded-Host used to outrank Host, which let the same caller
+        supply both halves of the same-origin comparison: send Origin: evil and
+        X-Forwarded-Host: evil and the guard agreed with itself. Only a proxy
+        we are told to trust may speak for the host now."""
+        response = self.app.app.dispatch(
+            _request(
+                "/api/echo",
+                method="POST",
+                headers={
+                    "x-security-code": "Ab12Cd34",
+                    "host": "127.0.0.1:45678",
+                    "x-forwarded-host": "evil.example",
+                    "origin": "http://evil.example",
+                },
+                body="{}",
+            )
+        )
+        self.assertEqual(response.status, 403)
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["code"], "bad_origin")
+
+    def test_forwarded_host_is_honoured_when_a_proxy_is_trusted(self):
+        """The opt-out has to actually work, or a real reverse-proxy
+        deployment has no way back."""
+        with patch.object(self.app, "TRUST_FORWARDED_HEADERS", True):
+            response = self.app.app.dispatch(
+                _request(
+                    "/api/echo",
+                    method="POST",
+                    headers={
+                        "x-security-code": "Ab12Cd34",
+                        "host": "127.0.0.1:45678",
+                        "x-forwarded-host": "sensor.example",
+                        "origin": "http://sensor.example",
+                    },
+                    body="hello",
+                )
+            )
+        self.assertEqual(response.status, 200)
+
     def _set_desktop_mode(self, value):
         previous = os.environ.get("SNIFF4HOUND_DESKTOP")
 
@@ -442,6 +483,99 @@ class ApiInputCoercionTests(unittest.TestCase):
         )
         return replacement_store, icon
 
+    def _store_with_captured_svg_favicon(self, tmp_dir):
+        """A favicon body is whatever the watched host chose to send, so this
+        is the hostile case: a valid SVG that carries a script."""
+        replacement_store = SniffStore(Path(tmp_dir) / "svg.db")
+        icon = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+        http_response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: image/svg+xml\r\n"
+            b"Content-Length: " + str(len(icon)).encode("ascii") + b"\r\n"
+            b"\r\n"
+            + icon
+        )
+        replacement_store.register_packet(
+            {
+                "proto": "tcp",
+                "src_ip": "198.51.100.11",
+                "dst_ip": "10.0.0.5",
+                "src_port": 80,
+                "dst_port": 51322,
+                "summary": "HTTP favicon response",
+                "payload_text": "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml",
+                "payload_hex": http_response.hex(),
+                "banner_text": "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml",
+                "http_path": "/favicon.svg",
+                "http_host": "example.test",
+                "raw_packet": b"",
+            }
+        )
+        return replacement_store, icon
+
+    def test_svg_favicon_is_served_as_a_download_not_as_a_live_document(self):
+        """Serving a captured SVG inline runs its <script> in this backend's
+        own origin, where the API - and the security code in the query string
+        that fetched it - are readable. Raster icons stay inline; a scriptable
+        document does not."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            forensic = patch("sniff4hound.store.STORE_RAW_PACKET_BYTES", True)
+            forensic.start()
+            self.addCleanup(forensic.stop)
+            replacement_store, icon = self._store_with_captured_svg_favicon(tmp_dir)
+            try:
+                with patch.object(self.app, "store", replacement_store):
+                    rows = json.loads(
+                        self.app.app.dispatch(_request("/favicons/")).body.decode("utf-8")
+                    )
+                self.assertEqual(rows[0]["mime_type"], "image/svg+xml")
+
+                with patch.object(self.app, "store", replacement_store):
+                    response = self.app.app.dispatch(_request(
+                        "/favicons/raw/",
+                        query=f"id={rows[0]['id']}",
+                    ))
+
+                self.assertEqual(response.status, 200)
+                # The bytes are still served - this is a forensic tool - but
+                # never as something the browser will render and execute.
+                self.assertEqual(response.body, icon)
+                self.assertEqual(response.headers.get("Content-Type"), "application/octet-stream")
+                self.assertTrue(
+                    response.headers.get("Content-Disposition", "").startswith("attachment;"),
+                    response.headers.get("Content-Disposition"),
+                )
+                self.assertEqual(response.headers.get("Content-Security-Policy"), "default-src 'none'; sandbox")
+                self.assertEqual(response.headers.get("X-Content-Type-Options"), "nosniff")
+            finally:
+                replacement_store.close()
+
+    def test_raster_favicon_stays_inline_but_is_sandboxed(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            forensic = patch("sniff4hound.store.STORE_RAW_PACKET_BYTES", True)
+            forensic.start()
+            self.addCleanup(forensic.stop)
+            replacement_store, icon = self._store_with_captured_favicon(tmp_dir)
+            try:
+                with patch.object(self.app, "store", replacement_store):
+                    rows = json.loads(
+                        self.app.app.dispatch(_request("/favicons/")).body.decode("utf-8")
+                    )
+                    response = self.app.app.dispatch(_request(
+                        "/favicons/raw/",
+                        query=f"id={rows[0]['id']}",
+                    ))
+
+                self.assertEqual(response.body, icon)
+                self.assertEqual(response.headers.get("Content-Type"), "image/x-icon")
+                self.assertTrue(
+                    response.headers.get("Content-Disposition", "").startswith("inline;"),
+                    response.headers.get("Content-Disposition"),
+                )
+                self.assertEqual(response.headers.get("Content-Security-Policy"), "default-src 'none'; sandbox")
+            finally:
+                replacement_store.close()
+
     def test_file_catalog_endpoints_accept_root_arrays(self):
         class FakeStore:
             def __init__(self):
@@ -631,6 +765,55 @@ class CaptureIpcTokenTests(unittest.TestCase):
     must never travel as a `sudo env KEY=VALUE` / `pkexec env KEY=VALUE`
     argument - including on the whole-process self-elevation re-exec that
     replaced the old capture-child-only relaunch."""
+
+    def test_the_desktop_security_code_is_not_printed_to_stdout(self):
+        """The ready line is printed, and the same stdout is the journal when
+        the app starts from its .desktop entry. Only the path to a 0600 file
+        may travel there - never the code itself."""
+        import io
+        from contextlib import redirect_stdout
+
+        from sniff4hound import manage
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            code_path = str(Path(tmp_dir) / "desktop-code.secret")
+            buffer = io.StringIO()
+            with patch.object(manage, "default_desktop_code_path", return_value=code_path), \
+                 patch("sniff4hound.auth.REQUIRE_AUTH", True), \
+                 patch("sniff4hound.auth.get_security_code", return_value="Ab12Cd34"), \
+                 redirect_stdout(buffer):
+                manage._emit_desktop_ready("127.0.0.1", 45678)
+
+            printed = buffer.getvalue()
+            self.assertIn(manage.DESKTOP_READY_PREFIX, printed)
+            self.assertNotIn("Ab12Cd34", printed)
+
+            payload = json.loads(printed.split(manage.DESKTOP_READY_PREFIX, 1)[1])
+            self.assertNotIn("security_code", payload)
+            self.assertEqual(payload["security_code_file"], code_path)
+            self.assertTrue(payload["auth_required"])
+
+            # The file carries the code, and only the operator can read it.
+            self.assertEqual(Path(code_path).read_text(encoding="utf-8"), "Ab12Cd34")
+            self.assertEqual(os.stat(code_path).st_mode & 0o777, 0o600)
+
+    def test_no_code_file_is_written_when_auth_is_disabled(self):
+        import io
+        from contextlib import redirect_stdout
+
+        from sniff4hound import manage
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            code_path = str(Path(tmp_dir) / "desktop-code.secret")
+            buffer = io.StringIO()
+            with patch.object(manage, "default_desktop_code_path", return_value=code_path), \
+                 patch("sniff4hound.auth.REQUIRE_AUTH", False), \
+                 redirect_stdout(buffer):
+                manage._emit_desktop_ready("127.0.0.1", 45678)
+
+            payload = json.loads(buffer.getvalue().split(manage.DESKTOP_READY_PREFIX, 1)[1])
+            self.assertEqual(payload["security_code_file"], "")
+            self.assertFalse(Path(code_path).exists())
 
     def test_the_token_is_not_on_the_self_elevate_command_line(self):
         import sniff4hound.manage as manage
