@@ -176,6 +176,29 @@ function electronCertificateIsTrusted(certificate, trusted) {
   return certificateMatchesTrustedCa(issuer, trusted);
 }
 
+// The local backend is a process this app spawned itself, listening on
+// loopback with a certificate it generated at startup. Its traffic never
+// leaves the machine, so there is no man in the middle to protect against and
+// the self-signed cert is accepted on that basis alone. A *remote* sensor gets
+// no such pass: nothing about it is under our control.
+function isOwnLocalBackend(hostname) {
+  return Boolean(backendReady && backendReady.connection === "local") && isLoopbackHost(hostname);
+}
+
+// Accept an otherwise-untrusted certificate only when it actually chains up to
+// the CA the operator pasted for this origin. Matching the hostname alone -
+// which is what this used to do - accepts any self-signed certificate an
+// attacker cares to present for that name, which is precisely the certificate
+// a man in the middle has. The hostname check stays as well, so a CA pinned
+// for one sensor cannot vouch for a different host.
+function runtimeCertificateIsAcceptable(hostname, origin, certificate) {
+  const trusted = trustedCaForOrigin(origin);
+  if (trusted && hostname === trusted.host && electronCertificateIsTrusted(certificate, trusted)) {
+    return true;
+  }
+  return isOwnLocalBackend(hostname);
+}
+
 function installRuntimeCertificateTrust() {
   if (certificateTrustInstalled) return;
   certificateTrustInstalled = true;
@@ -185,8 +208,7 @@ function installRuntimeCertificateTrust() {
       return;
     }
     const origin = normalizeOrigin(request.url);
-    const trusted = trustedCaForOrigin(origin);
-    if ((trusted && request.hostname === trusted.host) || isLoopbackHost(request.hostname)) {
+    if (runtimeCertificateIsAcceptable(request.hostname, origin, request.certificate)) {
       callback(0);
       return;
     }
@@ -194,14 +216,13 @@ function installRuntimeCertificateTrust() {
   });
   app.on("certificate-error", (event, _webContents, url, _error, certificate, callback) => {
     const origin = normalizeOrigin(url);
-    const trusted = trustedCaForOrigin(origin);
     let hostname = "";
     try {
       hostname = new URL(url).hostname;
     } catch {
       hostname = "";
     }
-    if ((trusted && hostname === trusted.host) || isLoopbackHost(hostname)) {
+    if (runtimeCertificateIsAcceptable(hostname, origin, certificate)) {
       event.preventDefault();
       callback(true);
       return;

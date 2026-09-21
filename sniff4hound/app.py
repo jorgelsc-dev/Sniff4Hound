@@ -41,6 +41,8 @@ from .settings import (
     DEFAULT_DOCS_TITLE,
     HOST,
     PORT,
+    TLS_ENABLED,
+    TRUST_FORWARDED_HEADERS,
     resolve_ipc_call_timeout,
     resolve_ipc_connect_timeout,
     resolve_ipc_socket,
@@ -109,6 +111,22 @@ FAVICON_EXTENSION_BY_MIME = {
     "image/webp": "webp",
     "image/x-icon": "ico",
 }
+# Favicon bodies are attacker-supplied: they are pulled off the wire from
+# whatever host the sensor happens to be watching. Raster formats cannot
+# execute anything, so they keep their real type for the thumbnail. SVG is a
+# scriptable document, and serving one inline would run its <script> in this
+# backend's own origin - where the security code is readable - so everything
+# outside this set is forced to download instead.
+FAVICON_INLINE_SAFE_MIME_TYPES = frozenset({
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/x-icon",
+})
+# Denies every subresource the body might reference and drops it into a unique
+# opaque origin, so even a type-confused response cannot reach back into the API.
+FAVICON_SANDBOX_CSP = "default-src 'none'; sandbox"
 
 
 def _is_benign_http_send_error(exc: Exception) -> bool:
@@ -838,14 +856,29 @@ def _origin_tuple(value: str) -> tuple[str, str, int] | None:
 
 
 def _request_host_origin(request) -> tuple[str, str, int] | None:
-    host = _request_header(request, "X-Forwarded-Host", "x-forwarded-host", "Host", "host")
+    """The origin this request claims to have been addressed to.
+
+    `_guard_request_origin` compares the caller's Origin against this, so
+    letting X-Forwarded-Host win by default would hand the caller both sides of
+    the comparison and make the guard trivially satisfiable. This is the same
+    reasoning `_client_address` already applies to X-Forwarded-For: the header
+    is only trustworthy when a proxy we control is known to rewrite it.
+    """
+    if TRUST_FORWARDED_HEADERS:
+        host = _request_header(request, "X-Forwarded-Host", "x-forwarded-host", "Host", "host")
+    else:
+        host = _request_header(request, "Host", "host")
     if not host:
         return None
     host = str(host).split(",", 1)[0].strip()
-    proto = _request_header(request, "X-Forwarded-Proto", "x-forwarded-proto")
-    scheme = str(proto or "http").split(",", 1)[0].strip().lower() or "http"
+    # Default to what this process actually listens with rather than to "http":
+    # under SNIFF4HOUND_TLS the browser's Origin says https, and a hardcoded
+    # http here would fail the tuple comparison on every state-changing call.
+    default_scheme = "https" if TLS_ENABLED else "http"
+    proto = _request_header(request, "X-Forwarded-Proto", "x-forwarded-proto") if TRUST_FORWARDED_HEADERS else ""
+    scheme = str(proto or default_scheme).split(",", 1)[0].strip().lower() or default_scheme
     if scheme not in {"http", "https"}:
-        scheme = "http"
+        scheme = default_scheme
     return _origin_tuple(f"{scheme}://{host}")
 
 
@@ -1940,13 +1973,19 @@ def favicon_raw(request):
     candidate = _favicon_candidate_from_payload(row or {})
     if not candidate:
         return Response.text("Not Found", status=404)
-    extension = FAVICON_EXTENSION_BY_MIME.get(candidate["mime_type"], "bin")
+    mime_type = candidate["mime_type"]
+    extension = FAVICON_EXTENSION_BY_MIME.get(mime_type, "bin")
+    inline_safe = mime_type in FAVICON_INLINE_SAFE_MIME_TYPES
     return Response(
         body=candidate["_body"],
         headers={
-            "Content-Type": candidate["mime_type"],
+            "Content-Type": mime_type if inline_safe else "application/octet-stream",
             "Cache-Control": "no-store",
-            "Content-Disposition": f'inline; filename="favicon-{favicon_id}.{extension}"',
+            "Content-Disposition": (
+                f'{"inline" if inline_safe else "attachment"}; filename="favicon-{favicon_id}.{extension}"'
+            ),
+            "Content-Security-Policy": FAVICON_SANDBOX_CSP,
+            "X-Content-Type-Options": "nosniff",
         },
     )
 
