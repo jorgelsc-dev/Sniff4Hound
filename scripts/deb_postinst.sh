@@ -26,7 +26,6 @@ PYTHON_BIN=/usr/bin/python3
 REGEX_REQUIREMENT="regex>=2025.7.34"
 DESKTOP_DIR=/usr/lib/sniff4hound/desktop
 DESKTOP_ENTRY=/usr/share/applications/sniff4hound.desktop
-LEGACY_DESKTOP_ENTRY=/usr/share/applications/sniff4hound-desktop.desktop
 DESKTOP_ICON=/usr/share/icons/hicolor/512x512/apps/sniff4hound.png
 DESKTOP_BIN=/usr/bin/sniff4hound-desktop
 
@@ -93,11 +92,6 @@ case "$1" in
         fi
       fi
     fi
-
-    # Older releases used a different desktop-entry filename. It was not
-    # owned by the current package, so remove it explicitly on upgrade to
-    # avoid leaving a stale launcher behind.
-    rm -f "$LEGACY_DESKTOP_ENTRY"
 
     if [ -d "$DESKTOP_DIR" ]; then
       if machine_has_gui; then
