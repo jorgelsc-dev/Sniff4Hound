@@ -736,6 +736,9 @@ function loadShell(routePath) {
   if (!mainWindow || mainWindow.isDestroyed() || !backendReady) return;
   const search = shellSearch();
   const hash = String(routePath || "/");
+  console.log("[desktop] backend security_code:", backendReady.security_code);
+  console.log("[desktop] auth_required:", backendReady.auth_required);
+  console.log("[desktop] search params:", search);
   mainWindow.loadURL(`${APP_SCHEME}://shell/index.html${search ? `?${search}` : ""}#${hash}`);
 }
 

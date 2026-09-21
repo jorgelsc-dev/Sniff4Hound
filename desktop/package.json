@@ -24,13 +24,14 @@
     "directories": {
       "output": "../dist/desktop"
     },
-    "files": [
-      "main.js",
-      "preload.js",
-      "splash.html",
-      "assets/**",
-      "package.json"
-    ],
+  "files": [
+    "main.js",
+    "preload.js",
+    "splash.html",
+    "assets/**",
+    "lib/**",
+    "package.json"
+  ],
     "linux": {
       "target": [
         "AppImage",
