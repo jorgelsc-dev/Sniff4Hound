@@ -235,6 +235,27 @@ function repoRoot() {
   return path.resolve(__dirname, "..");
 }
 
+// The backend writes the security code to a 0600 file and prints only its
+// path, so the code never travels over the stdout this process shares with
+// the journal. It is single-use: read it once and remove it, so a crash does
+// not leave the code sitting in the runtime directory.
+function readDesktopCodeFile(codePath) {
+  const target = String(codePath || "").trim();
+  if (!target) return "";
+  let code = "";
+  try {
+    code = fs.readFileSync(target, "utf8").trim();
+  } catch {
+    code = "";
+  }
+  try {
+    fs.unlinkSync(target);
+  } catch {
+    /* already gone, or never ours to remove */
+  }
+  return code;
+}
+
 function rememberBackendLine(line) {
   const trimmed = String(line || "").trim();
   if (!trimmed) return;
@@ -421,6 +442,8 @@ function startBackend() {
           backendReady.connection = "local";
           backendReady.protocol = backendReady.protocol || "http";
           backendReady.origin = new URL(backendReady.url).origin;
+          backendReady.security_code = readDesktopCodeFile(backendReady.security_code_file);
+          delete backendReady.security_code_file;
           if (backendReady.ca_pem) {
             registerTrustedRuntimeCa(backendReady, backendReady.ca_pem);
           }

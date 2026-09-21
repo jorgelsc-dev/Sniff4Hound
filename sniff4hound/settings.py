@@ -462,6 +462,19 @@ def resolve_ipc_token() -> str:
 
 def write_ipc_token_file(path: str | Path, token: str) -> bool:
     """Persist the IPC token 0600 for the privileged child to read."""
+    return write_secret_file(path, token)
+
+
+def write_secret_file(path: str | Path, value: str) -> bool:
+    """Write a short-lived secret to a 0600 file.
+
+    The same reasoning that moved the IPC token off `sudo env KEY=VALUE`
+    applies to anything else this process has to hand another local process:
+    a value passed through argv or printed to stdout is readable by whoever
+    can see /proc or the journal, while a 0600 file is not. O_CREAT|O_EXCL
+    means an attacker-planted path (including a symlink) fails the create
+    instead of being followed.
+    """
     target = Path(path).expanduser()
     try:
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -478,7 +491,7 @@ def write_ipc_token_file(path: str | Path, token: str) -> bool:
         return False
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(str(token or ""))
+            stream.write(str(value or ""))
     except OSError:
         return False
     try:
@@ -492,6 +505,19 @@ def default_ipc_token_path(socket_path: str | Path) -> str:
     """Sits next to the IPC socket (XDG_RUNTIME_DIR, or /tmp), whose parent
     directory this process already creates and owns."""
     return str(Path(socket_path).with_suffix(".token"))
+
+
+def default_desktop_code_path(port: int | None = None) -> str:
+    """Where the backend drops the security code for the desktop shell.
+
+    Sits beside the IPC socket, in a directory this process already creates
+    and owns, so the code never has to travel over the stdout the Electron
+    parent shares with the journal.
+    """
+    effective_port = int(port) if port is not None else PORT
+    return str(Path(default_ipc_socket_path(effective_port)).with_name(
+        f"desktop-code-{effective_port}.secret"
+    ))
 
 
 def resolve_ipc_owner_uid() -> int | None:

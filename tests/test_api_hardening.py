@@ -766,6 +766,55 @@ class CaptureIpcTokenTests(unittest.TestCase):
     argument - including on the whole-process self-elevation re-exec that
     replaced the old capture-child-only relaunch."""
 
+    def test_the_desktop_security_code_is_not_printed_to_stdout(self):
+        """The ready line is printed, and the same stdout is the journal when
+        the app starts from its .desktop entry. Only the path to a 0600 file
+        may travel there - never the code itself."""
+        import io
+        from contextlib import redirect_stdout
+
+        from sniff4hound import manage
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            code_path = str(Path(tmp_dir) / "desktop-code.secret")
+            buffer = io.StringIO()
+            with patch.object(manage, "default_desktop_code_path", return_value=code_path), \
+                 patch("sniff4hound.auth.REQUIRE_AUTH", True), \
+                 patch("sniff4hound.auth.get_security_code", return_value="Ab12Cd34"), \
+                 redirect_stdout(buffer):
+                manage._emit_desktop_ready("127.0.0.1", 45678)
+
+            printed = buffer.getvalue()
+            self.assertIn(manage.DESKTOP_READY_PREFIX, printed)
+            self.assertNotIn("Ab12Cd34", printed)
+
+            payload = json.loads(printed.split(manage.DESKTOP_READY_PREFIX, 1)[1])
+            self.assertNotIn("security_code", payload)
+            self.assertEqual(payload["security_code_file"], code_path)
+            self.assertTrue(payload["auth_required"])
+
+            # The file carries the code, and only the operator can read it.
+            self.assertEqual(Path(code_path).read_text(encoding="utf-8"), "Ab12Cd34")
+            self.assertEqual(os.stat(code_path).st_mode & 0o777, 0o600)
+
+    def test_no_code_file_is_written_when_auth_is_disabled(self):
+        import io
+        from contextlib import redirect_stdout
+
+        from sniff4hound import manage
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            code_path = str(Path(tmp_dir) / "desktop-code.secret")
+            buffer = io.StringIO()
+            with patch.object(manage, "default_desktop_code_path", return_value=code_path), \
+                 patch("sniff4hound.auth.REQUIRE_AUTH", False), \
+                 redirect_stdout(buffer):
+                manage._emit_desktop_ready("127.0.0.1", 45678)
+
+            payload = json.loads(buffer.getvalue().split(manage.DESKTOP_READY_PREFIX, 1)[1])
+            self.assertEqual(payload["security_code_file"], "")
+            self.assertFalse(Path(code_path).exists())
+
     def test_the_token_is_not_on_the_self_elevate_command_line(self):
         import sniff4hound.manage as manage
 

@@ -27,10 +27,12 @@ from .settings import (
     HOST,
     PORT,
     TLS_ENABLED,
+    default_desktop_code_path,
     default_ipc_token_path,
     resolve_ipc_socket,
     resolve_ipc_token,
     write_ipc_token_file,
+    write_secret_file,
 )
 
 try:
@@ -198,6 +200,26 @@ def _startup_frontend_url(host: str, port: int, *, desktop: bool = False) -> str
     return f"{base_url}/?{urlencode(query)}" if query else f"{base_url}/"
 
 
+def _write_desktop_code_file(port: int, code: str) -> str:
+    """Hand the security code to the desktop shell through a 0600 file.
+
+    The ready payload is printed to stdout. Electron reads that off a pipe,
+    but the same stdout is the journal when the app is started from its
+    .desktop entry, and a terminal when someone runs the backend by hand -
+    so the code itself must not travel in it. Only the path does; the shell
+    reads the file and unlinks it. Chowned back to the operator because by
+    this point the backend has usually re-executed itself as root.
+    """
+    path = default_desktop_code_path(port)
+    if not write_secret_file(path, code):
+        return ""
+    try:
+        os.chown(path, _resolve_owner_uid(), -1)
+    except OSError:
+        pass
+    return path
+
+
 def _emit_desktop_ready(host: str, port: int) -> None:
     from .auth import REQUIRE_AUTH, get_security_code
 
@@ -207,13 +229,14 @@ def _emit_desktop_ready(host: str, port: int) -> None:
 
         ca_pem = public_ca_pem()
     base_url = f"{_runtime_scheme()}://{host}:{port}"
+    code_file = _write_desktop_code_file(port, get_security_code()) if REQUIRE_AUTH else ""
     payload = {
         "url": f"{base_url}/?desktop=1",
         "host": str(host),
         "port": int(port),
         "protocol": _runtime_scheme(),
         "auth_required": bool(REQUIRE_AUTH),
-        "security_code": get_security_code() if REQUIRE_AUTH else "",
+        "security_code_file": code_file,
         "ca_pem": ca_pem,
     }
     print(f"{DESKTOP_READY_PREFIX}{json.dumps(payload, separators=(',', ':'))}", flush=True)
