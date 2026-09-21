@@ -16,13 +16,26 @@ PACKAGE_FRONTEND_DIR = ("sniff4hound", "_frontend_dist")
 
 
 def _build_frontend_if_needed() -> None:
-    if FRONTEND_SOURCE_DIR.exists():
-        return
     if not FRONTEND_DIR.exists():
         raise DistutilsFileError(
             "frontend/ is missing from the source tree. Rebuild the source distribution with "
             "frontend sources included, or restore frontend/ before packaging Sniff4Hound."
         )
+
+    if FRONTEND_SOURCE_DIR.exists():
+        output_mtime = max(
+            (path.stat().st_mtime for path in FRONTEND_SOURCE_DIR.rglob("*") if path.is_file()),
+            default=0,
+        )
+        source_paths = (
+            path
+            for path in FRONTEND_DIR.rglob("*")
+            if path.is_file()
+            and "node_modules" not in path.parts
+            and "dist" not in path.parts
+        )
+        if max((path.stat().st_mtime for path in source_paths), default=0) <= output_mtime:
+            return
 
     npm = shutil.which("npm")
     if npm is None:

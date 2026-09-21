@@ -43,9 +43,7 @@ require_command() {
 require_command "$PYTHON_BIN"
 require_command dpkg-deb
 require_command sha256sum
-if [[ "$BUILD_DESKTOP" == "1" ]]; then
-  require_command npm
-fi
+require_command npm
 
 if [[ ! -f "$LAUNCHER_SOURCE" ]]; then
   echo "Missing launcher template: $LAUNCHER_SOURCE" >&2
@@ -68,10 +66,8 @@ if [[ "$BUILD_DESKTOP" == "1" && ! -f "$DESKTOP_ENTRY_SOURCE" ]]; then
   exit 1
 fi
 
-if [[ ! -d frontend/dist ]]; then
-  echo "frontend/dist is missing. Run 'cd frontend && npm ci && npm run build' before building the Debian package." >&2
-  exit 1
-fi
+echo "[build] Building frontend..."
+(cd "$ROOT_DIR/frontend" && npm ci && npm run build)
 
 PACKAGE_VERSION="$("$PYTHON_BIN" -m sniff4hound.versioning --apply --print-version)"
 
