@@ -778,7 +778,7 @@ class CaptureIpcTokenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             code_path = str(Path(tmp_dir) / "desktop-code.secret")
             buffer = io.StringIO()
-            with patch.object(manage, "default_desktop_code_path", return_value=code_path), \
+            with patch.object(manage, "resolve_desktop_code_path", return_value=code_path), \
                  patch("sniff4hound.auth.REQUIRE_AUTH", True), \
                  patch("sniff4hound.auth.get_security_code", return_value="Ab12Cd34"), \
                  redirect_stdout(buffer):
@@ -806,7 +806,7 @@ class CaptureIpcTokenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             code_path = str(Path(tmp_dir) / "desktop-code.secret")
             buffer = io.StringIO()
-            with patch.object(manage, "default_desktop_code_path", return_value=code_path), \
+            with patch.object(manage, "resolve_desktop_code_path", return_value=code_path), \
                  patch("sniff4hound.auth.REQUIRE_AUTH", False), \
                  redirect_stdout(buffer):
                 manage._emit_desktop_ready("127.0.0.1", 45678)
@@ -814,6 +814,26 @@ class CaptureIpcTokenTests(unittest.TestCase):
             payload = json.loads(buffer.getvalue().split(manage.DESKTOP_READY_PREFIX, 1)[1])
             self.assertEqual(payload["security_code_file"], "")
             self.assertFalse(Path(code_path).exists())
+
+    def test_the_desktop_code_path_is_forwarded_across_the_elevation(self):
+        """pkexec drops XDG_RUNTIME_DIR, so the backend's own default lands
+        under root's runtime directory once it re-execs - somewhere the
+        unprivileged Electron process may not be able to read. The desktop
+        app pins the path instead, and that assignment has to survive the
+        re-exec or the shell never gets its code."""
+        from sniff4hound import manage, settings
+
+        chosen = "/home/operator/.config/Sniff4Hound/desktop-code.secret"
+        with patch.dict(os.environ, {"SNIFF4HOUND_DESKTOP_CODE_FILE": chosen}, clear=False):
+            reloaded = importlib.reload(settings)
+            self.addCleanup(importlib.reload, settings)
+            self.assertEqual(reloaded.resolve_desktop_code_path(45678), chosen)
+
+            # The path is not a secret, so unlike the IPC token it may ride
+            # the command line - but it must actually be carried over.
+            assignments = manage._self_elevate_env_assignments(1000)
+        self.assertIn(f"SNIFF4HOUND_DESKTOP_CODE_FILE={chosen}", assignments)
+        self.assertNotIn("SNIFF4HOUND_DESKTOP_CODE_FILE", manage.CAPTURE_ENV_DENYLIST)
 
     def test_the_token_is_not_on_the_self_elevate_command_line(self):
         import sniff4hound.manage as manage

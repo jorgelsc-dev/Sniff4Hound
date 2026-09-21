@@ -235,6 +235,10 @@ function repoRoot() {
   return path.resolve(__dirname, "..");
 }
 
+function desktopCodeFilePath() {
+  return path.join(app.getPath("userData"), "desktop-code.secret");
+}
+
 // The backend writes the security code to a 0600 file and prints only its
 // path, so the code never travels over the stdout this process shares with
 // the journal. It is single-use: read it once and remove it, so a crash does
@@ -374,6 +378,12 @@ function backendEnv(pythonPath) {
     SNIFF4HOUND_PORT: process.env.SNIFF4HOUND_PORT || DEFAULT_PORT,
     SNIFF4HOUND_CAPTURE_AUTO_START: "0",
     SNIFF4HOUND_TLS: process.env.SNIFF4HOUND_TLS || "1",
+    // Where the backend should leave the security code. It has to be a
+    // directory this (unprivileged) process can read: the backend re-execs
+    // itself through pkexec, which does not forward XDG_RUNTIME_DIR, so its
+    // own default would land under root's runtime directory. The assignment
+    // survives that re-exec because of the SNIFF4HOUND_ prefix.
+    SNIFF4HOUND_DESKTOP_CODE_FILE: desktopCodeFilePath(),
   };
 
   if (usingSharedVendorRuntime()) {

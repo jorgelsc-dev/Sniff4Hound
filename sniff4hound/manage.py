@@ -27,8 +27,8 @@ from .settings import (
     HOST,
     PORT,
     TLS_ENABLED,
-    default_desktop_code_path,
     default_ipc_token_path,
+    resolve_desktop_code_path,
     resolve_ipc_socket,
     resolve_ipc_token,
     write_ipc_token_file,
@@ -210,7 +210,7 @@ def _write_desktop_code_file(port: int, code: str) -> str:
     reads the file and unlinks it. Chowned back to the operator because by
     this point the backend has usually re-executed itself as root.
     """
-    path = default_desktop_code_path(port)
+    path = resolve_desktop_code_path(port)
     if not write_secret_file(path, code):
         return ""
     try:

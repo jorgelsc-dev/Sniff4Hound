@@ -507,6 +507,22 @@ def default_ipc_token_path(socket_path: str | Path) -> str:
     return str(Path(socket_path).with_suffix(".token"))
 
 
+def resolve_desktop_code_path(port: int | None = None) -> str:
+    """Where to drop the security code for the desktop shell.
+
+    The desktop app sets SNIFF4HOUND_DESKTOP_CODE_FILE to a path inside its
+    own userData directory, and that assignment survives the pkexec
+    re-exec (it carries the SNIFF4HOUND_ prefix, so
+    _self_elevate_env_assignments forwards it). That matters: pkexec does
+    not forward XDG_RUNTIME_DIR, so once the backend is root the default
+    below resolves somewhere the operator's unprivileged Electron process
+    cannot necessarily reach. Forwarding the path - never the code - keeps
+    both sides pointing at the same user-owned file.
+    """
+    override = str(_env("SNIFF4HOUND_DESKTOP_CODE_FILE", "")).strip()
+    return override or default_desktop_code_path(port)
+
+
 def default_desktop_code_path(port: int | None = None) -> str:
     """Where the backend drops the security code for the desktop shell.
 
