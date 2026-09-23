@@ -30,7 +30,7 @@ stack vertically and the screen scrolls to keep all controls accessible.
 From the repository root:
 
 ```bash
-cd frontend && npm ci && npm run build
+cd desktop/frontend && npm ci && npm run build
 python3 -m venv --copies build/desktop/runtime/python-venv
 build/desktop/runtime/python-venv/bin/python -m pip install -e .
 cd desktop && npm install && npm run dev

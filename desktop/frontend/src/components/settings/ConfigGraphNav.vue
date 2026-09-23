@@ -1,37 +1,42 @@
 <template>
   <div class="arch-graph">
     <div class="arch-graph__head">
-      <h3 class="text-subtitle-1 font-weight-bold">Arquitectura de Sniff4Hound</h3>
+      <div class="arch-graph__head-row">
+        <h3 class="text-subtitle-1 font-weight-bold">Mapa de configuración</h3>
+        <v-btn size="x-small" variant="text" :disabled="isDefaultView" @click="resetView">Ajustar vista</v-btn>
+      </div>
       <p class="text-body-2 arch-graph__hint">
-        Cómo se relacionan los componentes de la app. Los nodos con
-        <v-icon icon="mdi-pencil-circle" size="12" color="secondary" /> anillo punteado admiten
-        edición - haz click para ver su descripción y saltar a su configuración. Las líneas punteadas
-        salen de un componente que ahora mismo no está corriendo.
+        Arrastra un nodo para reordenarlo, usa Ctrl/Cmd + rueda para hacer zoom. Los nodos con
+        <v-icon icon="mdi-pencil-circle" size="12" color="secondary" /> anillo punteado se pueden abrir para
+        configurar ese componente - haz click para ver su descripción y el botón de configuración. Las líneas
+        punteadas salen de un componente que ahora mismo no está corriendo.
       </p>
     </div>
     <div class="arch-graph__scroll">
-      <svg :viewBox="`0 0 ${viewBoxWidth} ${viewBoxHeight}`" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Diagrama de arquitectura de Sniff4Hound, interactivo">
-        <text v-for="col in columns" :key="`col-${col.index}`" :x="columnX(col.index)" :y="18" text-anchor="middle" fill="currentColor" font-size="10" font-weight="700" letter-spacing="1">{{ col.label }}</text>
-
-        <line v-for="(edge, i) in edges" :key="`edge-${i}`" :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2" :stroke="edge.color" stroke-width="1.1" :opacity="edge.active ? 0.32 : 0.18" :stroke-dasharray="edge.active ? null : '5 4'" marker-end="url(#arch-arrow)" />
-        <circle v-for="dot in pulseDots" :key="dot.id" :cx="dot.x" :cy="dot.y" :r="dot.r" :fill="dot.color" :opacity="dot.opacity" class="arch-signal-dot" />
-
+      <svg ref="svgRoot" :viewBox="`0 0 ${viewBoxWidth} ${viewBoxHeight}`" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mapa de configuración de Sniff4Hound, interactivo - arrastrable y con zoom">
         <defs>
           <marker id="arch-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0,0 L8,4 L0,8 z" fill="#5c7a8f" />
           </marker>
         </defs>
 
-        <g v-for="node in nodes" :key="node.id" tabindex="0" role="button" :aria-label="`Ver ${node.label} - ${node.active ? 'activo' : 'inactivo'}`"
-          class="arch-node" :class="{ 'arch-node--editable': node.editable, 'arch-node--selected': selectedId === node.id, 'arch-node--inactive': !node.active }"
-          @click="selectNode(node.id)" @keydown.enter="selectNode(node.id)" @keydown.space.prevent="selectNode(node.id)">
-          <circle v-if="node.editable" :cx="node.x" :cy="node.y" :r="NODE_RADIUS + 5" fill="none" :stroke="node.color" stroke-width="1.2" stroke-dasharray="3 3" class="arch-node__ring" />
-          <circle :cx="node.x" :cy="node.y" :r="NODE_RADIUS" :fill="node.color" :opacity="selectedId === node.id ? 1 : node.active ? 0.85 : 0.35" stroke="#0a1420" stroke-width="1.5" />
-          <foreignObject :x="node.x - 10" :y="node.y - 10" width="20" height="20" class="arch-node__icon">
-            <i :class="['mdi', node.icon]" />
-          </foreignObject>
-          <circle v-if="node.hasStatus" :cx="node.x + NODE_RADIUS - 2" :cy="node.y + NODE_RADIUS - 2" r="4" :fill="node.active ? '#3ddc84' : '#5c6b7a'" stroke="#0a1420" stroke-width="1" />
-          <text :x="node.x" :y="node.y + NODE_RADIUS + 13" text-anchor="middle" fill="currentColor" font-size="8.5">{{ node.label }}</text>
+        <g ref="zoomLayer">
+          <text v-for="col in columns" :key="`col-${col.index}`" :x="columnX(col.index)" :y="18" text-anchor="middle" fill="currentColor" font-size="10" font-weight="700" letter-spacing="1">{{ col.label }}</text>
+
+          <line v-for="(edge, i) in edges" :key="`edge-${i}`" :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2" :stroke="edge.color" stroke-width="1.1" :opacity="edge.active ? 0.32 : 0.18" :stroke-dasharray="edge.active ? null : '5 4'" marker-end="url(#arch-arrow)" />
+          <circle v-for="dot in pulseDots" :key="dot.id" :cx="dot.x" :cy="dot.y" :r="dot.r" :fill="dot.color" :opacity="dot.opacity" class="arch-signal-dot" />
+
+          <g v-for="node in nodes" :key="node.id" :ref="(el) => setNodeEl(node.id, el)" tabindex="0" role="button" :aria-label="`Ver ${node.label} - ${node.active ? 'activo' : 'inactivo'}`"
+            class="arch-node" :class="{ 'arch-node--editable': node.editable, 'arch-node--selected': selectedId === node.id, 'arch-node--inactive': !node.active }"
+            @click="selectNode(node.id)" @keydown.enter="selectNode(node.id)" @keydown.space.prevent="selectNode(node.id)">
+            <circle v-if="node.editable" :cx="node.x" :cy="node.y" :r="NODE_RADIUS + 5" fill="none" :stroke="node.color" stroke-width="1.2" stroke-dasharray="3 3" class="arch-node__ring" />
+            <circle :cx="node.x" :cy="node.y" :r="NODE_RADIUS" :fill="node.color" :opacity="selectedId === node.id ? 1 : node.active ? 0.85 : 0.35" stroke="#0a1420" stroke-width="1.5" />
+            <foreignObject :x="node.x - 10" :y="node.y - 10" width="20" height="20" class="arch-node__icon">
+              <i :class="['mdi', node.icon]" />
+            </foreignObject>
+            <circle v-if="node.hasStatus" :cx="node.x + NODE_RADIUS - 2" :cy="node.y + NODE_RADIUS - 2" r="4" :fill="node.active ? '#3ddc84' : '#5c6b7a'" stroke="#0a1420" stroke-width="1" />
+            <text :x="node.x" :y="node.y + NODE_RADIUS + 13" text-anchor="middle" fill="currentColor" font-size="8.5">{{ node.label }}</text>
+          </g>
         </g>
       </svg>
     </div>
@@ -52,10 +57,6 @@
         <v-btn v-if="selected.editable" size="x-small" color="primary" @click="goToSettings(selected.settingsTab)">
           Configurar <v-icon icon="mdi-arrow-right" size="12" end />
         </v-btn>
-        <template v-else-if="selected.id === 'store'">
-          <v-btn size="x-small" variant="tonal" @click="goToSettings('blacklist')">Lista negra</v-btn>
-          <v-btn size="x-small" variant="tonal" @click="goToSettings('exclusions')">Exclusiones</v-btn>
-        </template>
         <span v-else class="arch-info-panel__readonly">Sin ajustes propios - es infraestructura interna.</span>
       </div>
     </div>
@@ -63,14 +64,15 @@
 </template>
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { interpolateRgb, interval as d3Interval } from "d3";
+import { drag as d3Drag, interpolateRgb, interval as d3Interval, select as d3Select, zoom as d3Zoom, zoomIdentity } from "d3";
 import store from "../../state/appStore";
 
 const emit = defineEmits(["open-settings-tab"]);
 
 // Real on/off state per statusKey, read from the same endpoints the rest of
 // the app already uses (no new backend surface) - a node without a
-// statusKey (the infrastructure ones: Store, Auth, API, Dashboard, Fuentes)
+// statusKey (the infrastructure ones: Store, Auth, API, Dashboard, Fuentes,
+// plus the config-only ones: Lista negra/blanca, Exclusiones, Notificaciones)
 // has no real "off" state at this level and is always shown as active.
 const status = ref({ sniffer: false, honeypot: false, runtime: false, monitors: false, ai: false });
 async function loadStatus() {
@@ -100,6 +102,9 @@ let statusTimer = null;
 const COLUMN_LABELS = ["Fuentes", "Captura", "Detección", "Almacenamiento", "Acceso", "Visualización"];
 const COLUMN_COLORS = ["#6c8197", "#0fe8ff", "#c084fc", "#3ddc84", "#ffb454", "#ff6b84"];
 
+// Every one of these `settingsTab` values must exactly match a value already
+// gated by SettingsView.vue's VALID_TABS / v-window-item - a typo here
+// silently breaks both this map and the ?section= deep links other views use.
 const NODE_DEFS = [
   { id: "sources", label: "Tráfico / conexiones", column: 0, editable: false, icon: "mdi-access-point-network",
     description: "Tráfico de la NIC en modo promiscuo y conexiones entrantes a los puertos señuelo - el origen de todo lo que la app procesa." },
@@ -117,12 +122,18 @@ const NODE_DEFS = [
     description: "Red entrenada con el feedback del operador (benigno/maligno). Incluye el torneo de arquitecturas que compite varias formas de red hasta que la mejora se estanca." },
   { id: "store", label: "SniffStore", column: 3, editable: false, icon: "mdi-database",
     description: "Persistencia SQLite central: paquetes, tags, flows, sesiones, config de monitors, lista negra/blanca, exclusiones, config en tiempo real. Todo lo demás lee o escribe acá." },
+  { id: "blacklist", label: "Lista negra / blanca", column: 3, editable: true, settingsTab: "blacklist", icon: "mdi-format-list-checks",
+    description: "IPs y rangos bloqueados o permitidos explícitamente - se aplican antes que cualquier regla de detección." },
+  { id: "exclusions", label: "Exclusiones", column: 3, editable: true, settingsTab: "exclusions", icon: "mdi-filter-off-outline",
+    description: "Filtro compartido (IP/CIDR/puerto/protocolo) que Sniffer, Honeypot y Monitors respetan antes de generar cualquier evento." },
   { id: "auth", label: "Auth", column: 4, editable: false, icon: "mdi-lock-outline",
     description: "Código de sesión generado al arrancar más JWT firmado (HS256) que protegen cada ruta de la API/WebSocket." },
   { id: "api", label: "API / WebSocket", column: 4, editable: false, icon: "mdi-api",
     description: "Puerta de entrada HTTP + WebSocket (wsbuilder) que expone todo lo anterior al dashboard." },
   { id: "dashboard", label: "Dashboard", column: 5, editable: false, icon: "mdi-view-dashboard",
     description: "La SPA Vue que estás usando ahora mismo - consume la API/WebSocket y muestra todo en vivo." },
+  { id: "notifications", label: "Notificaciones", column: 5, editable: true, settingsTab: "notifications", icon: "mdi-bell-outline",
+    description: "Sonido de alerta al llegar una detección nueva - preferencia de este navegador, no se sincroniza entre sesiones." },
 ];
 
 const EDGE_DEFS = [
@@ -131,7 +142,9 @@ const EDGE_DEFS = [
   ["sniffer", "monitors"], ["sniffer", "ai_lof"], ["sniffer", "ai_classifier"], ["sniffer", "store"],
   ["honeypot", "store"],
   ["monitors", "store"], ["ai_lof", "store"], ["ai_classifier", "store"],
+  ["store", "blacklist"], ["store", "exclusions"],
   ["store", "api"], ["auth", "api"], ["api", "dashboard"],
+  ["dashboard", "notifications"],
 ];
 
 const selectedId = ref(null);
@@ -145,7 +158,8 @@ function goToSettings(tab) {
 
 // --- Layout: fixed columns, same pattern as NeuralGraph.vue's columnX/rowY,
 // simplified since every column here holds at most 3 nodes (no density
-// tiers needed). ---
+// tiers needed). A dragged node (see `positions` below) overrides this
+// formula for that node only - the formula stays the fallback/reset layout. ---
 const TOP_MARGIN = 34;
 const SIDE_MARGIN = 50;
 const NODE_RADIUS = 16;
@@ -170,14 +184,45 @@ function rowY(rowIndex, rowCount) {
   return TOP_MARGIN + (offset + rowIndex + 0.5) * ROW_HEIGHT;
 }
 
+// --- Dragged layout memory: a node the operator has repositioned keeps that
+// position (this browser only, like every other localStorage-backed
+// preference in appStore.js) instead of snapping back to its column slot. ---
+const POSITIONS_STORAGE_KEY = "sniff4hound.settingsGraphPositions";
+const positions = ref({});
+function loadPositions() {
+  try {
+    const raw = localStorage.getItem(POSITIONS_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
+    const validIds = new Set(NODE_DEFS.map((def) => def.id));
+    const next = {};
+    for (const [id, pos] of Object.entries(parsed)) {
+      if (validIds.has(id) && Number.isFinite(pos?.x) && Number.isFinite(pos?.y)) next[id] = { x: pos.x, y: pos.y };
+    }
+    positions.value = next;
+  } catch {
+    // Corrupt/unavailable storage just falls back to the default layout.
+  }
+}
+function savePositions() {
+  try {
+    localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(positions.value));
+  } catch {
+    // Storage full/unavailable (e.g. private mode) - dragging still works
+    // for this session, it just won't survive a reload.
+  }
+}
+
 const nodes = computed(() => {
   const seenPerColumn = new Array(COLUMN_LABELS.length).fill(0);
   return NODE_DEFS.map((def) => {
     const rowIndex = seenPerColumn[def.column]++;
+    const override = positions.value[def.id];
     return {
       ...def,
-      x: columnX(def.column),
-      y: rowY(rowIndex, columnCounts.value[def.column]),
+      x: override ? override.x : columnX(def.column),
+      y: override ? override.y : rowY(rowIndex, columnCounts.value[def.column]),
       color: COLUMN_COLORS[def.column],
       hasStatus: !!def.statusKey,
       active: def.statusKey ? !!status.value[def.statusKey] : true,
@@ -220,10 +265,65 @@ const pulseDots = computed(() => {
   });
 });
 
+// --- Drag: reposition a node on the canvas, cloning NeuralGraph.vue's
+// ref-collection + d3-drag pattern. `.clickDistance(3)` is what lets the
+// existing @click="selectNode" keep working on the very same <g> - a plain
+// click never reaches `drag`, only a real pointer movement does, and it
+// suppresses the synthetic click that would otherwise follow a real drag. ---
+const svgRoot = ref(null);
+const nodeEls = new Map();
+function setNodeEl(id, el) {
+  if (el) nodeEls.set(id, el);
+  else nodeEls.delete(id);
+}
+const nodeDrag = d3Drag()
+  .container(() => svgRoot.value)
+  .clickDistance(3)
+  .subject((event, id) => nodesById.value[id] || { x: 0, y: 0 })
+  .on("drag", (event, id) => {
+    positions.value[id] = { x: event.x, y: event.y };
+  })
+  .on("end", savePositions);
+function bindDragToNodes() {
+  for (const [id, el] of nodeEls) {
+    d3Select(el).datum(id).call(nodeDrag);
+  }
+}
+
+// --- Pan/zoom: same d3-zoom-on-a-<g>-transform approach as NeuralGraph.vue,
+// so dragging a node and panning the canvas can coexist on the same <svg>
+// without fighting over the same pointerdown. ---
+const zoomLayer = ref(null);
+const viewTransform = ref(zoomIdentity);
+const isDefaultView = computed(() => viewTransform.value.k === 1 && viewTransform.value.x === 0 && viewTransform.value.y === 0);
+const zoomBehavior = d3Zoom()
+  .scaleExtent([0.5, 3])
+  .filter((event) => {
+    // Plain wheel still scrolls the page as normal; only ctrl/cmd+wheel (the
+    // same modifier browsers use for page zoom) drives the canvas zoom.
+    if (event.type === "wheel") return event.ctrlKey || event.metaKey;
+    // A drag-to-pan gesture starting on a node must not also start a pan -
+    // nodes run their own d3-drag (see nodeDrag above), and a competing pan
+    // from the same pointerdown would race with it.
+    if (event.target.closest(".arch-node")) return false;
+    return !event.button;
+  })
+  .on("zoom", (event) => {
+    viewTransform.value = event.transform;
+    if (zoomLayer.value) zoomLayer.value.setAttribute("transform", event.transform.toString());
+  });
+let zoomSelection = null;
+function resetView() {
+  zoomSelection?.transition().duration(200).call(zoomBehavior.transform, zoomIdentity);
+}
+
 onMounted(() => {
+  loadPositions();
   ambientTimer = d3Interval((elapsed) => { tick.value = elapsed; }, 60);
   loadStatus();
   statusTimer = setInterval(loadStatus, 8000);
+  bindDragToNodes();
+  zoomSelection = d3Select(svgRoot.value).call(zoomBehavior);
 });
 onBeforeUnmount(() => {
   ambientTimer?.stop();
@@ -232,11 +332,13 @@ onBeforeUnmount(() => {
 </script>
 <style scoped>
 .arch-graph { padding: 4px 2px; }
+.arch-graph__head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .arch-graph__hint { color: var(--text-dim); max-width: 620px; }
 .arch-graph__hint .v-icon { vertical-align: -2px; }
-.arch-graph__scroll { overflow: auto; max-height: 420px; }
+.arch-graph__scroll { overflow: hidden; max-height: 420px; touch-action: none; }
 .arch-graph__scroll svg { width: 100%; min-width: 640px; display: block; }
-.arch-node { cursor: pointer; }
+.arch-node { cursor: grab; }
+.arch-node:active { cursor: grabbing; }
 .arch-node text { pointer-events: none; }
 .arch-node:focus circle:nth-of-type(2) { stroke: #fff; stroke-width: 3; }
 .arch-node--selected circle:nth-of-type(2) { stroke: #fff; stroke-width: 2.5; }

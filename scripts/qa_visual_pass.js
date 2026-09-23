@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Read-only visual/console-error pass over every current top-level Dashboard
-// route (see frontend/src/router/index.js), driven directly over CDP.
+// route (see desktop/frontend/src/router/index.js), driven directly over CDP.
 // Unlike scripts/qa_ui_cdp.js (written for an older honeypot-config UI with
 // routes - /ports, /banners, /catalog, /explorer, /agents - that no longer
 // exist in this app), this walks the routes that are actually registered

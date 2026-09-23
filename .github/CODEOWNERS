@@ -13,11 +13,11 @@
 # Documentation and public-facing branding
 /docs/ @jorgelsc-dev
 /docs/assets/ @jorgelsc-dev
-/frontend/public/ @jorgelsc-dev
-/frontend/src/assets/ @jorgelsc-dev
+/desktop/frontend/public/ @jorgelsc-dev
+/desktop/frontend/src/assets/ @jorgelsc-dev
 
 # Application code
-/frontend/ @jorgelsc-dev
+/desktop/frontend/ @jorgelsc-dev
 /sniff4hound/ @jorgelsc-dev
 /scripts/ @jorgelsc-dev
 

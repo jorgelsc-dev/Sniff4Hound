@@ -150,7 +150,7 @@ logger.info("capture started", extra={"extra_fields": {"mode": "sniffer"}})
 ## 12. Desarrollo de frontend
 
 ```bash
-cd frontend
+cd desktop/frontend
 npm ci
 npm run dev
 ```

@@ -69,7 +69,7 @@ class ClassificationTests(unittest.TestCase):
         import re
         from pathlib import Path
 
-        catalog = Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "protocolCatalog.js"
+        catalog = Path(__file__).resolve().parents[1] / "desktop" / "frontend" / "src" / "utils" / "protocolCatalog.js"
         source = catalog.read_text(encoding="utf-8")
         # Entries look like:  key: ["layer", "icon", "Label", "description"],
         declared = set(re.findall(r'^\s{2}"?([a-z0-9-]+)"?:\s*\[', source, re.MULTILINE))

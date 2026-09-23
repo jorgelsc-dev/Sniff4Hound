@@ -360,7 +360,7 @@ function resolveFrontendDist() {
   if (app.isPackaged && fs.existsSync(path.join(packagedDist, "index.html"))) {
     return packagedDist;
   }
-  return path.join(repoRoot(), "frontend", "dist");
+  return path.join(__dirname, "frontend", "dist");
 }
 
 function venvRootForPython(pythonPath) {

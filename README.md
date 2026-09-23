@@ -31,7 +31,7 @@ Punto importante:
 - Captura raw para IPv4, IPv6, ARP, TCP, UDP, ICMP y STP.
 - Persistencia SQLite para sesiones, flows, packets, payloads, tags y runtime config.
 - Modo `honeypot` con un catalogo de 10k+ listeners TCP/UDP; el set curado se habilita por defecto y el resto queda disponible para activar bajo demanda.
-- Dashboard Vue 3 + Vuetify servido por el mismo proceso.
+- Dashboard Vue 3 + Vuetify, cargado directamente por la app de escritorio Electron (no se sirve como pagina web).
 - La vista inicial muestra métricas de telemetría, actividad diaria, protocolos, hosts, puertos y etiquetas del período seleccionado. Incluye el estado actual de Sniffer/Honeypot y accesos a alertas IA y mapas; se actualiza con los eventos de captura y permite actualización manual.
 - Autenticacion por token de sesion y JWT HS256.
 - WebSocket en vivo para eventos `packet`, `stats_update`, `runtime_mode` y chat.
@@ -45,7 +45,7 @@ Punto importante:
 - Python `3.12+`
 - Linux/Unix con `AF_PACKET` para captura raw en modo `sniffer`
 - privilegios de administrador o `CAP_NET_RAW` para captura live
-- Node `>=22.12.0` solo si vas a trabajar en `frontend/`
+- Node `>=22.12.0` solo si vas a trabajar en `desktop/frontend/`
 
 ## Instalacion
 
@@ -119,10 +119,10 @@ El repositorio incluye un builder reproducible para generar el `.deb` localmente
 1. Construye la SPA:
 
 ```bash
-cd frontend
+cd desktop/frontend
 npm ci
 npm run build
-cd ..
+cd ../..
 ```
 
 2. Genera el paquete:
@@ -182,7 +182,7 @@ Al arrancar, `sniff4hound` imprime un token de 8 caracteres en la terminal. La U
 
 ### 3. Abrir la interfaz
 
-- Dashboard: `http://127.0.0.1:45678`
+- UI: abre la app de escritorio Electron (`sniff4hound-desktop`, o el icono del launcher) - no hay dashboard servido por navegador.
 - Docs runtime: `http://127.0.0.1:45678/docs`
 - Catalogo de endpoints: `http://127.0.0.1:45678/api/endpoints/`
 
@@ -350,7 +350,7 @@ despliegues separados web/captura) es la excepcion: sigue sin elevarse nunca.
 - `sniff4hound/store.py`: esquema SQLite y snapshots de dashboard.
 - `sniff4hound/auth.py`: token de sesion y JWT HS256.
 - `sniff4hound/logger.py`: helper NDJSON para integraciones y pruebas.
-- `frontend/`: SPA Vue 3 + Vuetify.
+- `desktop/frontend/`: SPA Vue 3 + Vuetify, cargada por la app de escritorio Electron (`desktop/`).
 
 ## Logging y datos
 
@@ -369,7 +369,7 @@ python -m sniff4hound.manage
 Frontend:
 
 ```bash
-cd frontend
+cd desktop/frontend
 npm ci
 npm run dev
 ```
@@ -387,7 +387,7 @@ Checks:
 Frontend:
 
 ```bash
-cd frontend
+cd desktop/frontend
 npm run lint
 npm run build
 ```

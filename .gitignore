@@ -30,13 +30,13 @@ ENV/
 
 # Node / frontend dependencies and build outputs
 node_modules/
-frontend/node_modules/
-frontend/node_modules_legacy_vuecli/
-frontend/dist*/
-frontend/.cache/
-frontend/.eslintcache
-frontend/.parcel-cache/
-frontend/.vite/
+desktop/frontend/node_modules/
+desktop/frontend/node_modules_legacy_vuecli/
+desktop/frontend/dist*/
+desktop/frontend/.cache/
+desktop/frontend/.eslintcache
+desktop/frontend/.parcel-cache/
+desktop/frontend/.vite/
 *.log
 *.log.*
 npm-debug.log*
@@ -49,9 +49,9 @@ honeypot.log*
 .env
 .env.*
 !.env.example
-frontend/.env
-frontend/.env.*
-!frontend/.env.example
+desktop/frontend/.env
+desktop/frontend/.env.*
+!desktop/frontend/.env.example
 *.pem
 *.key
 *.crt

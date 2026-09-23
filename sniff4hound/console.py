@@ -22,7 +22,6 @@ command never means threading another parameter through the call chain.
 from __future__ import annotations
 
 import shlex
-import webbrowser
 
 try:
     import readline
@@ -175,7 +174,6 @@ CONSOLE_COMMAND_SPECS = (
         ),
     ),
     ConsoleCommandSpec("/token", "Show the current security code"),
-    ConsoleCommandSpec("/url", "Show the current dashboard URL"),
     ConsoleCommandSpec("/clients", "List connected WebSocket clients"),
     ConsoleCommandSpec(
         "/broadcast",
@@ -183,7 +181,6 @@ CONSOLE_COMMAND_SPECS = (
         aliases=("/say",),
         usage="/broadcast <text>",
     ),
-    ConsoleCommandSpec("/open", "Open the dashboard in the browser"),
     ConsoleCommandSpec("/version", "Show the Sniff4Hound version"),
     ConsoleCommandSpec("/quit", "Stop Sniff4Hound", aliases=("/exit",)),
 )
@@ -757,10 +754,6 @@ def _cmd_token(context: ConsoleContext, args: list[str]) -> None:
     _say(f"Security code: {get_security_code()}")
 
 
-def _cmd_url(context: ConsoleContext, args: list[str]) -> None:
-    _say(f"Dashboard: http://{context.host}:{context.port}/")
-
-
 def _cmd_clients(context: ConsoleContext, args: list[str]) -> None:
     clients = context.hub.list_clients()
     if not clients:
@@ -788,12 +781,6 @@ def _cmd_broadcast(context: ConsoleContext, args: list[str]) -> None:
         broadcast=True,
     )
     _say(f"Broadcast sent: {message.get('content')}")
-
-
-def _cmd_open(context: ConsoleContext, args: list[str]) -> None:
-    url = f"http://{context.host}:{context.port}/"
-    opened = webbrowser.open(url)
-    _say(f"Browser {'opened' if opened else 'not opened'}: {url}")
 
 
 def _cmd_version(context: ConsoleContext, args: list[str]) -> None:
@@ -829,10 +816,8 @@ CONSOLE_HANDLERS = {
     "/config": _cmd_config,
     "/chat": _cmd_chat,
     "/token": _cmd_token,
-    "/url": _cmd_url,
     "/clients": _cmd_clients,
     "/broadcast": _cmd_broadcast,
-    "/open": _cmd_open,
     "/version": _cmd_version,
     "/quit": _cmd_quit,
 }

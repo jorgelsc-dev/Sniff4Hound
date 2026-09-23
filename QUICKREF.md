@@ -139,7 +139,7 @@ pytest tests/ -q
 ## Frontend
 
 ```bash
-cd frontend
+cd desktop/frontend
 npm ci
 npm run dev
 npm run lint

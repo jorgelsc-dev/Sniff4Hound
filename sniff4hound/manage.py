@@ -15,7 +15,6 @@ import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlencode
 
 from .ipc import generate_ipc_token
 from .process_control import request_process_shutdown, reset_process_shutdown_request
@@ -186,18 +185,6 @@ def _desktop_mode_enabled() -> bool:
 
 def _runtime_scheme() -> str:
     return "https" if TLS_ENABLED else "http"
-
-
-def _startup_frontend_url(host: str, port: int, *, desktop: bool = False) -> str:
-    from .auth import REQUIRE_AUTH, get_security_code
-
-    base_url = f"{_runtime_scheme()}://{host}:{port}"
-    query = {}
-    if REQUIRE_AUTH:
-        query["code"] = get_security_code()
-    if desktop:
-        query["desktop"] = "1"
-    return f"{base_url}/?{urlencode(query)}" if query else f"{base_url}/"
 
 
 def _write_desktop_code_file(port: int, code: str) -> str:
