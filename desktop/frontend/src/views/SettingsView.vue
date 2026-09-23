@@ -7,40 +7,9 @@
       :show-refresh="false"
     />
 
-    <v-tabs v-model="activeTab" color="primary" density="compact" class="settings-tabs mb-4" grow>
-      <v-tab value="capture">
-        <v-icon icon="mdi-lan" start />
-        Capture
-      </v-tab>
-      <v-tab value="honeypot">
-        <v-icon icon="mdi-spider-web" start />
-        Honeypot
-      </v-tab>
-      <v-tab value="detection">
-        <v-icon icon="mdi-target-account" start />
-        Detection
-      </v-tab>
-      <v-tab value="blacklist">
-        <v-icon icon="mdi-format-list-checks" start />
-        Lists
-      </v-tab>
-      <v-tab value="exclusions">
-        <v-icon icon="mdi-filter-off-outline" start />
-        Exclusions
-      </v-tab>
-      <v-tab value="notifications">
-        <v-icon icon="mdi-bell-outline" start />
-        Notifications
-      </v-tab>
-      <v-tab value="ai">
-        <v-icon icon="mdi-brain" start />
-        IA
-      </v-tab>
-      <v-tab value="architecture">
-        <v-icon icon="mdi-sitemap-outline" start />
-        Arquitectura
-      </v-tab>
-    </v-tabs>
+    <DataPanel class="mb-4" title="Mapa de configuración" subtitle="Cómo se relacionan los componentes de Sniff4Hound - abre un nodo para configurarlo, todo lo demás sigue abajo.">
+      <ConfigGraphNav @open-settings-tab="activeTab = $event" />
+    </DataPanel>
 
     <v-window v-model="activeTab">
       <v-window-item value="capture">
@@ -1026,11 +995,6 @@
         <AiSettingsPanel />
       </v-window-item>
 
-      <v-window-item value="architecture">
-        <DataPanel title="Arquitectura" subtitle="Cómo se relacionan los componentes de Sniff4Hound - haz click en un nodo para configurarlo.">
-          <ArchitectureGraphPanel @open-settings-tab="activeTab = $event" />
-        </DataPanel>
-      </v-window-item>
     </v-window>
   </div>
 </template>
@@ -1046,7 +1010,7 @@ import BlacklistPanel from "../components/settings/BlacklistPanel.vue";
 import ExclusionsPanel from "../components/settings/ExclusionsPanel.vue";
 import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 import AiSettingsPanel from "../components/settings/AiSettingsPanel.vue";
-import ArchitectureGraphPanel from "../components/settings/ArchitectureGraphPanel.vue";
+import ConfigGraphNav from "../components/settings/ConfigGraphNav.vue";
 import { formatTimestamp, matchesSearch, uniqueSorted } from "../utils/traffic";
 
 const PROTOCOL_OPTIONS = [
@@ -1071,7 +1035,7 @@ const PROTOCOL_OPTIONS = [
 ];
 const SEVERITY_OPTIONS = ["info", "low", "medium", "high", "critical"];
 const VALID_TABS = new Set([
-  "capture", "honeypot", "detection", "blacklist", "exclusions", "notifications", "ai", "architecture",
+  "capture", "honeypot", "detection", "blacklist", "exclusions", "notifications", "ai",
 ]);
 const GROUP_BY_OPTIONS = ["src_ip", "dst_ip", "src_ip+dst_port", "dst_ip+dst_port", "src_ip+dst_ip"];
 const MATCH_REGEX_KEYS = [
@@ -1152,7 +1116,7 @@ export default {
     LocationPicker,
     RuleDetailDialog,
     AiSettingsPanel,
-    ArchitectureGraphPanel,
+    ConfigGraphNav,
   },
   data() {
     const requested = String((this.$route && this.$route.query && this.$route.query.section) || "").trim();
@@ -1956,16 +1920,6 @@ export default {
 </script>
 
 <style scoped>
-.settings-tabs {
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.settings-tabs :deep(.v-tab) {
-  min-height: 38px;
-  font-size: 0.78rem;
-}
-
 .interface-card,
 .scope-card,
 .purge-card,

@@ -171,13 +171,16 @@ def _path_category(path: str) -> str:
         return "other"
     if normalized.startswith("sniff4hound/") and normalized.endswith(".py"):
         return "core"
-    if normalized.startswith("frontend/src/state/"):
+    # Matches both the current path and the pre-move one (frontend/ lived at
+    # the repo root before it was nested under desktop/) so a changelog
+    # spanning that move still categorizes older commits correctly.
+    if normalized.startswith("desktop/frontend/src/state/") or normalized.startswith("frontend/src/state/"):
         return "frontend-state"
-    if normalized.startswith("frontend/src/views/"):
+    if normalized.startswith("desktop/frontend/src/views/") or normalized.startswith("frontend/src/views/"):
         return "frontend-view"
-    if normalized.startswith("frontend/src/components/"):
+    if normalized.startswith("desktop/frontend/src/components/") or normalized.startswith("frontend/src/components/"):
         return "frontend-component"
-    if normalized.startswith("frontend/src/"):
+    if normalized.startswith("desktop/frontend/src/") or normalized.startswith("frontend/src/"):
         return "frontend"
     if normalized.startswith(".github/workflows/") or normalized.startswith("scripts/"):
         return "build"

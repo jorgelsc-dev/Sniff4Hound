@@ -42,7 +42,7 @@ protection matches on — not by workflow name:
   version in `ci.yml` also renames this check and it has to be re-selected in
   the branch protection settings.
 - `Frontend lint + build` — ESLint with `--max-warnings=0`, production build
-  of `frontend/`
+  of `desktop/frontend/`
 - `Landing lint + build` — the same for `landing/`. `docs-pages.yml` only runs
   on push to `main`, so without this check a broken landing page would reach
   the published site before anything caught it.

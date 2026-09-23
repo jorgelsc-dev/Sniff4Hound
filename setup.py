@@ -10,16 +10,17 @@ from setuptools.command.build_py import build_py as _build_py
 
 
 ROOT = Path(__file__).resolve().parent
-FRONTEND_DIR = ROOT / "frontend"
-FRONTEND_SOURCE_DIR = ROOT / "frontend" / "dist"
+FRONTEND_DIR = ROOT / "desktop" / "frontend"
+FRONTEND_SOURCE_DIR = ROOT / "desktop" / "frontend" / "dist"
 PACKAGE_FRONTEND_DIR = ("sniff4hound", "_frontend_dist")
 
 
 def _build_frontend_if_needed() -> None:
     if not FRONTEND_DIR.exists():
         raise DistutilsFileError(
-            "frontend/ is missing from the source tree. Rebuild the source distribution with "
-            "frontend sources included, or restore frontend/ before packaging Sniff4Hound."
+            "desktop/frontend/ is missing from the source tree. Rebuild the source distribution "
+            "with frontend sources included, or restore desktop/frontend/ before packaging "
+            "Sniff4Hound."
         )
 
     if FRONTEND_SOURCE_DIR.exists():
@@ -40,8 +41,8 @@ def _build_frontend_if_needed() -> None:
     npm = shutil.which("npm")
     if npm is None:
         raise DistutilsFileError(
-            "frontend/dist is missing and npm is unavailable. Install Node.js 22 LTS, then run "
-            "'npm ci && npm run build' in frontend/ before packaging Sniff4Hound."
+            "desktop/frontend/dist is missing and npm is unavailable. Install Node.js 22 LTS, "
+            "then run 'npm ci && npm run build' in desktop/frontend/ before packaging Sniff4Hound."
         )
 
     try:
@@ -50,7 +51,7 @@ def _build_frontend_if_needed() -> None:
     except subprocess.CalledProcessError as exc:
         raise DistutilsFileError(
             "Sniff4Hound could not build the frontend automatically. Run 'npm ci && npm run build' "
-            "in frontend/ and try again."
+            "in desktop/frontend/ and try again."
         ) from exc
 
 

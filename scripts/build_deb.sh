@@ -67,7 +67,7 @@ if [[ "$BUILD_DESKTOP" == "1" && ! -f "$DESKTOP_ENTRY_SOURCE" ]]; then
 fi
 
 echo "[build] Building frontend..."
-(cd "$ROOT_DIR/frontend" && npm ci && npm run build)
+(cd "$ROOT_DIR/desktop/frontend" && npm ci && npm run build)
 
 PACKAGE_VERSION="$("$PYTHON_BIN" -m sniff4hound.versioning --apply --print-version)"
 
@@ -142,6 +142,17 @@ fi
 # listed as a fallback for policykit-1/pkexec so the combined `sniff4hound`
 # command can still self-elevate (see sniff4hound/manage.py's
 # _ensure_running_as_root()) on a machine that skips both.
+#
+# `desktop/package.json`'s own "name" is "sniff4hound-desktop" - if that
+# package is ever installed standalone (electron-builder's raw `deb`
+# target, e.g. from dist/desktop/*.deb during dev), it ships its own
+# /usr/share/applications/sniff4hound-desktop.desktop under /opt/Sniff4Hound,
+# alongside this package's own desktop entry - two "Sniff4Hound" launcher
+# icons, one of them stale. Conflicts+Replaces makes apt remove that
+# standalone package automatically on install/upgrade instead of leaving
+# both registered in dpkg (a bare `rm -f` in postinst was tried and
+# reverted for exactly this: it deletes a file dpkg still believes a
+# *different* package owns, without fixing that package's own record).
 cat > "$DEBIAN_DIR/control" <<EOF
 Package: $PACKAGE_NAME
 Version: $PACKAGE_VERSION
@@ -151,6 +162,8 @@ Architecture: $PACKAGE_ARCH
 Maintainer: JorgelSC Dev
 Depends: python3 (>= 3.12)
 Recommends: python3-venv, policykit-1 | pkexec | sudo, libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0
+Conflicts: sniff4hound-desktop
+Replaces: sniff4hound-desktop
 Homepage: https://github.com/jorgelsc-dev/Sniff4Hound
 Description: Native Python network sniffer with bundled web dashboard and desktop app
  Sniff4Hound captures local traffic, persists runtime data in SQLite, and

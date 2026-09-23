@@ -10,23 +10,13 @@ include setup.py
 include sniff4hound/*.py
 recursive-include sniff4hound/data *
 recursive-include docs *
-include frontend/.env.development
-include frontend/.npmrc
-include frontend/eslint.config.js
-include frontend/index.html
-include frontend/jsconfig.json
-include frontend/package-lock.json
-include frontend/package.json
-include frontend/vite.config.js
-recursive-include frontend/public *
-recursive-include frontend/src *
 recursive-include desktop *
-prune frontend/node_modules
-prune frontend/node_modules_legacy_vuecli
-prune frontend/dist.root-owned-backup
-prune frontend/dist_perm_old_20260611
-prune frontend/dist_root_old
-exclude frontend/Sniff4Hound.db
+prune desktop/frontend/node_modules
+prune desktop/frontend/node_modules_legacy_vuecli
+prune desktop/frontend/dist.root-owned-backup
+prune desktop/frontend/dist_perm_old_20260611
+prune desktop/frontend/dist_root_old
+exclude desktop/frontend/Sniff4Hound.db
 prune .venv
 prune desktop/node_modules
 prune sniff4hound/.venv

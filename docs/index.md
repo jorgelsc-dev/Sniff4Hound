@@ -67,4 +67,4 @@
 1. Empieza por [Empezar](getting-started.md).
 2. Revisa [Arquitectura](architecture.md) para entender el flujo.
 3. Usa [Referencia](reference/index.md) si necesitas rutas, variables o esquema.
-4. Si trabajas en la UI, valida tambien `frontend/` y el runtime `/docs`.
+4. Si trabajas en la UI, valida tambien `desktop/frontend/` y el runtime `/docs`.

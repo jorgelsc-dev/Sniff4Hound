@@ -24,10 +24,10 @@ require_command npm
 cd "$ROOT_DIR"
 
 echo "[desktop] Building frontend bundle..."
-if [[ ! -d frontend/node_modules ]]; then
-  (cd frontend && npm ci)
+if [[ ! -d desktop/frontend/node_modules ]]; then
+  (cd desktop/frontend && npm ci)
 fi
-(cd frontend && npm run build)
+(cd desktop/frontend && npm run build)
 
 echo "[desktop] Preparing isolated Python venv..."
 rm -rf "$RUNTIME_DIR"

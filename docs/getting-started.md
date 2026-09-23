@@ -5,7 +5,7 @@
 - Python `3.12+`
 - Linux o Unix con `AF_PACKET` para captura raw en modo `sniffer`
 - privilegios de administrador o `CAP_NET_RAW` para captura en vivo
-- Node `22.12.0+` solo si vas a trabajar en `frontend/`
+- Node `22.12.0+` solo si vas a trabajar en `desktop/frontend/`
 
 ## Instalar
 
@@ -66,10 +66,10 @@ python -m pip install -e .
 Construye la SPA y luego genera el artefacto:
 
 ```bash
-cd frontend
+cd desktop/frontend
 npm ci
 npm run build
-cd ..
+cd ../..
 ./scripts/build_deb.sh
 sudo apt install ./dist/sniff4hound_<version>_<arch>.deb
 ```
@@ -102,10 +102,10 @@ SNIFF4HOUND_CAPTURE_INTERFACES="eth0,wlan0" sniff4hound
 
 ## Acceso
 
-- Dashboard: `http://127.0.0.1:45678`
+- UI: abre la app de escritorio Electron (`sniff4hound-desktop`, o el icono del launcher) - no hay dashboard servido por navegador.
 - Docs runtime: `http://127.0.0.1:45678/docs`
 - Catalogo de endpoints: `http://127.0.0.1:45678/api/endpoints/`
-- La UI pide el codigo de seguridad al abrirse y lo conserva solo en memoria del tab actual.
+- La UI pide el codigo de seguridad al abrirse y lo conserva solo en memoria de esa sesion.
 
 ## Documentacion local
 

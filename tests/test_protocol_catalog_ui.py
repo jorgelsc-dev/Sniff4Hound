@@ -7,7 +7,7 @@ from pathlib import Path
 from sniff4hound.protocol_facets import PROTOCOL_FACETS
 from sniff4hound.utils import KNOWN_PROTOCOLS
 
-CATALOG = Path(__file__).resolve().parent.parent / "frontend" / "src" / "utils" / "protocolCatalog.js"
+CATALOG = Path(__file__).resolve().parent.parent / "desktop" / "frontend" / "src" / "utils" / "protocolCatalog.js"
 
 # [layer, icon, label, description] - the shape protocolCatalog.js declares.
 ENTRY_RE = re.compile(r'^\s{2}"?([a-z0-9_-]+)"?:\s*\[\s*"([a-z]+)"', re.MULTILINE)

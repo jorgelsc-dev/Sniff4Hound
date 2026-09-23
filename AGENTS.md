@@ -1,17 +1,18 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`sniff4hound/` contains the Python runtime and API: `app.py`, `manage.py`, `sniffer.py`, `honeypot.py`, `store.py`, `auth.py`, and helpers. Bundled JSON assets live in `sniff4hound/data/`. `tests/` holds backend smoke and integration tests. `frontend/` is the Vue 3 + Vuetify SPA; source code is in `frontend/src/` (`components/`, `views/`, `router/`, `state/`, `utils/`), with static files in `frontend/public/`.
+`sniff4hound/` contains the Python runtime and API: `app.py`, `manage.py`, `sniffer.py`, `honeypot.py`, `store.py`, `auth.py`, and helpers. Bundled JSON assets live in `sniff4hound/data/`. `tests/` holds backend smoke and integration tests. `desktop/` is the Electron shell; `desktop/frontend/` is the Vue 3 + Vuetify SPA it loads directly off disk (never served over HTTP - see the Desktop App section below), with source in `desktop/frontend/src/` (`components/`, `views/`, `router/`, `state/`, `utils/`) and static files in `desktop/frontend/public/`.
 
 ## Build, Test, and Development Commands
 - `python -m pip install -e .`: install the backend in editable mode from the repo root.
 - `python -m sniff4hound.manage`: run the runtime locally.
 - `python -m unittest discover -t . -s tests -q`: run the Python test suite with stdlib unittest.
 - `pytest tests/ -q`: run the same tests under pytest.
-- `cd frontend && npm ci`: install frontend dependencies from `package-lock.json`.
-- `cd frontend && npm run dev`: start the Vite dev server.
-- `cd frontend && npm test`: run frontend linting.
-- `cd frontend && npm run build`: build the production frontend bundle.
+- `cd desktop/frontend && npm ci`: install frontend dependencies from `package-lock.json`.
+- `cd desktop/frontend && npm run dev`: start the Vite dev server (fast iteration only - see the Desktop App section for how to verify a change for real).
+- `cd desktop/frontend && npm test`: run frontend linting.
+- `cd desktop/frontend && npm run build`: build the production frontend bundle.
+- `cd desktop && npm run dev` (with `ELECTRON_RUN_AS_NODE` unset if it's set in your shell): launch the actual Electron app.
 
 ## Coding Style & Naming Conventions
 Follow the existing style in each layer rather than adding new formatters. Python code uses 4-space indentation, `snake_case` for functions/modules, and `PascalCase` for classes. Frontend code uses ESM, 2-space indentation, Vue SFCs, and `PascalCase` component filenames such as `AppTopBar.vue`. Keep environment variables uppercase with the `SNIFF4HOUND_` prefix.

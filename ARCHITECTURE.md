@@ -5,15 +5,15 @@
 ## Vista general
 
 ```text
-Operador / navegador
+Operador (app de escritorio Electron, desktop/frontend/dist cargado directo del disco)
         |
         v
   sniff4hound.manage            (usuario normal, SIN privilegios)
         |
-        +--> sniff4hound.app (App, API, WS, auth, SPA)
+        +--> sniff4hound.app (App, API, WS, auth - sin ruta "/", no sirve la SPA)
         |       |
         |       +--> SniffStore (SQLite)
-        |       +--> frontend/dist + WebSocketHub
+        |       +--> WebSocketHub
         |       +--> RuntimeControllerClient --+
         |                                      |
         |                              IPC Unix socket 0600

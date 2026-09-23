@@ -53,7 +53,7 @@ else
   ok "no tracked database files"
 fi
 
-tracked_dist="$(git ls-files -- 'dist/**' 'frontend/dist/**' || true)"
+tracked_dist="$(git ls-files -- 'dist/**' 'desktop/frontend/dist/**' || true)"
 if [[ -n "$tracked_dist" ]]; then
   fail "tracked build artifacts detected:\n$tracked_dist"
 else
