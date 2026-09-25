@@ -43,7 +43,7 @@ const routes = [
   { path: "/domains", name: "domains", component: () => import("../views/DomainsView.vue") },
   { path: "/paths", name: "paths", component: () => import("../views/PathsView.vue") },
   { path: "/ips", name: "ips", component: () => import("../views/IpsView.vue") },
-  { path: "/settings", name: "settings", component: () => import("../views/SettingsView.vue") },
+  { path: "/settings", name: "settings", component: () => import("../views/SettingsView.vue"), meta: { fullWidth: true, canvasOnly: true } },
   { path: "/targets", redirect: "/" },
   { path: "/sessions", redirect: "/" },
   { path: "/intel", redirect: "/investigate" },
