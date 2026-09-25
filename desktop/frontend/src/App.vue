@@ -12,6 +12,9 @@
       :remote-backend="desktopRemoteBackend"
       @shutdown-app="shutdownApplication"
     />
+    <!-- Only once the session can actually reach the API: every entry either
+         routes into a guarded view or calls the runtime. -->
+    <CommandPalette v-if="canRenderViews" />
 
     <v-main class="app-main" :class="{ 'app-main--canvas': $route.meta.canvasOnly && canRenderViews }">
       <v-container class="app-container" :class="{ 'app-container--full': isFullWidthRoute }" :fluid="isFullWidthRoute">
@@ -105,6 +108,7 @@ import { nextTick } from "vue";
 import store from "./state/appStore";
 import AppTopBar from "./components/layout/AppTopBar.vue";
 import GlobalToolsMenu from "./components/layout/GlobalToolsMenu.vue";
+import CommandPalette from "./components/layout/CommandPalette.vue";
 
 // Purely a UX beat: give the operator a moment to see the "shutting down"
 // state (and the backend a moment to actually stop) before the tab closes
@@ -126,6 +130,7 @@ export default {
   components: {
     AppTopBar,
     GlobalToolsMenu,
+    CommandPalette,
   },
   data() {
     return {

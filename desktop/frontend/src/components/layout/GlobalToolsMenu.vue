@@ -157,6 +157,7 @@
 
 <script>
 import store from "../../state/appStore";
+import { NAV_LINKS } from "../../utils/navigation";
 
 const QUICK_STATUS_REFRESH_MS = 15000;
 const CONTROL_COLORS = {
@@ -215,40 +216,7 @@ export default {
         ai: false,
         trainingCapture: false,
       },
-      links: [
-        {
-          label: "Dashboard",
-          to: "/",
-          icon: "mdi-view-dashboard",
-          color: "primary",
-          children: [
-            { label: "Resumen", to: "/dashboard/overview", icon: "mdi-view-dashboard-outline" },
-            { label: "Mapa de Nodos", to: "/dashboard/node-map", icon: "mdi-graph-outline" },
-            { label: "Mapa en Vivo", to: "/dashboard/live-map", icon: "mdi-earth" },
-          ],
-        },
-        { label: "Chat", to: "/chat", icon: "mdi-message-processing-outline", color: "info" },
-        { label: "Configuración", to: "/settings", icon: "mdi-cog-outline", color: "secondary" },
-        {
-          label: "IA",
-          to: "/ai",
-          icon: "mdi-brain",
-          color: "secondary",
-          children: [
-            { label: "Resumen", to: "/ai/overview", icon: "mdi-clipboard-pulse-outline" },
-            { label: "RNN Red Neuronal", to: "/ai/neural-network", icon: "mdi-hub-outline" },
-          ],
-        },
-        { label: "SOC", to: "/soc", icon: "mdi-shield-search", color: "error" },
-        { label: "Investigar", to: "/investigate", icon: "mdi-magnify-scan", color: "info" },
-        { label: "Monitores", to: "/monitors", icon: "mdi-target-account", color: "success" },
-        { label: "Protocolos", to: "/protocols", icon: "mdi-swap-horizontal", color: "secondary" },
-        { label: "Sniffer", to: "/sniffer", icon: "mdi-ethernet", color: "info" },
-        { label: "Honeypot", to: "/honeypot", icon: "mdi-spider-web", color: "warning" },
-        { label: "Dominios", to: "/domains", icon: "mdi-web", color: "primary" },
-        { label: "Paths", to: "/paths", icon: "mdi-routes", color: "secondary" },
-        { label: "IPs", to: "/ips", icon: "mdi-ip-network", color: "success" },
-      ],
+      links: NAV_LINKS,
     };
   },
   watch: {

@@ -16,6 +16,17 @@
         </div>
       </div>
 
+      <button
+        type="button"
+        class="command-trigger"
+        aria-label="Buscar vistas, ajustes y acciones"
+        @click="store.state.commandPaletteOpen = true"
+      >
+        <v-icon icon="mdi-magnify" size="15" />
+        <span>Buscar...</span>
+        <kbd>{{ commandShortcut }}</kbd>
+      </button>
+
       <v-spacer />
 
       <div class="status-rail">
@@ -81,6 +92,7 @@
 </template>
 
 <script>
+import store from "../../state/appStore";
 import BrandMark from "../brand/BrandMark.vue";
 
 export default {
@@ -105,10 +117,17 @@ export default {
   emits: ["shutdown-app"],
   data() {
     return {
+      store,
       desktopApi: null,
     };
   },
   computed: {
+    // Electron on macOS reports "darwin" through the preload bridge; every
+    // other target this ships to is a Ctrl machine.
+    commandShortcut() {
+      const platform = String(this.desktopApi?.platform || (typeof navigator !== "undefined" ? navigator.platform : "")).toLowerCase();
+      return platform.includes("mac") || platform.includes("darwin") ? "\u2318K" : "Ctrl K";
+    },
     desktopMode() {
       return Boolean(this.desktopApi);
     },
@@ -218,6 +237,57 @@ export default {
   gap: 12px;
   min-width: 0;
   -webkit-app-region: no-drag;
+}
+
+/* The bar itself is the window's drag handle in desktop mode, which swallows
+   clicks on anything inside it that does not opt out. */
+.command-trigger {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 22px;
+  padding: 0 9px;
+  height: 26px;
+  min-width: 210px;
+  border: 1px solid rgba(var(--brand-sky-rgb), 0.16);
+  border-radius: 7px;
+  background: rgba(4, 10, 18, 0.5);
+  color: rgba(197, 210, 227, 0.62);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+}
+
+.command-trigger:hover {
+  border-color: rgba(var(--brand-cyan-rgb), 0.42);
+  background: rgba(6, 14, 24, 0.72);
+  color: rgba(226, 236, 248, 0.92);
+}
+
+.command-trigger:focus-visible {
+  outline: 2px solid rgba(var(--brand-cyan-rgb), 0.6);
+  outline-offset: 2px;
+}
+
+.command-trigger span {
+  flex: 1;
+  text-align: left;
+}
+
+.command-trigger kbd {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(var(--brand-sky-rgb), 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(197, 210, 227, 0.72);
+}
+
+@media (max-width: 820px) {
+  .command-trigger { min-width: 0; margin-left: 12px; }
+  .command-trigger span, .command-trigger kbd { display: none; }
 }
 
 .shutdown-btn {
