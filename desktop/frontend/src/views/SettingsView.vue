@@ -1,7 +1,7 @@
 <template>
   <div class="settings-view">
     <ConfigGraphNav v-model="activeTab" :states="graphStates" :refreshing="statusRefreshing" @refresh="refreshGraph">
-    <v-window v-model="activeTab" :touch="false">
+    <v-window :model-value="activeTab" :touch="false">
       <v-window-item value="runtime">
         <div class="settings-engine-list">
           <div v-for="engine in ['sniffer', 'honeypot']" :key="engine" class="settings-engine">
