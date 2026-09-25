@@ -1,3 +1,10 @@
+import {
+  connectionPath as routeConnection,
+  defaultPosition as positionOnGrid,
+  graphBounds as boundsOf,
+  validPositions as keepValidPositions,
+} from "../../utils/flowGraph";
+
 export const GRAPH_CARD = { width: 238, height: 112 };
 export const GRAPH_STORAGE_KEY = "sniff4hound.settingsGraphCards.v1";
 export const GRAPH_COLUMNS = [
@@ -30,46 +37,23 @@ export const SETTINGS_EDGES = [
   ["blacklist", "store"], ["store", "connection"], ["connection", "notifications"],
 ];
 
+const NODE_IDS = SETTINGS_NODES.map(node => node.id);
+// The 312/158 step this layout was authored against, expressed as the gap the
+// shared grid helper takes.
+const GRID_GAP = { x: 312 - GRAPH_CARD.width, y: 158 - GRAPH_CARD.height };
+
 export function defaultPosition(node) {
-  return { x: 40 + node.column * 312, y: 60 + node.row * 158 };
+  return positionOnGrid(node, GRAPH_CARD, GRID_GAP);
 }
 
 export function validPositions(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(SETTINGS_NODES.flatMap(({ id }) => {
-    const pos = value[id];
-    return Number.isFinite(pos?.x) && Number.isFinite(pos?.y)
-      && Math.abs(pos.x) < 10000 && Math.abs(pos.y) < 10000
-      ? [[id, { x: pos.x, y: pos.y }]] : [];
-  }));
+  return keepValidPositions(value, NODE_IDS);
 }
 
 export function graphBounds(nodes) {
-  const left = Math.min(...nodes.map(n => n.x)) - 30;
-  const top = Math.min(...nodes.map(n => n.y)) - 48;
-  const right = Math.max(...nodes.map(n => n.x + GRAPH_CARD.width)) + 30;
-  const bottom = Math.max(...nodes.map(n => n.y + GRAPH_CARD.height)) + 30;
-  return { x: left, y: top, width: right - left, height: bottom - top };
+  return boundsOf(nodes, GRAPH_CARD);
 }
 
 export function connectionPath(from, to) {
-  const { width, height } = GRAPH_CARD;
-  if (Math.abs(to.x - from.x) < width) {
-    const downward = to.y > from.y;
-    const x1 = from.x + width / 2;
-    const y1 = from.y + (downward ? height : 0);
-    const x2 = to.x + width / 2;
-    const y2 = to.y + (downward ? 0 : height);
-    // Side routing keeps vertical connections clear of intermediate cards.
-    const side = Math.min(from.x, to.x) - 26;
-    return `M ${x1} ${y1} C ${side} ${y1}, ${side} ${y2}, ${x2} ${y2}`;
-  }
-  const forward = to.x > from.x;
-  const x1 = from.x + (forward ? width : 0);
-  const y1 = from.y + height / 2;
-  const x2 = to.x + (forward ? 0 : width);
-  const y2 = to.y + height / 2;
-  const bend = Math.max(40, Math.abs(x2 - x1) / 2);
-  const sign = forward ? 1 : -1;
-  return `M ${x1} ${y1} C ${x1 + bend * sign} ${y1}, ${x2 - bend * sign} ${y2}, ${x2} ${y2}`;
+  return routeConnection(from, to, GRAPH_CARD);
 }

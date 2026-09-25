@@ -13,6 +13,15 @@
     </div>
     <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
 
+    <SystemFlowCanvas
+      class="mb-4"
+      :totals="flowTotals"
+      :runtime="dashboard?.runtime || store.state.runtime || {}"
+      :activity="store.state.liveActivity"
+      :online="store.state.wsStatus === 'online'"
+      @open="$router.push($event.route)"
+    />
+
     <div class="metrics-grid">
       <v-card v-for="metric in metrics" :key="metric.label" class="stat-card" variant="tonal">
         <div class="stat-heading"><span>{{ metric.label }}</span><v-icon :icon="metric.icon" :color="metric.color" size="21" /></div>
@@ -40,13 +49,6 @@
       <ChartCard title="Hosts con más actividad" subtitle="Apariciones como origen o destino de paquetes" :series="hosts" empty-text="Sin hosts registrados en este período." />
       <ChartCard title="Puertos más frecuentes" subtitle="Paquetes por puerto de destino (u origen si no hay destino)" :series="ports" color="success" fill="linear-gradient(90deg, #20bda9, #64dfc4)" empty-text="Sin puertos registrados en este período." />
       <ChartCard title="Etiquetas detectadas" subtitle="Coincidencias de reglas y metadatos analizados" :series="tags" color="warning" fill="linear-gradient(90deg, #d89932, #f4cc79)" empty-text="Sin etiquetas registradas en este período." />
-      <v-card variant="tonal" class="runtime-card">
-        <div class="panel-heading"><div><h2>Estado de los motores</h2><p>Estado actual · independiente del período seleccionado</p></div></div>
-        <div v-for="engine in engines" :key="engine.label" class="engine-row">
-          <div><div class="engine-name"><v-icon :icon="engine.icon" size="19" />{{ engine.label }}</div><span class="text-caption text-medium-emphasis">{{ engine.data ? `${number(engine.data.packets_seen)} paquetes observados en esta ejecución` : 'Estado no disponible' }}</span></div>
-          <v-chip size="small" variant="tonal" :color="engine.data?.running ? 'success' : 'secondary'">{{ !engine.data ? 'Sin conexión' : engine.data.capture_state === 'blocked' ? 'Bloqueado' : engine.data.running ? 'Activo' : 'Detenido' }}</v-chip>
-        </div>
-      </v-card>
     </div>
   </div>
 </template>
@@ -55,6 +57,7 @@
 import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import ChartCard from "../components/ui/ChartCard.vue";
+import SystemFlowCanvas from "../components/flow/SystemFlowCanvas.vue";
 
 function series(rows, key = "label", limit = 8) {
   const items = (Array.isArray(rows) ? rows : []).slice(0, limit);
@@ -64,7 +67,7 @@ function series(rows, key = "label", limit = 8) {
 
 export default {
   name: "DashboardHubView",
-  components: { ViewHeader, ChartCard },
+  components: { ViewHeader, ChartCard, SystemFlowCanvas },
   data: () => ({ store, analytics: null, dashboard: null, loading: false, error: "", lastUpdated: "", requestId: 0, refreshTimer: null, unsubscribe: null }),
   computed: {
     apiBase() { return this.store.state.apiBase; },
@@ -84,11 +87,19 @@ export default {
     ports() { return series(this.analytics?.top_open_ports, "port"); },
     tags() { return series(this.analytics?.top_tag_keys); },
     timeline() { return series(this.analytics?.timeline, "label", 30); },
-    engines() {
-      return [
-        { label: "Sniffer", icon: "mdi-ethernet", data: this.dashboard?.runtime?.sniffer },
-        { label: "Honeypot", icon: "mdi-spider-web", data: this.dashboard?.runtime?.honeypot },
-      ];
+    // Every figure here comes straight from dashboard_snapshot()/analytics_snapshot();
+    // the canvas adds no derived metrics of its own beyond the live packet rate.
+    flowTotals() {
+      const counts = this.dashboard?.counts || {};
+      const sniffer = this.dashboard?.runtime?.sniffer || {};
+      return {
+        interfaces: (sniffer.interfaces || []).length,
+        packets: counts.count_ports,
+        protocols: this.analytics?.ports_by_proto?.length,
+        monitors: counts.count_monitors,
+        payloads: counts.count_banners,
+        detections: counts.count_tags,
+      };
     },
   },
   watch: { apiBase() { this.load(); } },
@@ -128,7 +139,7 @@ export default {
 </script>
 
 <style scoped>
-.dashboard-toolbar, .dashboard-links, .stat-heading, .panel-heading, .engine-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dashboard-toolbar, .dashboard-links, .stat-heading, .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dashboard-toolbar { margin-bottom: 18px; flex-wrap: wrap; }
 .dashboard-links { flex-wrap: wrap; gap: 4px; }
 .metrics-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
@@ -137,7 +148,7 @@ export default {
 .stat-value { font-size: 1.9rem; font-weight: 700; font-family: var(--font-mono); margin: 10px 0 4px; overflow-wrap: anywhere; }
 .charts-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .activity-card { grid-column: span 2; }
-.activity-card, .runtime-card { padding: 22px; border-radius: 16px; }
+.activity-card { padding: 22px; border-radius: 16px; }
 h2 { font-size: 1rem; font-weight: 600; }
 .panel-heading p { font-size: .75rem; opacity: .65; margin-top: 4px; }
 .activity-chart { display: flex; gap: 8px; height: 220px; margin-top: 24px; overflow-x: auto; }
@@ -146,8 +157,6 @@ h2 { font-size: 1rem; font-weight: 600; }
 .activity-track { height: 170px; width: 100%; display: flex; align-items: flex-end; border-bottom: 1px solid rgba(120, 190, 220, .2); margin: 8px 0; background: repeating-linear-gradient(to top, transparent 0, transparent 41px, rgba(120, 190, 220, .08) 42px); }
 .activity-bar { width: 75%; margin: 0 auto; background: linear-gradient(0deg, #17618f, #32d4e5); border-radius: 4px 4px 0 0; min-height: 2px; }
 .empty-chart { min-height: 220px; display: grid; place-content: center; justify-items: center; gap: 12px; opacity: .55; font-size: .85rem; }
-.engine-row { padding: 20px 0; border-bottom: 1px solid rgba(120, 190, 220, .12); flex-wrap: wrap; }
-.engine-name { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
 @media (max-width: 1280px) { .metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .charts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .charts-grid { grid-template-columns: minmax(0, 1fr); } .activity-card { grid-column: auto; } .stat-card { padding: 14px; } }
 </style>
