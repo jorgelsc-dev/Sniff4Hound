@@ -52,6 +52,9 @@ const state = reactive({
   authToken: "",
   authError: "",
   authPromptOpen: false,
+  // Ctrl/Cmd+K palette. In the store rather than local to CommandPalette so
+  // the top bar's search affordance can open it without a component ref.
+  commandPaletteOpen: false,
   shutdownPending: false,
   notifySoundEnabled: true,
   // Incremented on every inbound chat frame; ChatView watches it.
