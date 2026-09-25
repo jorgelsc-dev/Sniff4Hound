@@ -948,14 +948,23 @@ function httpFetchWithMeta(path, opts, config) {
 }
 
 // --- deferred jobs ---------------------------------------------------------
-// Resolvers for the jobs currently being waited on, so a "job_update" frame
-// can wake one the moment it finishes instead of leaving it to sit out the
-// rest of its poll interval.
-const jobWaiters = new Map();
+// The jobs currently being waited on, so a "job_update" frame can wake one the
+// moment it finishes instead of leaving it to sit out the rest of its poll
+// interval.
+//
+// A set of records rather than a map keyed by job id: two callers can end up
+// waiting on the same id, and keying by it meant the second registration
+// silently replaced the first, leaving that one to fall back to its timer. It
+// also keeps the frame's id - a value off the wire - out of any position where
+// it selects what gets invoked.
+const jobWaiters = new Set();
 
 function notifyJobFinished(jobId) {
-  const waiter = jobWaiters.get(String(jobId || ""));
-  if (waiter) waiter();
+  const id = String(jobId || "");
+  if (!id) return;
+  for (const waiter of jobWaiters) {
+    if (waiter.id === id) waiter.wake();
+  }
 }
 
 // Starts tight - most deferred jobs are only just past the inline window -
@@ -970,6 +979,9 @@ function awaitJob(jobId, config = {}) {
   if (!id) return Promise.reject(new Error("Missing job id"));
   state.pendingJobs += 1;
   let attempt = 0;
+  // Held at this scope so the final cleanup can drop a registration left
+  // behind when the poll rejects mid-wait.
+  let currentWaiter = null;
 
   const poll = () => fetchJsonPromise(`/api/jobs/?id=${encodeURIComponent(id)}`, {}, {
     ...config,
@@ -986,19 +998,24 @@ function awaitJob(jobId, config = {}) {
     // websocket nudge or the next scheduled check.
     return new Promise((resolve) => {
       const timer = setTimeout(resolve, jobPollDelay(attempt));
-      jobWaiters.set(id, () => {
-        clearTimeout(timer);
-        resolve();
-      });
+      currentWaiter = {
+        id,
+        wake: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+      };
+      jobWaiters.add(currentWaiter);
     }).then(() => {
-      jobWaiters.delete(id);
+      jobWaiters.delete(currentWaiter);
+      currentWaiter = null;
       attempt += 1;
       return poll();
     });
   });
 
   return poll().finally(() => {
-    jobWaiters.delete(id);
+    if (currentWaiter) jobWaiters.delete(currentWaiter);
     state.pendingJobs = Math.max(0, state.pendingJobs - 1);
   });
 }

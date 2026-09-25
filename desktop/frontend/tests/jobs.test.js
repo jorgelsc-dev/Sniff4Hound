@@ -77,6 +77,27 @@ test("a failed job rejects with the server's message and type", () => withFetch(
   },
 ));
 
+// Covers the polling path only: with no websocket frame in play both waiters
+// fall back to their own timers, so this does not exercise the wake-up that
+// the Set-of-records registry fixes. It is here to pin the concurrent case -
+// two callers parked on one id must both receive the result.
+test("two callers waiting on the same job id both resolve", () => withFetch(
+  (url, _options, call) => {
+    if (!url.includes("/api/jobs/")) return json({ job_id: "shared" }, 201);
+    if (call <= 4) return json({ id: "shared", status: "running" });
+    return json({ id: "shared", status: "done", result: "ambos" });
+  },
+  async () => {
+    const [first, second] = await Promise.all([
+      appStore.fetchJsonPromise("/api/soc/analysis/"),
+      appStore.fetchJsonPromise("/api/soc/analysis/"),
+    ]);
+    assert.equal(first, "ambos");
+    assert.equal(second, "ambos");
+    assert.equal(appStore.state.pendingJobs, 0);
+  },
+));
+
 test("pendingJobs rises while a job is outstanding", () => withFetch(
   (url, _options, call) => {
     if (!url.includes("/api/jobs/")) return json({ job_id: "j4" }, 201);
