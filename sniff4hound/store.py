@@ -916,6 +916,22 @@ class SniffStore:
                 updated_at TEXT NOT NULL
             )
             """,
+            # Only deferred API jobs land here - see jobs.py. A request that
+            # finishes inside the inline window never writes a row, which is
+            # what keeps this table from competing with packet storage for the
+            # write lock on every UI refresh.
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'queued',
+                result_json TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                error_type TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL DEFAULT ''
+            )
+            """,
         ]
         with self._lock:
             for statement in schema:
@@ -6320,6 +6336,63 @@ class SniffStore:
             commit=True,
         )
         return str(value)
+
+    # -- deferred API jobs (see jobs.py) ------------------------------------
+
+    def upsert_job(self, job: dict):
+        """Writes a job that outlived the inline window.
+
+        Called twice per deferred job - once when it is claimed for polling,
+        once when it finishes - rather than on every state change, to keep the
+        write count on this table proportional to slow requests only.
+        """
+        result = job.get("result")
+        self._execute(
+            """
+            INSERT INTO jobs (id, kind, status, result_json, error, error_type, created_at, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              status = excluded.status,
+              result_json = excluded.result_json,
+              error = excluded.error,
+              error_type = excluded.error_type,
+              finished_at = excluded.finished_at
+            """,
+            (
+                str(job.get("id") or ""),
+                str(job.get("kind") or ""),
+                str(job.get("status") or "queued"),
+                "" if result is None else json_dumps(result),
+                str(job.get("error") or ""),
+                str(job.get("error_type") or ""),
+                str(job.get("created_at") or utc_now()),
+                str(job.get("finished_at") or ""),
+            ),
+            commit=True,
+        )
+
+    def get_job(self, job_id: str) -> dict | None:
+        row = self._fetchone("SELECT * FROM jobs WHERE id = ?", (str(job_id),))
+        if row is None:
+            return None
+        raw = row["result_json"] or ""
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "result": json_loads(raw, default=None) if raw else None,
+            "error": row["error"],
+            "error_type": row["error_type"],
+            "created_at": row["created_at"],
+            "finished_at": row["finished_at"],
+        }
+
+    def delete_expired_jobs(self, ttl_seconds: int) -> int:
+        cutoff = utc_since(max(1, int(ttl_seconds)))
+        cursor = self._execute(
+            "DELETE FROM jobs WHERE created_at < ?", (cutoff,), commit=True
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0)
 
     def upsert_catalog_file_row(self, filename: str, row: dict):
         rows = self.read_catalog_file(filename)
