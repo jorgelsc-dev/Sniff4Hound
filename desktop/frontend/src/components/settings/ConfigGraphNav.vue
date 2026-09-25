@@ -1,368 +1,345 @@
 <template>
-  <div class="arch-graph">
-    <div class="arch-graph__head">
-      <div class="arch-graph__head-row">
-        <h3 class="text-subtitle-1 font-weight-bold">Mapa de configuración</h3>
-        <v-btn size="x-small" variant="text" :disabled="isDefaultView" @click="resetView">Ajustar vista</v-btn>
+  <section class="config-workspace" :class="{ 'has-inspector': selected }">
+    <header class="config-toolbar">
+      <div class="config-title">
+        <v-icon icon="mdi-source-branch" size="20" />
+        <h1>Settings</h1>
+        <span class="config-project">Sniff4Hound</span>
       </div>
-      <p class="text-body-2 arch-graph__hint">
-        Arrastra un nodo para reordenarlo, usa Ctrl/Cmd + rueda para hacer zoom. Los nodos con
-        <v-icon icon="mdi-pencil-circle" size="12" color="secondary" /> anillo punteado se pueden abrir para
-        configurar ese componente - haz click para ver su descripción y el botón de configuración. Las líneas
-        punteadas salen de un componente que ahora mismo no está corriendo.
-      </p>
-    </div>
-    <div class="arch-graph__scroll">
-      <svg ref="svgRoot" :viewBox="`0 0 ${viewBoxWidth} ${viewBoxHeight}`" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mapa de configuración de Sniff4Hound, interactivo - arrastrable y con zoom">
-        <defs>
-          <marker id="arch-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-            <path d="M0,0 L8,4 L0,8 z" fill="#5c7a8f" />
-          </marker>
-        </defs>
-
-        <g ref="zoomLayer">
-          <text v-for="col in columns" :key="`col-${col.index}`" :x="columnX(col.index)" :y="18" text-anchor="middle" fill="currentColor" font-size="10" font-weight="700" letter-spacing="1">{{ col.label }}</text>
-
-          <line v-for="(edge, i) in edges" :key="`edge-${i}`" :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2" :stroke="edge.color" stroke-width="1.1" :opacity="edge.active ? 0.32 : 0.18" :stroke-dasharray="edge.active ? null : '5 4'" marker-end="url(#arch-arrow)" />
-          <circle v-for="dot in pulseDots" :key="dot.id" :cx="dot.x" :cy="dot.y" :r="dot.r" :fill="dot.color" :opacity="dot.opacity" class="arch-signal-dot" />
-
-          <g v-for="node in nodes" :key="node.id" :ref="(el) => setNodeEl(node.id, el)" tabindex="0" role="button" :aria-label="`Ver ${node.label} - ${node.active ? 'activo' : 'inactivo'}`"
-            class="arch-node" :class="{ 'arch-node--editable': node.editable, 'arch-node--selected': selectedId === node.id, 'arch-node--inactive': !node.active }"
-            @click="selectNode(node.id)" @keydown.enter="selectNode(node.id)" @keydown.space.prevent="selectNode(node.id)">
-            <circle v-if="node.editable" :cx="node.x" :cy="node.y" :r="NODE_RADIUS + 5" fill="none" :stroke="node.color" stroke-width="1.2" stroke-dasharray="3 3" class="arch-node__ring" />
-            <circle :cx="node.x" :cy="node.y" :r="NODE_RADIUS" :fill="node.color" :opacity="selectedId === node.id ? 1 : node.active ? 0.85 : 0.35" stroke="#0a1420" stroke-width="1.5" />
-            <foreignObject :x="node.x - 10" :y="node.y - 10" width="20" height="20" class="arch-node__icon">
-              <i :class="['mdi', node.icon]" />
-            </foreignObject>
-            <circle v-if="node.hasStatus" :cx="node.x + NODE_RADIUS - 2" :cy="node.y + NODE_RADIUS - 2" r="4" :fill="node.active ? '#3ddc84' : '#5c6b7a'" stroke="#0a1420" stroke-width="1" />
-            <text :x="node.x" :y="node.y + NODE_RADIUS + 13" text-anchor="middle" fill="currentColor" font-size="8.5">{{ node.label }}</text>
-          </g>
-        </g>
-      </svg>
-    </div>
-
-    <div v-if="selected" class="arch-info-panel">
-      <div class="arch-info-panel__head">
-        <span class="arch-info-panel__dot" :style="{ background: selected.color }" />
-        <strong>{{ selected.label }}</strong>
-        <v-chip v-if="selected.hasStatus" size="x-small" :color="selected.active ? 'success' : 'default'" variant="tonal">
-          {{ selected.active ? "Activo" : "Inactivo" }}
-        </v-chip>
-        <v-btn icon size="x-small" variant="text" class="ml-auto" aria-label="Cerrar" @click="selectedId = null">
-          <v-icon icon="mdi-close" size="14" />
+      <div class="config-tools">
+        <v-select
+          :model-value="modelValue"
+          :items="SETTINGS_NODES"
+          item-title="label"
+          item-value="section"
+          placeholder="Componentes"
+          aria-label="Seleccionar componente"
+          prepend-inner-icon="mdi-cube-outline"
+          variant="outlined"
+          density="compact"
+          hide-details
+          class="config-jump"
+          @update:model-value="$emit('update:modelValue', $event)"
+        />
+        <v-btn icon="mdi-refresh" size="small" variant="text" :loading="refreshing" aria-label="Actualizar estados" @click="$emit('refresh')">
+          <v-icon icon="mdi-refresh" />
+          <v-tooltip activator="parent">Actualizar estados</v-tooltip>
         </v-btn>
       </div>
-      <p class="arch-info-panel__desc">{{ selected.description }}</p>
-      <div class="arch-info-panel__actions">
-        <v-btn v-if="selected.editable" size="x-small" color="primary" @click="goToSettings(selected.settingsTab)">
-          Configurar <v-icon icon="mdi-arrow-right" size="12" end />
-        </v-btn>
-        <span v-else class="arch-info-panel__readonly">Sin ajustes propios - es infraestructura interna.</span>
+    </header>
+
+    <div class="config-workspace__body">
+      <div class="config-canvas-shell">
+        <div
+          ref="viewport"
+          class="config-canvas"
+          tabindex="0"
+          aria-label="Grafo de configuración"
+          @keydown.esc="closeInspector"
+        >
+          <div ref="world" class="config-world" :style="{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})` }">
+            <svg class="config-wires" width="1" height="1" aria-hidden="true">
+              <g v-for="edge in edges" :key="edge.id" :class="{ 'is-related': edge.related, 'is-flowing': edge.active }">
+                <path :d="edge.path" class="config-wire" :style="{ stroke: edge.color }" />
+                <path v-if="edge.active" :d="edge.path" class="config-wire-signal" :style="{ stroke: edge.color, animationDelay: edge.delay }" />
+              </g>
+            </svg>
+            <span
+              v-for="(column, index) in GRAPH_COLUMNS"
+              :key="column.label"
+              class="config-column"
+              :style="{ left: (40 + index * 312) + 'px', color: column.color }"
+            >{{ column.label }}</span>
+            <button
+              v-for="node in nodes"
+              :key="node.id"
+              :ref="el => setNodeEl(node.id, el)"
+              type="button"
+              class="config-node"
+              :class="{ 'is-selected': modelValue === node.section, 'is-running': node.state.active }"
+              :data-node="node.id"
+              :style="{ left: node.x + 'px', top: node.y + 'px', '--node-color': node.color }"
+              :aria-label="'Configurar ' + node.label"
+              :aria-expanded="modelValue === node.section"
+              aria-controls="settings-inspector"
+              @click="$emit('update:modelValue', node.section)"
+              @focus="revealNode(node)"
+              @keydown.esc.stop="closeInspector"
+            >
+              <span class="config-node__head">
+                <span class="config-node__icon"><v-icon :icon="node.icon" size="21" /></span>
+                <strong>{{ node.label }}</strong>
+                <v-icon icon="mdi-chevron-right" size="17" class="config-node__open" />
+              </span>
+              <span class="config-node__detail">{{ node.detail }}</span>
+              <span class="config-node__status" :class="{ 'is-unknown': node.state.unknown }">
+                <span class="config-node__dot" />
+                <span>{{ node.state.label || "Ajustes" }}</span>
+              </span>
+              <span class="config-node__port config-node__port--in" />
+              <span class="config-node__port config-node__port--out" />
+            </button>
+          </div>
+        </div>
+        <div class="config-canvas-tools">
+          <span class="config-component-count">{{ nodes.length }} componentes</span>
+          <div class="config-zoom">
+            <v-btn icon="mdi-minus" size="x-small" variant="text" :disabled="transform.k <= 0.35" aria-label="Alejar" @click="zoomBy(0.8)">
+              <v-icon icon="mdi-minus" /><v-tooltip activator="parent">Alejar</v-tooltip>
+            </v-btn>
+            <output aria-label="Zoom">{{ Math.round(transform.k * 100) }}%</output>
+            <v-btn icon="mdi-plus" size="x-small" variant="text" :disabled="transform.k >= 1.8" aria-label="Acercar" @click="zoomBy(1.25)">
+              <v-icon icon="mdi-plus" /><v-tooltip activator="parent">Acercar</v-tooltip>
+            </v-btn>
+            <span class="config-tool-divider" />
+            <v-btn icon="mdi-fit-to-screen-outline" size="x-small" variant="text" aria-label="Ajustar grafo" @click="fitGraph">
+              <v-icon icon="mdi-fit-to-screen-outline" /><v-tooltip activator="parent">Ajustar grafo</v-tooltip>
+            </v-btn>
+            <v-btn icon="mdi-auto-fix" size="x-small" variant="text" aria-label="Restablecer posiciones" @click="resetLayout">
+              <v-icon icon="mdi-auto-fix" /><v-tooltip activator="parent">Restablecer posiciones</v-tooltip>
+            </v-btn>
+          </div>
+        </div>
       </div>
+
+      <Transition name="config-overlay">
+        <div v-show="selected" class="config-overlay" @click.self="closeInspector">
+          <div
+            id="settings-inspector"
+            class="config-overlay__card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="config-inspector-title"
+            :style="{ '--node-color': selected?.color }"
+            @keydown.esc="closeInspector"
+          >
+            <header class="config-overlay__header">
+              <span class="config-overlay__icon"><v-icon :icon="selected?.icon || 'mdi-cog-outline'" /></span>
+              <div class="config-overlay__title">
+                <span>{{ selected?.detail }}</span>
+                <h2 id="config-inspector-title">{{ selected?.label }}</h2>
+              </div>
+              <v-btn icon="mdi-close" size="small" variant="text" aria-label="Cerrar configuración" @click="closeInspector">
+                <v-icon icon="mdi-close" /><v-tooltip activator="parent">Cerrar configuración</v-tooltip>
+              </v-btn>
+            </header>
+            <div ref="inspectorBody" class="config-overlay__body">
+              <slot />
+            </div>
+          </div>
+        </div>
+      </Transition>
     </div>
-  </div>
+  </section>
 </template>
+
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { drag as d3Drag, interpolateRgb, interval as d3Interval, select as d3Select, zoom as d3Zoom, zoomIdentity } from "d3";
-import store from "../../state/appStore";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { drag, select, zoom, zoomIdentity } from "d3";
+import {
+  GRAPH_COLUMNS, GRAPH_CARD, GRAPH_STORAGE_KEY, SETTINGS_NODES, SETTINGS_EDGES,
+  defaultPosition, validPositions, graphBounds, connectionPath,
+} from "./settingsGraph";
 
-const emit = defineEmits(["open-settings-tab"]);
-
-// Real on/off state per statusKey, read from the same endpoints the rest of
-// the app already uses (no new backend surface) - a node without a
-// statusKey (the infrastructure ones: Store, Auth, API, Dashboard, Fuentes,
-// plus the config-only ones: Lista negra/blanca, Exclusiones, Notificaciones)
-// has no real "off" state at this level and is always shown as active.
-const status = ref({ sniffer: false, honeypot: false, runtime: false, monitors: false, ai: false });
-async function loadStatus() {
-  try {
-    const [runtime, monitors, aiConfig] = await Promise.all([
-      store.fetchJsonPromise("/api/runtime/"),
-      store.fetchJsonPromise("/api/monitors/"),
-      store.fetchJsonPromise("/api/ai/config"),
-    ]);
-    status.value = {
-      sniffer: !!runtime?.sniffer?.running,
-      honeypot: !!runtime?.honeypot?.running,
-      runtime: !!runtime?.sniffer?.running || !!runtime?.honeypot?.running,
-      monitors: Array.isArray(monitors) && monitors.some((m) => m.enabled),
-      ai: !!aiConfig?.training_enabled,
-    };
-  } catch {
-    // Best-effort status only - the diagram still works (just shows every
-    // engine as inactive) if these calls fail, e.g. no backend reachable.
-  }
-}
-let statusTimer = null;
-
-// Column categories mirror the "Data Source -> Ingestion -> Transformation ->
-// Data Lake -> Visualisation" layered-pipeline framing the user asked to
-// match, adapted to this app's actual components (see sniff4hound/*.py).
-const COLUMN_LABELS = ["Fuentes", "Captura", "Detección", "Almacenamiento", "Acceso", "Visualización"];
-const COLUMN_COLORS = ["#6c8197", "#0fe8ff", "#c084fc", "#3ddc84", "#ffb454", "#ff6b84"];
-
-// Every one of these `settingsTab` values must exactly match a value already
-// gated by SettingsView.vue's VALID_TABS / v-window-item - a typo here
-// silently breaks both this map and the ?section= deep links other views use.
-const NODE_DEFS = [
-  { id: "sources", label: "Tráfico / conexiones", column: 0, editable: false, icon: "mdi-access-point-network",
-    description: "Tráfico de la NIC en modo promiscuo y conexiones entrantes a los puertos señuelo - el origen de todo lo que la app procesa." },
-  { id: "sniffer", label: "Sniffer", column: 1, editable: true, settingsTab: "capture", icon: "mdi-ethernet", statusKey: "sniffer",
-    description: "Captura pasiva raw-socket (Ethernet, VLAN, ARP, IP, TCP/UDP/ICMP, protocolos de aplicación). Evalúa reglas e IA por paquete y persiste en SniffStore." },
-  { id: "honeypot", label: "Honeypot", column: 1, editable: true, settingsTab: "honeypot", icon: "mdi-spider-web", statusKey: "honeypot",
-    description: "Señuelos activos (HTTP, SSH, FTP, SMB, DNS, MySQL, Redis, RDP, VNC...) que registran cada intento de conexión y lo tratan como evidencia." },
-  { id: "runtime", label: "Modo / Runtime", column: 1, editable: true, settingsTab: "capture", icon: "mdi-source-branch", statusKey: "runtime",
-    description: "Orquesta qué motor corre (Sniffer, Honeypot o ambos a la vez) y qué interfaces usa el Sniffer." },
-  { id: "monitors", label: "Monitors", column: 2, editable: true, settingsTab: "detection", icon: "mdi-target-account", statusKey: "monitors",
-    description: "Motor de reglas (patrones/regex, severidad, inclusión/exclusión) que etiqueta cada paquete capturado, venga de Sniffer o Honeypot." },
-  { id: "ai_lof", label: "IA · Outliers", column: 2, editable: true, settingsTab: "ai", icon: "mdi-chart-scatter-plot", statusKey: "ai",
-    description: "Detector LOF no supervisado: convierte los bytes de cada paquete en una imagen y puntúa anomalías por cohorte de protocolo/origen." },
-  { id: "ai_classifier", label: "IA · Clasificador", column: 2, editable: true, settingsTab: "ai", icon: "mdi-brain", statusKey: "ai",
-    description: "Red entrenada con el feedback del operador (benigno/maligno). Incluye el torneo de arquitecturas que compite varias formas de red hasta que la mejora se estanca." },
-  { id: "store", label: "SniffStore", column: 3, editable: false, icon: "mdi-database",
-    description: "Persistencia SQLite central: paquetes, tags, flows, sesiones, config de monitors, lista negra/blanca, exclusiones, config en tiempo real. Todo lo demás lee o escribe acá." },
-  { id: "blacklist", label: "Lista negra / blanca", column: 3, editable: true, settingsTab: "blacklist", icon: "mdi-format-list-checks",
-    description: "IPs y rangos bloqueados o permitidos explícitamente - se aplican antes que cualquier regla de detección." },
-  { id: "exclusions", label: "Exclusiones", column: 3, editable: true, settingsTab: "exclusions", icon: "mdi-filter-off-outline",
-    description: "Filtro compartido (IP/CIDR/puerto/protocolo) que Sniffer, Honeypot y Monitors respetan antes de generar cualquier evento." },
-  { id: "auth", label: "Auth", column: 4, editable: false, icon: "mdi-lock-outline",
-    description: "Código de sesión generado al arrancar más JWT firmado (HS256) que protegen cada ruta de la API/WebSocket." },
-  { id: "api", label: "API / WebSocket", column: 4, editable: false, icon: "mdi-api",
-    description: "Puerta de entrada HTTP + WebSocket (wsbuilder) que expone todo lo anterior al dashboard." },
-  { id: "dashboard", label: "Dashboard", column: 5, editable: false, icon: "mdi-view-dashboard",
-    description: "La SPA Vue que estás usando ahora mismo - consume la API/WebSocket y muestra todo en vivo." },
-  { id: "notifications", label: "Notificaciones", column: 5, editable: true, settingsTab: "notifications", icon: "mdi-bell-outline",
-    description: "Sonido de alerta al llegar una detección nueva - preferencia de este navegador, no se sincroniza entre sesiones." },
-];
-
-const EDGE_DEFS = [
-  ["sources", "sniffer"], ["sources", "honeypot"],
-  ["runtime", "sniffer"], ["runtime", "honeypot"],
-  ["sniffer", "monitors"], ["sniffer", "ai_lof"], ["sniffer", "ai_classifier"], ["sniffer", "store"],
-  ["honeypot", "store"],
-  ["monitors", "store"], ["ai_lof", "store"], ["ai_classifier", "store"],
-  ["store", "blacklist"], ["store", "exclusions"],
-  ["store", "api"], ["auth", "api"], ["api", "dashboard"],
-  ["dashboard", "notifications"],
-];
-
-const selectedId = ref(null);
-function selectNode(id) {
-  selectedId.value = selectedId.value === id ? null : id;
-}
-function goToSettings(tab) {
-  if (!tab) return;
-  emit("open-settings-tab", tab);
-}
-
-// --- Layout: fixed columns, same pattern as NeuralGraph.vue's columnX/rowY,
-// simplified since every column here holds at most 3 nodes (no density
-// tiers needed). A dragged node (see `positions` below) overrides this
-// formula for that node only - the formula stays the fallback/reset layout. ---
-const TOP_MARGIN = 34;
-const SIDE_MARGIN = 50;
-const NODE_RADIUS = 16;
-const ROW_HEIGHT = 74;
-const viewBoxWidth = 920;
-
-const columns = computed(() => COLUMN_LABELS.map((label, index) => ({ index, label })));
-function columnX(index) {
-  const usable = viewBoxWidth - SIDE_MARGIN * 2;
-  const step = COLUMN_LABELS.length > 1 ? usable / (COLUMN_LABELS.length - 1) : 0;
-  return SIDE_MARGIN + index * step;
-}
-const columnCounts = computed(() => {
-  const counts = new Array(COLUMN_LABELS.length).fill(0);
-  for (const def of NODE_DEFS) counts[def.column] += 1;
-  return counts;
+const props = defineProps({
+  modelValue: { type: String, default: "" },
+  states: { type: Object, default: () => ({}) },
+  refreshing: { type: Boolean, default: false },
 });
-const maxRowsInAnyColumn = computed(() => Math.max(...columnCounts.value));
-const viewBoxHeight = computed(() => TOP_MARGIN + maxRowsInAnyColumn.value * ROW_HEIGHT + 20);
-function rowY(rowIndex, rowCount) {
-  const offset = (maxRowsInAnyColumn.value - rowCount) / 2;
-  return TOP_MARGIN + (offset + rowIndex + 0.5) * ROW_HEIGHT;
-}
-
-// --- Dragged layout memory: a node the operator has repositioned keeps that
-// position (this browser only, like every other localStorage-backed
-// preference in appStore.js) instead of snapping back to its column slot. ---
-const POSITIONS_STORAGE_KEY = "sniff4hound.settingsGraphPositions";
+const emit = defineEmits(["update:modelValue", "refresh"]);
+const viewport = ref(null);
+const world = ref(null);
+const inspectorBody = ref(null);
 const positions = ref({});
-function loadPositions() {
-  try {
-    const raw = localStorage.getItem(POSITIONS_STORAGE_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return;
-    const validIds = new Set(NODE_DEFS.map((def) => def.id));
-    const next = {};
-    for (const [id, pos] of Object.entries(parsed)) {
-      if (validIds.has(id) && Number.isFinite(pos?.x) && Number.isFinite(pos?.y)) next[id] = { x: pos.x, y: pos.y };
-    }
-    positions.value = next;
-  } catch {
-    // Corrupt/unavailable storage just falls back to the default layout.
-  }
-}
-function savePositions() {
-  try {
-    localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(positions.value));
-  } catch {
-    // Storage full/unavailable (e.g. private mode) - dragging still works
-    // for this session, it just won't survive a reload.
-  }
-}
-
-const nodes = computed(() => {
-  const seenPerColumn = new Array(COLUMN_LABELS.length).fill(0);
-  return NODE_DEFS.map((def) => {
-    const rowIndex = seenPerColumn[def.column]++;
-    const override = positions.value[def.id];
-    return {
-      ...def,
-      x: override ? override.x : columnX(def.column),
-      y: override ? override.y : rowY(rowIndex, columnCounts.value[def.column]),
-      color: COLUMN_COLORS[def.column],
-      hasStatus: !!def.statusKey,
-      active: def.statusKey ? !!status.value[def.statusKey] : true,
-    };
-  });
-});
-const nodesById = computed(() => Object.fromEntries(nodes.value.map((n) => [n.id, n])));
-const edges = computed(() =>
-  EDGE_DEFS.map(([fromId, toId]) => {
-    const from = nodesById.value[fromId];
-    const to = nodesById.value[toId];
-    return {
-      x1: from.x, y1: from.y, x2: to.x, y2: to.y,
-      color: interpolateRgb(from.color, to.color)(0.5),
-      active: from.active,
-    };
-  })
-);
-const selected = computed(() => (selectedId.value ? nodesById.value[selectedId.value] : null));
-
-// --- Life: a few traveling dots along the edges, same lightweight ambient
-// touch as NeuralGraph.vue, so the diagram doesn't read as a frozen image. ---
-const tick = ref(0);
-let ambientTimer = null;
-const pulseDots = computed(() => {
-  const t = tick.value;
-  // Only the active edges get a traveling pulse - a dashed, inactive edge
-  // has nothing flowing through it right now.
-  return edges.value.filter((edge) => edge.active).map((edge, i) => {
-    const speed = 1400;
-    const progress = ((t / speed + i / edges.value.length) % 1 + 1) % 1;
-    return {
-      id: `dot-${i}`,
-      x: edge.x1 + (edge.x2 - edge.x1) * progress,
-      y: edge.y1 + (edge.y2 - edge.y1) * progress,
-      r: 1.8,
-      color: edge.color,
-      opacity: Math.max(0, Math.sin(progress * Math.PI)) * 0.7,
-    };
-  });
-});
-
-// --- Drag: reposition a node on the canvas, cloning NeuralGraph.vue's
-// ref-collection + d3-drag pattern. `.clickDistance(3)` is what lets the
-// existing @click="selectNode" keep working on the very same <g> - a plain
-// click never reaches `drag`, only a real pointer movement does, and it
-// suppresses the synthetic click that would otherwise follow a real drag. ---
-const svgRoot = ref(null);
+const transform = ref(zoomIdentity);
 const nodeEls = new Map();
+let selection;
+let resizeObserver;
+let resizeFrame;
+const nodes = computed(() => SETTINGS_NODES.map(node => ({
+  ...node,
+  ...(positions.value[node.id] || defaultPosition(node)),
+  color: GRAPH_COLUMNS[node.column].color,
+  state: props.states[node.section] || { unknown: true, label: "Sin datos" },
+})));
+const selected = computed(() => nodes.value.find(node => node.section === props.modelValue));
+const edges = computed(() => {
+  const byId = Object.fromEntries(nodes.value.map(node => [node.id, node]));
+  return SETTINGS_EDGES.map(([from, to], index) => ({
+    id: from + "-" + to,
+    path: connectionPath(byId[from], byId[to]),
+    color: byId[from].color,
+    active: Boolean(byId[from].state.active && byId[to].state.active),
+    related: selected.value && [from, to].includes(selected.value.id),
+    delay: (-index * 0.37) + "s",
+  }));
+});
+
 function setNodeEl(id, el) {
   if (el) nodeEls.set(id, el);
   else nodeEls.delete(id);
 }
-const nodeDrag = d3Drag()
-  .container(() => svgRoot.value)
-  .clickDistance(3)
-  .subject((event, id) => nodesById.value[id] || { x: 0, y: 0 })
-  .on("drag", (event, id) => {
-    positions.value[id] = { x: event.x, y: event.y };
-  })
-  .on("end", savePositions);
-function bindDragToNodes() {
-  for (const [id, el] of nodeEls) {
-    d3Select(el).datum(id).call(nodeDrag);
+function savePositions() {
+  try { localStorage.setItem(GRAPH_STORAGE_KEY, JSON.stringify(positions.value)); } catch { /* Session-only layout when storage is unavailable. */ }
+}
+function closeInspector() {
+  const id = selected.value?.id;
+  emit("update:modelValue", "");
+  nextTick(() => nodeEls.get(id)?.focus({ preventScroll: true }));
+}
+const zoomBehavior = zoom()
+  .scaleExtent([0.35, 1.8])
+  .extent(() => [[0, 0], [viewport.value.clientWidth, viewport.value.clientHeight]])
+  .filter(event => !event.target.closest(".config-node") && !event.button)
+  .on("zoom", event => { transform.value = event.transform; });
+
+function fitGraph() {
+  if (!selection || !viewport.value.clientWidth) return;
+  const bounds = graphBounds(nodes.value);
+  const width = viewport.value.clientWidth;
+  const height = viewport.value.clientHeight;
+  // Keep cards readable on narrow screens; the canvas remains pannable.
+  const scale = Math.max(0.62, Math.min(1, (width - 32) / bounds.width, (height - 30) / bounds.height));
+  const x = width < bounds.width * scale ? 16 - bounds.x * scale : (width - bounds.width * scale) / 2 - bounds.x * scale;
+  const y = Math.max(12, (height - bounds.height * scale) / 2) - bounds.y * scale;
+  selection.call(zoomBehavior.transform, zoomIdentity.translate(x, y).scale(scale));
+}
+function zoomBy(factor) {
+  selection?.call(zoomBehavior.scaleBy, factor);
+}
+function resetLayout() {
+  positions.value = {};
+  savePositions();
+  fitGraph();
+}
+function revealNode(node) {
+  if (!selection) return;
+  const [x, y] = transform.value.apply([node.x, node.y]);
+  const width = GRAPH_CARD.width * transform.value.k;
+  const height = GRAPH_CARD.height * transform.value.k;
+  if (x < 0 || y < 0 || x + width > viewport.value.clientWidth || y + height > viewport.value.clientHeight) {
+    selection.call(zoomBehavior.translateTo, node.x + GRAPH_CARD.width / 2, node.y + GRAPH_CARD.height / 2);
   }
 }
 
-// --- Pan/zoom: same d3-zoom-on-a-<g>-transform approach as NeuralGraph.vue,
-// so dragging a node and panning the canvas can coexist on the same <svg>
-// without fighting over the same pointerdown. ---
-const zoomLayer = ref(null);
-const viewTransform = ref(zoomIdentity);
-const isDefaultView = computed(() => viewTransform.value.k === 1 && viewTransform.value.x === 0 && viewTransform.value.y === 0);
-const zoomBehavior = d3Zoom()
-  .scaleExtent([0.5, 3])
-  .filter((event) => {
-    // Plain wheel still scrolls the page as normal; only ctrl/cmd+wheel (the
-    // same modifier browsers use for page zoom) drives the canvas zoom.
-    if (event.type === "wheel") return event.ctrlKey || event.metaKey;
-    // A drag-to-pan gesture starting on a node must not also start a pan -
-    // nodes run their own d3-drag (see nodeDrag above), and a competing pan
-    // from the same pointerdown would race with it.
-    if (event.target.closest(".arch-node")) return false;
-    return !event.button;
-  })
-  .on("zoom", (event) => {
-    viewTransform.value = event.transform;
-    if (zoomLayer.value) zoomLayer.value.setAttribute("transform", event.transform.toString());
-  });
-let zoomSelection = null;
-function resetView() {
-  zoomSelection?.transition().duration(200).call(zoomBehavior.transform, zoomIdentity);
-}
-
+watch(() => props.modelValue, () => {
+  if (inspectorBody.value) inspectorBody.value.scrollTop = 0;
+});
 onMounted(() => {
-  loadPositions();
-  ambientTimer = d3Interval((elapsed) => { tick.value = elapsed; }, 60);
-  loadStatus();
-  statusTimer = setInterval(loadStatus, 8000);
-  bindDragToNodes();
-  zoomSelection = d3Select(svgRoot.value).call(zoomBehavior);
+  try { positions.value = validPositions(JSON.parse(localStorage.getItem(GRAPH_STORAGE_KEY))); } catch { /* Use the default layout. */ }
+  selection = select(viewport.value).call(zoomBehavior).on("dblclick.zoom", null);
+  const nodeDrag = drag()
+    .container(() => viewport.value)
+    .clickDistance(5)
+    .subject((_event, id) => {
+      const node = nodes.value.find(item => item.id === id);
+      const [x, y] = transform.value.apply([node.x, node.y]);
+      return { x, y };
+    })
+    .on("drag", (event, id) => {
+      const [x, y] = transform.value.invert([event.x, event.y]);
+      positions.value[id] = { x, y };
+    })
+    .on("end", savePositions);
+  for (const [id, el] of nodeEls) select(el).datum(id).call(nodeDrag);
+  resizeObserver = new ResizeObserver(() => {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(fitGraph);
+  });
+  resizeObserver.observe(viewport.value);
+  fitGraph();
 });
 onBeforeUnmount(() => {
-  ambientTimer?.stop();
-  clearInterval(statusTimer);
+  resizeObserver?.disconnect();
+  cancelAnimationFrame(resizeFrame);
+  selection?.on(".zoom", null);
+  for (const el of nodeEls.values()) select(el).on(".drag", null);
 });
 </script>
-<style scoped>
-.arch-graph { padding: 4px 2px; }
-.arch-graph__head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-.arch-graph__hint { color: var(--text-dim); max-width: 620px; }
-.arch-graph__hint .v-icon { vertical-align: -2px; }
-.arch-graph__scroll { overflow: hidden; max-height: 420px; touch-action: none; }
-.arch-graph__scroll svg { width: 100%; min-width: 640px; display: block; }
-.arch-node { cursor: grab; }
-.arch-node:active { cursor: grabbing; }
-.arch-node text { pointer-events: none; }
-.arch-node:focus circle:nth-of-type(2) { stroke: #fff; stroke-width: 3; }
-.arch-node--selected circle:nth-of-type(2) { stroke: #fff; stroke-width: 2.5; }
-.arch-node--inactive text { opacity: 0.55; }
-.arch-node__ring { animation: arch-ring-spin 12s linear infinite; transform-origin: center; }
-@keyframes arch-ring-spin {
-  from { stroke-dashoffset: 0; }
-  to { stroke-dashoffset: -24; }
-}
-.arch-node__icon { pointer-events: none; overflow: visible; }
-.arch-node__icon i { display: block; width: 20px; height: 20px; line-height: 20px; font-size: 15px; text-align: center; color: #071019; }
-.arch-signal-dot { pointer-events: none; filter: drop-shadow(0 0 2px currentColor); }
 
-.arch-info-panel {
-  margin-top: 10px;
-  max-width: 420px;
-  background: rgba(10, 20, 32, 0.85);
-  border: 1px solid #8acbdf22;
-  border-radius: 10px;
-  padding: 10px 12px;
+<style scoped>
+.config-workspace {
+  --config-bg: #111215;
+  --config-panel: #191a1e;
+  height: calc(100dvh - 92px);
+  min-height: 560px;
+  display: flex;
+  flex-direction: column;
+  color: #e8e9ec;
+  background: var(--config-bg);
+  border: 1px solid #303138;
+  overflow: hidden;
+  letter-spacing: 0;
 }
-.arch-info-panel__head { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; }
-.arch-info-panel__dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-.arch-info-panel__desc { margin: 6px 0 8px; font-size: 0.68rem; color: var(--text-dim); line-height: 1.5; }
-.arch-info-panel__actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.arch-info-panel__readonly { font-size: 0.62rem; color: var(--text-dim); font-style: italic; }
+.config-toolbar { min-height: 64px; flex: 0 0 auto; padding: 10px 18px; border-bottom: 1px solid #2d2e35; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #17181c; }
+.config-title, .config-tools { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.config-title > .v-icon { color: #b79aeb; }
+.config-title h1 { font-size: 19px; font-weight: 650; letter-spacing: 0; }
+.config-project { font-size: 12px; color: #92949f; border-left: 1px solid #393a42; padding-left: 12px; }
+.config-jump { width: 220px; }
+.config-workspace__body { flex: 1; display: flex; min-height: 0; position: relative; }
+.config-canvas-shell { flex: 1; min-width: 0; position: relative; overflow: hidden; }
+.config-canvas { position: absolute; inset: 0 0 58px; overflow: hidden; outline: none; cursor: grab; touch-action: none; background-image: radial-gradient(#33343a 0.8px, transparent 0.8px); background-size: 22px 22px; }
+.config-canvas:active { cursor: grabbing; }
+.config-canvas:focus-visible { outline: 1px solid #b79aeb; outline-offset: -2px; }
+.config-world { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+.config-wires { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+.config-wire { fill: none; stroke-width: 1.4; opacity: 0.25; }
+.is-related .config-wire { opacity: 0.85; stroke-width: 2; }
+.config-wire-signal { fill: none; stroke-width: 2.4; stroke-dasharray: 8 160; animation: wire-flow 4s linear infinite; opacity: 0.75; }
+.config-column { position: absolute; top: 22px; font-size: 12px; font-weight: 600; }
+.config-node { position: absolute; width: 238px; height: 112px; padding: 14px 16px 0; border: 1px solid #3b3c44; border-radius: 8px; background: #1c1d22; color: #ebecef; text-align: left; cursor: grab; box-shadow: 0 5px 16px #0003; transition: border-color 160ms, background 160ms, box-shadow 160ms; user-select: none; touch-action: none; }
+.config-node:hover { background: #24252b; border-color: var(--node-color); }
+.config-node:active { cursor: grabbing; }
+.config-node:focus-visible, .config-node.is-selected { outline: 2px solid var(--node-color); outline-offset: 3px; border-color: var(--node-color); box-shadow: 0 6px 24px #0006; }
+.config-node__head { display: flex; align-items: center; gap: 9px; }
+.config-node__head strong { font-size: 14px; font-weight: 600; flex: 1; letter-spacing: 0; }
+.config-node__icon { color: var(--node-color); display: flex; }
+.config-node__open { color: #7d7f8c; }
+.config-node__detail { display: block; font-size: 11px; color: #a8aab5; margin: 7px 0 12px; }
+.config-node__status { margin: 0 -16px; padding: 8px 14px; height: 31px; border-top: 1px solid #34353b; display: flex; align-items: center; gap: 7px; font-size: 10px; color: #aeb0ba; background: #ffffff03; border-radius: 0 0 8px 8px; }
+.config-node__status > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.config-node__dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #81838e; }
+.is-running .config-node__dot { background: #69c798; }
+.is-unknown .config-node__dot { background: #e4b96c; }
+.config-node__port { position: absolute; width: 7px; height: 7px; border: 1px solid #70727e; border-radius: 50%; background: #202126; top: 52px; }
+.config-node__port--in { left: -4px; }
+.config-node__port--out { right: -4px; }
+.config-canvas-tools { position: absolute; bottom: 0; left: 0; right: 0; height: 58px; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid #2d2e35; background: #17181c; }
+.config-component-count { color: #999ba6; font-size: 11px; }
+.config-zoom { display: flex; align-items: center; gap: 3px; }
+.config-zoom output { width: 42px; text-align: center; font-size: 11px; color: #b2b4bf; font-variant-numeric: tabular-nums; }
+.config-tool-divider { height: 18px; width: 1px; background: #3b3c43; margin: 0 5px; }
+.config-overlay { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: 32px; background: #08080bd9; backdrop-filter: blur(3px); }
+.config-overlay__card { display: flex; flex-direction: column; width: min(980px, 100%); max-height: 100%; background: var(--config-panel); border: 1px solid #3c3d45; border-top: 3px solid var(--node-color, #b79aeb); border-radius: 10px; box-shadow: 0 24px 60px #000a; overflow: hidden; }
+.config-overlay__header { display: flex; align-items: center; gap: 12px; padding: 18px 22px; border-bottom: 1px solid #33343c; flex: 0 0 auto; }
+.config-overlay__icon { display: flex; color: var(--node-color, #b79aeb); }
+.config-overlay__title { flex: 1; min-width: 0; }
+.config-overlay__title span { font-size: 11px; color: #aaaeba; }
+.config-overlay__title h2 { font-size: 19px; font-weight: 600; letter-spacing: 0; overflow-wrap: break-word; }
+.config-overlay__body { overflow: auto; flex: 1; padding: 22px; min-height: 0; scrollbar-gutter: stable; }
+.config-overlay-enter-active, .config-overlay-leave-active { transition: opacity 180ms ease; }
+.config-overlay-enter-active .config-overlay__card, .config-overlay-leave-active .config-overlay__card { transition: opacity 180ms ease, transform 180ms ease; }
+.config-overlay-enter-from, .config-overlay-leave-to { opacity: 0; }
+.config-overlay-enter-from .config-overlay__card, .config-overlay-leave-to .config-overlay__card { opacity: 0; transform: scale(0.96) translateY(8px); }
+@keyframes wire-flow { to { stroke-dashoffset: -168; } }
+@media (max-width: 1100px) { .config-project { display: none; } }
+@media (max-width: 700px) {
+  .config-workspace { height: calc(100dvh - 116px); min-height: 540px; }
+  .config-toolbar { padding: 10px; gap: 8px; }
+  .config-title { gap: 6px; }
+  .config-title h1 { font-size: 17px; }
+  .config-jump { width: 154px; }
+  .config-tools { gap: 2px; }
+  .config-overlay { padding: 0; }
+  .config-overlay__card { width: 100%; height: 100%; max-height: 100%; border-radius: 0; border-left: 0; border-right: 0; }
+  .config-overlay__header { padding: 12px 14px; }
+  .config-overlay__body { padding: 14px; }
+  .config-component-count { display: none; }
+  .config-canvas-tools { justify-content: center; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .config-wire-signal { animation: none; }
+  .config-node, .config-overlay-enter-active, .config-overlay-leave-active { transition: none; }
+}
 </style>

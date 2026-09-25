@@ -48,18 +48,17 @@ if (process.platform === "linux") {
   app.commandLine.appendSwitch("no-sandbox");
 }
 
-// AI/automation channel: always-on Chrome DevTools Protocol remote debugging
-// on a fixed, well-known port, so an agent never has to ask the operator to
-// relaunch with a special flag first - see AGENTS.md's "Desktop App:
-// AI/Automation Access" for how to attach and drive/inspect the running
-// window (click elements, read the DOM, screenshot) exactly like a user
-// would. Deliberate, operator-directed tradeoff: any other local process can
-// attach to this port and fully control the window, a real attack surface
-// for a tool that already runs elevated - set SNIFF4HOUND_DESKTOP_DEBUG_PORT
-// to a different port, or to "0"/"false"/"off" to disable it outright, for a
-// deployment that wants it closed instead.
-const DEFAULT_DESKTOP_DEBUG_PORT = "9223";
-const desktopDebugPortRaw = String(process.env.SNIFF4HOUND_DESKTOP_DEBUG_PORT ?? DEFAULT_DESKTOP_DEBUG_PORT).trim();
+// AI/automation channel: opt-in Chrome DevTools Protocol remote debugging -
+// off unless SNIFF4HOUND_DESKTOP_DEBUG_PORT names a port, so a normal launch
+// prints no "DevTools listening on ws://..." banner and opens no port. Set
+// it to a port number to enable it for a session (see AGENTS.md's "Desktop
+// App: AI/Automation Access" for how to attach and drive/inspect the running
+// window - click elements, read the DOM, screenshot - exactly like a user
+// would). Any other local process can attach to an open port and fully
+// control the window, a real attack surface for a tool that already runs
+// elevated, which is why this now needs to be turned on deliberately rather
+// than closed off deliberately.
+const desktopDebugPortRaw = String(process.env.SNIFF4HOUND_DESKTOP_DEBUG_PORT ?? "0").trim();
 const desktopDebugDisabled = ["0", "false", "off", "no", ""].includes(desktopDebugPortRaw.toLowerCase());
 if (!desktopDebugDisabled) {
   app.commandLine.appendSwitch("remote-debugging-port", desktopDebugPortRaw);

@@ -1,17 +1,29 @@
 <template>
   <div class="settings-view">
-    <ViewHeader
-      overline="Configuration"
-      title="Settings"
-      description="Everything that changes how Sniff4Hound behaves lives here. Other views stay read-only: tables, charts, and live feeds."
-      :show-refresh="false"
-    />
+    <ConfigGraphNav v-model="activeTab" :states="graphStates" :refreshing="statusRefreshing" @refresh="refreshGraph">
+    <v-window :model-value="activeTab" :touch="false">
+      <v-window-item value="runtime">
+        <div class="settings-engine-list">
+          <div v-for="engine in ['sniffer', 'honeypot']" :key="engine" class="settings-engine">
+            <div>
+              <h3>{{ engine === 'sniffer' ? 'Sniffer' : 'Honeypot' }}</h3>
+              <span>{{ runtime[engine]?.running ? 'En ejecución' : 'Detenido' }}</span>
+            </div>
+            <v-switch
+              :model-value="Boolean(runtime[engine]?.running)"
+              :aria-label="'Activar ' + engine"
+              :loading="enginePending === engine"
+              :disabled="Boolean(enginePending) || store.state.wsStatus !== 'online'"
+              color="success"
+              hide-details
+              inset
+              @update:model-value="toggleEngine(engine, $event)"
+            />
+          </div>
+        </div>
+        <v-alert v-if="engineError" type="error" variant="tonal" class="mt-4">{{ engineError }}</v-alert>
+      </v-window-item>
 
-    <DataPanel class="mb-4" title="Mapa de configuración" subtitle="Cómo se relacionan los componentes de Sniff4Hound - abre un nodo para configurarlo, todo lo demás sigue abajo.">
-      <ConfigGraphNav @open-settings-tab="activeTab = $event" />
-    </DataPanel>
-
-    <v-window v-model="activeTab">
       <v-window-item value="capture">
         <DataPanel
           title="Capture Interfaces"
@@ -64,6 +76,8 @@
           </v-row>
         </DataPanel>
 
+      </v-window-item>
+      <v-window-item value="scope">
         <DataPanel
           title="Detection scope"
           subtitle="Mute detections for traffic that stays entirely inside the selected scopes. Excluded packets remain visible in capture, but they are not classified, tagged by rules, run through monitors, or sent to anomaly detectors."
@@ -115,6 +129,8 @@
           </v-alert>
         </DataPanel>
 
+      </v-window-item>
+      <v-window-item value="location">
         <DataPanel
           title="Sensor location"
           subtitle="Where this machine physically sits. Private and loopback addresses have no geolocation of their own, so the Radar map plots them all at this point. Public addresses keep their own location, resolved from the registry blocks."
@@ -172,6 +188,9 @@
           </v-alert>
         </DataPanel>
 
+      </v-window-item>
+      <v-window-item value="storage">
+        <AiModeControls :config="aiSnapshot" storage-only class="mb-5" @updated="aiSnapshot = $event" />
         <DataPanel
           title="Stored data"
           subtitle="Delete what capture and the honeypot have written to the database. Monitor definitions, listeners, allow/block lists and settings are never touched."
@@ -506,17 +525,6 @@
         </EntityTablePanel>
 
         <RuleDetailDialog v-model="ruleDetailOpen" :monitor="ruleDetailMonitor" />
-
-        <v-btn
-          size="small"
-          variant="text"
-          color="primary"
-          prepend-icon="mdi-chart-timeline-variant"
-          class="mt-4"
-          to="/monitors"
-        >
-          View monitor traffic &amp; charts
-        </v-btn>
 
         <v-dialog v-model="dialogOpen" max-width="980">
           <v-card rounded="xl" class="pa-2 monitor-dialog-card">
@@ -970,6 +978,21 @@
         <ExclusionsPanel />
       </v-window-item>
 
+      <v-window-item value="connection">
+        <dl class="settings-connection">
+          <dt>WebSocket</dt>
+          <dd>{{ store.state.wsStatus === 'online' ? 'Conectado' : store.state.wsStatus }}</dd>
+          <dt>API</dt>
+          <dd>{{ store.state.apiBase || 'Local' }}</dd>
+          <dt>Autenticación</dt>
+          <dd>{{ store.state.authRequired ? (store.state.authStatus === 'authenticated' ? 'Sesión autenticada' : 'Sesión requerida') : 'No requerida' }}</dd>
+        </dl>
+        <v-btn v-if="store.state.authRequired && store.state.authStatus !== 'authenticated'" class="mt-4" prepend-icon="mdi-lock-open-outline" @click="store.state.authPromptOpen = true">
+          Autenticar
+        </v-btn>
+        <v-btn class="mt-4" variant="outlined" prepend-icon="mdi-refresh" :loading="statusRefreshing" @click="refreshGraph">Actualizar conexión</v-btn>
+      </v-window-item>
+
       <v-window-item value="notifications">
         <v-card variant="tonal" class="pa-4 notify-card">
           <div class="d-flex align-start justify-space-between flex-wrap ga-3">
@@ -982,6 +1005,7 @@
             </div>
             <v-switch
               :model-value="store.state.notifySoundEnabled"
+              aria-label="Sonido de notificaciones"
               color="primary"
               hide-details
               inset
@@ -992,16 +1016,16 @@
       </v-window-item>
 
       <v-window-item value="ai">
-        <AiSettingsPanel />
+        <AiSettingsPanel @updated="refreshGraph" />
       </v-window-item>
 
     </v-window>
+    </ConfigGraphNav>
   </div>
 </template>
 
 <script>
 import store from "../state/appStore";
-import ViewHeader from "../components/ui/ViewHeader.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import LocationPicker from "../components/settings/LocationPicker.vue";
@@ -1010,7 +1034,9 @@ import BlacklistPanel from "../components/settings/BlacklistPanel.vue";
 import ExclusionsPanel from "../components/settings/ExclusionsPanel.vue";
 import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 import AiSettingsPanel from "../components/settings/AiSettingsPanel.vue";
+import AiModeControls from "../components/settings/AiModeControls.vue";
 import ConfigGraphNav from "../components/settings/ConfigGraphNav.vue";
+import { SETTINGS_NODES } from "../components/settings/settingsGraph";
 import { formatTimestamp, matchesSearch, uniqueSorted } from "../utils/traffic";
 
 const PROTOCOL_OPTIONS = [
@@ -1034,9 +1060,7 @@ const PROTOCOL_OPTIONS = [
   "llc-osi",
 ];
 const SEVERITY_OPTIONS = ["info", "low", "medium", "high", "critical"];
-const VALID_TABS = new Set([
-  "capture", "honeypot", "detection", "blacklist", "exclusions", "notifications", "ai",
-]);
+const VALID_TABS = new Set(SETTINGS_NODES.map(node => node.section));
 const GROUP_BY_OPTIONS = ["src_ip", "dst_ip", "src_ip+dst_port", "dst_ip+dst_port", "src_ip+dst_ip"];
 const MATCH_REGEX_KEYS = [
   "payload_regex",
@@ -1107,7 +1131,6 @@ function emptyForm() {
 export default {
   name: "SettingsView",
   components: {
-    ViewHeader,
     EntityTablePanel,
     DataPanel,
     RegexHelperButton,
@@ -1116,13 +1139,19 @@ export default {
     LocationPicker,
     RuleDetailDialog,
     AiSettingsPanel,
+    AiModeControls,
     ConfigGraphNav,
   },
   data() {
     const requested = String((this.$route && this.$route.query && this.$route.query.section) || "").trim();
     return {
       store,
-      activeTab: VALID_TABS.has(requested) ? requested : "capture",
+      activeTab: VALID_TABS.has(requested) ? requested : "",
+      statusRefreshing: false,
+      graphStatusTimer: null,
+      aiSnapshot: null,
+      enginePending: "",
+      engineError: "",
       ruleDetailOpen: false,
       ruleDetailMonitor: null,
 
@@ -1193,6 +1222,28 @@ export default {
     };
   },
   computed: {
+    graphStates() {
+      const online = this.store.state.wsStatus === "online";
+      const live = online && Boolean(this.runtime.sniffer?.running || this.runtime.honeypot?.running);
+      const state = (label, active = live) => ({ label, active: online && active, unknown: !online });
+      const engineState = (name) => !online
+        ? state("Sin conexión", false)
+        : state(this.runtime[name]?.running ? "En ejecución" : "Detenido", Boolean(this.runtime[name]?.running));
+      return {
+        runtime: state(online ? (live ? "Captura activa" : "Motores detenidos") : "Sin conexión", live),
+        capture: engineState("sniffer"),
+        honeypot: { ...engineState("honeypot"), label: online ? `${this.listeners.filter(item => item.enabled).length} listeners habilitados` : "Sin conexión" },
+        location: state(this.locationConfigured ? this.locationSummary : "Sin ubicación"),
+        detection: state(this.error ? "Sin datos" : `${this.monitors.filter(item => item.enabled).length} reglas habilitadas`),
+        scope: state(this.detectionScopes.length ? `${this.detectionScopes.length} ámbitos silenciados` : "Todo el tráfico"),
+        ai: state(!this.aiSnapshot || !online ? "Sin datos" : this.aiSnapshot.training_enabled ? "Entrenamiento activo" : this.aiSnapshot.ai_alert_mode_enabled ? "Alertas de IA activas" : "Entrenamiento detenido", live && Boolean(this.aiSnapshot?.training_enabled || this.aiSnapshot?.ai_alert_mode_enabled)),
+        storage: state(online ? "SQLite local" : "Sin conexión"),
+        exclusions: state("Filtros compartidos"),
+        blacklist: state("Bloqueados / permitidos"),
+        connection: state(online ? "Conectado" : "Sin conexión", online),
+        notifications: state(this.store.state.notifySoundEnabled ? "Sonido activado" : "Sonido desactivado", online && this.store.state.notifySoundEnabled),
+      };
+    },
     runtime() {
       return this.store.state.runtime || {};
     },
@@ -1320,17 +1371,50 @@ export default {
   watch: {
     "$route.query.section"(next) {
       const requested = String(next || "").trim();
-      if (VALID_TABS.has(requested)) this.activeTab = requested;
+      this.activeTab = VALID_TABS.has(requested) ? requested : "";
+    },
+    activeTab(next) {
+      if (String(this.$route.query.section || "") === next) return;
+      const query = { ...this.$route.query };
+      if (next) query.section = next;
+      else delete query.section;
+      this.$router.replace({ query });
     },
   },
   mounted() {
-    this.store.initRuntime();
+    this.refreshGraph();
+    this.graphStatusTimer = setInterval(this.refreshGraph, 10000);
     this.loadListeners();
     this.loadDetectionScopes();
     this.loadLocation();
     this.load();
   },
+  beforeUnmount() {
+    clearInterval(this.graphStatusTimer);
+  },
   methods: {
+    async refreshGraph() {
+      if (this.statusRefreshing) return;
+      this.statusRefreshing = true;
+      const results = await Promise.allSettled([
+        this.store.initRuntime(),
+        this.store.fetchJsonPromise("/api/ai/config"),
+      ]);
+      this.aiSnapshot = results[1].status === "fulfilled" ? results[1].value : null;
+      this.statusRefreshing = false;
+    },
+    async toggleEngine(engine, enabled) {
+      if (this.enginePending) return;
+      this.enginePending = engine;
+      this.engineError = "";
+      try {
+        await this.store.controlEngine(engine, enabled ? "start" : "stop");
+      } catch (err) {
+        this.engineError = err.message || "No se pudo cambiar el estado del motor.";
+      } finally {
+        this.enginePending = "";
+      }
+    },
     formatTimestamp,
     matchesSearch,
     // Capture
@@ -1920,6 +2004,36 @@ export default {
 </script>
 
 <style scoped>
+.settings-view { min-width: 0; }
+.settings-engine { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid #35363e; }
+.settings-engine h3 { font-size: 15px; }
+.settings-engine span { color: #b1b3be; font-size: 12px; }
+.settings-engine .v-switch { flex: 0 0 auto; }
+.settings-connection { display: grid; grid-template-columns: auto 1fr; gap: 18px; font-size: 13px; }
+.settings-connection dt { color: #a4a6b1; }
+.settings-connection dd { margin: 0; overflow-wrap: anywhere; }
+.settings-view :deep(.config-inspector .data-panel),
+.settings-view :deep(.config-inspector .filter-card),
+.settings-view :deep(.config-inspector .notify-card) {
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
+}
+.settings-view :deep(.config-inspector .v-card__underlay) { display: none; }
+.settings-view :deep(.config-inspector .panel-pulse) { display: none; }
+.settings-view :deep(.config-inspector .panel-head) { align-items: flex-start !important; }
+.settings-view :deep(.config-inspector .panel-head > div) { min-width: 0; flex-wrap: wrap; }
+.settings-view :deep(.config-inspector .text-subtitle-1) { font-size: 15px !important; }
+.settings-view :deep(.config-inspector .text-body-2) { font-size: 12px !important; line-height: 1.6; }
+.settings-view :deep(.config-inspector .v-col) { flex: 0 0 100%; max-width: 100%; }
+.settings-view :deep(.config-inspector .v-btn) { letter-spacing: 0; max-width: 100%; }
+.settings-view :deep(.config-inspector .v-btn__content) { white-space: normal; }
+.settings-view :deep(.config-inspector .v-window) { overflow: visible; }
+.settings-view :deep(.config-inspector .v-window-item) { transition: none !important; }
+.settings-view :deep(.config-inspector .v-window__container) { height: auto !important; }
+
 .interface-card,
 .scope-card,
 .purge-card,

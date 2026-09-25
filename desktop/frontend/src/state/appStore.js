@@ -24,6 +24,8 @@ const TIME_RANGE_OPTIONS = [
 const TIME_RANGE_VALUES = new Set(TIME_RANGE_OPTIONS.map((option) => option.value));
 const WS_RECONNECT_DELAY_MS = 1800;
 const WS_REFRESH_THROTTLE_MS = 10000;
+const LIVE_ACTIVITY_WINDOW_MS = 5000;
+const LIVE_ACTIVITY_TICK_MS = 500;
 const WS_AUTH_CLOSE_CODE = 4401;
 const APP_SHUTDOWN_DELAY_SECONDS = 0.2;
 const WS_REFRESH_EVENT_TYPES = new Set([
@@ -60,6 +62,12 @@ const state = reactive({
   // in flight; null once no purge is running. ClearDataButton renders a
   // real progress bar off this instead of a bare spinner.
   dataClearProgress: null,
+  // Rolling packets/second over the last LIVE_ACTIVITY_WINDOW_MS, split by
+  // which engine produced the traffic. scheduleTableRefresh() deliberately
+  // coalesces inbound frames down to one table refresh every 10s, which is
+  // right for tables but erases any sense of *rate* - this keeps the raw
+  // arrival cadence so the pipeline canvas can animate at the real speed.
+  liveActivity: { total: 0, sniffer: 0, honeypot: 0, lastPacketAt: 0, seen: 0 },
 });
 
 const tableRefreshSubscribers = new Set();
@@ -702,6 +710,7 @@ function clearReconnectTimer() {
 function destroyRealtime() {
   wsConnectAttempt += 1;
   clearReconnectTimer();
+  stopLiveActivityTicker();
   if (wsRefreshTimer) {
     clearTimeout(wsRefreshTimer);
     wsRefreshTimer = null;
@@ -1551,6 +1560,63 @@ function evaluateNotificationsForMessage(type, payload) {
   }
 }
 
+// --- live activity (packets/second) ----------------------------------------
+// Arrival timestamps for the current window, newest last. Only ever holds a
+// few seconds of events, so the linear scan on each tick stays trivial even
+// under a heavy capture.
+const liveActivityEvents = [];
+let liveActivityTimer = null;
+
+function isHoneypotInterface(name) {
+  const iface = String(name || "").trim().toLowerCase();
+  return iface === "honeypot" || iface.startsWith("honeypot")
+    || iface === "service" || iface.startsWith("service:");
+}
+
+function recomputeLiveActivity() {
+  const cutoff = Date.now() - LIVE_ACTIVITY_WINDOW_MS;
+  while (liveActivityEvents.length && liveActivityEvents[0].at < cutoff) {
+    liveActivityEvents.shift();
+  }
+  const seconds = LIVE_ACTIVITY_WINDOW_MS / 1000;
+  let honeypot = 0;
+  for (const event of liveActivityEvents) {
+    if (event.honeypot) honeypot += 1;
+  }
+  const total = liveActivityEvents.length;
+  const activity = state.liveActivity;
+  activity.total = total / seconds;
+  activity.honeypot = honeypot / seconds;
+  activity.sniffer = (total - honeypot) / seconds;
+  if (!total) activity.total = activity.sniffer = activity.honeypot = 0;
+}
+
+function recordLiveActivity(type, payload) {
+  if (type !== "packet") return;
+  const packet = payload && payload.packet;
+  liveActivityEvents.push({
+    at: Date.now(),
+    honeypot: isHoneypotInterface(packet && packet.interface),
+  });
+  state.liveActivity.lastPacketAt = Date.now();
+  state.liveActivity.seen += 1;
+}
+
+// The window has to keep draining even when nothing is arriving, otherwise a
+// capture that goes quiet would freeze the wires at their last busy rate
+// instead of visibly settling down.
+function startLiveActivityTicker() {
+  if (liveActivityTimer) return;
+  liveActivityTimer = setInterval(recomputeLiveActivity, LIVE_ACTIVITY_TICK_MS);
+}
+
+function stopLiveActivityTicker() {
+  if (liveActivityTimer) clearInterval(liveActivityTimer);
+  liveActivityTimer = null;
+  liveActivityEvents.length = 0;
+  Object.assign(state.liveActivity, { total: 0, sniffer: 0, honeypot: 0 });
+}
+
 function scheduleTableRefresh(payload) {
   wsPendingRefreshPayload = payload;
   // The throttle below drops every event that arrives while a flush is
@@ -1896,6 +1962,7 @@ function attachRealtimeSocket(socket) {
     clearReconnectTimer();
     const isReconnect = hasEverConnectedRealtime;
     state.wsStatus = "online";
+    startLiveActivityTicker();
     // The server keeps subscriptions per connection, so a reconnect starts
     // with none. Re-sending is what keeps a view that was streaming from
     // quietly freezing on the slice it had when the socket dropped.
@@ -1952,6 +2019,7 @@ function attachRealtimeSocket(socket) {
         receivedAt: Date.now(),
       });
     }
+    recordLiveActivity(type, payload);
     evaluateNotificationsForMessage(type, payload);
     if (!WS_REFRESH_EVENT_TYPES.has(type)) return;
     scheduleTableRefresh({
@@ -1969,6 +2037,7 @@ function attachRealtimeSocket(socket) {
   socket.addEventListener("close", (event) => {
     if (wsClient !== socket) return;
     wsClient = null;
+    stopLiveActivityTicker();
     if (event && event.code === WS_AUTH_CLOSE_CODE) {
       handleUnauthorized("Session expired. Re-enter the security code.");
       return;
