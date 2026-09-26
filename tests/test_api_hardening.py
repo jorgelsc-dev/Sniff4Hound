@@ -894,5 +894,56 @@ class CaptureIpcTokenTests(unittest.TestCase):
             self.assertEqual(settings.resolve_ipc_token(), "b" * 64)
 
 
+class CaptureServiceUnavailableTests(unittest.TestCase):
+    """Every engine control runs in the privileged capture process over IPC.
+    When that link is down, the failure used to reach the operator as a bare
+    500 "Internal Server Error" on the Sniffer/Honeypot toggle - which says
+    nothing about which half is broken and looks identical to a crash in the
+    API itself."""
+
+    def setUp(self):
+        _, self.app = _reload_app_stack(self, "0")
+
+    def _post_runtime(self, body):
+        return self.app.app.dispatch(
+            _request("/api/runtime/", method="POST", body=json.dumps(body))
+        )
+
+    def test_a_dropped_capture_link_answers_503_with_a_reason(self):
+        from sniff4hound.ipc import IpcDisconnected
+
+        with patch.object(
+            self.app.runtime,
+            "start",
+            side_effect=IpcDisconnected("Not connected to the capture service"),
+        ):
+            response = self._post_runtime({"engine": "honeypot", "action": "start"})
+
+        self.assertEqual(response.status, 503)
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["code"], "capture_unavailable")
+        self.assertIn("capture service", payload["message"].lower())
+        # The underlying reason survives: without it the operator cannot tell
+        # a stalled capture process from a rejected token.
+        self.assertIn("Not connected to the capture service", payload["message"])
+
+    def test_a_stalled_capture_call_answers_503_not_500(self):
+        from sniff4hound.ipc import IpcError
+
+        with patch.object(self.app.runtime, "stop", side_effect=IpcError("IPC call timed out")):
+            response = self._post_runtime({"engine": "sniffer", "action": "stop"})
+
+        self.assertEqual(response.status, 503)
+        self.assertIn("IPC call timed out", json.loads(response.body.decode("utf-8"))["message"])
+
+    def test_a_validation_error_is_still_a_400(self):
+        """The new 503 branch must not swallow the existing ValueError -> 400
+        mapping: "mode, engine or interface is required" is a client mistake,
+        not an unavailable backend."""
+        response = self._post_runtime({})
+        self.assertEqual(response.status, 400)
+        self.assertEqual(json.loads(response.body.decode("utf-8"))["code"], "invalid_request")
+
+
 if __name__ == "__main__":
     unittest.main()

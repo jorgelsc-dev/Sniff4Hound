@@ -32,7 +32,7 @@ from .export import (
     normalize_format,
     rows_to_csv,
 )
-from .ipc import IpcClient
+from .ipc import IpcClient, IpcError
 from .jobs import STATUS_DONE, STATUS_ERROR, JobQueue
 from .settings import (
     API_MAX_LIMIT,
@@ -3233,6 +3233,27 @@ def _apply_api_auth_guards():
                 return Response.json(
                     {"status": "error", "code": "invalid_request", "message": str(exc)},
                     status=400,
+                )
+            except IpcError as exc:
+                # Every engine control (start/stop/set_mode/listeners) runs in
+                # the privileged capture process over IPC, so a stalled or
+                # restarted capture process used to reach the operator as a
+                # bare 500 "Internal Server Error" on the Sniffer/Honeypot
+                # toggle - indistinguishable from a real bug, and silent about
+                # the fact that the engine itself is fine. 503 with the
+                # underlying reason says which half is unavailable, and the
+                # client reconnects on the next call (see IpcClient).
+                return Response.json(
+                    {
+                        "status": "error",
+                        "code": "capture_unavailable",
+                        "message": (
+                            "The capture service is not responding "
+                            f"({exc}). The engines run in a separate privileged "
+                            "process; retry in a moment, and if it persists restart Sniff4Hound."
+                        ),
+                    },
+                    status=503,
                 )
 
         guarded_handler._sniff4hound_auth_wrapped = True
