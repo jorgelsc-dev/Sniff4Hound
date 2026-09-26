@@ -108,7 +108,10 @@ export default {
       messages: [],
       draft: "",
       messageSearch: "",
-      loading: false,
+      // True at first paint - see the note in IpRelationshipGraph: mounted()
+      // fires after the initial render, so starting false showed the "no
+      // conversation yet" empty state before load() had even been called.
+      loading: true,
       sending: false,
       clearing: false,
       error: "",
