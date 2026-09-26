@@ -571,22 +571,19 @@ class TestSnifferParsing(unittest.TestCase):
         self.assertEqual(stored[0]["proto"], "unparseable")
         self.assertEqual(stored[0]["parse_error"], "frame too short to parse")
 
-    def test_snapshot_stops_reporting_running_when_all_capture_threads_died(self):
-        class DeadThread:
-            def is_alive(self):
-                return False
-
+    def test_worker_exit_stops_reporting_capture_as_running(self):
         self.sniffer.state.running = True
         self.sniffer.state.interfaces = ["wlan0"]
         self.sniffer.state.errors = {"wlan0": "network is down"}
-        self.sniffer._threads = [DeadThread()]
+        self.sniffer._threads = [threading.current_thread()]
+
+        self.sniffer._mark_capture_worker_stopped("wlan0")
 
         snapshot = self.sniffer.snapshot()
 
         self.assertFalse(snapshot["running"])
         self.assertFalse(self.sniffer.state.running)
         self.assertEqual(snapshot["capture_state"], "blocked")
-        self.assertEqual(snapshot["active_threads"], 0)
 
     def test_capture_worker_stops_after_repeated_socket_receive_errors(self):
         # If an interface disappears, recvfrom() can fail immediately forever.

@@ -732,11 +732,9 @@ class Sniffer:
             available = self.list_available_interfaces()
             active_threads = sum(1 for thread in self._threads if thread.is_alive())
             errors = dict(self.state.errors)
-            running = bool(self.state.running and active_threads > 0)
-            if self.state.running and active_threads == 0 and not self._stop_event.is_set():
-                self.state.running = False
+            running = bool(self.state.running)
             capture_state = "idle"
-            if running:
+            if running and active_threads > 0:
                 capture_state = "running"
             elif errors:
                 capture_state = "blocked"
@@ -1134,7 +1132,6 @@ class Sniffer:
                     sock.close()
             except Exception:
                 pass
-            self._mark_capture_worker_stopped(interface)
             return
         except Exception as exc:
             self._set_error(interface, f"socket unavailable: {exc}")
