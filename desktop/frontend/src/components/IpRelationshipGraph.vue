@@ -593,7 +593,13 @@ export default {
     return {
       MIN_ZOOM,
       MAX_ZOOM,
-      loading: false,
+      // Starts true, because at first paint this component genuinely has not
+      // asked yet. mounted() runs *after* the initial render, so with `false`
+      // here the first frame had loading=false and nodes=[] and fell through
+      // to the "no IPs observed" branch - the operator was told there was no
+      // traffic, and then the map appeared a moment later. An empty result
+      // and an unasked question are not the same answer.
+      loading: true,
       error: "",
       nodes: [],
       edges: [],
