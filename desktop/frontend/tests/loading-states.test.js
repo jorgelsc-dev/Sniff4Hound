@@ -21,12 +21,44 @@ function sfc(path) {
   const source = readFileSync(new URL(path, import.meta.url), "utf8");
   const { descriptor } = parse(source);
   return {
-    // Comments stripped: they are not rendered, and a comment that quotes the
-    // empty-state copy it explains would otherwise be mistaken for the real
-    // thing and read as an unguarded branch.
-    template: (descriptor.template?.content || "").replace(/<!--[\s\S]*?-->/g, ""),
+    template: descriptor.template?.content || "",
     script: (descriptor.script?.content || "") + (descriptor.scriptSetup?.content || ""),
   };
+}
+
+// Where the comments are, rather than removing them.
+//
+// This started as a regex strip of `<!-- ... -->`, which CodeQL correctly
+// flagged (js/incomplete-multi-character-sanitization): one pass over nested
+// or malformed markers leaves `<!--` behind. Nothing untrusted is involved
+// here - these are repo files read off disk - but scanning for the ranges is
+// both exact and simpler to reason about than a regex that has to be right
+// about every edge case.
+function commentRanges(text) {
+  const ranges = [];
+  let from = 0;
+  for (;;) {
+    const open = text.indexOf("<!--", from);
+    if (open === -1) return ranges;
+    const close = text.indexOf("-->", open + 4);
+    const end = close === -1 ? text.length : close + 3;
+    ranges.push([open, end]);
+    from = end;
+  }
+}
+
+// The first occurrence that is actually rendered. A comment explaining an
+// empty state usually quotes its copy, and counting that as the real thing
+// reads the branch as unguarded.
+function indexOutsideComments(text, needle) {
+  const ranges = commentRanges(text);
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(needle, from);
+    if (at === -1) return -1;
+    if (!ranges.some(([start, end]) => at >= start && at < end)) return at;
+    from = at + needle.length;
+  }
 }
 
 // Components that fetch on mount and render an empty state from the same
@@ -69,15 +101,16 @@ test("every no-data message is guarded by the loading flag", () => {
 
   for (const [path, message] of guarded) {
     const { template } = sfc(path);
-    const line = template
-      .split("\n")
-      .find((candidate) => candidate.includes(message));
-    assert.ok(line, `${path}: expected to still find the empty-state copy "${message}"`);
+    const index = indexOutsideComments(template, message);
+    assert.notEqual(
+      index,
+      -1,
+      `${path}: expected to still find the rendered empty-state copy "${message}"`,
+    );
 
     // The element carrying the message must be reached through v-else-if,
     // i.e. it sits behind a preceding loading branch rather than standing on
     // its own v-if.
-    const index = template.indexOf(message);
     const preceding = template.slice(0, index);
     const branch = preceding.lastIndexOf("v-else-if");
     const standalone = preceding.lastIndexOf("v-if=");
