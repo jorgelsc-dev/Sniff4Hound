@@ -1327,6 +1327,7 @@ class Sniffer:
         ai_only_mode = self._ai_alert_mode_enabled and not self._training_enabled
         monitor_matched = False
         training_hits = []
+        suppressed_hits: list[dict] = []
         if detection_muted:
             matches = []
             monitor_hits = []
@@ -1344,7 +1345,13 @@ class Sniffer:
             monitor_matched = bool(combined_hits)
             monitor_hits = self._filter_monitor_hits(combined_hits)
             if monitor_hits:
-                monitor_hits = self._rule_throttle.filter(monitor_hits, packet.get("src_ip"))
+                # partition(), not filter(): what the throttle silenced still
+                # gets tagged below, so "matched but rate-limited" stays
+                # distinguishable from "never matched". Only the allowed half
+                # counts as an alert, so this does not undo the rate limit.
+                monitor_hits, suppressed_hits = self._rule_throttle.partition(
+                    monitor_hits, packet.get("src_ip")
+                )
             # Anomaly detectors run unconditionally, regardless of filter_enabled —
             # a rate/state-based detector that only ever saw already-matched
             # traffic could never build a useful baseline.
@@ -1363,11 +1370,12 @@ class Sniffer:
         # exactly these rows again once training mode goes back off -
         # without touching the alerts also captured during that window.
         training_sample = self._training_capture_enabled and not detection_muted and not is_alert
-        tags = self._build_packet_tags(packet, matches, monitor_hits)
+        tags = self._build_packet_tags(packet, matches, monitor_hits, suppressed_hits)
         if training_sample:
             tags.append({"key": "training_capture", "value": "1"})
         packet["rule_hits"] = matches
         packet["monitor_hits"] = monitor_hits
+        packet["suppressed_monitor_hits"] = suppressed_hits
         packet["tags"] = tags
         if detection_muted:
             packet["ai_detection_status"] = "muted"
@@ -1472,7 +1480,13 @@ class Sniffer:
             except Exception:
                 LOGGER.exception("Failed to record path intel")
 
-    def _build_packet_tags(self, packet: dict, matches: list[dict], monitor_hits: list[dict] | None = None) -> list[dict]:
+    def _build_packet_tags(
+        self,
+        packet: dict,
+        matches: list[dict],
+        monitor_hits: list[dict] | None = None,
+        suppressed_hits: list[dict] | None = None,
+    ) -> list[dict]:
         tags = [
             {"key": "proto", "value": normalize_protocol_name(packet.get("proto"))},
             {"key": "state", "value": str(packet.get("state") or "open").strip().lower() or "open"},
@@ -1501,6 +1515,24 @@ class Sniffer:
             detail = str(hit.get("detail") or "").strip()
             if detail:
                 tags.append({"key": "detail", "value": detail, "severity": severity})
+            # How many identical hits RuleAlertThrottle swallowed while this
+            # one was in cooldown, so a single alert still conveys the volume
+            # behind it instead of looking like an isolated event.
+            silenced = int(hit.get("suppressed_since_last") or 0)
+            if silenced > 0:
+                tags.append({"key": "monitor_suppressed_count", "value": str(silenced), "severity": severity})
+        # Rate-limited hits are recorded under their own keys: the monitor did
+        # match, so hiding it entirely is what makes a working signature look
+        # broken, but reusing "monitor"/"monitor_id" would re-alert on exactly
+        # what the throttle exists to quieten.
+        for hit in suppressed_hits or []:
+            severity = str(hit.get("severity") or "info")
+            label = str(hit.get("label") or hit.get("tag") or hit.get("monitor_name") or "").strip()
+            if label:
+                tags.append({"key": "monitor_suppressed", "value": label, "severity": severity})
+            monitor_id = str(hit.get("monitor_id") or "").strip()
+            if monitor_id:
+                tags.append({"key": "monitor_suppressed_id", "value": monitor_id, "severity": severity})
         return tags
 
     def parse_packet(self, data: bytes, *, interface: str = "") -> dict | None:
