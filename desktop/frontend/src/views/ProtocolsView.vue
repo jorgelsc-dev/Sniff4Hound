@@ -231,10 +231,18 @@
             </v-chip>
           </template>
           <template #cell-src_ip="{ value }">
-            <span class="mono">{{ value || "-" }}</span>
+            <template v-if="value">
+              <span class="mono">{{ value }}</span>
+              <ListActionIcons inline :value="value" category="ip" />
+            </template>
+            <span v-else>-</span>
           </template>
           <template #cell-dst_ip="{ value }">
-            <span class="mono">{{ value || "-" }}</span>
+            <template v-if="value">
+              <span class="mono">{{ value }}</span>
+              <ListActionIcons inline :value="value" category="ip" />
+            </template>
+            <span v-else>-</span>
           </template>
           <template #cell-size="{ item }">
             <span class="meta-cell">{{ buildPacketSizeSummary(item) }}</span>
@@ -291,10 +299,18 @@
             </v-chip>
           </template>
           <template #cell-src_ip="{ value }">
-            <span class="mono">{{ value || "-" }}</span>
+            <template v-if="value">
+              <span class="mono">{{ value }}</span>
+              <ListActionIcons inline :value="value" category="ip" />
+            </template>
+            <span v-else>-</span>
           </template>
           <template #cell-dst_ip="{ value }">
-            <span class="mono">{{ value || "-" }}</span>
+            <template v-if="value">
+              <span class="mono">{{ value }}</span>
+              <ListActionIcons inline :value="value" category="ip" />
+            </template>
+            <span v-else>-</span>
           </template>
           <template #cell-response_size="{ value }">
             <span class="meta-cell">{{ formatBytes(value) || "-" }}</span>
@@ -332,7 +348,11 @@
             {{ formatTimestamp(value) }}
           </template>
           <template #cell-ip="{ value }">
-            <span class="mono">{{ value || "-" }}</span>
+            <template v-if="value">
+              <span class="mono">{{ value }}</span>
+              <ListActionIcons inline :value="value" category="ip" />
+            </template>
+            <span v-else>-</span>
           </template>
           <template #cell-port="{ value }">
             <v-chip size="x-small" color="info" variant="tonal">
@@ -364,6 +384,7 @@ import {
 } from "../utils/protocolCatalog";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
+import ListActionIcons from "../components/ui/ListActionIcons.vue";
 import {
   buildPacketRouteSummary,
   buildPacketSizeSummary,
@@ -839,6 +860,7 @@ function uniqueEndpointSet(rows) {
 export default {
   name: "ProtocolsView",
   components: {
+    ListActionIcons,
     ViewHeader,
     EntityTablePanel,
   },

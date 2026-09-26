@@ -54,7 +54,10 @@ function evaluationModeLabel(mode) {
 .tournament-panel {
   height: 100%;
   overflow-y: auto;
-  padding: 16px 20px 320px;
+  /* The learning charts float bottom-right over this stage. The candidates now
+     sit in one row across the top, so they clear it on their own and no longer
+     need the tall bottom gutter this used to reserve. */
+  padding: 16px 20px 24px;
   box-sizing: border-box;
 }
 .tournament-panel__head {
@@ -70,11 +73,16 @@ function evaluationModeLabel(mode) {
   color: var(--text-dim);
   max-width: 640px;
 }
+/* auto-fit rather than auto-fill: empty tracks collapse, so the round's three
+   candidates spread across the full row instead of huddling in a 420px column
+   with the rest of the stage left black. Capped so they do not stretch into
+   letterboxes on an ultrawide. */
 .tournament-panel__graphs {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 420px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+  align-items: start;
+  max-width: 1500px;
 }
 .tournament-panel__champion {
   margin-top: 14px;
