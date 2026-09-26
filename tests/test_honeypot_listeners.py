@@ -5,10 +5,11 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from sniff4hound.honeypot import (
     HoneypotEngine,
@@ -29,6 +30,27 @@ def _free_high_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
+
+
+def _port_is_bound(port: int) -> bool:
+    """True while something still holds `port`, i.e. a listener has not let
+    go of it yet. SO_REUSEADDR means a successful bind is the reliable signal
+    here, not a connect attempt."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+            return False
+        except OSError:
+            return True
+
+
+def _wait_until(predicate, *, timeout=5.0, interval=0.02) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
 
 
 class TestSeedingDoesNotImportHeavyHoneypotModule(unittest.TestCase):
@@ -182,6 +204,124 @@ class TestHoneypotListenerStore(unittest.TestCase):
         self.assertEqual(snapshot["listeners"], [])
         self.assertGreaterEqual(snapshot["listener_count"], 10000)
         self.assertEqual(snapshot["enabled_listener_count"], expected_enabled)
+
+
+class TestListenerHonoursEngineStopEvent(unittest.TestCase):
+    """`stop()` signals the listeners it finds in its roster snapshot. A
+    listener registered *after* that snapshot - the spawn loop runs on its own
+    background thread, so this is a real interleaving - had nobody left to
+    signal its own stop event, and `_listen` only ever watched that one. The
+    thread therefore kept its port bound and kept answering traffic for the
+    rest of the process's life, while `snapshot()` reported the honeypot
+    stopped. Honouring the engine-wide stop event closes that off.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.store = SniffStore(Path(self.temp_dir.name) / "test.db")
+        self.addCleanup(self.store.close)
+        # Loopback explicitly: the wildcard default expands to every real host
+        # IPv4 address (see _resolve_bind_hosts), which this test neither needs
+        # nor wants to be listening on.
+        self.engine = HoneypotEngine(self.store, MagicMock(), bind_host="127.0.0.1")
+
+    def test_listener_winds_down_on_the_engine_stop_event_alone(self):
+        port = _free_high_port()
+        own_stop = threading.Event()
+        # Deliberately never set: this stands in for the listener that
+        # escaped stop()'s roster, whose own event nobody holds any more.
+        self.addCleanup(own_stop.set)
+
+        self.engine._stop_event.clear()
+        thread = threading.Thread(
+            target=self.engine._listen,
+            args=(port, lambda *a, **k: None),
+            kwargs={"stop_event": own_stop},
+            daemon=True,
+        )
+        thread.start()
+        self.assertTrue(
+            _wait_until(lambda: _port_is_bound(port), timeout=5),
+            msg="listener never bound its port, so the test proves nothing",
+        )
+
+        self.engine._stop_event.set()
+
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive(), "listener ignored the engine-wide stop event")
+        self.assertTrue(
+            _wait_until(lambda: not _port_is_bound(port), timeout=5),
+            msg="listener exited but left its port bound",
+        )
+
+
+class TestHoneypotStopDuringStartup(unittest.TestCase):
+    """start() binds its listeners on a background thread, so stop() can and
+    does land mid-spawn. Whatever the interleaving, stopping the engine has to
+    leave nothing running: a surviving listener thread is a port still open to
+    attackers while the UI reports the honeypot stopped.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.store = SniffStore(Path(self.temp_dir.name) / "test.db")
+        self.addCleanup(self.store.close)
+        # Enough enabled listeners that start()'s spawn loop is still running
+        # when the test moves on, which is the interleaving that matters here.
+        # `_listen` is replaced so no real port is bound and the test needs no
+        # privileges.
+        with self.store._lock:
+            self.store._conn.execute("UPDATE honeypot_listeners SET enabled = 0")
+            self.store._conn.execute(
+                "UPDATE honeypot_listeners SET enabled = 1 WHERE id IN"
+                " (SELECT id FROM honeypot_listeners LIMIT 150)"
+            )
+            self.store._conn.commit()
+
+        def _fake_listen(_self, _port, _handler, *, udp=False, stop_event):
+            stop_event.wait(timeout=30)
+
+        patcher = patch.object(HoneypotEngine, "_listen", _fake_listen)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.engine = HoneypotEngine(self.store, MagicMock())
+        self.addCleanup(self.engine.stop)
+
+    def _spawn_loop_finished(self) -> bool:
+        thread = self.engine._start_thread
+        return thread is not None and not thread.is_alive()
+
+    def _listener_threads_alive(self) -> list[str]:
+        return [t.name for t in threading.enumerate() if "sniff4hound-listener-" in t.name]
+
+    def test_stop_after_startup_leaves_no_listener_thread_behind(self):
+        self.engine.start()
+        self.assertTrue(_wait_until(self._spawn_loop_finished, timeout=30))
+        self.assertGreater(len(self._listener_threads_alive()), 0)
+
+        self.engine.stop()
+
+        self.assertFalse(self.engine.snapshot(include_listeners=False)["running"])
+        self.assertTrue(
+            _wait_until(lambda: not self._listener_threads_alive(), timeout=20),
+            msg=f"listener threads outlived stop(): {self._listener_threads_alive()[:5]}",
+        )
+
+    def test_stop_racing_startup_leaves_no_listener_thread_behind(self):
+        """The actual race: stopping *while* the spawn loop is still
+        mid-flight. A listener registered after stop() had taken its roster
+        snapshot used to escape the shutdown entirely - its port stayed bound
+        and it kept answering traffic while the UI reported the honeypot
+        stopped, for the rest of the process's life."""
+        self.engine.start()
+        self.engine.stop()
+
+        self.assertTrue(
+            _wait_until(lambda: not self._listener_threads_alive(), timeout=20),
+            msg=f"listener threads outlived stop(): {self._listener_threads_alive()[:5]}",
+        )
 
 
 class TestHoneypotEnginePerListenerControl(unittest.TestCase):
