@@ -90,26 +90,11 @@
         <v-btn variant="outlined" :disabled="loading || targetKind !== 'ip'" @click="setTopSuggestion">
           Top host
         </v-btn>
-        <v-btn
-          variant="tonal"
-          color="success"
-          prepend-icon="mdi-shield-check-outline"
-          :loading="listActionSubmitting === 'whitelist'"
-          :disabled="loading || !targetValue"
-          @click="addListEntry('whitelist')"
-        >
-          Whitelist
-        </v-btn>
-        <v-btn
-          variant="tonal"
-          color="error"
-          prepend-icon="mdi-shield-alert-outline"
-          :loading="listActionSubmitting === 'blacklist'"
-          :disabled="loading || !targetValue"
-          @click="addListEntry('blacklist')"
-        >
-          Blacklist
-        </v-btn>
+        <ListActionIcons
+          :value="targetValue"
+          :category="targetCategory"
+          @added="listActionMessage = `${$event.value} añadida a la ${$event.kind}.`"
+        />
       </v-col>
     </v-row>
 
@@ -316,6 +301,7 @@ import IocExportMenu from "../components/ui/IocExportMenu.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import MonitorMatchesPanel from "../components/monitors/MonitorMatchesPanel.vue";
+import ListActionIcons from "../components/ui/ListActionIcons.vue";
 import { uniqueSorted } from "../utils/traffic";
 
 export default {
@@ -326,6 +312,7 @@ export default {
     DataPanel,
     EntityTablePanel,
     MonitorMatchesPanel,
+    ListActionIcons,
   },
   data() {
     return {
@@ -341,7 +328,6 @@ export default {
       monitors: [],
       analytics: {},
       intel: {},
-      listActionSubmitting: "",
       listActionMessage: "",
       serviceColumns: [
         { key: "ip", label: "IP" },
@@ -775,32 +761,6 @@ export default {
         })
         .finally(() => {
           if (sequence === this.loadSequence) this.loading = false;
-        });
-    },
-    addListEntry(kind) {
-      const value = this.targetValue;
-      if (!value) return;
-      this.listActionSubmitting = kind;
-      this.listActionMessage = "";
-      this.error = "";
-      const payload = {
-        category: this.targetCategory,
-        matchType: "exact",
-        value,
-        label: `${kind === "whitelist" ? "Trusted" : "Blocked"} ${this.targetLabel}: ${value}`,
-      };
-      const action = kind === "whitelist"
-        ? this.store.createWhitelistEntry(payload)
-        : this.store.createBlacklistEntry(payload);
-      action
-        .then(() => {
-          this.listActionMessage = `${value} added to ${kind}.`;
-        })
-        .catch((err) => {
-          this.error = (err && err.message) || `Failed to add ${value} to ${kind}`;
-        })
-        .finally(() => {
-          this.listActionSubmitting = "";
         });
     },
   },

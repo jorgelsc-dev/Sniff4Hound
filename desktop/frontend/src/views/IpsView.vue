@@ -82,9 +82,12 @@
       @refresh="load"
     >
       <template #cell-ip="{ value }">
-        <router-link v-if="value" class="mono ip-link" :to="{ path: '/investigate', query: { ip: value } }">
-          {{ value }}
-        </router-link>
+        <template v-if="value">
+          <router-link class="mono ip-link" :to="{ path: '/investigate', query: { ip: value } }">
+            {{ value }}
+          </router-link>
+          <ListActionIcons inline :value="value" category="ip" />
+        </template>
         <span v-else>-</span>
       </template>
       <template #cell-scope="{ item }">
@@ -124,6 +127,7 @@ import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import ChartCard from "../components/ui/ChartCard.vue";
+import ListActionIcons from "../components/ui/ListActionIcons.vue";
 import { formatTimestamp, topSeriesByValue } from "../utils/traffic";
 import { deviceIcon, deviceColor, deviceDisplay } from "../utils/devices";
 import IpRelationshipGraph from "../components/IpRelationshipGraph.vue";
@@ -149,6 +153,7 @@ export default {
   name: "IpsView",
   components: {
     ViewHeader,
+    ListActionIcons,
     EntityTablePanel,
     ChartCard,
     IpRelationshipGraph,

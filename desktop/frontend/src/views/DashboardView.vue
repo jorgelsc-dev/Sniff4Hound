@@ -66,10 +66,18 @@
         <v-chip size="x-small" color="primary" variant="tonal">{{ String(value || "unknown").toUpperCase() }}</v-chip>
       </template>
       <template #cell-src_ip="{ value }">
-        <span class="mono">{{ value || "-" }}</span>
+        <template v-if="value">
+          <span class="mono">{{ value }}</span>
+          <ListActionIcons inline :value="value" category="ip" />
+        </template>
+        <span v-else>-</span>
       </template>
       <template #cell-dst_ip="{ value }">
-        <span class="mono">{{ value || "-" }}</span>
+        <template v-if="value">
+          <span class="mono">{{ value }}</span>
+          <ListActionIcons inline :value="value" category="ip" />
+        </template>
+        <span v-else>-</span>
       </template>
       <template #cell-score="{ value }">
         <span v-if="value === null || value === undefined" class="text-medium-emphasis">—</span>
@@ -106,6 +114,7 @@
 import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
+import ListActionIcons from "../components/ui/ListActionIcons.vue";
 import ClearDataButton from "../components/ui/ClearDataButton.vue";
 import {
   buildPacketSizeSummary,
@@ -119,6 +128,7 @@ const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
 export default {
   name: "DashboardView",
   components: {
+    ListActionIcons,
     ViewHeader,
     EntityTablePanel,
     ClearDataButton,

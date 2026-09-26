@@ -46,9 +46,12 @@
         <v-chip size="x-small" color="primary" variant="tonal">{{ value }}</v-chip>
       </template>
       <template #cell-ip="{ value }">
-        <router-link v-if="value" class="mono ip-link" :to="{ path: '/investigate', query: { ip: value } }">
-          {{ value }}
-        </router-link>
+        <template v-if="value">
+          <router-link class="mono ip-link" :to="{ path: '/investigate', query: { ip: value } }">
+            {{ value }}
+          </router-link>
+          <ListActionIcons inline :value="value" category="ip" />
+        </template>
         <span v-else>-</span>
       </template>
       <template #cell-last_seen="{ value }">
@@ -62,6 +65,7 @@
 import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
+import ListActionIcons from "../components/ui/ListActionIcons.vue";
 import ChartCard from "../components/ui/ChartCard.vue";
 import { formatTimestamp, groupSumSeries, topSeriesByValue } from "../utils/traffic";
 
@@ -72,6 +76,7 @@ const FEED_LIMIT = 500;
 export default {
   name: "PathsView",
   components: {
+    ListActionIcons,
     ViewHeader,
     EntityTablePanel,
     ChartCard,
