@@ -37,6 +37,7 @@ const FETCHES_ON_MOUNT = [
   "../src/components/monitors/MonitorMatchesPanel.vue",
   "../src/views/ProtocolsView.vue",
   "../src/views/ChatView.vue",
+  "../src/views/MonitorsView.vue",
 ];
 
 for (const path of FETCHES_ON_MOUNT) {
