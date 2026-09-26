@@ -17,26 +17,20 @@
       />
       <span v-if="candidate.loss != null" class="text-caption">pérdida {{ candidate.loss.toFixed(4) }}</span>
     </div>
-    <div class="tournament-graph__zoom">
-      <v-btn icon size="x-small" variant="tonal" aria-label="Alejar" :disabled="zoom <= MIN_ZOOM" @click="zoomBy(-ZOOM_STEP)">
-        <v-icon icon="mdi-magnify-minus-outline" size="14" />
-      </v-btn>
-      <span class="tournament-graph__zoom-level">{{ Math.round(zoom * 100) }}%</span>
-      <v-btn icon size="x-small" variant="tonal" aria-label="Acercar" :disabled="zoom >= MAX_ZOOM" @click="zoomBy(ZOOM_STEP)">
-        <v-icon icon="mdi-magnify-plus-outline" size="14" />
-      </v-btn>
-    </div>
-    <div class="tournament-graph__scroll" @wheel="onWheel">
-      <svg :viewBox="`0 0 ${viewBoxWidth} ${viewBoxHeight}`" preserveAspectRatio="xMidYMid meet" :style="{ transform: `scale(${zoom})` }" role="img" :aria-label="`Candidata ${shapeLabel}, ${statusLabel}`">
-        <text v-for="(label, i) in columnLabels" :key="label" :x="columnX(i)" y="12" text-anchor="middle" fill="currentColor" font-size="8">{{ label }}</text>
-        <line v-for="(edge, i) in edges" :key="`edge-${i}`" :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2" :stroke="edgeColor" stroke-width="0.6" :opacity="0.22" />
-        <circle v-for="node in nodes" :key="node.id" :cx="node.x" :cy="node.y" :r="node.r" :fill="nodeColor" :class="{ 'tournament-node--training': candidate.status === 'training' }" />
+    <div class="tournament-graph__figure">
+      <svg :viewBox="`0 0 ${VIEWBOX_WIDTH} ${viewBoxHeight}`" preserveAspectRatio="xMidYMid meet" role="img" :aria-label="graphLabel">
+        <text v-for="column in columnMeta" :key="`label-${column.index}`" :x="column.x" y="10" text-anchor="middle" fill="currentColor" font-size="7" opacity="0.6">{{ column.label }}</text>
+        <line v-for="(edge, i) in edges" :key="`edge-${i}`" :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2" :stroke="edgeColor" stroke-width="0.5" :opacity="0.2" />
+        <circle v-for="node in nodes" :key="node.id" :cx="node.x" :cy="node.y" :r="NODE_RADIUS" :fill="nodeColor" :class="{ 'tournament-node--training': candidate.status === 'training' }" />
+        <!-- A layer taller than MAX_ROWS is drawn clipped; saying so beats
+             quietly sketching a different shape than the header claims. -->
+        <text v-for="column in truncatedColumns" :key="`more-${column.index}`" :x="column.x" :y="viewBoxHeight - 2" text-anchor="middle" :fill="nodeColor" font-size="6" opacity="0.85">+{{ column.hidden }}</text>
       </svg>
     </div>
   </v-card>
 </template>
 <script setup>
-import { computed, ref } from "vue";
+import { computed } from "vue";
 
 const props = defineProps({
   candidate: { type: Object, required: true },
@@ -47,10 +41,14 @@ const hiddenSizes = computed(() => props.candidate.hidden_sizes || []);
 const columnSizes = computed(() => [props.featureCount, ...hiddenSizes.value, 1]);
 const numColumns = computed(() => columnSizes.value.length);
 const shapeLabel = computed(() => columnSizes.value.join(" → "));
+// Abbreviated on purpose. A deep candidate puts nine or more columns inside a
+// fixed viewBox, where "Entrada"/"Oculta 1"/... are far wider than the space
+// between two columns and run into each other - the header already spells the
+// shape out in full.
 const columnLabels = computed(() => [
-  "Entrada",
-  ...hiddenSizes.value.map((_, i) => `Oculta ${i + 1}`),
-  "Salida",
+  "Ent",
+  ...hiddenSizes.value.map((_, i) => `H${i + 1}`),
+  "Sal",
 ]);
 
 const STATUS_META = {
@@ -78,31 +76,42 @@ const progressPercent = computed(() => {
 // candidate (see store.get_ai_tournament_state()), so unlike NeuralGraph.vue
 // this never needs the settle-animation/drag/weight-color machinery, just a
 // topology sketch of the shape being trained.
-const TOP_MARGIN = 20;
-const SIDE_MARGIN = 30;
-const viewBoxWidth = 260;
-const ROW_HEIGHT = 16;
-const NODE_RADIUS = 5;
-const maxRowCount = computed(() => Math.max(...columnSizes.value));
-const viewBoxHeight = computed(() => TOP_MARGIN + Math.min(maxRowCount.value, 14) * ROW_HEIGHT + 10);
+const TOP_MARGIN = 18;
+const SIDE_MARGIN = 16;
+const VIEWBOX_WIDTH = 300;
+const ROW_HEIGHT = 11;
+const NODE_RADIUS = 3.4;
+const MAX_ROWS = 14;
+const BOTTOM_MARGIN = 12;
+const maxRowCount = computed(() => Math.min(Math.max(...columnSizes.value), MAX_ROWS));
+const viewBoxHeight = computed(() => TOP_MARGIN + maxRowCount.value * ROW_HEIGHT + BOTTOM_MARGIN);
+const graphLabel = computed(() => `Candidata ${shapeLabel.value}, ${statusLabel.value}`);
+
 function columnX(index) {
-  const usable = viewBoxWidth - SIDE_MARGIN * 2;
+  const usable = VIEWBOX_WIDTH - SIDE_MARGIN * 2;
   const step = numColumns.value > 1 ? usable / (numColumns.value - 1) : 0;
   return SIDE_MARGIN + index * step;
 }
 function rowY(index, rowCount) {
-  const shown = Math.min(rowCount, 14);
-  const offset = (Math.min(maxRowCount.value, 14) - shown) / 2;
-  return TOP_MARGIN + (offset + Math.min(index, shown - 1)) * ROW_HEIGHT;
+  const shown = Math.min(rowCount, MAX_ROWS);
+  const offset = (maxRowCount.value - shown) / 2;
+  return TOP_MARGIN + (offset + index) * ROW_HEIGHT;
 }
+const columnMeta = computed(() => columnSizes.value.map((count, index) => ({
+  index,
+  count,
+  x: columnX(index),
+  label: columnLabels.value[index],
+  hidden: Math.max(0, count - MAX_ROWS),
+})));
+const truncatedColumns = computed(() => columnMeta.value.filter(column => column.hidden > 0));
 const columns = computed(() =>
   columnSizes.value.map((count, colIdx) => {
-    const shown = Math.min(count, 14);
+    const shown = Math.min(count, MAX_ROWS);
     return Array.from({ length: shown }, (_, i) => ({
       id: `${colIdx}_${i}`,
       x: columnX(colIdx),
       y: rowY(i, count),
-      r: NODE_RADIUS,
     }));
   })
 );
@@ -119,18 +128,6 @@ const edges = computed(() => {
   return result;
 });
 
-const MIN_ZOOM = 0.5;
-const MAX_ZOOM = 3;
-const ZOOM_STEP = 0.25;
-const zoom = ref(1);
-function zoomBy(delta) {
-  zoom.value = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round((zoom.value + delta) * 100) / 100));
-}
-function onWheel(event) {
-  if (!event.ctrlKey && !event.metaKey) return;
-  event.preventDefault();
-  zoomBy(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
-}
 </script>
 <style scoped>
 .tournament-graph { border: 1px solid transparent; transition: border-color 0.2s ease; }
@@ -140,10 +137,11 @@ function onWheel(event) {
 .tournament-graph__head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .tournament-graph__progress { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .tournament-graph__progress .text-caption { min-width: 5.5em; }
-.tournament-graph__zoom { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
-.tournament-graph__zoom-level { min-width: 3em; text-align: center; font-size: 0.65rem; color: var(--text-dim); }
-.tournament-graph__scroll { overflow: auto; max-height: 160px; }
-.tournament-graph__scroll svg { width: 100%; max-width: 320px; display: block; margin: 0 auto; transform-origin: top center; }
+/* No inner scroller: the viewBox already grows with the deepest layer, so the
+   whole topology fits the card and the per-card zoom controls it used to need
+   are gone with it. */
+.tournament-graph__figure { margin-top: 2px; }
+.tournament-graph__figure svg { width: 100%; height: auto; display: block; }
 .tournament-node--training { animation: tournament-pulse 1.2s ease-in-out infinite; }
 @keyframes tournament-pulse {
   0%, 100% { opacity: 0.5; }
