@@ -716,11 +716,14 @@ class CaptureSupervisor:
     the child is alive once, 0.2s after spawning it, and then blocks in
     app.run() until shutdown.
 
-    Restarting the process is only half of it - `IpcClient` connects exactly
-    once, from connect_capture_service(), and its `call()` raises
-    IpcDisconnected forever after the reader thread sees the socket drop. So
-    a successful respawn is followed by re-running `reconnect` to re-attach
-    this process to the new child.
+    A successful respawn is followed by `reconnect`. `IpcClient.call()` does
+    re-establish the link on demand now, so the RPCs behind the engine
+    controls would recover on their own - but every one of those calls is
+    request-driven, and nothing polls. Until a user happens to click
+    something, the link stays down and with it the reader thread carrying
+    packet/stats events, so live capture would silently stay dark on an
+    untouched dashboard. Reconnecting eagerly here brings the event stream
+    back as soon as the child is up.
 
     Every collaborator is injected because the interesting logic here is the
     decision (restart? give up?), and exercising that for real needs root -
@@ -833,6 +836,13 @@ class CaptureSupervisor:
         # own random one (see capture_service.main) - which this process's
         # IpcClient, still holding the original secret, would then be
         # rejected by. Put the same secret back before spawning.
+        #
+        # Refusing to spawn when that fails is the important half: a token
+        # mismatch is not a transient error to the client. IpcClient latches
+        # `_auth_failed` on the first rejection and raises IpcAuthError from
+        # every later connect(), so one child started with the wrong secret
+        # wedges the link for the rest of the run - including across a
+        # subsequent restart that would otherwise have recovered.
         if not self._write_token(self._ipc_token_file, self._ipc_token):
             self._log(
                 f"[!] Could not rewrite the capture IPC token file at {self._ipc_token_file} - "

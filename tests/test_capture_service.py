@@ -266,8 +266,10 @@ class CaptureSupervisorTests(unittest.TestCase):
         )
         self.assertIsNot(supervisor.process, dead)
         self.assertIsNone(supervisor.process.poll())
-        # IpcClient never reconnects on its own, so a respawn alone would
-        # leave the web process detached from the child it just started.
+        # IpcClient.call() reconnects on demand, but only when something
+        # calls it - nothing polls. Reconnecting eagerly is what brings the
+        # reader thread, and so the packet/stats event stream, back on an
+        # untouched dashboard.
         self.assertEqual(self.reconnected, 1)
         # And the secret goes back off disk afterwards, as at startup.
         self.assertEqual(self.removed, ["/run/sniff4hound/capture-8080.token"])
@@ -332,8 +334,11 @@ class CaptureSupervisorTests(unittest.TestCase):
             write_token=lambda path, token: False,
         )
 
-        # Spawning anyway would start a child that mints its own token and is
-        # unreachable over IPC - worse than not restarting at all.
+        # Spawning anyway would start a child that mints its own token, and a
+        # token mismatch is permanent: IpcClient latches `_auth_failed` on the
+        # first rejection and raises from every later connect(), so it would
+        # wedge the link for the rest of the run - including across a later
+        # restart that would otherwise have recovered.
         self.assertFalse(supervisor.check_once())
         self.assertEqual(self.spawned, [])
         self.assertIn("Could not rewrite the capture IPC token file", self.logs[-1])
