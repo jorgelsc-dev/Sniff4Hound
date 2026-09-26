@@ -601,6 +601,18 @@ class HoneypotEngine:
         # ("tcp/22") - the shared `_stop_event` above still governs the
         # writer thread and overall engine lifecycle, but per-listener
         # start/stop needs per-listener signaling.
+        #
+        # Both dicts are guarded by `_listener_lock`, not `_state_lock`:
+        # start() spawns listeners from a *background* thread (see
+        # _start_listeners) while snapshot() is being polled from the IPC
+        # dispatch thread, so these are genuinely concurrent readers and
+        # writers. Unguarded, iterating either one while the spawn loop
+        # inserted into it raised "dictionary changed size during
+        # iteration", which travelled out as a bare HTTP 500 on exactly the
+        # request that had just started the honeypot. A lock of its own
+        # keeps the (brief) bookkeeping critical sections off the state
+        # lock that every counter update takes.
+        self._listener_lock = threading.RLock()
         self._listener_stop_events: dict[str, threading.Event] = {}
         self._listener_threads: dict[str, threading.Thread] = {}
         self._writer_thread: threading.Thread | None = None
@@ -859,7 +871,8 @@ class HoneypotEngine:
 
     def _listener_view(self, row: dict) -> dict:
         listener_id = str(row.get("id") or "")
-        thread = self._listener_threads.get(listener_id)
+        with self._listener_lock:
+            thread = self._listener_threads.get(listener_id)
         return {
             "id": listener_id,
             "proto": row.get("proto"),
@@ -885,7 +898,8 @@ class HoneypotEngine:
                 "enabled": sum(1 for item in listeners if item.get("enabled")),
                 "custom": sum(1 for item in listeners if item.get("source") == "custom"),
             }
-        running_listener_count = sum(1 for thread in self._listener_threads.values() if thread.is_alive())
+        with self._listener_lock:
+            running_listener_count = sum(1 for thread in self._listener_threads.values() if thread.is_alive())
         with self._state_lock:
             return {
                 "running": bool(self._state.running),
@@ -981,13 +995,20 @@ class HoneypotEngine:
         # call timeout). Signalling all of them up front means they all
         # start winding down concurrently and the joins below just wait out
         # the shared ~1s grace period once.
-        listener_ids = list(self._listener_threads.keys())
-        for listener_id in listener_ids:
-            stop_event = self._listener_stop_events.pop(listener_id, None)
+        #
+        # Draining the roster under `_listener_lock` (and joining outside it)
+        # also closes the window that let a listener spawned concurrently by
+        # _start_listeners survive the stop: the roster is emptied
+        # atomically, so anything registered after this point belongs to the
+        # next start(), and anything registered before it is signalled here.
+        with self._listener_lock:
+            listener_ids = list(self._listener_threads.keys())
+            stop_events = [self._listener_stop_events.pop(listener_id, None) for listener_id in listener_ids]
+            threads = [self._listener_threads.pop(listener_id, None) for listener_id in listener_ids]
+        for stop_event in stop_events:
             if stop_event is not None:
                 stop_event.set()
-        for listener_id in listener_ids:
-            thread = self._listener_threads.pop(listener_id, None)
+        for thread in threads:
             if thread is not None and thread.is_alive():
                 thread.join(timeout=1.5)
         if self._writer_thread and self._writer_thread.is_alive():
@@ -1214,6 +1235,15 @@ class HoneypotEngine:
         return hosts
 
     def _listen(self, port: int, handler, *, udp: bool = False, stop_event: threading.Event):
+        # A listener winds down on *either* its own stop event (one port
+        # toggled off) or the engine-wide one (stop() of the whole honeypot).
+        # Honouring only the per-listener event meant a thread that escaped
+        # stop()'s roster snapshot kept its port bound and kept answering
+        # traffic for the life of the process, with the UI reporting the
+        # honeypot as stopped.
+        def _stopping() -> bool:
+            return stop_event.is_set() or self._stop_event.is_set()
+
         sock_type = socket.SOCK_DGRAM if udp else socket.SOCK_STREAM
         hosts = self._resolve_bind_hosts()
         sockets: list[socket.socket] = []
@@ -1238,18 +1268,18 @@ class HoneypotEngine:
         try:
             if not udp:
                 LOGGER.info("TCP listener activo en %s:%s (%d IP(s))", hosts, port, len(sockets))
-                while not stop_event.is_set():
+                while not _stopping():
                     try:
                         ready, _, _ = select.select(sockets, [], [], 1.0)
                     except OSError:
-                        if stop_event.is_set():
+                        if _stopping():
                             break
                         continue
                     for ready_sock in ready:
                         try:
                             client, addr = ready_sock.accept()
                         except OSError as error:
-                            if stop_event.is_set():
+                            if _stopping():
                                 break
                             self._set_error(f"tcp/{port}", str(error))
                             continue
@@ -1266,18 +1296,18 @@ class HoneypotEngine:
                         ).start()
             else:
                 LOGGER.info("UDP listener activo en %s:%s (%d IP(s))", hosts, port, len(sockets))
-                while not stop_event.is_set():
+                while not _stopping():
                     try:
                         ready, _, _ = select.select(sockets, [], [], 1.0)
                     except OSError:
-                        if stop_event.is_set():
+                        if _stopping():
                             break
                         continue
                     for ready_sock in ready:
                         try:
                             data, addr = ready_sock.recvfrom(MAX_PACKET_SIZE)
                         except OSError as error:
-                            if stop_event.is_set():
+                            if _stopping():
                                 break
                             self._set_error(f"udp/{port}", str(error))
                             continue
@@ -1317,9 +1347,10 @@ class HoneypotEngine:
         Returns False (with an error recorded) only for a TCP/TLS listener
         whose TLS context isn't ready - every other failure surfaces later,
         from inside the thread, via `_set_error` (bind failures etc.)."""
-        existing = self._listener_threads.get(listener_id)
-        if existing is not None and existing.is_alive():
-            return True
+        with self._listener_lock:
+            existing = self._listener_threads.get(listener_id)
+            if existing is not None and existing.is_alive():
+                return True
         if not listener_port_allowed(proto, port, source=source):
             self._set_error(listener_id, listener_port_policy_error(proto, port, source=source))
             return False
@@ -1342,16 +1373,25 @@ class HoneypotEngine:
                 name=f"sniff4hound-listener-udp-{port}",
                 daemon=True,
             )
-        self._listener_stop_events[listener_id] = stop_event
-        thread.start()
-        self._listener_threads[listener_id] = thread
+        # Registered *and* started under the lock, so stop() can never
+        # observe a half-registered listener: a thread recorded before it is
+        # started would be joined before `start()` ran (which raises), and
+        # one started before it is recorded could miss stop()'s roster
+        # snapshot entirely and keep its port bound - a listener still
+        # answering attackers while the UI reports the honeypot stopped.
+        # start() is cheap (the thread immediately blocks in bind/select).
+        with self._listener_lock:
+            self._listener_stop_events[listener_id] = stop_event
+            thread.start()
+            self._listener_threads[listener_id] = thread
         return True
 
     def _stop_listener_thread(self, listener_id: str):
-        stop_event = self._listener_stop_events.pop(listener_id, None)
+        with self._listener_lock:
+            stop_event = self._listener_stop_events.pop(listener_id, None)
+            thread = self._listener_threads.pop(listener_id, None)
         if stop_event is not None:
             stop_event.set()
-        thread = self._listener_threads.pop(listener_id, None)
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.5)
 
