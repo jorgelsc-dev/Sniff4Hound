@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .ipc import generate_ipc_token
-from .process_control import request_process_shutdown, reset_process_shutdown_request
+from .process_control import process_shutdown_requested, request_process_shutdown, reset_process_shutdown_request
 from .terminal import PROMPT, set_prompt_active
 from .settings import (
     DATA_DIR,
@@ -693,6 +693,171 @@ def _stop_capture_child(process, *, timeout: float = 5.0) -> None:
     _wait_for_process(process, 2.0)
 
 
+# Bounds for CaptureSupervisor below. Three restarts inside a minute rides
+# out a one-off crash or OOM-kill; a child dying that fast repeatedly is
+# broken rather than unlucky, and an unbounded retry loop would re-prompt for
+# privileges on every attempt.
+CAPTURE_RESTART_MAX_ATTEMPTS = 3
+CAPTURE_RESTART_WINDOW_SECONDS = 60.0
+CAPTURE_SUPERVISOR_POLL_SECONDS = 3.0
+
+
+def _log_to_stderr(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+class CaptureSupervisor:
+    """Watches the privileged capture child for the life of the server and
+    restarts it when it dies unexpectedly.
+
+    Without this, a capture child lost mid-session (crash, OOM-kill, an
+    external `kill -9`) leaves this process serving HTTP perfectly happily
+    while every engine control fails for the rest of the run: main() checks
+    the child is alive once, 0.2s after spawning it, and then blocks in
+    app.run() until shutdown.
+
+    Restarting the process is only half of it - `IpcClient` connects exactly
+    once, from connect_capture_service(), and its `call()` raises
+    IpcDisconnected forever after the reader thread sees the socket drop. So
+    a successful respawn is followed by re-running `reconnect` to re-attach
+    this process to the new child.
+
+    Every collaborator is injected because the interesting logic here is the
+    decision (restart? give up?), and exercising that for real needs root -
+    see CaptureSupervisorTests, which drives it with a fake Popen handle and
+    a fake clock.
+    """
+
+    def __init__(
+        self,
+        *,
+        process,
+        ipc_socket: str,
+        ipc_token_file: str,
+        ipc_token: str,
+        spawn=None,
+        reconnect=None,
+        write_token=None,
+        remove_token=None,
+        shutdown_requested=None,
+        monotonic=None,
+        log=None,
+        max_restarts: int = CAPTURE_RESTART_MAX_ATTEMPTS,
+        window_seconds: float = CAPTURE_RESTART_WINDOW_SECONDS,
+        poll_interval: float = CAPTURE_SUPERVISOR_POLL_SECONDS,
+    ):
+        self._process = process
+        self._ipc_socket = ipc_socket
+        self._ipc_token_file = ipc_token_file
+        self._ipc_token = ipc_token
+        self._spawn = spawn or _spawn_capture_child
+        self._reconnect = reconnect
+        self._write_token = write_token or write_ipc_token_file
+        self._remove_token = remove_token or _remove_ipc_token_file
+        self._shutdown_requested = shutdown_requested or process_shutdown_requested
+        self._monotonic = monotonic or time.monotonic
+        self._log = log or _log_to_stderr
+        self._max_restarts = max_restarts
+        self._window_seconds = window_seconds
+        self._poll_interval = poll_interval
+        self._restarts: list[float] = []
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def process(self):
+        """The handle for the child that is current *now* - not the one
+        main() spawned, which a restart has replaced. Shutdown has to signal
+        this one or it orphans a privileged process."""
+        return self._process
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run, name="sniff4hound-capture-supervisor", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def _run(self) -> None:
+        # wait() rather than sleep() so stop() ends the thread immediately
+        # instead of up to a poll interval later - shutdown terminates the
+        # child, and a tick landing in that window would read it as a crash.
+        while not self._stop_event.wait(self._poll_interval):
+            try:
+                if not self.check_once():
+                    return
+            except Exception as exc:
+                self._log(f"[!] Capture process supervisor stopped after an unexpected error: {exc}")
+                return
+
+    def check_once(self) -> bool:
+        """One supervision tick. Returns whether supervision should continue."""
+        if self._stop_event.is_set():
+            return False
+        process = self._process
+        if process is None:
+            return False
+        if process.poll() is None:
+            return True
+        # Expected exit: the whole process tree is going down (/api/app/shutdown
+        # signals this process too), so the child being gone is the point.
+        if self._shutdown_requested():
+            return False
+        return self._restart(process)
+
+    def _restart(self, dead) -> bool:
+        now = self._monotonic()
+        window_start = now - self._window_seconds
+        self._restarts = [at for at in self._restarts if at > window_start]
+        if len(self._restarts) >= self._max_restarts:
+            self._log(
+                f"[!] The capture process has died {len(self._restarts)} times in the last "
+                f"{int(self._window_seconds)}s - giving up on restarting it. Engine controls "
+                "will stay unavailable until Sniff4Hound is restarted; the child's own output "
+                f"is in {_capture_log_path(self._ipc_socket)}."
+            )
+            return False
+
+        self._restarts.append(now)
+        self._log(
+            f"[!] The capture process exited unexpectedly (code {dead.returncode}) - restarting "
+            f"it ({len(self._restarts)}/{self._max_restarts})..."
+        )
+
+        # main() deletes the token file as soon as the first child has
+        # authenticated, and a child that finds no token file generates its
+        # own random one (see capture_service.main) - which this process's
+        # IpcClient, still holding the original secret, would then be
+        # rejected by. Put the same secret back before spawning.
+        if not self._write_token(self._ipc_token_file, self._ipc_token):
+            self._log(
+                f"[!] Could not rewrite the capture IPC token file at {self._ipc_token_file} - "
+                "not restarting the capture process."
+            )
+            return False
+
+        process = self._spawn(self._ipc_socket, self._ipc_token_file)
+        if process is None:
+            # _spawn_capture_child already printed why. Keep the dead handle so
+            # the next tick tries again, spending the restart budget rather
+            # than ending supervision on one transient failure to fork.
+            return True
+
+        self._process = process
+        if self._reconnect is not None and not self._reconnect():
+            self._log(
+                "[!] The capture process restarted but this process could not re-attach to it."
+            )
+        # Shrink the window in which the secret exists on disk, exactly as
+        # main() does after its own first connect.
+        self._remove_token(self._ipc_token_file)
+        return True
+
+
 def _start_interactive_console(
     *,
     host: str,
@@ -782,6 +947,7 @@ def main():
     desktop_mode = _desktop_mode_enabled()
     console_thread = None
     capture_process = None
+    capture_supervisor = None
 
     if selected_port is None:
         _print_address_in_use_error(host, requested_port)
@@ -871,6 +1037,16 @@ def main():
                 append_chat_message=append_chat_message,
                 store=store,
             )
+        # app.run() below blocks until shutdown, so nothing in this function
+        # would ever look at the capture child again - this thread does.
+        capture_supervisor = CaptureSupervisor(
+            process=capture_process,
+            ipc_socket=ipc_socket,
+            ipc_token_file=ipc_token_file,
+            ipc_token=ipc_token,
+            reconnect=connect_capture_service,
+        )
+        capture_supervisor.start()
         bootstrap_capture()
         if tls_material:
             app.run(host, selected_port, ssl_context=tls_material.ssl_context)
@@ -884,6 +1060,16 @@ def main():
     except KeyboardInterrupt:
         print("\n\n🛑 Shutting down gracefully...\n")
     finally:
+        if capture_supervisor is not None:
+            # Before anything below can make the child exit. Ctrl+C does not
+            # go through request_process_shutdown(), so the supervisor's own
+            # shutdown check would not cover this path - a tick landing here
+            # would read the terminated child as a crash and respawn a
+            # privileged process on the way out.
+            capture_supervisor.stop()
+            # A restart replaced the handle main() is still holding; signaling
+            # the stale one would leave the live child orphaned as root.
+            capture_process = capture_supervisor.process
         _stop_interactive_console(console_thread)
         shutdown_capture()
         _stop_capture_child(capture_process)
