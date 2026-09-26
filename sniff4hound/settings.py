@@ -327,6 +327,15 @@ API_MAX_LIMIT = max(100, _as_int(_env("SNIFF4HOUND_API_MAX_LIMIT", "20000"), 200
 # capture thread (rulesets.build_packet_text joins this in on every packet).
 PAYLOAD_TEXT_MAX_CHARS = max(240, _as_int(_env("SNIFF4HOUND_PAYLOAD_TEXT_MAX_CHARS", "4096"), 4096))
 
+# If an interface disappears or the kernel invalidates the raw socket,
+# recvfrom() can fail immediately in a tight loop. Give transient receive
+# errors a few chances, then stop that worker and surface the interface as
+# blocked instead of burning CPU while reporting capture as healthy.
+CAPTURE_SOCKET_ERROR_LIMIT = max(
+    1,
+    _as_int(_env("SNIFF4HOUND_CAPTURE_SOCKET_ERROR_LIMIT", "5"), 5),
+)
+
 # Raw frame bytes and their hex dumps are useful for forensic/image analysis,
 # but they can also retain credentials exactly as they crossed the wire. Keep
 # them opt-in; text previews are still retained after redaction.

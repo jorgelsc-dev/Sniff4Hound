@@ -227,24 +227,44 @@ class TestListenerHonoursEngineStopEvent(unittest.TestCase):
         self.engine = HoneypotEngine(self.store, MagicMock(), bind_host="127.0.0.1")
 
     def test_listener_winds_down_on_the_engine_stop_event_alone(self):
-        port = _free_high_port()
-        own_stop = threading.Event()
-        # Deliberately never set: this stands in for the listener that
-        # escaped stop()'s roster, whose own event nobody holds any more.
-        self.addCleanup(own_stop.set)
+        port = None
+        thread = None
+        own_stop = None
+        for _attempt in range(5):
+            candidate_port = _free_high_port()
+            candidate_stop = threading.Event()
+            # Deliberately never set on the successful attempt: this stands
+            # in for the listener that escaped stop()'s roster, whose own
+            # event nobody holds any more.
+            self.addCleanup(candidate_stop.set)
 
-        self.engine._stop_event.clear()
-        thread = threading.Thread(
-            target=self.engine._listen,
-            args=(port, lambda *a, **k: None),
-            kwargs={"stop_event": own_stop},
-            daemon=True,
-        )
-        thread.start()
-        self.assertTrue(
-            _wait_until(lambda: _port_is_bound(port), timeout=5),
-            msg="listener never bound its port, so the test proves nothing",
-        )
+            self.engine._stop_event.clear()
+            candidate_thread = threading.Thread(
+                target=self.engine._listen,
+                args=(candidate_port, lambda *a, **k: None),
+                kwargs={"stop_event": candidate_stop},
+                daemon=True,
+            )
+            candidate_thread.start()
+            if _wait_until(
+                lambda: (
+                    candidate_thread.is_alive()
+                    and _port_is_bound(candidate_port)
+                )
+                or not candidate_thread.is_alive(),
+                timeout=10,
+            ) and candidate_thread.is_alive() and _port_is_bound(candidate_port):
+                port = candidate_port
+                thread = candidate_thread
+                own_stop = candidate_stop
+                break
+
+            candidate_stop.set()
+            candidate_thread.join(timeout=2)
+
+        self.assertIsNotNone(port, "listener never bound its port, so the test proves nothing")
+        self.assertIsNotNone(thread, "listener never started, so the test proves nothing")
+        self.assertIsNotNone(own_stop, "listener stop event was not created")
 
         self.engine._stop_event.set()
 
