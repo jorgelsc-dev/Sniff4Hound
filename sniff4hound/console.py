@@ -154,9 +154,21 @@ CONSOLE_COMMAND_SPECS = (
         completions=(("monitors", "honeypot", "all", "everything"),),
         details=(
             "monitors/honeypot/all clear detection history (packets, tags, payloads).\n"
-            "everything also wipes flows, domains, paths and sessions, then vacuums\n"
-            "the database file. Monitor and listener definitions are never touched.\n"
+            "everything also wipes flows, domains, paths and sessions, then hands the\n"
+            "freed pages back. Monitor and listener definitions are never touched.\n"
             "Destructive and irreversible: needs --yes to actually run."
+        ),
+    ),
+    ConsoleCommandSpec(
+        "/compact",
+        "Show database size and reclaim free space",
+        usage="/compact [--yes]",
+        details=(
+            "Without --yes, only reports the file size, how much of it is live data\n"
+            "and whether this database can reclaim space incrementally. With --yes,\n"
+            "rewrites the file to give every free page back - needed for a database\n"
+            "created before incremental reclaim worked, whose file otherwise only\n"
+            "ever grows. Pauses capture for the length of the rewrite."
         ),
     ),
     ConsoleCommandSpec(
@@ -715,6 +727,33 @@ def _cmd_clear(context: ConsoleContext, args: list[str]) -> None:
     _say(f"Cleared {scope}: {detail}")
 
 
+def _cmd_compact(context: ConsoleContext, args: list[str]) -> None:
+    if context.store is None:
+        _say("Capture store unavailable in this process.")
+        return
+    stats = context.store.database_storage_stats()
+    mib = 1048576
+    _rows([
+        "[console] Database storage:",
+        f"  file                    {stats['file_bytes'] / mib:.1f} MiB",
+        f"  live data               {stats['live_bytes'] / mib:.1f} MiB",
+        f"  reclaimable             {stats['free_bytes'] / mib:.1f} MiB "
+        f"({stats['free_ratio'] * 100:.1f}%)",
+        f"  incremental reclaim     {'on' if stats['incremental_reclaim'] else 'OFF - file can only grow'}",
+    ])
+    if not any(str(a).lower() in ("--yes", "-y") for a in args):
+        _say("Rewrites the file and pauses capture for the duration. Re-run: /compact --yes")
+        return
+    result = context.store.compact_database()
+    if result.get("state") != "compacted":
+        _say(f"Compact failed: {result.get('error') or 'unknown error'}")
+        return
+    _say(
+        f"Compacted: {result['before_bytes'] / mib:.1f} MiB -> {result['after_bytes'] / mib:.1f} MiB "
+        f"(reclaimed {result['reclaimed_bytes'] / mib:.1f} MiB in {result['elapsed_seconds']:.2f}s)"
+    )
+
+
 def _cmd_config(context: ConsoleContext, args: list[str]) -> None:
     from . import settings
 
@@ -813,6 +852,7 @@ CONSOLE_HANDLERS = {
     "/packets": _cmd_packets,
     "/intel": _cmd_intel,
     "/clear": _cmd_clear,
+    "/compact": _cmd_compact,
     "/config": _cmd_config,
     "/chat": _cmd_chat,
     "/token": _cmd_token,
