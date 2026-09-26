@@ -30,6 +30,7 @@ el prefijo `[chat]`. `/chat` muestra el historial.
 | `/packets [N]` | - | Show the most recent captured packets |
 | `/intel <ip>` | `/lookup` | Show what is known about one IP address |
 | `/clear monitors\|honeypot\|all\|everything [--yes]` | - | Delete stored capture data for a scope |
+| `/compact [--yes]` | - | Show database size and reclaim free space |
 | `/config` | - | Show the effective runtime configuration |
 | `/chat [N]` | - | Show the operator chat transcript |
 | `/token` | - | Show the current security code |

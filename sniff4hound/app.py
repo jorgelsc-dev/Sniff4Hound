@@ -660,6 +660,8 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/monitors/packets/", "desc": "Packets that matched a given monitor."},
     {"method": "GET", "path": "/api/alerts/recent", "desc": "Lean recent monitor-hit feed (src/dst IP + severity only, no packet bodies)."},
     {"method": "POST", "path": "/api/data/clear/", "desc": "Clear stored data for a scope: 'monitors', 'honeypot', 'all' (detection history), or 'everything' (also flows/domains/paths/sessions). Never deletes monitor/listener definitions."},
+    {"method": "GET", "path": "/api/data/storage", "desc": "Database file size split into live data and reclaimable free pages, plus whether this database can reclaim space incrementally (auto_vacuum)."},
+    {"method": "POST", "path": "/api/data/compact/", "desc": "Rewrite the database file, reclaiming every free page and enabling incremental reclaim. For a database that grew before incremental reclaim worked; holds the write lock for the rewrite, so capture pauses briefly."},
     {"method": "GET", "path": "/api/export/", "desc": "Available IOC export datasets, formats and column sets."},
     {"method": "GET", "path": "/api/export/alerts", "desc": "Monitor hits as indicators (rule, severity, 5-tuple, first/last seen). ?format=csv|json"},
     {"method": "GET", "path": "/api/export/endpoints", "desc": "Observed IPs with hit counts, worst severity and the rules that flagged them. ?format=csv|json"},
@@ -3180,6 +3182,35 @@ def clear_detections_api(request):
 
         result["honeypot_events"] = clear_honeypot_events()
     return result
+
+
+@app.api("/api/data/storage", methods=("GET",))
+def data_storage_api(request):
+    """How large the database is and how much of it is reclaimable.
+
+    `incremental_reclaim: false` is the one worth acting on: it means this
+    database predates auto_vacuum=INCREMENTAL and every automatic reclaim
+    is a no-op, so `free_bytes` will keep climbing until POST
+    /api/data/compact/ runs.
+    """
+    return store.database_storage_stats()
+
+
+@app.api("/api/data/compact/", methods=("POST",))
+def data_compact_api(request):
+    """Reclaim the whole freelist in one rewrite.
+
+    Deliberately operator-triggered rather than automatic: a whole-file
+    VACUUM holds the write lock for as long as the rewrite takes, and the
+    privileged capture child shares this database - doing this behind an
+    operator's back is what wedged capture before (see
+    SniffStore.purge_capture_data on why the purge path does not). Slow
+    enough on a large database to come back as a queued job id instead of
+    a response, which is why it does not hold up other requests.
+    """
+    before = store.database_storage_stats()
+    result = store.compact_database()
+    return {**result, "before": before, "after": store.database_storage_stats()}
 
 
 def _apply_api_auth_guards():
