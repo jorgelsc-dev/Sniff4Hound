@@ -103,6 +103,47 @@ Detalles utiles:
 - marca filas con interfaces `honeypot` o `honeypot:<port>`;
 - permite estudiar el mismo dashboard con datos pasivos o activos.
 
+## Cola de peticiones (`sniff4hound.jobs`)
+
+Todas las rutas `@app.api` pasan por `JobQueue.submit()`, que responde de dos
+maneras:
+
+- **en linea**: el handler termino dentro de `INLINE_WINDOW_SECONDS` (0.2s), asi
+  que el resultado viaja en la propia peticion y **no se escribe ninguna fila**.
+  Es el caso normal: la mayoria de rutas resuelven un snapshot cacheado o un
+  SELECT indexado en milisegundos, y hacerles pagar un INSERT mas un segundo
+  viaje seria un retroceso - sobre el mismo fichero SQLite donde el sniffer
+  escribe paquetes, donde cada escritor extra se serializa contra ese trabajo.
+- **diferida**: el handler sigue corriendo al cerrarse esa ventana, asi que el
+  job se persiste en la tabla `jobs` y el cliente recibe `201 Created` con su
+  `job_id`; luego consulta `GET /api/jobs/?id=<id>`.
+
+Detalles que importan:
+
+- el wrapper se aplica **antes** que `_apply_api_auth_guards()`, de modo que la
+  comprobacion de auth queda por fuera: una peticion sin token se rechaza en el
+  acto, nunca recibe un id por trabajo que no tenia permiso de ejecutar;
+- el camino en linea **re-lanza la excepcion original**, no una envoltura, para
+  que siga funcionando el mapeo existente (`ValueError` -> 400, `_NotFound` ->
+  404) de las ~30 validaciones de los handlers;
+- al terminar un job diferido se emite un frame `job_update` por el WebSocket
+  **sin el resultado** - un snapshot puede ser grande y cada cliente conectado
+  recibiria una copia. El frame solo dice "deja de esperar"; el payload se
+  recoge por HTTP;
+- quedan **exentas** las rutas que se romperian o que deben actuar ya:
+  `/api/jobs/`, `/api/auth/session`, `/publicca`, `/api/app/shutdown`,
+  `/api/ws/ticket`, `/api/export*` y `/favicons*` (estas devuelven un `Response`
+  crudo - un adjunto CSV, un PEM - que no es un resultado JSON);
+- los GET que viajan por el canal `WS /ws/` no pasan por la cola: son acciones
+  del socket, no rutas HTTP;
+- un reaper borra cada 5 minutos los jobs de mas de 30 minutos, resultados
+  incluidos.
+
+En el frontend nada de esto es visible para quien llama: la intercepcion vive en
+`httpFetchWithMeta()`, asi que cada `fetchJsonPromise()` existente sigue siendo
+una promesa del payload. `state.pendingJobs` cuenta las peticiones aparcadas y
+alimenta el indicador global de espera.
+
 ## `sniff4hound.store`
 
 Es la fuente de verdad local.
@@ -116,6 +157,7 @@ Tablas principales:
 - `tags`
 - `rulesets`
 - `runtime_config`
+- `jobs` (solo peticiones diferidas; ver "Cola de peticiones")
 
 Funciones practicas:
 

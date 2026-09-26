@@ -33,6 +33,7 @@ from .export import (
     rows_to_csv,
 )
 from .ipc import IpcClient
+from .jobs import STATUS_DONE, STATUS_ERROR, JobQueue
 from .settings import (
     API_MAX_LIMIT,
     CAPTURE_AUTO_START,
@@ -432,6 +433,12 @@ class WebSocketHub:
 
 hub = WebSocketHub()
 
+# Deferred jobs broadcast a completion nudge so a waiting client does not have
+# to sit out its next poll interval; the result itself is still collected over
+# HTTP, since a snapshot can be large and every connected client would
+# otherwise receive a copy.
+job_queue = JobQueue(store=store, broadcast=hub.broadcast)
+
 
 class RuntimeControllerClient:
     """Web-process proxy for the real `RuntimeController`, which lives in
@@ -515,6 +522,7 @@ def connect_capture_service() -> bool:
 AUTH_SESSION_PATH = "/api/auth/session"
 DOCS_PATHS = ("/docs", "/docs.json")
 PUBLIC_CA_PATH = "/publicca"
+JOBS_PATH = "/api/jobs/"
 WS_AUTH_CLOSE_CODE = 4401
 WS_TICKET_TTL_SECONDS = 15.0
 _WS_TICKETS: dict[str, dict[str, Any]] = {}
@@ -544,6 +552,7 @@ WS_PONG_TIMEOUT_SECONDS = 10.0
 
 ENDPOINTS = [
     {"method": "GET", "path": PUBLIC_CA_PATH, "desc": "Public runtime CA certificate for desktop TLS bootstrap."},
+    {"method": "GET", "path": JOBS_PATH, "desc": "Collect a queued request by `id`. Any API call that outruns the server's inline window answers `201` with a `job_id` instead of its payload; this returns `status` (queued/running/done/error) and, once done, the `result` itself."},
     {"method": "GET", "path": "/docs", "desc": "Automatic runtime documentation."},
     {"method": "GET", "path": "/docs.json", "desc": "Automatic runtime docs payload."},
     {"method": "GET", "path": "/protocols/", "desc": "Observed protocol list."},
@@ -2070,6 +2079,38 @@ def map_scan(request):
     limit = _normalize_limit(request.query.get("limit"), default=500, maximum=2000)
     snapshot = store.map_snapshot(limit=limit)
     return {"data": snapshot}
+
+
+@app.api(JOBS_PATH, methods=("GET",))
+def job_status(request):
+    """Collects a deferred job.
+
+    Answers 200 with `status` on every call. The result is delivered inline
+    once `status` is "done" - one fewer round-trip than a separate result
+    route, and there is nothing to collect in any other state anyway.
+    """
+    job_id = str(request.query.get("id") or "").strip()
+    if not job_id:
+        raise ValueError("id is required")
+    job = job_queue.get(job_id)
+    if job is None:
+        # Either the id was never issued, or the job outlived its TTL and was
+        # reaped. The client cannot tell those apart and does not need to: both
+        # mean "ask again from the start".
+        raise _NotFound(f"Unknown job: {job_id}")
+    payload = {
+        "id": job["id"],
+        "kind": job.get("kind", ""),
+        "status": job["status"],
+        "created_at": job.get("created_at", ""),
+        "finished_at": job.get("finished_at", ""),
+    }
+    if job["status"] == STATUS_DONE:
+        payload["result"] = job.get("result")
+    elif job["status"] == STATUS_ERROR:
+        payload["error"] = job.get("error", "")
+        payload["error_type"] = job.get("error_type", "")
+    return payload
 
 
 @app.api("/api/endpoints/", methods=("GET",))
@@ -3794,10 +3835,69 @@ def websocket_handler(ws, request=None):
         access_log.log_websocket_close(request, ws_close_code, ws_started_at)
 
 
+# Routes that must answer on the calling request rather than through the
+# queue.
+#
+# The first four would break outright: /api/jobs/ is how a deferred job is
+# collected (queueing it would never resolve), the export routes and the
+# public CA return a raw Response - a CSV attachment, a PEM - which is not a
+# JSON job result, and the auth session route is the one the SPA calls to find
+# out whether it may talk to the API at all.
+#
+# The last two are correctness, not plumbing: a shutdown has to take effect
+# now, and a websocket ticket is fetched mid-handshake, where a second
+# round-trip would be a reconnect loop.
+JOB_QUEUE_EXEMPT_PATHS = frozenset({
+    JOBS_PATH,
+    AUTH_SESSION_PATH,
+    PUBLIC_CA_PATH,
+    "/api/app/shutdown",
+    "/api/ws/ticket",
+})
+JOB_QUEUE_EXEMPT_PREFIXES = ("/api/export", "/favicons")
+
+
+def _queue_exempt(path: str) -> bool:
+    return path in JOB_QUEUE_EXEMPT_PATHS or path.startswith(JOB_QUEUE_EXEMPT_PREFIXES)
+
+
+def _apply_api_job_queue():
+    """Routes every remaining API handler through the job queue.
+
+    Applied before _apply_api_auth_guards() so the auth wrapper ends up
+    outermost: an unauthenticated request must be rejected on the spot, not
+    handed a job id for work that was never allowed to run.
+    """
+    for route in app.router.routes:
+        path = getattr(route, "path", "")
+        if getattr(route, "kind", "") != "api" or _queue_exempt(path):
+            continue
+
+        current_handler = getattr(route, "handler", None)
+        if current_handler is None or getattr(current_handler, "_sniff4hound_queued", False):
+            continue
+
+        @wraps(current_handler)
+        def queued_handler(request, *args, _handler=current_handler, _path=path, **kwargs):
+            kind = f"{getattr(request, 'method', 'GET')} {_path}"
+            finished, payload = job_queue.submit(kind, lambda: _handler(request, *args, **kwargs))
+            if finished:
+                return payload
+            return Response.json(
+                {"status": "queued", "job_id": payload, "poll": JOBS_PATH},
+                status=201,
+                headers={"Location": f"{JOBS_PATH}?id={payload}"},
+            )
+
+        queued_handler._sniff4hound_queued = True
+        route.handler = queued_handler
+
+
 # Order matters: _attach_runtime_docs() registers /docs and /docs.json, so
 # the guard pass has to run *after* it or those two routes never get
 # wrapped - which is exactly how they ended up reachable without a token.
 _attach_runtime_docs()
+_apply_api_job_queue()
 _apply_api_auth_guards()
 
 
@@ -3816,6 +3916,10 @@ def shutdown_capture():
     # and leave the privileged capture child un-signaled.
     try:
         runtime.stop()
+    except (Exception, KeyboardInterrupt):
+        pass
+    try:
+        job_queue.shutdown()
     except (Exception, KeyboardInterrupt):
         pass
     try:

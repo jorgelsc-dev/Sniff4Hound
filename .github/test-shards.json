@@ -7,7 +7,8 @@
       "tests.test_map_country_stats",
       "tests.test_capture_service",
       "tests.test_ws_snapshot_channel",
-      "tests.test_runtime_tls"
+      "tests.test_runtime_tls",
+      "tests.test_jobs"
     ],
     [
       "tests.test_monitors.TestLoadBuiltinMonitors",

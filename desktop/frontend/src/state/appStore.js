@@ -26,6 +26,8 @@ const WS_RECONNECT_DELAY_MS = 1800;
 const WS_REFRESH_THROTTLE_MS = 10000;
 const LIVE_ACTIVITY_WINDOW_MS = 5000;
 const LIVE_ACTIVITY_TICK_MS = 500;
+const JOB_POLL_MIN_MS = 220;
+const JOB_POLL_MAX_MS = 2000;
 const WS_AUTH_CLOSE_CODE = 4401;
 const APP_SHUTDOWN_DELAY_SECONDS = 0.2;
 const WS_REFRESH_EVENT_TYPES = new Set([
@@ -71,6 +73,10 @@ const state = reactive({
   // right for tables but erases any sense of *rate* - this keeps the raw
   // arrival cadence so the pipeline canvas can animate at the real speed.
   liveActivity: { total: 0, sniffer: 0, honeypot: 0, lastPacketAt: 0, seen: 0 },
+  // How many requests are currently parked on a queued job. Anything above
+  // zero means the UI is waiting on the backend for something that outran the
+  // inline window.
+  pendingJobs: 0,
 });
 
 const tableRefreshSubscribers = new Set();
@@ -928,9 +934,90 @@ function httpFetchWithMeta(path, opts, config) {
         }
         throw error;
       }
+      // 201 + job_id means the backend queued this instead of answering it
+      // (see sniff4hound/jobs.py): it ran past the inline window, so the
+      // result has to be collected separately. Handled here rather than at
+      // each call site so every existing caller keeps its plain "promise of
+      // the payload" contract and needs no change.
+      if (res.status === 201 && data && data.job_id) {
+        return awaitJob(data.job_id, config).then(result => ({ data: result, response: res }));
+      }
       return { data, response: res };
     })
   );
+}
+
+// --- deferred jobs ---------------------------------------------------------
+// The jobs currently being waited on, so a "job_update" frame can wake one the
+// moment it finishes instead of leaving it to sit out the rest of its poll
+// interval.
+//
+// A set of records rather than a map keyed by job id: two callers can end up
+// waiting on the same id, and keying by it meant the second registration
+// silently replaced the first, leaving that one to fall back to its timer. It
+// also keeps the frame's id - a value off the wire - out of any position where
+// it selects what gets invoked.
+const jobWaiters = new Set();
+
+function notifyJobFinished(jobId) {
+  const id = String(jobId || "");
+  if (!id) return;
+  for (const waiter of jobWaiters) {
+    if (waiter.id === id) waiter.wake();
+  }
+}
+
+// Starts tight - most deferred jobs are only just past the inline window -
+// then backs off, so a genuinely long one does not fire hundreds of requests
+// while it runs.
+function jobPollDelay(attempt) {
+  return Math.min(JOB_POLL_MAX_MS, Math.round(JOB_POLL_MIN_MS * Math.pow(1.6, attempt)));
+}
+
+function awaitJob(jobId, config = {}) {
+  const id = String(jobId || "").trim();
+  if (!id) return Promise.reject(new Error("Missing job id"));
+  state.pendingJobs += 1;
+  let attempt = 0;
+  // Held at this scope so the final cleanup can drop a registration left
+  // behind when the poll rejects mid-wait.
+  let currentWaiter = null;
+
+  const poll = () => fetchJsonPromise(`/api/jobs/?id=${encodeURIComponent(id)}`, {}, {
+    ...config,
+    preferHttp: true,
+  }).then((job) => {
+    const status = String((job && job.status) || "").toLowerCase();
+    if (status === "done") return job.result;
+    if (status === "error") {
+      const error = new Error(job.error || "La petición falló en el servidor.");
+      error.code = job.error_type || "job_failed";
+      throw error;
+    }
+    // Still queued or running: continue on whichever comes first, the
+    // websocket nudge or the next scheduled check.
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, jobPollDelay(attempt));
+      currentWaiter = {
+        id,
+        wake: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+      };
+      jobWaiters.add(currentWaiter);
+    }).then(() => {
+      jobWaiters.delete(currentWaiter);
+      currentWaiter = null;
+      attempt += 1;
+      return poll();
+    });
+  });
+
+  return poll().finally(() => {
+    if (currentWaiter) jobWaiters.delete(currentWaiter);
+    state.pendingJobs = Math.max(0, state.pendingJobs - 1);
+  });
 }
 
 function fetchJsonPromise(path, options = {}, config = {}) {
@@ -1999,6 +2086,13 @@ function attachRealtimeSocket(socket) {
     }
     if (type === "data_clear_progress") {
       state.dataClearProgress = payload;
+    }
+    if (type === "job_update") {
+      // Carries no result - a snapshot can be large and every client would
+      // get a copy. It only says "stop waiting", and awaitJob() collects the
+      // payload over HTTP.
+      notifyJobFinished(payload.id);
+      return;
     }
     if (type === "get_result") {
       resolveWsGet(payload);
