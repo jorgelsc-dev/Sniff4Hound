@@ -6,6 +6,7 @@ import ctypes.util
 import ipaddress
 import json
 import random
+import shutil
 import sqlite3
 import sys
 import threading
@@ -84,6 +85,24 @@ PATH_TABLE_LIMIT = 50000
 # trim_oversized_tables() never pruned the table at all - 43k rows / 5 MB
 # observed on a live instance after minutes of capture.
 SESSION_TABLE_LIMIT = 20000
+
+# Handing free pages back only works in auto_vacuum=INCREMENTAL mode, and a
+# database created before _open_connection() set that pragma is stuck at
+# NONE for life. In that mode every PRAGMA incremental_vacuum in this file
+# is a silent no-op, so purges and retention sweeps free pages the file
+# never gives back: an operator's live database reached 5.55 GiB holding
+# ~200 MiB of live data, 96.4% of it freelist. Switching an existing
+# database over is only possible with one whole-file VACUUM.
+#
+# That VACUUM is what #117 took *out* of the purge path, and it stays out:
+# this one runs at most once per database, at open time, never per purge.
+# Its cost tracks live content rather than file size - the free pages are
+# never read, so that 5.55 GiB file rewrites in well under a second - which
+# is why the bound below caps live bytes rather than how large the file has
+# grown. Past the cap the migration is left to the explicit operator action
+# (compact_database), so a database with genuinely that much data in it
+# cannot stall startup.
+AUTOVACUUM_MIGRATION_MAX_LIVE_BYTES = 512 * 1024 * 1024
 _GEOIP_COUNTRY_DB_PATHS = (
     Path("/usr/share/GeoIP/GeoIP.dat"),
     Path("/usr/local/share/GeoIP/GeoIP.dat"),
@@ -640,6 +659,10 @@ class SniffStore:
         self._geoip_resolver = _GeoCountryResolver()
         self._create_schema()
         self._seed_baseline()
+        # Last, and only after the schema exists: on a database this app
+        # created the pragma in _open_connection() already took, and this is
+        # four header reads and a return.
+        self._autovacuum_migration = self._ensure_incremental_autovacuum()
 
     def _open_connection(self):
         conn = sqlite3.connect(self.path, check_same_thread=False)
@@ -653,11 +676,13 @@ class SniffStore:
         # PRAGMA incremental_vacuum elsewhere (purge_capture_data,
         # enforce_retention's per-trim reclaim) was a silent no-op, so the
         # file only ever grew and never gave space back, on every purge and
-        # every retention cycle. Changing auto_vacuum on an existing
-        # non-empty database needs a full VACUUM (the exact stall this
-        # codebase deliberately avoids elsewhere), so this fixes it only for
-        # a database created from now on - an existing one keeps its
-        # current mode until it's recreated.
+        # every retention cycle.
+        #
+        # On a database that already exists this line is not wasted even
+        # though it cannot change the mode on its own: SQLite remembers the
+        # requested mode and applies it on the next VACUUM, which is exactly
+        # what _ensure_incremental_autovacuum() relies on to migrate one of
+        # those older files over.
         conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -688,6 +713,194 @@ class SniffStore:
         except sqlite3.Error:
             pass
         self._conn = self._open_connection()
+
+    def _page_stats(self) -> tuple[int, int, int]:
+        """(page_size, page_count, freelist_count), all cheap header reads."""
+        values = []
+        for pragma in ("page_size", "page_count", "freelist_count"):
+            try:
+                row = self._conn.execute(f"PRAGMA {pragma}").fetchone()
+                values.append(int(row[0] or 0) if row else 0)
+            except sqlite3.Error:
+                values.append(0)
+        return values[0], values[1], values[2]
+
+    def _auto_vacuum_mode(self) -> int:
+        """0 NONE, 1 FULL, 2 INCREMENTAL. Only 2 makes reclaim work here."""
+        try:
+            row = self._conn.execute("PRAGMA auto_vacuum").fetchone()
+        except sqlite3.Error:
+            return 0
+        return int(row[0] or 0) if row else 0
+
+    def database_storage_stats(self) -> dict:
+        """How much of the database file is live data and how much is
+        freelist waiting to be handed back.
+
+        Cheap enough to call from a status endpoint: every number comes
+        from a pragma that reads the file header, not from counting rows.
+        """
+        with self._lock:
+            page_size, page_count, free_pages = self._page_stats()
+            mode = self._auto_vacuum_mode()
+        file_bytes = page_size * page_count
+        free_bytes = page_size * free_pages
+        return {
+            "path": str(self.path),
+            "page_size": page_size,
+            "page_count": page_count,
+            "freelist_count": free_pages,
+            "file_bytes": file_bytes,
+            "free_bytes": free_bytes,
+            "live_bytes": max(0, file_bytes - free_bytes),
+            "free_ratio": round(free_bytes / file_bytes, 4) if file_bytes else 0.0,
+            "auto_vacuum": mode,
+            # False means every incremental reclaim in this file is a no-op
+            # and only compact_database() can shrink this database.
+            "incremental_reclaim": mode == 2,
+        }
+
+    def _vacuum_to_incremental(self) -> dict:
+        """Run the one whole-file VACUUM, adopting auto_vacuum=INCREMENTAL.
+
+        Callers own the bounds checks and self._lock; this just does it.
+        """
+        page_size, page_count, _free = self._page_stats()
+        before_bytes = page_size * page_count
+        started = time.monotonic()
+        # VACUUM refuses to run inside a transaction, and _seed_baseline()
+        # or an earlier write may have left one open on this connection.
+        try:
+            self._conn.commit()
+        except sqlite3.Error:
+            pass
+        self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+        self._conn.execute("VACUUM")
+        self._conn.commit()
+        # In WAL mode the rewritten pages land in the WAL first, so the file
+        # on disk does not actually shrink until the WAL is folded back in.
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+        page_size, page_count, _free = self._page_stats()
+        after_bytes = page_size * page_count
+        return {
+            "state": "compacted",
+            "auto_vacuum": self._auto_vacuum_mode(),
+            "before_bytes": before_bytes,
+            "after_bytes": after_bytes,
+            "reclaimed_bytes": max(0, before_bytes - after_bytes),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+
+    def _ensure_incremental_autovacuum(self) -> dict:
+        """Migrate a pre-existing database to auto_vacuum=INCREMENTAL once.
+
+        See AUTOVACUUM_MIGRATION_MAX_LIVE_BYTES. Never raises: a database
+        that cannot be migrated still works, it just keeps growing, and
+        that is not a reason to refuse to start.
+        """
+        with self._lock:
+            if self._auto_vacuum_mode() == 2:
+                return {"state": "enabled"}
+            page_size, page_count, free_pages = self._page_stats()
+            live_bytes = max(0, page_count - free_pages) * page_size
+            if live_bytes > AUTOVACUUM_MIGRATION_MAX_LIVE_BYTES:
+                LOGGER.warning(
+                    "Database %s cannot reclaim space (auto_vacuum=NONE) and holds %.1f MiB of "
+                    "live data, over the %.0f MiB startup-migration cap. Run the compact action "
+                    "to convert it.",
+                    self.path, live_bytes / 1048576, AUTOVACUUM_MIGRATION_MAX_LIVE_BYTES / 1048576,
+                )
+                return {"state": "deferred", "reason": "live_data_over_cap", "live_bytes": live_bytes}
+            # VACUUM builds a complete second copy before swapping it in, so
+            # it needs the live data to fit on disk twice over. Running it
+            # short of that fails partway and leaves the original alone -
+            # survivable, but there is no point trying.
+            try:
+                free_disk = shutil.disk_usage(self.path.parent).free
+            except OSError:
+                free_disk = 0
+            if free_disk and free_disk < live_bytes * 2 + (32 * 1024 * 1024):
+                LOGGER.warning(
+                    "Database %s cannot reclaim space (auto_vacuum=NONE) but there is not enough "
+                    "free disk to rewrite it (%.1f MiB live, %.1f MiB free).",
+                    self.path, live_bytes / 1048576, free_disk / 1048576,
+                )
+                return {"state": "deferred", "reason": "insufficient_disk", "live_bytes": live_bytes}
+            try:
+                result = self._vacuum_to_incremental()
+            except sqlite3.Error as exc:
+                # Most likely another process got there first (both the web
+                # process and the capture child open this store) and holds
+                # the write lock. Whoever won did the same migration.
+                LOGGER.warning("Could not switch %s to auto_vacuum=INCREMENTAL: %s", self.path, exc)
+                return {"state": "deferred", "reason": "vacuum_failed", "error": str(exc)}
+            LOGGER.info(
+                "Switched %s to auto_vacuum=INCREMENTAL, reclaiming %.1f MiB in %.2fs",
+                self.path, result["reclaimed_bytes"] / 1048576, result["elapsed_seconds"],
+            )
+            return result
+
+    def reclaim_free_pages(self, max_pages: int = 256) -> int:
+        """Hand back up to `max_pages` free pages; returns how many went.
+
+        Bounded on purpose. PRAGMA incremental_vacuum holds the write lock
+        for the pages it moves, so capping the bite keeps a reclaim from
+        stalling the capture child the way a whole-file VACUUM did (#117).
+        Returns 0 harmlessly on a database still in auto_vacuum=NONE, where
+        the pragma does nothing at all.
+        """
+        max_pages = max(1, int(max_pages))
+        try:
+            with self._lock:
+                before = self._page_stats()[2]
+                if not before:
+                    return 0
+                # The .fetchall() is load-bearing. PRAGMA incremental_vacuum
+                # frees a page per step of the statement, and
+                # Connection.execute() steps it exactly once - so without
+                # draining the cursor this frees ONE page no matter what N
+                # says, which is not a bound, it is a leak with a cap on it.
+                self._conn.execute(f"PRAGMA incremental_vacuum({max_pages})").fetchall()
+                self._conn.commit()
+                after = self._page_stats()[2]
+        except sqlite3.Error:
+            return 0
+        return max(0, before - after)
+
+    def compact_database(self) -> dict:
+        """Rewrite the file, reclaiming every free page at once.
+
+        The whole-file VACUUM that purge_capture_data() deliberately does
+        not run. It exists as an explicit operator action, not something on
+        an automatic path, because it takes the write lock for as long as
+        the rewrite lasts and the privileged capture child shares this
+        database: #117 is what happens when that runs behind an operator's
+        back. Called directly, it is the escape hatch for a database too
+        large for the startup migration, or one whose freelist grew while
+        auto_vacuum was off.
+        """
+        with self._lock:
+            stats_before = {
+                "auto_vacuum": self._auto_vacuum_mode(),
+            }
+            try:
+                result = self._vacuum_to_incremental()
+            except sqlite3.Error as exc:
+                return {
+                    "state": "failed",
+                    "error": str(exc),
+                    "auto_vacuum": stats_before["auto_vacuum"],
+                }
+            self._autovacuum_migration = result
+            LOGGER.info(
+                "Compacted %s: %.1f MiB -> %.1f MiB in %.2fs",
+                self.path, result["before_bytes"] / 1048576,
+                result["after_bytes"] / 1048576, result["elapsed_seconds"],
+            )
+            return result
 
     @property
     def local_ips(self) -> set[str]:
@@ -5958,14 +6171,11 @@ class SniffStore:
 
         # Reclaim the freed pages instead of letting the file grow
         # monotonically (a live instance went 49.8 MB -> 91.9 MB in four
-        # minutes while holding only 2000 packets). No-op on a database
-        # created before auto_vacuum=INCREMENTAL was set.
-        try:
-            with self._lock:
-                self._conn.execute("PRAGMA incremental_vacuum(256)")
-                self._conn.commit()
-        except sqlite3.Error:
-            pass
+        # minutes while holding only 2000 packets). Bounded per sweep rather
+        # than draining the whole freelist: this runs on the capture thread,
+        # and retention sweeps come around often enough that a steady
+        # trickle keeps up without ever holding the write lock long.
+        result["pages_reclaimed"] = self.reclaim_free_pages(256)
         return result
 
     def _trim_table(self, table: str, limit: int) -> int:
@@ -6103,54 +6313,32 @@ class SniffStore:
             if pages_total:
                 _report(phase="compacting", pages_done=0, pages_total=pages_total)
                 remaining = pages_total
-                # PRAGMA incremental_vacuum(N)'s "up to N pages" is what the
-                # docs promise, but it was observed reclaiming only ONE page
-                # per call - regardless of N, and even with no N at all - on
-                # at least one SQLite build. A fixed iteration count can't
-                # cover both that case and the normal one (where a single
-                # call reclaims everything), so this is time-boxed instead:
-                # keep taking bites while it's actually making progress and
-                # there's time left in the budget, then make exactly one
-                # more unbounded call for whatever remains and stop - on a
-                # build where N is honored that call is a fast no-op (the
-                # loop already finished); on one where it isn't, the file
-                # is left slightly larger than optimal rather than the
-                # purge hanging for a long, unbounded stretch reclaiming it
-                # one page at a time.
-                deadline = time.monotonic() + 2.0
-                last_reported_at = time.monotonic()
+                # Bounded bites rather than one unbounded call. Each bite
+                # takes and releases the write lock, so the capture child in
+                # the other process gets its turn instead of waiting out the
+                # entire freelist, and the gaps are what give the dialog
+                # something to report.
+                #
+                # Time-boxed as well as page-boxed: a database that cannot
+                # reclaim at all (auto_vacuum never reached INCREMENTAL)
+                # exits on the no-progress check below, but the clock is the
+                # backstop for anything slower than expected. It is not the
+                # primary mechanism - a bite honours its page count, so the
+                # usual case is one or two passes.
+                deadline = time.monotonic() + 30.0
+                last_reported_at = 0.0
                 while remaining > 0 and time.monotonic() < deadline:
-                    try:
-                        self._conn.execute("PRAGMA incremental_vacuum(2000)")
-                        self._conn.commit()
-                        next_row = self._conn.execute("PRAGMA freelist_count").fetchone()
-                        next_remaining = int(next_row[0] or 0) if next_row else 0
-                    except sqlite3.Error:
-                        remaining = 0
+                    if not self.reclaim_free_pages(2000):
+                        # No progress - stop rather than spin. Either there
+                        # is nothing left or this database cannot reclaim.
                         break
-                    if next_remaining >= remaining:
-                        # No progress this round - stop instead of looping
-                        # forever (e.g. auto_vacuum isn't INCREMENTAL on an
-                        # older database, so the PRAGMA is a silent no-op).
-                        break
-                    remaining = next_remaining
-                    # Throttled: on a build where each call only frees one
-                    # page, this loop can run thousands of times - a
-                    # broadcast (a WS send to every connected client) per
-                    # page would spam the dashboard far more than it would
-                    # inform it.
+                    remaining = self._page_stats()[2]
+                    # Throttled: a WS broadcast per bite would tell the
+                    # dashboard far less than it would cost it.
                     now = time.monotonic()
                     if now - last_reported_at >= 0.15:
                         last_reported_at = now
-                        _report(phase="compacting", pages_done=pages_total - remaining, pages_total=pages_total)
-                if remaining > 0:
-                    try:
-                        self._conn.execute("PRAGMA incremental_vacuum")
-                        self._conn.commit()
-                        final_row = self._conn.execute("PRAGMA freelist_count").fetchone()
-                        remaining = int(final_row[0] or 0) if final_row else remaining
-                    except sqlite3.Error:
-                        pass
+                        _report(phase="compacting", pages_done=max(0, pages_total - remaining), pages_total=pages_total)
                 # Unconditional and unthrottled: the last in-loop report may
                 # have been skipped by the throttle above, so this is what
                 # guarantees the dialog actually reaches 100% instead of
