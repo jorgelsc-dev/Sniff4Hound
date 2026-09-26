@@ -42,15 +42,25 @@
       empty-text="No domains observed yet"
       @refresh="load"
     >
+      <template #cell-name="{ value }">
+        <template v-if="value">
+          <span class="mono">{{ value }}</span>
+          <ListActionIcons inline :value="value" category="domain" />
+        </template>
+        <span v-else>-</span>
+      </template>
       <template #cell-source="{ value }">
         <v-chip size="x-small" :color="domainSourceColor(value)" variant="tonal">
           {{ domainSourceLabel(value) }}
         </v-chip>
       </template>
       <template #cell-ip="{ value }">
-        <router-link v-if="value" class="mono ip-link" :to="{ path: '/investigate', query: { ip: value } }">
-          {{ value }}
-        </router-link>
+        <template v-if="value">
+          <router-link class="mono ip-link" :to="{ path: '/investigate', query: { ip: value } }">
+            {{ value }}
+          </router-link>
+          <ListActionIcons inline :value="value" category="ip" />
+        </template>
         <span v-else>-</span>
       </template>
       <template #cell-last_seen="{ value }">
@@ -65,6 +75,7 @@ import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import ChartCard from "../components/ui/ChartCard.vue";
+import ListActionIcons from "../components/ui/ListActionIcons.vue";
 import { formatTimestamp, groupSumSeries, topSeriesByValue } from "../utils/traffic";
 
 const DOMAIN_SOURCE_LABELS = {
@@ -80,6 +91,7 @@ export default {
   name: "DomainsView",
   components: {
     ViewHeader,
+    ListActionIcons,
     EntityTablePanel,
     ChartCard,
   },

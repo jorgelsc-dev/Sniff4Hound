@@ -455,6 +455,7 @@
             <router-link class="soc-link" :to="{ path: '/investigate', query: { ip: value } }">
               {{ value }}
             </router-link>
+            <ListActionIcons inline :value="value" category="ip" />
           </template>
           <template #cell-scope="{ value }">
             <v-chip size="x-small" :color="scopeColor(value)" variant="tonal">
@@ -595,6 +596,7 @@ import ViewHeader from "../components/ui/ViewHeader.vue";
 import IocExportMenu from "../components/ui/IocExportMenu.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
+import ListActionIcons from "../components/ui/ListActionIcons.vue";
 import { formatTimestamp } from "../utils/traffic";
 import { buildExportFilename, downloadTextFile } from "../utils/exporters.js";
 
@@ -647,6 +649,7 @@ function seriesFrom(rows, limit = 6) {
 export default {
   name: "SocView",
   components: {
+    ListActionIcons,
     ViewHeader,
     IocExportMenu,
     DataPanel,
