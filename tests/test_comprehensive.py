@@ -571,6 +571,67 @@ class TestSnifferParsing(unittest.TestCase):
         self.assertEqual(stored[0]["proto"], "unparseable")
         self.assertEqual(stored[0]["parse_error"], "frame too short to parse")
 
+    def test_snapshot_stops_reporting_running_when_all_capture_threads_died(self):
+        class DeadThread:
+            def is_alive(self):
+                return False
+
+        self.sniffer.state.running = True
+        self.sniffer.state.interfaces = ["wlan0"]
+        self.sniffer.state.errors = {"wlan0": "network is down"}
+        self.sniffer._threads = [DeadThread()]
+
+        snapshot = self.sniffer.snapshot()
+
+        self.assertFalse(snapshot["running"])
+        self.assertFalse(self.sniffer.state.running)
+        self.assertEqual(snapshot["capture_state"], "blocked")
+        self.assertEqual(snapshot["active_threads"], 0)
+
+    def test_capture_worker_stops_after_repeated_socket_receive_errors(self):
+        # If an interface disappears, recvfrom() can fail immediately forever.
+        # The worker should stop and mark capture blocked instead of spinning
+        # hot while the runtime still claims the sniffer is running.
+        fake_sock = MagicMock()
+        fake_sock.recvfrom.side_effect = OSError("network is down")
+        self.sniffer._stop_event = threading.Event()
+        self.sniffer.state.running = True
+        self.sniffer.state.interfaces = ["wlan0"]
+        self.sniffer._threads = [threading.current_thread()]
+
+        with patch("socket.socket", return_value=fake_sock), \
+             patch("sniff4hound.sniffer.CAPTURE_PROMISCUOUS", False), \
+             patch("sniff4hound.sniffer.CAPTURE_SOCKET_ERROR_LIMIT", 2), \
+             patch("sniff4hound.sniffer.time.sleep") as sleep:
+            self.sniffer._capture_worker("wlan0")
+
+        self.assertEqual(fake_sock.recvfrom.call_count, 2)
+        sleep.assert_called_once()
+        fake_sock.close.assert_called_once()
+        snapshot = self.sniffer.snapshot()
+        self.assertFalse(snapshot["running"])
+        self.assertEqual(snapshot["capture_state"], "blocked")
+        self.assertIn("socket receive failed repeatedly", snapshot["errors"]["wlan0"])
+
+    def test_capture_worker_stops_immediately_after_bind_failure(self):
+        fake_sock = MagicMock()
+        fake_sock.bind.side_effect = OSError("No such device")
+        self.sniffer._stop_event = threading.Event()
+        self.sniffer.state.running = True
+        self.sniffer.state.interfaces = ["wlan0"]
+        self.sniffer._threads = [threading.current_thread()]
+
+        with patch("socket.socket", return_value=fake_sock), \
+             patch("sniff4hound.sniffer.CAPTURE_PROMISCUOUS", False):
+            self.sniffer._capture_worker("wlan0")
+
+        fake_sock.recvfrom.assert_not_called()
+        fake_sock.close.assert_called_once()
+        snapshot = self.sniffer.snapshot()
+        self.assertFalse(snapshot["running"])
+        self.assertEqual(snapshot["capture_state"], "blocked")
+        self.assertIn("bind failed", snapshot["errors"]["wlan0"])
+
 
 class TestSniffStore(unittest.TestCase):
     """Test SQLite store functionality."""

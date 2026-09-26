@@ -22,6 +22,7 @@ from .settings import (
     CAPTURE_BUFFER_BYTES,
     CAPTURE_POLL_TIMEOUT,
     CAPTURE_PROMISCUOUS,
+    CAPTURE_SOCKET_ERROR_LIMIT,
     MONITOR_MIN_SEVERITY_DEFAULT,
     MONITOR_SEVERITIES,
     MONITOR_SUPPRESS_GENERATED_INFO_DEFAULT,
@@ -731,13 +732,16 @@ class Sniffer:
             available = self.list_available_interfaces()
             active_threads = sum(1 for thread in self._threads if thread.is_alive())
             errors = dict(self.state.errors)
+            running = bool(self.state.running and active_threads > 0)
+            if self.state.running and active_threads == 0 and not self._stop_event.is_set():
+                self.state.running = False
             capture_state = "idle"
-            if self.state.running and active_threads > 0:
+            if running:
                 capture_state = "running"
-            elif self.state.running and errors:
+            elif errors:
                 capture_state = "blocked"
             return {
-                "running": bool(self.state.running),
+                "running": running,
                 "capture_state": capture_state,
                 "interfaces": list(self.state.interfaces),
                 "available_interfaces": available,
@@ -780,9 +784,10 @@ class Sniffer:
                     name=f"sniff4hound-capture-{interface}",
                     daemon=True,
                 )
-                thread.start()
                 threads.append(thread)
             self._threads = threads
+            for thread in threads:
+                thread.start()
         return self.snapshot()
 
     def stop(self):
@@ -815,6 +820,22 @@ class Sniffer:
     def _set_error(self, interface: str, message: str):
         with self._state_lock:
             self.state.errors[str(interface)] = str(message)
+
+    def _mark_capture_worker_stopped(self, interface: str):
+        if self._stop_event.is_set():
+            return
+        current = threading.current_thread()
+        with self._state_lock:
+            if not self.state.running:
+                return
+            active_threads = sum(
+                1
+                for thread in self._threads
+                if thread is not current and (thread.is_alive() or thread.ident is None)
+            )
+            if active_threads == 0:
+                self.state.running = False
+                self.state.errors.setdefault(str(interface), "capture worker exited")
 
     def _touch_packet(self, packet: dict, *, stored: bool = False):
         payload_len = safe_int(packet.get("payload_len", 0), 0)
@@ -1089,6 +1110,7 @@ class Sniffer:
         return self._ruleset_cache
 
     def _capture_worker(self, interface: str):
+        sock = None
         try:
             sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(ETH_P_ALL))
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, CAPTURE_BUFFER_BYTES)
@@ -1097,47 +1119,78 @@ class Sniffer:
                 sock.bind((interface, 0))
             except Exception as exc:
                 self._set_error(interface, f"bind failed: {exc}")
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                self._mark_capture_worker_stopped(interface)
+                return
             if CAPTURE_PROMISCUOUS:
                 self._enable_promiscuous(sock, interface)
         except PermissionError as exc:
             self._set_error(interface, f"permission denied: {exc}")
+            try:
+                if sock is not None:
+                    sock.close()
+            except Exception:
+                pass
+            self._mark_capture_worker_stopped(interface)
             return
         except Exception as exc:
             self._set_error(interface, f"socket unavailable: {exc}")
+            try:
+                if sock is not None:
+                    sock.close()
+            except Exception:
+                pass
+            self._mark_capture_worker_stopped(interface)
             return
 
-        while not self._stop_event.is_set():
-            try:
-                data, _ = sock.recvfrom(CAPTURE_BUFFER_BYTES)
-            except socket.timeout:
-                continue
-            except OSError as exc:
-                if self._stop_event.is_set():
-                    break
-                self._set_error(interface, str(exc))
-                continue
-            if not data:
-                continue
-            try:
-                packet = self.parse_packet(data, interface=interface)
-            except Exception as exc:
-                # A parser bug on one malformed frame must never take down
-                # the whole capture thread - fall back to a taggable
-                # "unparseable" record instead of letting the exception
-                # propagate out of the loop.
-                LOGGER.exception("Failed to parse captured frame on %s", interface)
-                packet = self._build_unparseable_packet(interface, data, reason=str(exc) or type(exc).__name__)
-            if not packet:
-                packet = self._build_unparseable_packet(interface, data, reason="frame too short to parse")
-            try:
-                self._store_packet(packet)
-            except Exception:
-                LOGGER.exception("Failed to process captured packet on %s", interface)
-
         try:
-            sock.close()
-        except Exception:
-            pass
+            consecutive_socket_errors = 0
+            while not self._stop_event.is_set():
+                try:
+                    data, _ = sock.recvfrom(CAPTURE_BUFFER_BYTES)
+                    consecutive_socket_errors = 0
+                except socket.timeout:
+                    continue
+                except OSError as exc:
+                    if self._stop_event.is_set():
+                        break
+                    consecutive_socket_errors += 1
+                    self._set_error(interface, str(exc))
+                    if consecutive_socket_errors >= CAPTURE_SOCKET_ERROR_LIMIT:
+                        self._set_error(
+                            interface,
+                            f"socket receive failed repeatedly: {exc}",
+                        )
+                        break
+                    time.sleep(min(0.25, CAPTURE_POLL_TIMEOUT))
+                    continue
+                if not data:
+                    continue
+                try:
+                    packet = self.parse_packet(data, interface=interface)
+                except Exception as exc:
+                    # A parser bug on one malformed frame must never take down
+                    # the whole capture thread - fall back to a taggable
+                    # "unparseable" record instead of letting the exception
+                    # propagate out of the loop.
+                    LOGGER.exception("Failed to parse captured frame on %s", interface)
+                    packet = self._build_unparseable_packet(interface, data, reason=str(exc) or type(exc).__name__)
+                if not packet:
+                    packet = self._build_unparseable_packet(interface, data, reason="frame too short to parse")
+                try:
+                    self._store_packet(packet)
+                except Exception:
+                    LOGGER.exception("Failed to process captured packet on %s", interface)
+        finally:
+            try:
+                if sock is not None:
+                    sock.close()
+            except Exception:
+                pass
+            self._mark_capture_worker_stopped(interface)
 
     def _build_unparseable_packet(self, interface: str, data: bytes, *, reason: str) -> dict:
         """A frame that either raised while parsing or was too short to even
