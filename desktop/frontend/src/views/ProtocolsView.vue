@@ -867,7 +867,10 @@ export default {
   data() {
     return {
       store,
-      loading: false,
+      // True at first paint: mounted() runs after the initial render, so
+      // starting false made `!loading && !packetRows.length` true for that
+      // frame and announced "no packets" before anything had been requested.
+      loading: true,
       error: "",
       lastUpdated: "",
       liveRefreshEnabled: true,

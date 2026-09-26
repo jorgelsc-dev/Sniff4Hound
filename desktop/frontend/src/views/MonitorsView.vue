@@ -14,7 +14,12 @@
           <div class="d-flex align-center justify-space-between ga-3">
             <div>
               <div class="text-caption text-medium-emphasis">{{ metric.label }}</div>
-              <div class="text-h5 font-weight-bold" :class="metric.colorClass">{{ metric.value }}</div>
+              <!-- An em dash while the catalog is in flight, never "0". These
+                   read off monitors.length, so until the response landed a
+                   30k-monitor install was told it had none: a confident wrong
+                   number, which is worse than an obvious placeholder. -->
+              <div v-if="loading && !monitors.length" class="text-h5 font-weight-bold text-medium-emphasis">—</div>
+              <div v-else class="text-h5 font-weight-bold" :class="metric.colorClass">{{ metric.value }}</div>
             </div>
             <v-icon :icon="metric.icon" class="metric-icon" :class="metric.colorClass" />
           </div>
@@ -204,7 +209,10 @@ export default {
   data() {
     return {
       store,
-      loading: false,
+      // True at first paint: mounted() calls load() only after the initial
+      // render, so `false` here let the "no monitor has matched" alert and
+      // the zeroed metric cards win that frame.
+      loading: true,
       error: "",
       lastUpdated: "",
       monitors: [],
