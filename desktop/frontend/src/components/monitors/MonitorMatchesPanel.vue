@@ -52,7 +52,10 @@
               </div>
               <div class="chart-row__value">{{ item.value }}</div>
             </div>
-            <div v-if="!chart.series.length" class="text-caption text-medium-emphasis">No data yet</div>
+            <!-- Guarded on `loading`: unguarded this said "No data yet" on
+                 every chart while the first request was still in flight. -->
+            <div v-if="loading && !chart.series.length" class="text-caption text-medium-emphasis">Loading…</div>
+            <div v-else-if="!chart.series.length" class="text-caption text-medium-emphasis">No data yet</div>
           </div>
         </v-card>
       </v-col>
@@ -188,7 +191,9 @@ export default {
   data() {
     return {
       rows: [],
-      loading: false,
+      // True at first paint - mounted() calls load() only after the initial
+      // render, so `false` here let the empty state win that frame.
+      loading: true,
       error: "",
       columns: [
         { key: "matched_value", label: "Match" },

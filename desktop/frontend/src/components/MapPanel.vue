@@ -423,7 +423,15 @@
           <td>{{ item.open_port_count }}</td>
           <td>{{ item.protocols }}</td>
         </tr>
-        <tr v-if="!latestHosts.length">
+        <!-- Guarded on `loading`: unguarded this read "No hosts yet." while
+             the first snapshot was still on its way, which is a different
+             claim from "we asked and there are none". -->
+        <tr v-if="loading && !latestHosts.length">
+          <td colspan="5" class="text-center py-4 text-medium-emphasis">
+            Loading hosts…
+          </td>
+        </tr>
+        <tr v-else-if="!latestHosts.length">
           <td colspan="5" class="text-center py-4 text-medium-emphasis">
             No hosts yet.
           </td>
@@ -506,7 +514,10 @@ export default {
       dockHeight: 180,
       dockObserver: null,
       error: "",
-      loading: false,
+      // True at first paint. mounted() either applies an already-cached
+      // snapshot (and clears this immediately) or starts a fetch that sets
+      // it - but both happen after the initial render.
+      loading: true,
       lastUpdated: "",
       liveRefreshEnabled: false,
       mapUid: this.buildMapUid(),
