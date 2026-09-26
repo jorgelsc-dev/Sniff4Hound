@@ -20,6 +20,11 @@
     <v-main class="app-main" :class="{ 'app-main--canvas': $route.meta.canvasOnly && canRenderViews }">
       <v-container class="app-container" :class="{ 'app-container--full': isFullWidthRoute }" :fluid="isFullWidthRoute">
         <div v-if="canRenderViews">
+          <!-- Persistent across every table route: the pipeline is how you
+               reach a table, so it must not unmount the moment you do.
+               Skipped on canvasOnly routes (Settings/Chat), which are a
+               full-bleed canvas already and would end up stacking two. -->
+          <FlowShell v-if="!$route.meta.canvasOnly" />
           <div :class="{ 'mt-3': !$route.meta.canvasOnly }">
             <router-view v-slot="{ Component }">
               <transition name="view-fade" mode="out-in">
@@ -111,6 +116,7 @@ import AppTopBar from "./components/layout/AppTopBar.vue";
 import GlobalToolsMenu from "./components/layout/GlobalToolsMenu.vue";
 import CommandPalette from "./components/layout/CommandPalette.vue";
 import PendingJobsIndicator from "./components/layout/PendingJobsIndicator.vue";
+import FlowShell from "./components/layout/FlowShell.vue";
 
 // Purely a UX beat: give the operator a moment to see the "shutting down"
 // state (and the backend a moment to actually stop) before the tab closes
@@ -134,6 +140,7 @@ export default {
     GlobalToolsMenu,
     CommandPalette,
     PendingJobsIndicator,
+    FlowShell,
   },
   data() {
     return {

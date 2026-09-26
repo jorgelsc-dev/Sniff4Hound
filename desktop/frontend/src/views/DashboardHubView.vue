@@ -13,14 +13,9 @@
     </div>
     <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
 
-    <SystemFlowCanvas
-      class="mb-4"
-      :totals="flowTotals"
-      :runtime="dashboard?.runtime || store.state.runtime || {}"
-      :activity="store.state.liveActivity"
-      :online="store.state.wsStatus === 'online'"
-      @open="$router.push($event.route)"
-    />
+    <!-- The pipeline canvas moved to FlowShell (App.vue): it is persistent
+         across every route now, instead of something this one page owned and
+         every navigation away threw out. -->
 
     <div class="metrics-grid">
       <v-card v-for="metric in metrics" :key="metric.label" class="stat-card" variant="tonal">
@@ -57,7 +52,6 @@
 import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import ChartCard from "../components/ui/ChartCard.vue";
-import SystemFlowCanvas from "../components/flow/SystemFlowCanvas.vue";
 
 function series(rows, key = "label", limit = 8) {
   const items = (Array.isArray(rows) ? rows : []).slice(0, limit);
@@ -67,7 +61,7 @@ function series(rows, key = "label", limit = 8) {
 
 export default {
   name: "DashboardHubView",
-  components: { ViewHeader, ChartCard, SystemFlowCanvas },
+  components: { ViewHeader, ChartCard },
   data: () => ({ store, analytics: null, dashboard: null, loading: false, error: "", lastUpdated: "", requestId: 0, refreshTimer: null, unsubscribe: null }),
   computed: {
     apiBase() { return this.store.state.apiBase; },
@@ -87,20 +81,6 @@ export default {
     ports() { return series(this.analytics?.top_open_ports, "port"); },
     tags() { return series(this.analytics?.top_tag_keys); },
     timeline() { return series(this.analytics?.timeline, "label", 30); },
-    // Every figure here comes straight from dashboard_snapshot()/analytics_snapshot();
-    // the canvas adds no derived metrics of its own beyond the live packet rate.
-    flowTotals() {
-      const counts = this.dashboard?.counts || {};
-      const sniffer = this.dashboard?.runtime?.sniffer || {};
-      return {
-        interfaces: (sniffer.interfaces || []).length,
-        packets: counts.count_ports,
-        protocols: this.analytics?.ports_by_proto?.length,
-        monitors: counts.count_monitors,
-        payloads: counts.count_banners,
-        detections: counts.count_tags,
-      };
-    },
   },
   watch: { apiBase() { this.load(); } },
   mounted() {

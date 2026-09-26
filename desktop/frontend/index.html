@@ -12,12 +12,12 @@
       name="description"
       content="Sniff4Hound: sniffer nativo de red con SQLite, estadísticas en vivo y panel operativo."
     >
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Oxanium:wght@400;500;600;700&family=Rajdhani:wght@400;500;600;700&family=Saira+Semi+Condensed:wght@400;500;600;700&display=swap"
-    >
+    <!-- Fonts are bundled (imported in main.js), never fetched at runtime.
+         A network-forensics tool has to render identically on an air-gapped
+         analyst box: asking fonts.googleapis.com for them on every launch
+         both announced to Google that this machine started Sniff4Hound and
+         left the whole UI on a generic fallback sans whenever the request
+         did not land. -->
     <link rel="icon" type="image/svg+xml" href="%BASE_URL%img/icons/favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="%BASE_URL%img/icons/favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="%BASE_URL%img/icons/favicon-16x16.png">

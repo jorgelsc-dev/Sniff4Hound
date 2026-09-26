@@ -1,16 +1,27 @@
 :root {
   color-scheme: dark;
-  --font-ui: "Saira Semi Condensed", "Rajdhani", "Inter Tight", "Segoe UI", "Noto Sans", "Arial Narrow", Arial, sans-serif;
-  --font-heading: "Oxanium", "Saira Semi Condensed", "Rajdhani", "Inter Tight", "Segoe UI", "Noto Sans", "Arial Narrow", Arial, sans-serif;
-  --font-mono: "IBM Plex Mono", "Fira Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  --bg-0: #03070d;
-  --bg-1: #06111d;
-  --bg-2: #0a1728;
-  --surface-0: rgba(9, 15, 24, 0.86);
-  --surface-1: rgba(12, 21, 34, 0.94);
-  --surface-2: rgba(15, 28, 44, 0.92);
-  --text-soft: rgba(233, 243, 255, 0.9);
-  --text-dim: rgba(166, 184, 208, 0.78);
+  /* Both bundled (main.js), so the first name always resolves - the stacks
+     below are a safety net, not the plan. The previous stack led with four
+     condensed display faces that were only ever fetched from Google Fonts,
+     so on any machine without them installed and without that request
+     landing, the entire UI silently rendered in a generic fallback while
+     still carrying type tuning meant for condensed metrics. */
+  --font-ui: "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", "Noto Sans", sans-serif;
+  --font-heading: var(--font-ui);
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --bg-0: #080a0d;
+  --bg-1: #0d1014;
+  --bg-2: #12161b;
+  /* Opaque, and stepped by lightness rather than by alpha. The translucent
+     surfaces stacked unpredictably - a card on a panel on the body read as a
+     different colour everywhere it appeared, which is most of why the UI
+     looked inconsistent rather than dark. */
+  --surface-0: #0d1014;
+  --surface-1: #12161b;
+  --surface-2: #171c22;
+  --surface-3: #1e242b;
+  --text-soft: rgba(237, 241, 246, 0.88);
+  --text-dim: rgba(157, 169, 184, 0.82);
   --brand-cyan: #0fe8ff;
   --brand-sky: #20c9ff;
   --brand-blue: #4b8fff;
@@ -20,8 +31,11 @@
   --brand-blue-rgb: 75, 143, 255;
   --brand-violet-rgb: 142, 99, 255;
   --brand-gradient: linear-gradient(120deg, var(--brand-cyan) 0%, var(--brand-sky) 34%, var(--brand-blue) 69%, var(--brand-violet) 100%);
-  --stroke: rgba(var(--brand-sky-rgb), 0.22);
-  --stroke-strong: rgba(var(--brand-violet-rgb), 0.38);
+  /* Neutral hairlines. Tinting every border with brand cyan/violet meant
+     colour carried no information: a warning card and an idle card were the
+     same glow. Colour is now reserved for state, borders just separate. */
+  --stroke: rgba(255, 255, 255, 0.09);
+  --stroke-strong: rgba(255, 255, 255, 0.16);
   --skel-a: rgba(21, 56, 91, 0.36);
   --skel-b: rgba(54, 143, 228, 0.34);
   --skel-c: rgba(142, 99, 255, 0.18);
@@ -29,27 +43,31 @@
 
 body {
   font-family: var(--font-ui);
-  font-stretch: 95%;
-  letter-spacing: 0.003em;
-  line-height: 1.45;
-  font-weight: 470;
-  font-feature-settings: "ss01" 1, "cv08" 1;
+  /* No font-stretch/letter-spacing/470-weight tuning any more: all of it was
+     compensating for condensed display metrics. Applied to Inter it just
+     smeared the text. `cv05`/`cv08` disambiguate l/I/1 and the open 6/9 -
+     worth having when the screen is full of IPs, ports and hex. */
+  line-height: 1.5;
+  font-weight: 400;
+  font-feature-settings: "cv05" 1, "cv08" 1;
   background: var(--bg-0);
   margin: 0;
   min-height: 100vh;
   color: rgba(233, 243, 255, 0.96);
 }
 
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image: linear-gradient(rgba(168, 204, 255, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(168, 204, 255, 0.05) 1px, transparent 1px);
-  background-size: 54px 54px;
-  opacity: 0.28;
-  z-index: -1;
+/* Tabular figures everywhere numbers are compared down a column: counters,
+   ports, byte sizes, packet rates. Proportional digits make those jitter as
+   they tick. */
+.v-table td,
+.v-table th,
+[class*="metric"],
+[class*="count"],
+code,
+kbd,
+pre,
+samp {
+  font-variant-numeric: tabular-nums;
 }
 
 .v-navigation-drawer {
@@ -72,39 +90,45 @@ body::before {
 .v-application .text-subtitle-1,
 .v-application .text-subtitle-2 {
   font-family: var(--font-heading);
-  letter-spacing: 0.008em;
-  font-weight: 560;
-  line-height: 1.28;
+  /* Negative tracking on headings, positive on small caps - Inter's own
+     recommendation, and the opposite of what condensed faces wanted. */
+  letter-spacing: -0.014em;
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 .v-application .text-overline {
   font-family: var(--font-heading);
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   font-weight: 600;
-  color: var(--brand-cyan);
+  font-size: 0.6875rem;
+  color: var(--text-dim);
 }
 
+/* Flat surfaces with a single hairline border, the way Railway/Linear do it:
+   the old cards stacked a vertical gradient, a coloured border and a 28px
+   shadow, so a page of them read as a pile of floating slabs competing for
+   attention instead of a calm grid of content. */
 .v-card {
-  border-radius: 8px;
-  border-color: var(--stroke);
-  background: linear-gradient(180deg, var(--surface-1), var(--surface-0));
-  box-shadow: 0 14px 28px rgba(3, 8, 15, 0.32);
-  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+  border-radius: 10px;
+  border: 1px solid var(--stroke);
+  background: var(--surface-1);
+  box-shadow: none;
+  transition: border-color 0.16s ease, background-color 0.16s ease;
 }
 
 .v-card:hover {
-  border-color: rgba(var(--brand-violet-rgb), 0.34);
-  box-shadow: 0 20px 40px rgba(2, 6, 12, 0.42);
+  border-color: var(--stroke-strong);
 }
 
 .v-card--variant-tonal {
   border: 1px solid var(--stroke);
-  background: linear-gradient(180deg, var(--surface-2), rgba(10, 16, 26, 0.92));
+  background: var(--surface-2);
 }
 
 .v-card--variant-outlined {
-  border: 1px solid var(--stroke-strong);
-  background: rgba(8, 13, 21, 0.62);
+  border: 1px solid var(--stroke);
+  background: transparent;
 }
 
 .v-skeleton-loader {
