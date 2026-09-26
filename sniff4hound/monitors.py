@@ -2856,6 +2856,15 @@ class RuleAlertThrottle:
     attack from one host doesn't suppress the same monitor firing for a
     different host. State is in-memory only, not persisted across restarts
     - acceptable for this scope, same tradeoff as anomaly.py's detectors.
+
+    Suppression is reported, never silent. A silenced hit still means "this
+    monitor matched", and an operator who cannot tell that apart from "this
+    monitor did not match" has no way to know detection is working - the
+    failure mode this exists to avoid is someone validating a signature (a
+    handful of requests in a few seconds, all from one source, so every one
+    after the first is inside the window) concluding the engine is broken.
+    So `partition()` hands the silenced hits back for tagging, and the next
+    hit that does get through carries `suppressed_since_last`.
     """
 
     THROTTLED_SEVERITIES = frozenset({"medium", "high", "critical"})
@@ -2863,13 +2872,16 @@ class RuleAlertThrottle:
     def __init__(self, window_seconds: int | None = None):
         self._window_seconds = window_seconds or settings.MONITOR_ALERT_COOLDOWN_SECONDS
         self._last_emit: dict[tuple[str, str], float] = {}
+        self._suppressed_since_last: dict[tuple[str, str], int] = {}
 
-    def filter(self, hits: list[dict], source: str = "") -> list[dict]:
+    def partition(self, hits: list[dict], source: str = "") -> tuple[list[dict], list[dict]]:
+        """Split hits into (allowed, suppressed) for this source."""
         if not hits:
-            return hits
+            return list(hits), []
         now = time.monotonic()
         source_key = str(source or "").strip()
-        allowed = []
+        allowed: list[dict] = []
+        suppressed: list[dict] = []
         for hit in hits:
             severity = str(hit.get("severity") or "info").strip().lower()
             if severity not in self.THROTTLED_SEVERITIES:
@@ -2878,10 +2890,21 @@ class RuleAlertThrottle:
             key = (str(hit.get("monitor_id") or hit.get("tag") or ""), source_key)
             last = self._last_emit.get(key)
             if last is not None and now - last < self._window_seconds:
+                self._suppressed_since_last[key] = self._suppressed_since_last.get(key, 0) + 1
+                suppressed.append(hit)
                 continue
+            silenced = self._suppressed_since_last.pop(key, 0)
+            if silenced:
+                # Copied rather than mutated: the caller's hit dicts come
+                # straight out of evaluate_packet() and are also handed to
+                # the training/anomaly paths.
+                hit = {**hit, "suppressed_since_last": silenced}
             self._last_emit[key] = now
             allowed.append(hit)
-        return allowed
+        return allowed, suppressed
+
+    def filter(self, hits: list[dict], source: str = "") -> list[dict]:
+        return self.partition(hits, source)[0]
 
 
 def evaluate_packet(packet: dict, monitors: list[dict]) -> list[dict]:

@@ -1195,5 +1195,162 @@ class TestTrainingAndAiAlertModes(unittest.TestCase):
             time.sleep(0.01)
 
 
+class RuleAlertThrottleVisibilityTests(unittest.TestCase):
+    """A silenced hit still means the monitor matched.
+
+    Reported from the field: validating a signature the obvious way - a
+    handful of `curl http://testmyids.com/` in a few seconds, every response
+    from the same source - produced no detection at all. The engine was
+    right (replaying the captured packet through evaluate_packet() returned
+    the critical hit); the throttle had swallowed it, and nothing recorded
+    that. "Rate-limited" and "never matched" have to be distinguishable.
+    """
+
+    def _throttle(self, window_seconds=45):
+        from sniff4hound.monitors import RuleAlertThrottle
+
+        return RuleAlertThrottle(window_seconds=window_seconds)
+
+    def _hit(self, severity="critical", monitor_id="builtin-root-id-response"):
+        return {
+            "monitor_id": monitor_id,
+            "monitor_name": "Root id command response",
+            "tag": "root-id-response",
+            "label": "Root id command response",
+            "severity": severity,
+        }
+
+    def test_repeat_hits_are_returned_as_suppressed_not_dropped(self):
+        throttle = self._throttle()
+        first_allowed, first_suppressed = throttle.partition([self._hit()], "217.160.0.187")
+        second_allowed, second_suppressed = throttle.partition([self._hit()], "217.160.0.187")
+
+        self.assertEqual(len(first_allowed), 1)
+        self.assertEqual(first_suppressed, [])
+        # The second is still rate-limited - but handed back, not discarded.
+        self.assertEqual(second_allowed, [])
+        self.assertEqual(len(second_suppressed), 1)
+        self.assertEqual(second_suppressed[0]["monitor_id"], "builtin-root-id-response")
+
+    def test_below_threshold_severities_are_never_suppressed(self):
+        # info/low monitors are visibility feeds (Domains/Paths/Radar), so
+        # they must keep firing on every match.
+        throttle = self._throttle()
+        for _ in range(3):
+            allowed, suppressed = throttle.partition([self._hit(severity="info")], "10.0.0.5")
+            self.assertEqual(len(allowed), 1)
+            self.assertEqual(suppressed, [])
+
+    def test_a_different_source_is_not_suppressed(self):
+        throttle = self._throttle()
+        throttle.partition([self._hit()], "10.0.0.5")
+        allowed, suppressed = throttle.partition([self._hit()], "10.0.0.6")
+
+        self.assertEqual(len(allowed), 1)
+        self.assertEqual(suppressed, [])
+
+    def test_the_next_alert_carries_how_many_were_silenced(self):
+        from sniff4hound import monitors as monitors_module
+
+        clock = [1000.0]
+        with patch.object(monitors_module.time, "monotonic", lambda: clock[0]):
+            throttle = self._throttle(window_seconds=45)
+            throttle.partition([self._hit()], "217.160.0.187")
+            for _ in range(3):
+                clock[0] += 1.0
+                allowed, suppressed = throttle.partition([self._hit()], "217.160.0.187")
+                self.assertEqual(allowed, [])
+                self.assertEqual(len(suppressed), 1)
+
+            clock[0] += 60.0
+            allowed, suppressed = throttle.partition([self._hit()], "217.160.0.187")
+
+        self.assertEqual(len(allowed), 1)
+        self.assertEqual(allowed[0]["suppressed_since_last"], 3)
+        # ...and the counter resets, so the following alert is not inflated.
+        self.assertEqual(suppressed, [])
+
+    def test_partition_does_not_mutate_the_callers_hits(self):
+        # evaluate_packet()'s dicts are also handed to the training and
+        # anomaly paths, so annotating them in place would leak.
+        from sniff4hound import monitors as monitors_module
+
+        clock = [1000.0]
+        with patch.object(monitors_module.time, "monotonic", lambda: clock[0]):
+            throttle = self._throttle(window_seconds=45)
+            throttle.partition([self._hit()], "1.2.3.4")
+            clock[0] += 1.0
+            throttle.partition([self._hit()], "1.2.3.4")
+            clock[0] += 60.0
+            original = self._hit()
+            allowed, _ = throttle.partition([original], "1.2.3.4")
+
+        self.assertEqual(allowed[0]["suppressed_since_last"], 1)
+        self.assertNotIn("suppressed_since_last", original)
+
+    def test_filter_still_returns_only_the_allowed_half(self):
+        throttle = self._throttle()
+        self.assertEqual(len(throttle.filter([self._hit()], "1.2.3.4")), 1)
+        self.assertEqual(throttle.filter([self._hit()], "1.2.3.4"), [])
+
+
+class SuppressedMonitorTagTests(unittest.TestCase):
+    """The silenced hit has to reach the packet's tags, under its own keys."""
+
+    def setUp(self):
+        from sniff4hound.sniffer import Sniffer
+
+        self.sniffer = Sniffer.__new__(Sniffer)
+
+    def _tags(self, monitor_hits, suppressed_hits):
+        return self.sniffer._build_packet_tags(
+            {"proto": "tcp", "state": "open", "direction": "inbound"},
+            [],
+            monitor_hits,
+            suppressed_hits,
+        )
+
+    def test_a_suppressed_hit_is_tagged_under_its_own_keys(self):
+        tags = self._tags(
+            [],
+            [{"monitor_id": "builtin-root-id-response", "label": "Root id command response", "severity": "critical"}],
+        )
+        by_key = {t["key"]: t for t in tags}
+
+        self.assertEqual(by_key["monitor_suppressed"]["value"], "Root id command response")
+        self.assertEqual(by_key["monitor_suppressed_id"]["value"], "builtin-root-id-response")
+        self.assertEqual(by_key["monitor_suppressed"]["severity"], "critical")
+        # Not under the alerting keys - that would re-raise exactly what the
+        # throttle exists to quieten.
+        self.assertNotIn("monitor", by_key)
+        self.assertNotIn("monitor_id", by_key)
+
+    def test_an_allowed_hit_reports_the_silenced_count(self):
+        tags = self._tags(
+            [{
+                "monitor_id": "builtin-root-id-response",
+                "label": "Root id command response",
+                "severity": "critical",
+                "suppressed_since_last": 4,
+            }],
+            [],
+        )
+        by_key = {t["key"]: t for t in tags}
+
+        self.assertEqual(by_key["monitor"]["value"], "Root id command response")
+        self.assertEqual(by_key["monitor_suppressed_count"]["value"], "4")
+
+    def test_no_suppression_adds_no_extra_tags(self):
+        tags = self._tags(
+            [{"monitor_id": "builtin-admin-ports", "label": "Admin port", "severity": "medium"}],
+            [],
+        )
+        keys = {t["key"] for t in tags}
+
+        self.assertNotIn("monitor_suppressed", keys)
+        self.assertNotIn("monitor_suppressed_id", keys)
+        self.assertNotIn("monitor_suppressed_count", keys)
+
+
 if __name__ == "__main__":
     unittest.main()
