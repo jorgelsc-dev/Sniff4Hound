@@ -499,6 +499,13 @@ function getMobileStreamPairing(id) {
   return fetchJsonPromise(`/api/mobile-stream/pairings?id=${encodeURIComponent(id)}`);
 }
 
+function approveMobileStreamPairing(id) {
+  return fetchJsonPromise("/api/mobile-stream/pairings/approve", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  });
+}
+
 function revokeMobileStreamSession(token) {
   return fetchJsonPromise("/api/mobile-stream/sessions/revoke", {
     method: "POST",
@@ -2286,6 +2293,7 @@ export default {
   stopMobileStreamServer,
   createMobileStreamPairing,
   getMobileStreamPairing,
+  approveMobileStreamPairing,
   revokeMobileStreamSession,
   getDeclaredLocation,
   setDeclaredLocation,

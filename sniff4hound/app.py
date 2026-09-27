@@ -2275,6 +2275,25 @@ def mobile_stream_pairings(request):
     return mobile_stream.create_pairing(interface, port=port)
 
 
+@app.api("/api/mobile-stream/pairings/approve", methods=("POST",))
+def mobile_stream_approve_pairing(request):
+    """Operator accepts the device that knocked; the 6-digit code is created
+    here and nowhere else.
+
+    This approval is the security boundary of the feature: until it runs, a
+    device that reached the QR URL has been served nothing but a holding page,
+    and there is no code in existence for it to guess.
+    """
+    payload = _read_json_body(request)
+    pairing_id = str(payload.get("id") or "").strip()
+    if not pairing_id:
+        raise ValueError("id is required")
+    approved = mobile_stream.approve_pairing(pairing_id)
+    if not approved:
+        raise ValueError("pairing is not waiting for approval")
+    return approved
+
+
 @app.api("/api/mobile-stream/sessions", methods=("GET",))
 def mobile_stream_sessions(_request):
     return {"sessions": mobile_stream.status().get("sessions", [])}

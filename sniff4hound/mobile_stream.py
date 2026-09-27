@@ -20,6 +20,13 @@ from .utils import safe_int, utc_now
 
 
 MOBILE_STREAM_DEFAULT_PORT = 45679
+# Two separate clocks, because approval sits between them. A fresh QR waits
+# this long for a device to actually scan it and for the operator to accept
+# that device...
+PAIRING_APPROVAL_TTL_SECONDS = 300
+# ...and only once accepted does the 60s code window start. Pairing a phone
+# is a deliberate, supervised act; the short clock belongs on the secret, not
+# on how fast the operator can walk to the desk.
 PAIRING_TTL_SECONDS = 60
 STREAM_QUEUE_SIZE = 200
 STREAM_KEEPALIVE_SECONDS = 25
@@ -45,9 +52,15 @@ class Pairing:
     expires_at: float
     code: str = ""
     seen_at: float = 0.0
+    approved_at: float = 0.0
     consumed_at: float = 0.0
     failed_at: float = 0.0
     client: str = ""
+    # Captured when the device first knocks, so the operator can judge *this*
+    # device before any code exists. Wall clock alongside the monotonic
+    # seen_at because this one is shown to a human.
+    user_agent: str = ""
+    seen_at_utc: str = ""
 
 
 @dataclass
@@ -119,9 +132,17 @@ def _public_event(payload: dict[str, Any]) -> dict[str, Any] | None:
         for tag in tags[:8]:
             if not isinstance(tag, dict):
                 continue
+            # Deliberately no `value`. A tag's value is whatever
+            # monitors.describe_match() extracted as the reason the packet
+            # matched, and for any monitor with a payload_regex that is
+            # `found.group(0)` - a literal slice of the decoded payload. So
+            # forwarding it puts captured cleartext (a password in a form
+            # post, a session cookie, a token) on the LAN, which is the one
+            # thing this stream is specified never to carry. The rule that
+            # fired and how bad it is: that is the alert. The matched bytes
+            # stay on the desktop.
             public_tags.append({
                 "key": str(tag.get("key") or "")[:80],
-                "value": str(tag.get("value") or "")[:120],
                 "severity": str(tag.get("severity") or "")[:40],
             })
         return {
@@ -263,7 +284,7 @@ class MobileStreamService:
                 address=self._state.address,
                 port=self._state.port,
                 created_at=now,
-                expires_at=now + PAIRING_TTL_SECONDS,
+                expires_at=now + PAIRING_APPROVAL_TTL_SECONDS,
             )
             self._pairings[pairing_id] = pairing
             view = self._pairing_view(pairing)
@@ -281,7 +302,16 @@ class MobileStreamService:
             view["url"] = f"{self._state.url_base}/mobile/pair/{pairing.id}"
             return view
 
-    def open_pairing(self, pairing_id: str, *, client: str) -> Pairing | None:
+    def open_pairing(self, pairing_id: str, *, client: str, user_agent: str = "") -> Pairing | None:
+        """Record that a device knocked. Deliberately issues no code.
+
+        The device is not trusted yet, and nothing is served to it: this only
+        captures who is asking (IP, User-Agent, time) so the operator has
+        something to judge. The secret comes into existence in
+        approve_pairing(), after a human says yes - which is what makes this
+        stronger than a QR that carries a fixed secret anyone who photographs
+        the screen can replay.
+        """
         with self._lock:
             self._prune_locked()
             pairing = self._pairings.get(str(pairing_id or ""))
@@ -291,17 +321,62 @@ class MobileStreamService:
             if pairing.expires_at <= now:
                 self._pairings.pop(pairing.id, None)
                 return None
-            if not pairing.code:
-                pairing.code = f"{secrets.randbelow(1_000_000):06d}"
-            pairing.seen_at = now
-            pairing.client = str(client or "")
+            # The phone re-polls this page while it waits to be accepted, so
+            # only the first knock defines the device being judged - a later
+            # refresh must not silently re-describe it, least of all after
+            # the operator already approved what they were shown.
+            if not pairing.approved_at and not pairing.seen_at:
+                pairing.seen_at = now
+                pairing.seen_at_utc = utc_now()
+                pairing.client = str(client or "")
+                pairing.user_agent = str(user_agent or "")[:180]
             return pairing
+
+    def approve_pairing(self, pairing_id: str) -> dict[str, Any] | None:
+        """Operator accepts the device; only now does a code exist.
+
+        Starts the short code window (PAIRING_TTL_SECONDS) from this moment,
+        not from when the QR was drawn, so the 60s is the phone's time to type
+        the code rather than a race the operator is also running in.
+        """
+        with self._lock:
+            self._prune_locked()
+            pairing = self._pairings.get(str(pairing_id or ""))
+            if not pairing or pairing.consumed_at or pairing.failed_at:
+                return None
+            now = _now()
+            if pairing.expires_at <= now:
+                self._pairings.pop(pairing.id, None)
+                return None
+            if not pairing.seen_at:
+                # Nothing has scanned it yet, so there is no device to
+                # approve. Approving in advance would put a live code on
+                # screen waiting for whoever reaches the URL first.
+                return None
+            if not pairing.approved_at:
+                pairing.approved_at = now
+                pairing.code = f"{secrets.randbelow(1_000_000):06d}"
+                pairing.expires_at = now + PAIRING_TTL_SECONDS
+            view = self._pairing_view(pairing)
+            view["url"] = f"{self._state.url_base}/mobile/pair/{pairing.id}"
+            return view
 
     def verify_pairing(self, pairing_id: str, code: str, *, client: str, user_agent: str) -> str | None:
         with self._lock:
             pairing = self._pairings.get(str(pairing_id or ""))
             now = _now()
             if not pairing or pairing.expires_at <= now or pairing.consumed_at or pairing.failed_at:
+                return None
+            if not pairing.approved_at or not pairing.code:
+                # No approval, no code to be right about. Guessing cannot be
+                # what grants access.
+                return None
+            if pairing.client and str(client or "") != pairing.client:
+                # The approval was for a specific device. Without this, the
+                # operator vouches for the phone they were shown while the
+                # code stays usable by anyone else holding the link - which
+                # would make the whole approval step decorative.
+                pairing.failed_at = now
                 return None
             if str(code or "").strip() != pairing.code:
                 pairing.failed_at = now
@@ -326,7 +401,10 @@ class MobileStreamService:
             if not session:
                 return False
             session.revoked_at = _now()
-            self._notify_all({"type": "revoked", "generated_at": utc_now()})
+            # Targeted: revoking one device must not knock the others off.
+            # The phone closes its EventSource on this event and does not
+            # reconnect, so broadcasting it took every paired device dark.
+            self._notify_all({"type": "revoked", "generated_at": utc_now()}, token=session.token)
             return True
 
     def session(self, token: str) -> MobileSession | None:
@@ -370,11 +448,19 @@ class MobileStreamService:
             with self._lock:
                 self._subscribers.pop(subscriber_id, None)
 
-    def _notify_all(self, event: dict[str, Any]) -> None:
+    def _notify_all(self, event: dict[str, Any], *, token: str | None = None) -> None:
+        """Fan an event out to subscribers, or to exactly one when `token` is
+        given - the revoke case, where the target is the *only* device that
+        should hear about it."""
         dead = []
-        for subscriber_id, (token, q) in self._subscribers.items():
-            session = self._sessions.get(token)
-            if not session or session.revoked_at:
+        for subscriber_id, (subscriber_token, q) in self._subscribers.items():
+            if token is not None and subscriber_token != token:
+                continue
+            session = self._sessions.get(subscriber_token)
+            # A revoked session still gets its own targeted event: that frame
+            # is how its phone learns it was cut off. Without this exception
+            # the revoked device is the one subscriber that never hears.
+            if not session or (session.revoked_at and token is None):
                 dead.append(subscriber_id)
                 continue
             try:
@@ -399,7 +485,11 @@ class MobileStreamService:
     def _pairing_view(self, pairing: Pairing) -> dict[str, Any]:
         now = _now()
         status = "pending"
-        if pairing.code:
+        if pairing.seen_at and not pairing.approved_at:
+            # A device is waiting on the operator. This is the state the
+            # desktop has to surface with the who/where/when of the attempt.
+            status = "awaiting_approval"
+        if pairing.approved_at:
             status = "waiting_code"
         if pairing.consumed_at:
             status = "paired"
@@ -413,9 +503,13 @@ class MobileStreamService:
             "address": pairing.address,
             "port": pairing.port,
             "status": status,
+            # Empty until approval - there is no code to leak before then.
             "code": pairing.code,
             "seen": bool(pairing.seen_at),
+            "approved": bool(pairing.approved_at),
             "client": pairing.client,
+            "user_agent": pairing.user_agent,
+            "seen_at": pairing.seen_at_utc,
             "expires_in": max(0, int(pairing.expires_at - now)),
         }
 
@@ -471,9 +565,18 @@ class _MobileStreamHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/mobile/pair/"):
             pairing_id = path.rsplit("/", 1)[-1]
-            pairing = self.server.service.open_pairing(pairing_id, client=self._client())
+            pairing = self.server.service.open_pairing(
+                pairing_id,
+                client=self._client(),
+                user_agent=self.headers.get("User-Agent", ""),
+            )
             if not pairing:
                 self._send(410, _closed_page().encode("utf-8"))
+                return
+            if not pairing.approved_at:
+                # Nothing is served to an unapproved device but a holding
+                # page that refreshes itself until the operator accepts it.
+                self._send(200, _awaiting_approval_page().encode("utf-8"))
                 return
             self._send(200, _pairing_page(pairing).encode("utf-8"))
             return
@@ -560,7 +663,7 @@ def _pairing_page(pairing: Pairing) -> str:
         "Sniff4Hound Pairing",
         f"""
 <h1>Enter pairing code</h1>
-<p>Type the 6-digit code shown in Sniff4Hound Settings. This link closes after one wrong attempt or when the timer expires.</p>
+<p>This device was approved. Type the 6-digit code now shown in Sniff4Hound Settings. This link closes after one wrong attempt or when the timer expires.</p>
 <form method="post" action="/mobile/pair/{html.escape(pairing.id)}/verify">
   <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{{6}}" autofocus>
   <button type="submit">Unlock live stream</button>
@@ -601,7 +704,7 @@ function addEvent(data) {{
   (data.tags || []).forEach(tag => {{
     const span = document.createElement("span");
     span.className = "tag";
-    span.textContent = [tag.severity, tag.value || tag.key].filter(Boolean).join(" ");
+    span.textContent = [tag.severity, tag.key].filter(Boolean).join(" ");
     row.appendChild(span);
   }});
   events.prepend(row);
@@ -616,6 +719,22 @@ source.addEventListener("runtime_mode", (event) => addEvent(JSON.parse(event.dat
 source.addEventListener("revoked", () => {{ status.textContent = "Session revoked"; source.close(); }});
 source.onerror = () => {{ status.textContent = "Reconnecting..."; }};
 </script>
+""",
+    )
+
+
+def _awaiting_approval_page() -> str:
+    # Plain meta-refresh rather than JS: this page exists before the device is
+    # trusted with anything, so it should do as little as possible.
+    return _shell(
+        "Sniff4Hound Pairing",
+        """
+<meta http-equiv="refresh" content="3">
+<h1>Waiting for approval</h1>
+<p>This device has asked to connect. Approve it in Sniff4Hound Settings on the
+desktop - the access attempt is shown there with this device's address and
+browser. A 6-digit code appears here once it is accepted.</p>
+<p class="meta">This page refreshes itself.</p>
 """,
     )
 
