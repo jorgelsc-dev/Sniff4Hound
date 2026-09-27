@@ -610,6 +610,53 @@ class TestSnifferParsing(unittest.TestCase):
         self.assertEqual(snapshot["capture_state"], "blocked")
         self.assertIn("socket receive failed repeatedly", snapshot["errors"]["wlan0"])
 
+    def test_a_quiet_interface_does_not_accumulate_towards_giving_up(self):
+        # Only a successful *read* used to clear the error counter. On a quiet
+        # interface a timeout is the normal state, not a fault - the socket
+        # blocked for the poll window and nothing arrived - so a link that
+        # threw an occasional transient error between long idle stretches kept
+        # a counter that never came back down, and capture eventually gave up
+        # on an interface that had recovered after every single one.
+        #
+        # A genuinely dead interface is unaffected: recvfrom() raises OSError
+        # immediately rather than timing out, so those still arrive
+        # back-to-back and still trip the limit (see the test above).
+        reads = iter([
+            OSError("transient"),
+            socket.timeout(),
+            OSError("transient"),
+            socket.timeout(),
+            OSError("transient"),
+            socket.timeout(),
+        ])
+
+        def _recv(_size):
+            try:
+                raise next(reads)
+            except StopIteration:
+                self.sniffer._stop_event.set()
+                raise socket.timeout()
+
+        fake_sock = MagicMock()
+        fake_sock.recvfrom.side_effect = _recv
+        self.sniffer._stop_event = threading.Event()
+        self.sniffer.state.running = True
+        self.sniffer.state.interfaces = ["wlan0"]
+        self.sniffer._threads = [threading.current_thread()]
+
+        with patch("socket.socket", return_value=fake_sock), \
+             patch("sniff4hound.sniffer.CAPTURE_PROMISCUOUS", False), \
+             patch("sniff4hound.sniffer.CAPTURE_SOCKET_ERROR_LIMIT", 2), \
+             patch("sniff4hound.sniffer.time.sleep"):
+            self.sniffer._capture_worker("wlan0")
+
+        # Three errors with the limit at two, and it never gave up, because a
+        # timeout reset the run each time.
+        self.assertNotIn(
+            "socket receive failed repeatedly",
+            self.sniffer.state.errors.get("wlan0", ""),
+        )
+
     def test_capture_worker_stops_immediately_after_bind_failure(self):
         fake_sock = MagicMock()
         fake_sock.bind.side_effect = OSError("No such device")
