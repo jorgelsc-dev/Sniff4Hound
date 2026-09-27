@@ -8,7 +8,8 @@
       "tests.test_capture_service",
       "tests.test_ws_snapshot_channel",
       "tests.test_runtime_tls",
-      "tests.test_jobs"
+      "tests.test_jobs",
+      "tests.test_mobile_stream"
     ],
     [
       "tests.test_monitors.TestLoadBuiltinMonitors",

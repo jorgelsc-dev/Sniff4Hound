@@ -34,6 +34,7 @@ from .export import (
 )
 from .ipc import IpcClient, IpcError
 from .jobs import STATUS_DONE, STATUS_ERROR, JobQueue
+from .mobile_stream import MOBILE_STREAM_DEFAULT_PORT, MobileStreamService
 from .settings import (
     API_MAX_LIMIT,
     CAPTURE_AUTO_START,
@@ -386,6 +387,10 @@ class WebSocketHub:
             return rows
 
     def broadcast(self, payload: dict):
+        try:
+            mobile_stream.record_event(payload)
+        except Exception:
+            pass
         message = _json_text(payload)
         dead = []
         with self._lock:
@@ -432,6 +437,7 @@ class WebSocketHub:
 
 
 hub = WebSocketHub()
+mobile_stream = MobileStreamService()
 
 # Deferred jobs broadcast a completion nudge so a waiting client does not have
 # to sit out its next poll interval; the result itself is still collected over
@@ -2233,6 +2239,56 @@ def ws_close(request):
     return {"status": "ok"}
 
 
+@app.api("/api/mobile-stream/interfaces", methods=("GET",))
+def mobile_stream_interfaces(_request):
+    return {"interfaces": mobile_stream.interfaces()}
+
+
+@app.api("/api/mobile-stream/status", methods=("GET",))
+def mobile_stream_status(_request):
+    return mobile_stream.status()
+
+
+@app.api("/api/mobile-stream/server", methods=("POST", "DELETE"))
+def mobile_stream_server(request):
+    if request.method.upper() == "DELETE":
+        return mobile_stream.stop()
+    payload = _read_json_body(request)
+    interface = str(payload.get("interface") or "").strip()
+    port = safe_int(payload.get("port"), MOBILE_STREAM_DEFAULT_PORT)
+    return mobile_stream.start(interface, port=port)
+
+
+@app.api("/api/mobile-stream/pairings", methods=("GET", "POST"))
+def mobile_stream_pairings(request):
+    if request.method.upper() == "GET":
+        pairing_id = str((request.query or {}).get("id") or "").strip()
+        if pairing_id:
+            pairing = mobile_stream.pairing(pairing_id)
+            if not pairing:
+                raise ValueError("pairing is not active")
+            return pairing
+        return mobile_stream.status()
+    payload = _read_json_body(request)
+    interface = str(payload.get("interface") or "").strip()
+    port = safe_int(payload.get("port"), MOBILE_STREAM_DEFAULT_PORT)
+    return mobile_stream.create_pairing(interface, port=port)
+
+
+@app.api("/api/mobile-stream/sessions", methods=("GET",))
+def mobile_stream_sessions(_request):
+    return {"sessions": mobile_stream.status().get("sessions", [])}
+
+
+@app.api("/api/mobile-stream/sessions/revoke", methods=("POST",))
+def mobile_stream_revoke_session(request):
+    payload = _read_json_body(request)
+    token = str(payload.get("token") or "").strip()
+    if not token:
+        raise ValueError("token is required")
+    return {"status": "ok", "revoked": mobile_stream.revoke_session(token)}
+
+
 @app.api("/api/chat/messages", methods=("GET", "POST"))
 def chat_messages(request):
     if request.method.upper() == "GET":
@@ -3906,7 +3962,7 @@ JOB_QUEUE_EXEMPT_PATHS = frozenset({
     "/api/app/shutdown",
     "/api/ws/ticket",
 })
-JOB_QUEUE_EXEMPT_PREFIXES = ("/api/export", "/favicons")
+JOB_QUEUE_EXEMPT_PREFIXES = ("/api/export", "/api/mobile-stream", "/favicons")
 
 
 def _queue_exempt(path: str) -> bool:
