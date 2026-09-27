@@ -191,18 +191,232 @@
       </v-window-item>
       <v-window-item value="storage">
         <AiModeControls :config="aiSnapshot" storage-only class="mb-5" @updated="aiSnapshot = $event" />
+
+        <!-- Database file stats -->
         <DataPanel
-          title="Stored data"
-          subtitle="Delete what capture and the honeypot have written to the database. Monitor definitions, listeners, allow/block lists and settings are never touched."
+          title="Base de datos"
+          subtitle="Tamaño y estado del archivo SQLite. Compactar libera las páginas acumuladas entre podas sin eliminar ningún dato."
+          variant="tonal"
+          class="mb-4 storage-card"
+        >
+          <template #header-actions>
+            <v-chip
+              size="small"
+              :color="storageStats ? 'primary' : 'secondary'"
+              variant="tonal"
+              prepend-icon="mdi-database"
+            >
+              {{ storageStats ? formatDbBytes(storageStats.live_bytes) + ' datos vivos' : 'Cargando…' }}
+            </v-chip>
+          </template>
+
+          <v-row density="compact" align="start" class="mt-1">
+            <v-col cols="12" md="8">
+              <div v-if="storageStats" class="storage-detail">
+                <div class="storage-path mono text-caption text-medium-emphasis mb-3">
+                  {{ storageStats.path }}
+                </div>
+
+                <div class="text-caption text-medium-emphasis mb-1">
+                  Uso del archivo
+                </div>
+                <v-progress-linear
+                  :model-value="storageStats.file_bytes ? Math.round((storageStats.live_bytes / storageStats.file_bytes) * 100) : 0"
+                  color="primary"
+                  bg-color="rgba(255,255,255,0.08)"
+                  rounded
+                  height="10"
+                  class="mb-2"
+                />
+                <div class="d-flex justify-space-between text-caption text-medium-emphasis mb-3">
+                  <span>{{ formatDbBytes(storageStats.live_bytes) }} datos</span>
+                  <span>{{ formatDbBytes(storageStats.free_bytes) }} libres</span>
+                  <span>{{ formatDbBytes(storageStats.file_bytes) }} total</span>
+                </div>
+
+                <v-alert
+                  v-if="storageStats && !storageStats.incremental_reclaim"
+                  type="warning"
+                  variant="tonal"
+                  density="comfortable"
+                  class="mb-3"
+                  prepend-icon="mdi-database-alert"
+                >
+                  Este archivo no tiene <code>auto_vacuum=INCREMENTAL</code>. Las podas periódicas no reducen el tamaño en disco. Compactar lo migra y activa la recuperación automática.
+                </v-alert>
+
+                <div class="d-flex flex-wrap ga-2">
+                  <v-btn
+                    size="small"
+                    variant="tonal"
+                    color="primary"
+                    prepend-icon="mdi-database-arrow-down"
+                    :loading="compacting"
+                    :disabled="compacting"
+                    @click="openCompact"
+                  >
+                    Compactar
+                  </v-btn>
+                  <v-btn
+                    size="small"
+                    variant="text"
+                    prepend-icon="mdi-refresh"
+                    :loading="storageLoading"
+                    @click="loadStorageStats"
+                  >
+                    Actualizar
+                  </v-btn>
+                </div>
+
+                <v-alert v-if="compactResult" type="success" variant="tonal" density="comfortable" class="mt-3">
+                  {{ compactResult }}
+                </v-alert>
+                <v-alert v-if="storageError" type="error" variant="tonal" density="comfortable" class="mt-3">
+                  {{ storageError }}
+                </v-alert>
+              </div>
+              <div v-else-if="storageLoading" class="text-caption text-medium-emphasis">Cargando estadísticas…</div>
+              <div v-else class="text-caption text-medium-emphasis">Sin datos de almacenamiento.</div>
+            </v-col>
+            <v-col cols="12" md="4">
+              <div class="storage-stat-grid">
+                <template v-if="storageStats">
+                  <div class="storage-stat-item">
+                    <div class="text-caption text-medium-emphasis">Tamaño de página</div>
+                    <div class="text-body-2 font-weight-medium">{{ storageStats.page_size }} B</div>
+                  </div>
+                  <div class="storage-stat-item">
+                    <div class="text-caption text-medium-emphasis">Páginas totales</div>
+                    <div class="text-body-2 font-weight-medium">{{ (storageStats.page_count || 0).toLocaleString() }}</div>
+                  </div>
+                  <div class="storage-stat-item">
+                    <div class="text-caption text-medium-emphasis">Páginas libres</div>
+                    <div class="text-body-2 font-weight-medium">{{ (storageStats.freelist_count || 0).toLocaleString() }}</div>
+                  </div>
+                  <div class="storage-stat-item">
+                    <div class="text-caption text-medium-emphasis">Recuperación incremental</div>
+                    <div class="text-body-2 font-weight-medium">
+                      <v-chip size="x-small" :color="storageStats.incremental_reclaim ? 'success' : 'warning'" variant="tonal">
+                        {{ storageStats.incremental_reclaim ? 'Activa' : 'Inactiva' }}
+                      </v-chip>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </v-col>
+          </v-row>
+        </DataPanel>
+
+        <!-- Compact confirmation dialog -->
+        <v-dialog v-model="compactDialog" max-width="460">
+          <v-card class="pa-4">
+            <div class="text-h6 mb-3">¿Compactar la base de datos?</div>
+            <div class="text-caption text-medium-emphasis mb-3">
+              Reescribe el archivo SQLite recuperando todas las páginas libres y activa la recuperación automática incremental. La captura se pausa brevemente durante la reescritura. No elimina ningún dato.
+            </div>
+            <div class="d-flex justify-end ga-2">
+              <v-btn variant="text" @click="compactDialog = false">Cancelar</v-btn>
+              <v-btn color="primary" variant="flat" :loading="compacting" @click="confirmCompact">
+                Compactar
+              </v-btn>
+            </div>
+          </v-card>
+        </v-dialog>
+
+        <!-- Retention policy -->
+        <DataPanel
+          title="Política de retención"
+          subtitle="Valores efectivos para esta instancia. Se fijan al arrancar desde variables de entorno SNIFF4HOUND_* y requieren reinicio para cambiarlos."
+          variant="tonal"
+          class="mb-4 retention-card"
+        >
+          <template #header-actions>
+            <v-chip
+              v-if="retentionConfig"
+              size="small"
+              color="info"
+              variant="tonal"
+              prepend-icon="mdi-clock-outline"
+            >
+              {{ retentionConfig.retention_days }}d general · {{ retentionConfig.retention_alert_days }}d alertas
+            </v-chip>
+          </template>
+
+          <v-row v-if="retentionConfig" density="compact" class="mt-2">
+            <!-- Temporal policy -->
+            <v-col cols="12" class="pb-1">
+              <div class="text-caption font-weight-medium text-medium-emphasis mb-2 text-uppercase" style="letter-spacing:.06em">Política temporal (primaria)</div>
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <div class="retention-field">
+                <div class="text-caption text-medium-emphasis">Ventana general</div>
+                <div class="text-h6 font-weight-bold">{{ retentionConfig.retention_days }}<span class="text-body-2 ml-1">días</span></div>
+                <div class="text-caption mono text-medium-emphasis">SNIFF4HOUND_RETENTION_DAYS</div>
+              </div>
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <div class="retention-field">
+                <div class="text-caption text-medium-emphasis">Alertas high/critical</div>
+                <div class="text-h6 font-weight-bold">{{ retentionConfig.retention_alert_days }}<span class="text-body-2 ml-1">días</span></div>
+                <div class="text-caption mono text-medium-emphasis">SNIFF4HOUND_RETENTION_ALERT_DAYS</div>
+              </div>
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <div class="retention-field">
+                <div class="text-caption text-medium-emphasis">Intervalo de barrido</div>
+                <div class="text-h6 font-weight-bold">{{ retentionConfig.retention_interval_seconds }}<span class="text-body-2 ml-1">s</span></div>
+                <div class="text-caption mono text-medium-emphasis">SNIFF4HOUND_RETENTION_INTERVAL_SECONDS</div>
+              </div>
+            </v-col>
+
+            <!-- Row-count backstops -->
+            <v-col cols="12" class="pb-1 mt-3">
+              <div class="text-caption font-weight-medium text-medium-emphasis mb-2 text-uppercase" style="letter-spacing:.06em">Topes de filas (freno ante picos)</div>
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <div class="retention-field">
+                <div class="text-caption text-medium-emphasis">Base (RETENTION_MAX_PACKETS)</div>
+                <div class="text-h6 font-weight-bold">{{ (retentionConfig.retention_max_packets || 0).toLocaleString() }}</div>
+                <div class="text-caption mono text-medium-emphasis">SNIFF4HOUND_RETENTION_MAX_PACKETS</div>
+              </div>
+            </v-col>
+            <v-col cols="12">
+              <v-table density="compact" class="retention-table rounded-lg">
+                <thead>
+                  <tr>
+                    <th>Tabla</th>
+                    <th>Límite de filas</th>
+                    <th>Origen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(limit, table) in retentionConfig.table_limits" :key="table">
+                    <td class="mono">{{ table }}</td>
+                    <td>{{ limit.toLocaleString() }}</td>
+                    <td class="text-caption text-medium-emphasis">
+                      {{ tableLimitOrigin(table, limit) }}
+                    </td>
+                  </tr>
+                </tbody>
+              </v-table>
+            </v-col>
+          </v-row>
+          <div v-else-if="retentionLoading" class="text-caption text-medium-emphasis">Cargando política…</div>
+          <div v-else class="text-caption text-medium-emphasis">Sin datos de retención.</div>
+        </DataPanel>
+
+        <!-- Purge -->
+        <DataPanel
+          title="Datos almacenados"
+          subtitle="Elimina lo que captura y el honeypot han escrito. Definiciones de monitores, listeners, listas de acceso y configuración nunca se tocan."
           variant="tonal"
           class="mb-4 purge-card"
         >
           <v-row density="compact" align="center">
             <v-col cols="12" md="8">
               <div class="text-body-2">
-                <strong>Detection history</strong> removes stored packets, tags and payloads.
-                <strong>Everything</strong> also wipes flows, domains, paths and sessions, then
-                compacts the database file on disk.
+                <strong>Historial de detección</strong> elimina paquetes, etiquetas y payloads almacenados.
+                <strong>Todo</strong> también borra flows, dominios, paths y sesiones, y luego compacta el archivo en disco.
               </div>
             </v-col>
             <v-col cols="12" md="4" class="d-flex justify-md-end ga-2 flex-wrap">
@@ -213,7 +427,7 @@
                 :disabled="purging"
                 @click="openPurge('all')"
               >
-                Detection history
+                Historial de detección
               </v-btn>
               <v-btn
                 size="small"
@@ -222,7 +436,7 @@
                 :disabled="purging"
                 @click="openPurge('everything')"
               >
-                Everything
+                Todo
               </v-btn>
             </v-col>
           </v-row>
@@ -238,23 +452,20 @@
         <v-dialog v-model="purgeDialog" max-width="460">
           <v-card class="pa-4">
             <div class="text-h6 mb-3">
-              {{ purgeScope === "everything" ? "Delete all capture data?" : "Clear detection history?" }}
+              {{ purgeScope === "everything" ? "¿Eliminar todos los datos de captura?" : "¿Limpiar el historial de detección?" }}
             </div>
             <div class="text-caption text-medium-emphasis mb-3">
               <template v-if="purgeScope === 'everything'">
-                Deletes every packet, tag, payload, flow, domain, path and session written by
-                capture and the honeypot, then compacts the database file. Monitor and listener
-                definitions, allow/block lists and settings survive. This cannot be undone.
+                Elimina todos los paquetes, etiquetas, payloads, flows, dominios, paths y sesiones, y luego compacta el archivo. Monitores, listeners, listas de acceso y configuración sobreviven. No se puede deshacer.
               </template>
               <template v-else>
-                Deletes stored packets, tags and payloads. Flows, domains, paths and sessions are
-                kept. This cannot be undone.
+                Elimina paquetes, etiquetas y payloads almacenados. Flows, dominios, paths y sesiones se conservan. No se puede deshacer.
               </template>
             </div>
             <div class="d-flex justify-end ga-2">
-              <v-btn variant="text" @click="purgeDialog = false">Cancel</v-btn>
+              <v-btn variant="text" @click="purgeDialog = false">Cancelar</v-btn>
               <v-btn color="error" variant="flat" :loading="purging" @click="confirmPurge">
-                {{ purgeScope === "everything" ? "Delete everything" : "Clear history" }}
+                {{ purgeScope === "everything" ? "Eliminar todo" : "Limpiar historial" }}
               </v-btn>
             </div>
           </v-card>
@@ -1302,6 +1513,18 @@ export default {
       purgeError: "",
       purgeResult: "",
 
+      // Storage stats
+      storageStats: null,
+      storageLoading: false,
+      storageError: "",
+      compactDialog: false,
+      compacting: false,
+      compactResult: "",
+
+      // Retention config
+      retentionConfig: null,
+      retentionLoading: false,
+
       // Mobile stream
       mobileLoading: false,
       mobileStopping: false,
@@ -1381,7 +1604,7 @@ export default {
         detection: state(this.error ? "Sin datos" : `${this.monitors.filter(item => item.enabled).length} reglas habilitadas`),
         scope: state(this.detectionScopes.length ? `${this.detectionScopes.length} ámbitos silenciados` : "Todo el tráfico"),
         ai: state(!this.aiSnapshot || !online ? "Sin datos" : this.aiSnapshot.training_enabled ? "Entrenamiento activo" : this.aiSnapshot.ai_alert_mode_enabled ? "Alertas de IA activas" : "Entrenamiento detenido", live && Boolean(this.aiSnapshot?.training_enabled || this.aiSnapshot?.ai_alert_mode_enabled)),
-        storage: state(online ? "SQLite local" : "Sin conexión"),
+        storage: state(online ? (this.storageStats ? this.formatDbBytes(this.storageStats.live_bytes) + " datos vivos" : "SQLite local") : "Sin conexión"),
         exclusions: state("Filtros compartidos"),
         blacklist: state("Bloqueados / permitidos"),
         connection: state(online ? "Conectado" : "Sin conexión", online),
@@ -1559,6 +1782,8 @@ export default {
     this.loadDetectionScopes();
     this.loadLocation();
     this.loadMobileStream();
+    this.loadStorageStats();
+    this.loadRetentionConfig();
     this.load();
   },
   beforeUnmount() {
@@ -1743,6 +1968,73 @@ export default {
         .catch((err) => {
           this.detectionScopesError = (err && err.message) || "Failed to load the detection scope filter";
         });
+    },
+    async loadStorageStats() {
+      this.storageLoading = true;
+      this.storageError = "";
+      try {
+        this.storageStats = await this.store.getStorageStats();
+      } catch (err) {
+        this.storageError = (err && err.message) || "No se pudieron cargar las estadísticas de almacenamiento.";
+      } finally {
+        this.storageLoading = false;
+      }
+    },
+    openCompact() {
+      this.compactResult = "";
+      this.storageError = "";
+      this.compactDialog = true;
+    },
+    async confirmCompact() {
+      if (this.compacting) return;
+      this.compacting = true;
+      this.storageError = "";
+      this.compactResult = "";
+      try {
+        const result = await this.store.compactDatabase();
+        const before = result && result.before ? result.before.file_bytes : null;
+        const after = result && result.after ? result.after.file_bytes : null;
+        if (Number.isFinite(before) && Number.isFinite(after)) {
+          const saved = Math.max(0, before - after);
+          this.compactResult = saved > 0
+            ? `Completado. Se liberaron ${this.formatDbBytes(saved)} (${this.formatDbBytes(before)} → ${this.formatDbBytes(after)}).`
+            : `Completado. El archivo ya estaba optimizado (${this.formatDbBytes(after)}).`;
+        } else {
+          this.compactResult = "Compactación completada.";
+        }
+        this.compactDialog = false;
+        await this.loadStorageStats();
+      } catch (err) {
+        this.storageError = (err && err.message) || "Falló la compactación.";
+        this.compactDialog = false;
+      } finally {
+        this.compacting = false;
+      }
+    },
+    async loadRetentionConfig() {
+      this.retentionLoading = true;
+      try {
+        this.retentionConfig = await this.store.getRetentionConfig();
+      } catch {
+        // Non-critical: the tab still works without it
+      } finally {
+        this.retentionLoading = false;
+      }
+    },
+    formatDbBytes(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n) || n <= 0) return "0 B";
+      if (n >= 1073741824) return `${(n / 1073741824).toFixed(2)} GB`;
+      if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+      if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
+      return `${n} B`;
+    },
+    tableLimitOrigin(table, limit) {
+      if (!this.retentionConfig) return "";
+      const mp = this.retentionConfig.retention_max_packets;
+      if (limit === mp) return "= RETENTION_MAX_PACKETS";
+      if (limit === mp * 2) return "= RETENTION_MAX_PACKETS × 2";
+      return "fijo";
     },
     openPurge(scope) {
       this.purgeScope = scope;
@@ -2308,8 +2600,54 @@ export default {
 .location-card,
 .listeners-card,
 .filter-card,
-.notify-card {
+.notify-card,
+.storage-card,
+.retention-card {
   border-radius: 8px;
+}
+
+.storage-path {
+  font-size: 0.78rem;
+  word-break: break-all;
+  opacity: 0.72;
+}
+
+.storage-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.storage-stat-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(118, 191, 232, 0.12);
+  background: rgba(10, 18, 29, 0.55);
+}
+
+.retention-field {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(118, 191, 232, 0.12);
+  background: rgba(10, 18, 29, 0.55);
+  margin-bottom: 4px;
+}
+
+.retention-table {
+  background: transparent !important;
+}
+
+.retention-table :deep(th) {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.7;
+  font-weight: 500;
+}
+
+.retention-table :deep(td) {
+  font-size: 0.82rem;
+  border-bottom: 1px solid rgba(255,255,255,0.05) !important;
 }
 
 .mono {

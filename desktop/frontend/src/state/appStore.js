@@ -688,6 +688,18 @@ function fetchIpRelationshipGraph(options) {
   return fetchJsonPromise(`/api/intel/ips/graph${buildIntelQuery(options)}`);
 }
 
+function getStorageStats() {
+  return fetchJsonPromise("/api/data/storage");
+}
+
+function compactDatabase() {
+  return fetchJsonPromise("/api/data/compact/", { method: "POST" });
+}
+
+function getRetentionConfig() {
+  return fetchJsonPromise("/api/data/retention");
+}
+
 function clearDetections(scope) {
   return fetchJsonPromise("/api/data/clear/", {
     method: "POST",
@@ -2319,6 +2331,9 @@ export default {
   listIpCatalogWithScopes,
   fetchIpRelationshipGraph,
   listMonitorPackets,
+  getStorageStats,
+  compactDatabase,
+  getRetentionConfig,
   clearDetections,
   downloadIocExport,
   reconnectRealtime,
