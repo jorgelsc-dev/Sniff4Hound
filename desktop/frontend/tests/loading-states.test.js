@@ -95,7 +95,7 @@ test("every no-data message is guarded by the loading flag", () => {
   // charts both did exactly that.
   const guarded = [
     ["../src/components/MapPanel.vue", "No hosts yet."],
-    ["../src/components/monitors/MonitorMatchesPanel.vue", "No data yet"],
+    ["../src/components/monitors/MonitorMatchesPanel.vue", "Sin datos todavía"],
     ["../src/components/IpRelationshipGraph.vue", "Aún no hay IPs observadas"],
   ];
 

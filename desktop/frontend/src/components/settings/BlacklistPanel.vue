@@ -1,10 +1,10 @@
 <template>
   <div>
     <v-alert type="info" variant="tonal" density="comfortable" class="mb-4">
-      Blacklist entries create monitor hits and alerts automatically. Whitelist entries stop matching
-      packets from being stored at all - not just muted from rules/alerts, dropped from capture
-      entirely, the same as an IP purged from Settings. Use exclusions (Settings &gt; Exclusiones)
-      instead if you want to silence detection while still keeping the traffic visible.
+      Las entradas de bloqueo crean detecciones y alertas automáticamente. Las entradas permitidas
+      impiden que los paquetes coincidentes se guarden: no solo se silencian reglas y alertas,
+      también se descartan de la captura igual que una IP purgada desde Configuración. Usa
+      exclusiones (Configuración &gt; Exclusiones) si quieres silenciar detección sin ocultar el tráfico.
     </v-alert>
 
     <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
@@ -65,15 +65,15 @@ export default {
       return [
         {
           kind: "blacklist",
-          title: "Blacklist",
-          description: "Matches are promoted as detections and alerts.",
+          title: "Lista de bloqueo",
+          description: "Las coincidencias se elevan a detecciones y alertas.",
           icon: "mdi-cancel",
           color: "error",
         },
         {
           kind: "whitelist",
-          title: "Whitelist",
-          description: "Matches stay in capture, but do not fire detections.",
+          title: "Lista permitida",
+          description: "Las coincidencias permanecen en captura, pero no disparan detecciones.",
           icon: "mdi-shield-check-outline",
           color: "success",
         },
@@ -86,51 +86,51 @@ export default {
       return [
         {
           category: "ip",
-          title: `IP ${blacklist ? "Blacklist" : "Whitelist"}`,
+          title: `IP ${blacklist ? "bloqueadas" : "permitidas"}`,
           subtitle: blacklist
-            ? "Flag traffic to or from a specific IP address."
-            : "Trust traffic to or from a specific IP address.",
-          valueLabel: "IP address",
+            ? "Marca tráfico hacia o desde una IP concreta."
+            : "Confía en tráfico hacia o desde una IP concreta.",
+          valueLabel: "Dirección IP",
           valuePlaceholder: "203.0.113.5",
           icon: "mdi-ip-network-outline",
         },
         {
           category: "domain",
-          title: `Domain ${blacklist ? "Blacklist" : "Whitelist"}`,
+          title: `Dominios ${blacklist ? "bloqueados" : "permitidos"}`,
           subtitle: blacklist
-            ? "Flag DNS lookups or HTTP/TLS traffic referencing a specific domain."
-            : "Trust DNS lookups or HTTP/TLS traffic referencing a specific domain.",
-          valueLabel: "Domain",
+            ? "Marca consultas DNS o tráfico HTTP/TLS que referencia un dominio."
+            : "Confía en consultas DNS o tráfico HTTP/TLS que referencia un dominio.",
+          valueLabel: "Dominio",
           valuePlaceholder: blacklist ? "evil.example.com" : "trusted.example.com",
           icon: "mdi-web",
         },
         {
           category: "path",
-          title: `Path ${blacklist ? "Blacklist" : "Whitelist"}`,
+          title: `Paths ${blacklist ? "bloqueados" : "permitidos"}`,
           subtitle: blacklist
-            ? "Flag HTTP requests to a specific request path."
-            : "Trust HTTP requests to a specific request path.",
+            ? "Marca solicitudes HTTP hacia un path concreto."
+            : "Confía en solicitudes HTTP hacia un path concreto.",
           valueLabel: "Path",
           valuePlaceholder: blacklist ? "/wp-admin/setup-config.php" : "/health",
           icon: "mdi-routes",
         },
         {
           category: "port",
-          title: `Port ${blacklist ? "Blacklist" : "Whitelist"}`,
+          title: `Puertos ${blacklist ? "bloqueados" : "permitidos"}`,
           subtitle: blacklist
-            ? "Flag traffic touching a specific source or destination port."
-            : "Trust traffic touching a specific source or destination port.",
-          valueLabel: "Port",
+            ? "Marca tráfico que toque un puerto origen o destino concreto."
+            : "Confía en tráfico que toque un puerto origen o destino concreto.",
+          valueLabel: "Puerto",
           valuePlaceholder: blacklist ? "3389" : "443",
           icon: "mdi-ethernet-cable",
         },
         {
           category: "protocol",
-          title: `Protocol ${blacklist ? "Blacklist" : "Whitelist"}`,
+          title: `Protocolos ${blacklist ? "bloqueados" : "permitidos"}`,
           subtitle: blacklist
-            ? "Flag traffic decoded as a specific transport or application protocol."
-            : "Trust traffic decoded as a specific transport or application protocol.",
-          valueLabel: "Protocol",
+            ? "Marca tráfico decodificado como un protocolo de transporte o aplicación."
+            : "Confía en tráfico decodificado como un protocolo de transporte o aplicación.",
+          valueLabel: "Protocolo",
           valuePlaceholder: blacklist ? "telnet" : "dns",
           icon: "mdi-lan",
         },
@@ -155,7 +155,7 @@ export default {
           };
         })
         .catch((err) => {
-          this.error = (err && err.message) || "Failed to load list entries";
+          this.error = (err && err.message) || "No se pudieron cargar las entradas de listas";
         });
     },
     createEntry(kind, { category, matchType, value, label }) {
@@ -166,7 +166,7 @@ export default {
       create({ category, matchType, value, label })
         .then(() => this.load())
         .catch((err) => {
-          this.formErrors[key] = (err && err.message) || "Failed to add entry";
+          this.formErrors[key] = (err && err.message) || "No se pudo agregar la entrada";
         })
         .finally(() => {
           this.submittingKey = "";
@@ -178,7 +178,7 @@ export default {
       toggle(entry.id, value)
         .then(() => this.load())
         .catch((err) => {
-          this.error = (err && err.message) || "Failed to update entry";
+          this.error = (err && err.message) || "No se pudo actualizar la entrada";
         })
         .finally(() => {
           this.togglePending = "";
@@ -189,7 +189,7 @@ export default {
       remove(entry.id)
         .then(() => this.load())
         .catch((err) => {
-          this.error = (err && err.message) || "Failed to delete entry";
+          this.error = (err && err.message) || "No se pudo eliminar la entrada";
         });
     },
   },

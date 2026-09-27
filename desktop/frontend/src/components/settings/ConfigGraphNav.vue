@@ -3,7 +3,7 @@
     <header class="config-toolbar">
       <div class="config-title">
         <v-icon icon="mdi-source-branch" size="20" />
-        <h1>Settings</h1>
+        <h1>Configuración</h1>
         <span class="config-project">Sniff4Hound</span>
       </div>
       <div class="config-tools">

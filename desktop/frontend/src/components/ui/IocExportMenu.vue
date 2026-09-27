@@ -8,13 +8,13 @@
         density="comfortable"
         prepend-icon="mdi-file-export-outline"
         :loading="busy"
-        aria-label="Export indicators"
+        aria-label="Exportar indicadores"
       >
-        Export
+        Exportar
       </v-btn>
     </template>
     <v-list density="compact" min-width="260">
-      <v-list-subheader>Download indicators</v-list-subheader>
+      <v-list-subheader>Descargar indicadores</v-list-subheader>
       <template v-for="dataset in datasets" :key="dataset">
         <v-list-item
           :title="`${labelFor(dataset)} (CSV)`"
@@ -36,17 +36,17 @@
 import store from "../../state/appStore";
 
 const DATASET_LABELS = {
-  alerts: "Alerts",
+  alerts: "Alertas",
   endpoints: "Endpoints",
-  flows: "Flows",
-  domains: "Domains",
+  flows: "Flujos",
+  domains: "Dominios",
 };
 
 const DATASET_DESCRIPTIONS = {
-  alerts: "Rule, severity, 5-tuple, evidence, first/last seen",
-  endpoints: "Observed IPs with hit counts and worst severity",
-  flows: "Flows active in window; lifetime packet/byte counts",
-  domains: "Domains seen in DNS/TLS-SNI/HTTP traffic",
+  alerts: "Regla, severidad, 5-tupla, evidencia y primer/último avistamiento",
+  endpoints: "IPs observadas con conteo de hits y peor severidad",
+  flows: "Flujos activos en la ventana y conteo total de paquetes/bytes",
+  domains: "Dominios vistos en tráfico DNS, TLS-SNI o HTTP",
 };
 
 export default {
@@ -86,8 +86,8 @@ export default {
           this.store.pushNotification({
             kind: "export",
             severity: "info",
-            title: "Indicators exported",
-            message: `Downloaded ${filename}`,
+            title: "Indicadores exportados",
+            message: `Descargado ${filename}`,
             groupKey: `ioc-export:${dataset}`,
           });
         })
@@ -95,7 +95,7 @@ export default {
           this.store.pushNotification({
             kind: "export",
             severity: "high",
-            title: "Export failed",
+            title: "Falló la exportación",
             message: String((error && error.message) || error),
             groupKey: `ioc-export-error:${dataset}`,
           });

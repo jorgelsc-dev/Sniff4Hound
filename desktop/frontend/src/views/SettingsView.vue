@@ -26,8 +26,8 @@
 
       <v-window-item value="capture">
         <DataPanel
-          title="Capture Interfaces"
-          subtitle="Select one or more interfaces to listen on. Leave it empty to sniff every visible interface."
+          title="Interfaces de captura"
+          subtitle="Selecciona una o varias interfaces de escucha. Déjalo vacío para capturar en todas las interfaces visibles."
           variant="tonal"
           :count="selectedSnifferInterfaces.length || snifferInterfaceOptions.length"
           count-label="interfaces"
@@ -79,8 +79,8 @@
       </v-window-item>
       <v-window-item value="scope">
         <DataPanel
-          title="Detection scope"
-          subtitle="Mute detections for traffic that stays entirely inside the selected scopes. Excluded packets remain visible in capture, but they are not classified, tagged by rules, run through monitors, or sent to anomaly detectors."
+          title="Alcance de detección"
+          subtitle="Silencia detecciones para el tráfico que permanece completamente dentro de los ámbitos elegidos. Los paquetes excluidos siguen visibles en captura, pero no se clasifican, etiquetan por reglas, pasan por monitores ni se envían a detectores de anomalías."
           variant="tonal"
           class="mb-4 scope-card"
         >
@@ -91,7 +91,7 @@
               variant="tonal"
               :prepend-icon="detectionScopes.length ? 'mdi-filter-off-outline' : 'mdi-filter-check-outline'"
             >
-              {{ detectionScopes.length ? `${detectionScopes.length} muted` : "Detecting everything" }}
+              {{ detectionScopes.length ? `${detectionScopes.length} silenciados` : "Detectando todo" }}
             </v-chip>
           </template>
 
@@ -112,14 +112,14 @@
                 />
               </div>
               <div class="text-caption text-medium-emphasis mt-2">
-                Both endpoints must fall inside an excluded scope. Traffic from a private
-                host out to a public address is still captured and analysed.
+                Ambos extremos deben quedar dentro de un ámbito excluido. El tráfico desde un host
+                privado hacia una dirección pública sigue capturándose y analizándose.
               </div>
             </v-col>
             <v-col cols="12" md="5">
               <div class="interface-status">{{ detectionScopeStatus }}</div>
               <div class="text-caption text-medium-emphasis mt-2">
-                Leave every box unchecked to detect on all traffic.
+                Deja todas las casillas vacías para detectar en todo el tráfico.
               </div>
             </v-col>
           </v-row>
@@ -132,8 +132,8 @@
       </v-window-item>
       <v-window-item value="location">
         <DataPanel
-          title="Sensor location"
-          subtitle="Where this machine physically sits. Private and loopback addresses have no geolocation of their own, so the Radar map plots them all at this point. Public addresses keep their own location, resolved from the registry blocks."
+          title="Ubicación del sensor"
+          subtitle="Dónde está físicamente esta máquina. Las direcciones privadas y loopback no tienen geolocalización propia, así que el mapa Radar las ubica en este punto. Las direcciones públicas conservan su propia ubicación, resuelta desde bloques de registro."
           variant="tonal"
           class="mb-4 location-card"
         >
@@ -144,12 +144,12 @@
               variant="tonal"
               :prepend-icon="locationConfigured ? 'mdi-map-marker-check' : 'mdi-map-marker-off'"
             >
-              {{ locationConfigured ? locationSummary : "Not set" }}
+              {{ locationConfigured ? locationSummary : "Sin configurar" }}
             </v-chip>
           </template>
 
           <div class="text-caption text-medium-emphasis mb-2">
-            Click the map to drop the marker, or type the coordinates.
+            Haz clic en el mapa para colocar el marcador, o escribe las coordenadas.
           </div>
 
           <LocationPicker
@@ -169,7 +169,7 @@
               :disabled="locationSubmitting || !locationConfigured"
               @click="clearLocation"
             >
-              Clear
+              Borrar
             </v-btn>
             <v-btn
               size="small"
@@ -179,7 +179,7 @@
               :disabled="!locationDirty || !locationDraftValid"
               @click="saveLocation"
             >
-              Save location
+              Guardar ubicación
             </v-btn>
           </div>
 
@@ -476,7 +476,7 @@
       <v-window-item value="honeypot">
         <DataPanel
           title="Listeners"
-          subtitle="Enable or disable individual listeners. A listener can never be edited or removed once created - only turned on or off - so the record of what was ever exposed stays intact."
+          subtitle="Habilita o deshabilita listeners individuales. Un listener creado no puede editarse ni eliminarse, solo encenderse o apagarse, para conservar el registro de lo que estuvo expuesto."
           variant="tonal"
           :count="listeners.length"
           count-label="listeners"
@@ -485,14 +485,14 @@
         >
           <template #header-actions>
             <v-btn size="small" color="primary" variant="outlined" prepend-icon="mdi-plus" @click="openNewListenerDialog">
-              New Listener
+              Nuevo listener
             </v-btn>
           </template>
 
           <v-text-field
             v-model.trim="listenerSearch"
-            label="Search listeners"
-            placeholder="proto, port, label, source..."
+            label="Buscar listeners"
+            placeholder="protocolo, puerto, etiqueta, origen..."
             prepend-inner-icon="mdi-magnify"
             clearable
             variant="outlined"
@@ -508,7 +508,7 @@
             :custom-filter="filterListenerRows"
             density="comfortable"
             items-per-page="10"
-            no-data-text="No listeners yet."
+            no-data-text="Todavía no hay listeners."
             class="listeners-table"
           >
             <template v-slot:[`item.endpoint`]="{ item }">
@@ -519,7 +519,7 @@
             </template>
             <template v-slot:[`item.source`]="{ item }">
               <v-chip size="x-small" :color="item.source === 'builtin' ? 'secondary' : 'info'" variant="tonal">
-                {{ item.source }}
+                {{ sourceLabel(item.source) }}
               </v-chip>
             </template>
             <template v-slot:[`item.running`]="{ item }">
@@ -529,7 +529,7 @@
                 variant="tonal"
                 :prepend-icon="item.running ? 'mdi-check-circle-outline' : 'mdi-close-circle-outline'"
               >
-                {{ item.running ? "Running" : "Stopped" }}
+                {{ item.running ? "En ejecución" : "Detenido" }}
               </v-chip>
             </template>
             <template v-slot:[`item.enabled`]="{ item }">
@@ -548,21 +548,21 @@
 
         <v-dialog v-model="newListenerDialog" max-width="420">
           <v-card class="pa-4">
-            <div class="text-h6 mb-3">New Listener</div>
+            <div class="text-h6 mb-3">Nuevo listener</div>
             <div class="text-caption text-medium-emphasis mb-3">
-              This can be enabled or disabled later, but never edited or removed - double-check the
-              protocol and port before creating it.
+              Podrás habilitarlo o deshabilitarlo más tarde, pero no editarlo ni eliminarlo.
+              Revisa el protocolo y el puerto antes de crearlo.
             </div>
             <v-select
               v-model="newListener.proto"
               :items="['tcp', 'udp']"
-              label="Protocol"
+              label="Protocolo"
               variant="outlined"
               density="comfortable"
             />
             <v-text-field
               v-model.number="newListener.port"
-              label="Port"
+              label="Puerto"
               type="number"
               variant="outlined"
               density="comfortable"
@@ -571,7 +571,7 @@
             />
             <v-text-field
               v-model.trim="newListener.label"
-              label="Label (optional)"
+              label="Etiqueta (opcional)"
               variant="outlined"
               density="comfortable"
             />
@@ -579,9 +579,9 @@
               {{ newListenerError }}
             </v-alert>
             <div class="d-flex justify-end ga-2">
-              <v-btn variant="text" @click="newListenerDialog = false">Cancel</v-btn>
+              <v-btn variant="text" @click="newListenerDialog = false">Cancelar</v-btn>
               <v-btn color="primary" variant="flat" :loading="newListenerSubmitting" @click="createListener">
-                Create
+                Crear
               </v-btn>
             </div>
           </v-card>
@@ -599,15 +599,13 @@
         <v-card variant="tonal" class="pa-4 mb-4 filter-card">
           <div class="d-flex align-start justify-space-between flex-wrap ga-3">
             <div>
-              <div class="text-subtitle-2 font-weight-medium">Store only detected traffic</div>
+              <div class="text-subtitle-2 font-weight-medium">Guardar solo tráfico detectado</div>
               <div class="text-caption text-medium-emphasis mt-1">
-                Controls whether the monitor rule catalog runs. When enabled (recommended), packets
-                are evaluated against your monitors; a match is stored as an alert, everything else is
-                counted live but not written to SQLite. Turning this off does not switch to storing
-                everything captured - it skips the rule catalog entirely, so only anomaly detectors
-                (port scans, SYN floods, ...) can still trigger storage, and clean traffic stays
-                unpersisted either way. Training mode (below) is the setting that captures benign
-                traffic on purpose, independent of this toggle.
+                Controla si se ejecuta el catálogo de reglas de monitores. Cuando está activo
+                (recomendado), los paquetes se evalúan contra tus monitores: las coincidencias se
+                guardan como alertas y el resto solo se cuenta en vivo, sin escribirse en SQLite.
+                Al desactivarlo no se guarda toda la captura: se omite el catálogo de reglas, así
+                que solo los detectores de anomalías pueden disparar almacenamiento.
               </div>
             </div>
             <v-switch
@@ -626,7 +624,7 @@
                 :items="monitorSeverityOptions"
                 item-title="label"
                 item-value="value"
-                label="Minimum monitor severity"
+                label="Severidad mínima de monitores"
                 variant="outlined"
                 density="comfortable"
                 hide-details="auto"
@@ -637,7 +635,7 @@
             <v-col cols="12" md="6">
               <v-switch
                 :model-value="suppressGeneratedInfo"
-                label="Mute generated info/low signals"
+                label="Silenciar señales generadas info/baja"
                 :loading="configSubmitting"
                 color="warning"
                 hide-details="auto"
@@ -650,23 +648,23 @@
 
         <div class="d-flex justify-end mb-3">
           <v-btn color="primary" prepend-icon="mdi-plus" @click="openCreateDialog">
-            New monitor
+            Nuevo monitor
           </v-btn>
         </div>
 
         <EntityTablePanel
-          title="Detection monitors"
-          subtitle="Built-in monitors can be enabled/disabled but not edited or removed. Custom monitors can be edited or removed. Their live traffic and charts are on the Monitors page."
+          title="Monitores de detección"
+          subtitle="Los monitores integrados pueden habilitarse o deshabilitarse, pero no editarse ni eliminarse. Los personalizados sí pueden editarse o eliminarse. Su tráfico en vivo y gráficas están en la página Monitores."
           :rows="monitors"
           :columns="columns"
           :loading="loading"
           :error="error"
           :last-updated="lastUpdated"
           search-enabled
-          search-label="Search monitors"
-          search-placeholder="Name, tag, description..."
+          search-label="Buscar monitores"
+          search-placeholder="Nombre, etiqueta, descripción..."
           :page-size="25"
-          empty-text="No monitors defined yet"
+          empty-text="Todavía no hay monitores definidos"
           @refresh="load"
         >
           <template #cell-mode="{ value }">
@@ -684,7 +682,7 @@
           </template>
           <template #cell-source="{ item }">
             <v-chip size="x-small" :color="item.source === 'builtin' ? 'secondary' : 'success'" variant="tonal">
-              {{ item.source === "builtin" ? "Built-in" : "Custom" }}
+              {{ item.source === "builtin" ? "Integrado" : "Personalizado" }}
             </v-chip>
           </template>
           <template #cell-enabled="{ item }">
@@ -707,7 +705,7 @@
                 prepend-icon="mdi-file-document-outline"
                 @click="openRuleDetail(item)"
               >
-                View
+                Ver
               </v-btn>
               <v-btn
                 v-if="item.source !== 'builtin'"
@@ -718,7 +716,7 @@
                 :disabled="isBusy(item.id)"
                 @click="openEditDialog(item)"
               >
-                Edit
+                Editar
               </v-btn>
               <v-btn
                 v-if="item.source !== 'builtin'"
@@ -729,7 +727,7 @@
                 :loading="isBusy(item.id)"
                 @click="removeMonitor(item)"
               >
-                Delete
+                Eliminar
               </v-btn>
             </div>
           </template>
@@ -740,7 +738,7 @@
         <v-dialog v-model="dialogOpen" max-width="980">
           <v-card rounded="xl" class="pa-2 monitor-dialog-card">
             <v-card-title class="text-h6">
-              {{ editingId ? "Edit monitor" : "New monitor" }}
+              {{ editingId ? "Editar monitor" : "Nuevo monitor" }}
             </v-card-title>
             <v-card-text class="monitor-dialog-body">
               <v-alert v-if="formError" type="error" variant="tonal" density="comfortable" class="mb-4">
@@ -749,14 +747,14 @@
 
               <v-row density="compact">
                 <v-col cols="12" md="8">
-                  <v-text-field v-model.trim="form.name" label="Name" variant="outlined" density="comfortable" />
+                  <v-text-field v-model.trim="form.name" label="Nombre" variant="outlined" density="comfortable" />
                 </v-col>
                 <v-col cols="12" md="4">
                   <v-text-field
                     v-model.number="form.priority"
                     type="number"
-                    label="Priority"
-                    hint="Lower runs first"
+                    label="Prioridad"
+                    hint="Los valores bajos se ejecutan primero"
                     persistent-hint
                     variant="outlined"
                     density="comfortable"
@@ -765,7 +763,7 @@
                 <v-col cols="12">
                   <v-text-field
                     v-model.trim="form.description"
-                    label="Description"
+                    label="Descripción"
                     variant="outlined"
                     density="comfortable"
                   />
@@ -774,7 +772,7 @@
                   <v-select
                     v-model="form.severity"
                     :items="severityOptions"
-                    label="Severity"
+                    label="Severidad"
                     variant="outlined"
                     density="comfortable"
                   />
@@ -782,8 +780,8 @@
                 <v-col cols="12" sm="6">
                   <v-text-field
                     v-model.trim="form.tag"
-                    label="Tag"
-                    hint="Short label attached to stored packets"
+                    label="Etiqueta"
+                    hint="Etiqueta breve asociada a los paquetes guardados"
                     persistent-hint
                     variant="outlined"
                     density="comfortable"
@@ -792,21 +790,21 @@
               </v-row>
 
               <v-btn-toggle v-model="form.mode" mandatory color="primary" class="mode-toggle my-4">
-                <v-btn value="rule">Rule builder</v-btn>
+                <v-btn value="rule">Constructor</v-btn>
                 <v-btn value="regex">Regex</v-btn>
-                <v-btn value="stateful">Stateful</v-btn>
+                <v-btn value="stateful">Con estado</v-btn>
               </v-btn-toggle>
 
               <v-expansion-panels v-model="monitorBuilderPanels" multiple variant="accordion" class="monitor-builder">
                 <v-expansion-panel value="include">
-                  <v-expansion-panel-title>Include</v-expansion-panel-title>
+                  <v-expansion-panel-title>Incluir</v-expansion-panel-title>
                   <v-expansion-panel-text>
                     <v-row density="compact">
                       <v-col cols="12" sm="6">
                         <v-select
                           v-model="form.protocols"
                           :items="protocolOptions"
-                          label="Protocols"
+                          label="Protocolos"
                           multiple
                           chips
                           closable-chips
@@ -818,7 +816,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.ports"
-                          label="Ports"
+                          label="Puertos"
                           multiple
                           chips
                           closable-chips
@@ -830,7 +828,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.srcPorts"
-                          label="Source ports"
+                          label="Puertos origen"
                           multiple
                           chips
                           closable-chips
@@ -842,7 +840,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.dstPorts"
-                          label="Destination ports"
+                          label="Puertos destino"
                           multiple
                           chips
                           closable-chips
@@ -866,7 +864,7 @@
                       <v-col cols="12">
                         <v-combobox
                           v-model="form.payloadContains"
-                          label="Payload contains"
+                          label="Payload contiene"
                           multiple
                           chips
                           closable-chips
@@ -878,7 +876,7 @@
                       <v-col cols="12" class="d-flex align-start ga-2">
                         <v-combobox
                           v-model="form.payloadRegex"
-                          label="Payload regex"
+                          label="Regex de payload"
                           multiple
                           chips
                           closable-chips
@@ -893,7 +891,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.ipRegex"
-                          label="IP regex"
+                          label="Regex de IP"
                           multiple
                           chips
                           closable-chips
@@ -905,7 +903,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.portRegex"
-                          label="Port regex"
+                          label="Regex de puerto"
                           multiple
                           chips
                           closable-chips
@@ -917,7 +915,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.protocolRegex"
-                          label="Protocol regex"
+                          label="Regex de protocolo"
                           multiple
                           chips
                           closable-chips
@@ -929,7 +927,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.payloadPrefixHex"
-                          label="Payload hex prefix"
+                          label="Prefijo hex de payload"
                           multiple
                           chips
                           closable-chips
@@ -943,14 +941,14 @@
                 </v-expansion-panel>
 
                 <v-expansion-panel value="exclude">
-                  <v-expansion-panel-title>Exclude</v-expansion-panel-title>
+                  <v-expansion-panel-title>Excluir</v-expansion-panel-title>
                   <v-expansion-panel-text>
                     <v-row density="compact">
                       <v-col cols="12" sm="6">
                         <v-select
                           v-model="form.excludeProtocols"
                           :items="protocolOptions"
-                          label="Protocols"
+                          label="Protocolos"
                           multiple
                           chips
                           closable-chips
@@ -962,7 +960,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.excludePorts"
-                          label="Ports"
+                          label="Puertos"
                           multiple
                           chips
                           closable-chips
@@ -986,7 +984,7 @@
                       <v-col cols="12">
                         <v-combobox
                           v-model="form.excludePayloadContains"
-                          label="Payload contains"
+                          label="Payload contiene"
                           multiple
                           chips
                           closable-chips
@@ -998,7 +996,7 @@
                       <v-col cols="12">
                         <v-combobox
                           v-model="form.payloadRegexExclude"
-                          label="Payload regex"
+                          label="Regex de payload"
                           multiple
                           chips
                           closable-chips
@@ -1011,7 +1009,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.excludeIpRegex"
-                          label="IP regex"
+                          label="Regex de IP"
                           multiple
                           chips
                           closable-chips
@@ -1023,7 +1021,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.excludePortRegex"
-                          label="Port regex"
+                          label="Regex de puerto"
                           multiple
                           chips
                           closable-chips
@@ -1035,7 +1033,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.excludeProtocolRegex"
-                          label="Protocol regex"
+                          label="Regex de protocolo"
                           multiple
                           chips
                           closable-chips
@@ -1047,7 +1045,7 @@
                       <v-col cols="12" sm="6">
                         <v-combobox
                           v-model="form.excludePayloadPrefixHex"
-                          label="Payload hex prefix"
+                          label="Prefijo hex de payload"
                           multiple
                           chips
                           closable-chips
@@ -1061,14 +1059,14 @@
                 </v-expansion-panel>
 
                 <v-expansion-panel value="advanced">
-                  <v-expansion-panel-title>Advanced</v-expansion-panel-title>
+                  <v-expansion-panel-title>Avanzado</v-expansion-panel-title>
                   <v-expansion-panel-text>
                     <v-row density="compact">
                       <v-col cols="12" sm="6">
                         <v-text-field
                           v-model.number="form.minLength"
                           type="number"
-                          label="Min packet length"
+                          label="Longitud mínima de paquete"
                           variant="outlined"
                           density="comfortable"
                         />
@@ -1077,7 +1075,7 @@
                         <v-text-field
                           v-model.number="form.maxLength"
                           type="number"
-                          label="Max packet length"
+                          label="Longitud máxima de paquete"
                           variant="outlined"
                           density="comfortable"
                         />
@@ -1085,7 +1083,7 @@
                       <v-col cols="12">
                         <v-checkbox
                           v-model="form.requestOnly"
-                          label="Request traffic only"
+                          label="Solo tráfico de solicitud"
                           color="primary"
                           density="compact"
                           hide-details
@@ -1094,7 +1092,7 @@
                       <v-col cols="12" sm="4">
                         <v-combobox
                           v-model="form.tcpFlags"
-                          label="Exact TCP flags"
+                          label="Flags TCP exactos"
                           multiple
                           chips
                           closable-chips
@@ -1106,7 +1104,7 @@
                       <v-col cols="12" sm="4">
                         <v-combobox
                           v-model="form.tcpFlagsAny"
-                          label="Any TCP flags"
+                          label="Cualquier flag TCP"
                           multiple
                           chips
                           closable-chips
@@ -1118,7 +1116,7 @@
                       <v-col cols="12" sm="4">
                         <v-combobox
                           v-model="form.tcpFlagsAll"
-                          label="All TCP flags"
+                          label="Todos los flags TCP"
                           multiple
                           chips
                           closable-chips
@@ -1131,7 +1129,7 @@
                         <v-text-field
                           v-model.number="form.countThreshold"
                           type="number"
-                          label="Count threshold"
+                          label="Umbral de conteo"
                           variant="outlined"
                           density="comfortable"
                         />
@@ -1140,7 +1138,7 @@
                         <v-text-field
                           v-model.number="form.windowSeconds"
                           type="number"
-                          label="Window seconds"
+                          label="Ventana en segundos"
                           variant="outlined"
                           density="comfortable"
                         />
@@ -1149,7 +1147,7 @@
                         <v-select
                           v-model="form.groupBy"
                           :items="groupByOptions"
-                          label="Group by"
+                          label="Agrupar por"
                           variant="outlined"
                           density="comfortable"
                         />
@@ -1157,7 +1155,7 @@
                       <v-col cols="12">
                         <v-textarea
                           v-model="form.advancedMatchJson"
-                          label="Advanced match JSON"
+                          label="JSON avanzado de coincidencia"
                           rows="7"
                           auto-grow
                           variant="outlined"
@@ -1172,9 +1170,9 @@
             </v-card-text>
             <v-card-actions>
               <v-spacer />
-              <v-btn variant="text" @click="dialogOpen = false">Cancel</v-btn>
+              <v-btn variant="text" @click="dialogOpen = false">Cancelar</v-btn>
               <v-btn color="primary" variant="tonal" :loading="formSubmitting" @click="submitForm">
-                Save monitor
+                Guardar monitor
               </v-btn>
             </v-card-actions>
           </v-card>
@@ -1204,16 +1202,16 @@
         <v-btn class="mt-4" variant="outlined" prepend-icon="mdi-refresh" :loading="statusRefreshing" @click="refreshGraph">Actualizar conexión</v-btn>
 
         <DataPanel
-          title="Mobile live stream"
-          subtitle="Pair a phone with a QR code and a 6-digit one-time code. The mobile page is read-only and receives redacted live events only."
+          title="Stream móvil en vivo"
+          subtitle="Vincula un teléfono con un QR y un código de un solo uso de 6 dígitos. La página móvil es de solo lectura y recibe solo eventos en vivo redactados."
           variant="tonal"
           class="mt-5"
           :count="mobileSessions.length"
-          count-label="mobile sessions"
+          count-label="sesiones móviles"
         >
           <template #header-actions>
             <v-chip size="small" :color="mobileServer.running ? 'success' : 'default'" variant="tonal" prepend-icon="mdi-cellphone-link">
-              {{ mobileServer.running ? `${mobileServer.interface} · ${mobileServer.address}` : "offline" }}
+              {{ mobileServer.running ? `${mobileServer.interface} · ${mobileServer.address}` : "sin conexión" }}
             </v-chip>
           </template>
 
@@ -1224,7 +1222,7 @@
                 :items="mobileInterfaceOptions"
                 item-title="label"
                 item-value="name"
-                label="Listening interface"
+                label="Interfaz de escucha"
                 variant="outlined"
                 density="comfortable"
                 hide-details="auto"
@@ -1234,7 +1232,7 @@
               <v-text-field
                 v-model.number="mobilePort"
                 class="mt-3"
-                label="Port"
+                label="Puerto"
                 type="number"
                 min="1"
                 max="65535"
@@ -1244,13 +1242,13 @@
               />
               <div class="d-flex flex-wrap ga-2 mt-3">
                 <v-btn color="primary" prepend-icon="mdi-qrcode" :loading="mobilePairingBusy" :disabled="!mobileInterface" @click="createMobilePairing">
-                  New QR
+                  Nuevo QR
                 </v-btn>
                 <v-btn variant="outlined" prepend-icon="mdi-refresh" :loading="mobileLoading" @click="loadMobileStream">
-                  Refresh
+                  Actualizar
                 </v-btn>
                 <v-btn v-if="mobileServer.running" variant="outlined" color="error" prepend-icon="mdi-stop-circle-outline" :loading="mobileStopping" @click="stopMobileStream">
-                  Stop
+                  Detener
                 </v-btn>
               </div>
               <v-alert v-if="mobileError" class="mt-3" type="error" variant="tonal" density="comfortable">
@@ -1259,16 +1257,16 @@
             </v-col>
             <v-col cols="12" md="4">
               <div v-if="mobilePairing.url" class="mobile-qr-wrap">
-                <img v-if="mobileQrDataUrl" :src="mobileQrDataUrl" alt="Mobile stream QR" class="mobile-qr" />
+                <img v-if="mobileQrDataUrl" :src="mobileQrDataUrl" alt="QR del stream móvil" class="mobile-qr" />
                 <div class="text-caption text-medium-emphasis mt-2">{{ mobilePairing.url }}</div>
               </div>
               <v-alert v-else type="info" variant="tonal" density="comfortable">
-                Pick an interface and create a QR. The phone must be on the same network.
+                Elige una interfaz y crea un QR. El teléfono debe estar en la misma red.
               </v-alert>
             </v-col>
             <v-col cols="12" md="3">
               <div class="mobile-code-box">
-                <div class="text-caption text-medium-emphasis">Pairing code</div>
+                <div class="text-caption text-medium-emphasis">Código de vinculación</div>
                 <div class="mobile-code">{{ mobilePairing.code || "------" }}</div>
                 <div class="text-caption text-medium-emphasis">
                   {{ mobilePairingStatus }}
@@ -1289,17 +1287,17 @@
             density="comfortable"
             prepend-icon="mdi-shield-account-outline"
           >
-            <div class="text-subtitle-2">A device is asking to connect</div>
+            <div class="text-subtitle-2">Un dispositivo solicita conexión</div>
             <div class="text-caption mt-1">
-              Address {{ mobilePairing.client || "unknown" }}
+              Dirección {{ mobilePairing.client || "desconocida" }}
               <span v-if="mobilePairing.seen_at"> · {{ mobilePairing.seen_at }}</span>
             </div>
             <div class="text-caption text-medium-emphasis mobile-approval-ua">
-              {{ mobilePairing.user_agent || "no User-Agent reported" }}
+              {{ mobilePairing.user_agent || "sin User-Agent reportado" }}
             </div>
             <div class="text-caption mt-2">
-              Approve only if this is the phone in your hand. Accepting generates the
-              6-digit code and starts its short entry window, counted down above.
+              Aprueba solo si es el teléfono que tienes a mano. Aceptar genera el código
+              de 6 dígitos e inicia su ventana breve de ingreso.
             </div>
             <template #append>
               <v-btn
@@ -1309,26 +1307,26 @@
                 :loading="mobileApproving"
                 @click="approveMobilePairing"
               >
-                Accept
+                Aceptar
               </v-btn>
             </template>
           </v-alert>
 
           <v-divider class="my-4" />
-          <div class="text-subtitle-2 mb-2">Active phones</div>
+          <div class="text-subtitle-2 mb-2">Teléfonos activos</div>
           <v-list v-if="mobileSessions.length" density="compact" bg-color="transparent">
             <v-list-item v-for="session in mobileSessions" :key="session.token">
               <template #prepend>
                 <v-icon icon="mdi-cellphone-check" />
               </template>
-              <v-list-item-title>{{ session.client || "mobile device" }}</v-list-item-title>
-              <v-list-item-subtitle>{{ session.user_agent || session.token_hint }} · {{ session.event_count || 0 }} events</v-list-item-subtitle>
+              <v-list-item-title>{{ session.client || "dispositivo móvil" }}</v-list-item-title>
+              <v-list-item-subtitle>{{ session.user_agent || session.token_hint }} · {{ session.event_count || 0 }} eventos</v-list-item-subtitle>
               <template #append>
                 <v-btn icon="mdi-close" variant="text" color="error" :loading="mobileRevoking === session.token" @click="revokeMobileSession(session.token)" />
               </template>
             </v-list-item>
           </v-list>
-          <div v-else class="text-caption text-medium-emphasis">No paired phones.</div>
+          <div v-else class="text-caption text-medium-emphasis">No hay teléfonos vinculados.</div>
         </DataPanel>
       </v-window-item>
 
@@ -1336,10 +1334,10 @@
         <v-card variant="tonal" class="pa-4 notify-card">
           <div class="d-flex align-start justify-space-between flex-wrap ga-3">
             <div>
-              <div class="text-subtitle-2 font-weight-medium">Notification sound</div>
+              <div class="text-subtitle-2 font-weight-medium">Sonido de notificación</div>
               <div class="text-caption text-medium-emphasis mt-1">
-                Play a sound in this browser tab when a new alert notification arrives. Saved locally
-                to this browser, not to the server.
+                Reproduce un sonido en esta pestaña cuando llegue una alerta nueva. Se guarda
+                localmente en el navegador, no en el servidor.
               </div>
             </div>
             <v-switch
@@ -1546,10 +1544,10 @@ export default {
       listenerSearch: "",
       listenerHeaders: [
         { title: "Listener", key: "endpoint", value: (item) => `${item.proto}/${item.port}` },
-        { title: "Label", key: "label" },
-        { title: "Source", key: "source" },
-        { title: "Status", key: "running" },
-        { title: "Enabled", key: "enabled", sortable: false },
+        { title: "Etiqueta", key: "label" },
+        { title: "Origen", key: "source" },
+        { title: "Estado", key: "running" },
+        { title: "Habilitado", key: "enabled", sortable: false },
       ],
       newListenerDialog: false,
       newListenerSubmitting: false,
@@ -1578,12 +1576,12 @@ export default {
       severityOptions: SEVERITY_OPTIONS,
       groupByOptions: GROUP_BY_OPTIONS,
       columns: [
-        { key: "name", label: "Name" },
-        { key: "mode", label: "Mode" },
-        { key: "match_summary", label: "Match", sortable: false },
-        { key: "severity", label: "Severity" },
-        { key: "source", label: "Source" },
-        { key: "enabled", label: "Enabled", sortable: false },
+        { key: "name", label: "Nombre" },
+        { key: "mode", label: "Modo" },
+        { key: "match_summary", label: "Coincidencia", sortable: false },
+        { key: "severity", label: "Severidad" },
+        { key: "source", label: "Origen" },
+        { key: "enabled", label: "Habilitado", sortable: false },
         { key: "actions", label: "", sortable: false, width: 200 },
       ],
     };
@@ -1629,11 +1627,11 @@ export default {
     },
     mobilePairingStatus() {
       const status = String(this.mobilePairing.status || "").replace(/_/g, " ");
-      if (!this.mobilePairing.id) return "Waiting for QR";
+      if (!this.mobilePairing.id) return "Esperando QR";
       const expires = Number(this.mobilePairing.expires_in || 0);
-      if (this.mobilePairing.code) return `${status || "waiting"} · ${expires}s`;
-      if (this.mobilePairingAwaitingApproval) return `${status} · accept to issue a code`;
-      return `${status || "pending"} · scan QR`;
+      if (this.mobilePairing.code) return `${this.mobilePairingStatusLabel(status || "waiting")} · ${expires}s`;
+      if (this.mobilePairingAwaitingApproval) return `${this.mobilePairingStatusLabel(status)} · acepta para emitir código`;
+      return `${this.mobilePairingStatusLabel(status || "pending")} · escanea el QR`;
     },
     mobilePairingAwaitingApproval() {
       return String(this.mobilePairing.status || "") === "awaiting_approval";
@@ -1650,7 +1648,7 @@ export default {
     },
     selectedInterfacesLabel() {
       const values = Array.isArray(this.snifferRuntime.selected_interfaces) ? this.snifferRuntime.selected_interfaces : [];
-      if (!values.length) return "all visible";
+      if (!values.length) return "todas visibles";
       return values.join(", ");
     },
     selectedSnifferInterfaces() {
@@ -1667,17 +1665,17 @@ export default {
         : [];
       const state = String(this.snifferRuntime.capture_state || "").trim().toLowerCase();
       if (state === "blocked") {
-        return `Capture is blocked on ${active.length || this.selectedSnifferInterfaces.length || 0} interfaces.`;
+        return `La captura está bloqueada en ${active.length || this.selectedSnifferInterfaces.length || 0} interfaces.`;
       }
       if (state === "running") {
-        if (active.length === 1) return `Listening on ${active[0]}.`;
-        if (active.length > 1) return `Listening on ${active.length} interfaces.`;
-        return "Listening on all visible interfaces.";
+        if (active.length === 1) return `Escuchando en ${active[0]}.`;
+        if (active.length > 1) return `Escuchando en ${active.length} interfaces.`;
+        return "Escuchando en todas las interfaces visibles.";
       }
       if (!this.selectedSnifferInterfaces.length) {
-        return "Ready to listen on every visible interface.";
+        return "Listo para escuchar en todas las interfaces visibles.";
       }
-      return `Ready to listen on ${this.selectedInterfacesLabel}.`;
+      return `Listo para escuchar en ${this.selectedInterfacesLabel}.`;
     },
     locationConfigured() {
       return Boolean(this.locationSaved.configured);
@@ -1688,7 +1686,7 @@ export default {
       const { lat, lon } = this.locationSaved;
       return Number.isFinite(lat) && Number.isFinite(lon)
         ? `${Number(lat).toFixed(2)}, ${Number(lon).toFixed(2)}`
-        : "Not set";
+        : "Sin configurar";
     },
     locationDraftValid() {
       const { lat, lon } = this.locationDraft;
@@ -1704,8 +1702,8 @@ export default {
     detectionScopeOptions() {
       const labels = {
         loopback: "Loopback (127.0.0.0/8, ::1)",
-        private: "Private / LAN (RFC1918, link-local)",
-        public: "Public (routable internet)",
+        private: "Privado / LAN (RFC1918, link-local)",
+        public: "Público (internet enrutable)",
       };
       const catalog = this.detectionScopeCatalog.length
         ? this.detectionScopeCatalog
@@ -1713,15 +1711,15 @@ export default {
       return catalog.map((value) => ({ value, label: labels[value] || value }));
     },
     detectionScopeStatus() {
-      if (!this.detectionScopes.length) return "All captured traffic is analysed.";
+      if (!this.detectionScopes.length) return "Todo el tráfico capturado se analiza.";
       const names = this.detectionScopes.join(", ");
-      return `Traffic between ${names} addresses is ignored entirely.`;
+      return `El tráfico entre direcciones ${names} se ignora por completo.`;
     },
     snifferInterfaceHint() {
       if (!this.snifferInterfaceOptions.length) {
-        return "No interfaces have been reported yet. Refresh to rediscover them.";
+        return "Aún no se reportaron interfaces. Actualiza para redescubrirlas.";
       }
-      return "An empty selection means Sniff4Hound will listen on every visible interface.";
+      return "Una selección vacía hace que Sniff4Hound escuche en todas las interfaces visibles.";
     },
     regexErrors() {
       const invalid = [
@@ -1734,7 +1732,7 @@ export default {
         ...(this.form.protocolRegex || []),
         ...(this.form.excludeProtocolRegex || []),
       ].map((pattern) => String(pattern || "").trim()).filter((pattern) => pattern && !this.isValidRegex(pattern));
-      return invalid.length ? [`Invalid regex: ${invalid.join(", ")}`] : [];
+      return invalid.length ? [`Regex inválida: ${invalid.join(", ")}`] : [];
     },
     advancedJsonError() {
       const text = String(this.form.advancedMatchJson || "").trim();
@@ -1742,21 +1740,21 @@ export default {
       try {
         const parsed = JSON.parse(text);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          return "Advanced match JSON must be an object";
+          return "El JSON avanzado de coincidencia debe ser un objeto";
         }
         const invalid = collectMatchRegexes(parsed).filter((pattern) => !this.isValidRegex(pattern));
-        return invalid.length ? `Invalid advanced regex: ${invalid.join(", ")}` : "";
+        return invalid.length ? `Regex avanzada inválida: ${invalid.join(", ")}` : "";
       } catch (err) {
-        return (err && err.message) || "Invalid JSON";
+        return (err && err.message) || "JSON inválido";
       }
     },
     monitorSeverityOptions() {
       const labels = {
-        info: "Info and above",
-        low: "Low and above",
-        medium: "Medium and above",
-        high: "High and critical",
-        critical: "Critical only",
+        info: "Info y superior",
+        low: "Baja y superior",
+        medium: "Media y superior",
+        high: "Alta y crítica",
+        critical: "Solo crítica",
       };
       return (this.monitorSeverityCatalog.length ? this.monitorSeverityCatalog : this.severityOptions)
         .map((value) => ({ value, label: labels[value] || value }));
@@ -1815,6 +1813,18 @@ export default {
     },
     formatTimestamp,
     matchesSearch,
+    mobilePairingStatusLabel(value) {
+      const labels = {
+        waiting: "esperando",
+        pending: "pendiente",
+        awaiting_approval: "esperando aprobación",
+        "awaiting approval": "esperando aprobación",
+        paired: "vinculado",
+        expired: "expirado",
+        closed: "cerrado",
+      };
+      return labels[String(value || "").trim().toLowerCase()] || String(value || "pendiente");
+    },
     async loadMobileStream() {
       this.mobileLoading = true;
       this.mobileError = "";
@@ -1832,7 +1842,7 @@ export default {
         }
         if (Number(status?.port)) this.mobilePort = Number(status.port);
       } catch (err) {
-        this.mobileError = err.message || "Failed to load mobile stream settings.";
+        this.mobileError = err.message || "No se pudo cargar la configuración del stream móvil.";
       } finally {
         this.mobileLoading = false;
       }
@@ -1851,7 +1861,7 @@ export default {
           : "";
         this.mobilePairingTimer = setInterval(this.refreshMobilePairing, 1500);
       } catch (err) {
-        this.mobileError = err.message || "Failed to create a mobile pairing QR.";
+        this.mobileError = err.message || "No se pudo crear el QR de vinculación móvil.";
       } finally {
         this.mobilePairingBusy = false;
       }
@@ -1865,7 +1875,7 @@ export default {
         // operator sees it without waiting for the next poll tick.
         this.mobilePairing = await this.store.approveMobileStreamPairing(this.mobilePairing.id);
       } catch (err) {
-        this.mobileError = err.message || "Failed to approve the device.";
+        this.mobileError = err.message || "No se pudo aprobar el dispositivo.";
       } finally {
         this.mobileApproving = false;
       }
@@ -1893,7 +1903,7 @@ export default {
         this.mobileQrDataUrl = "";
         clearInterval(this.mobilePairingTimer);
       } catch (err) {
-        this.mobileError = err.message || "Failed to stop the mobile stream.";
+        this.mobileError = err.message || "No se pudo detener el stream móvil.";
       } finally {
         this.mobileStopping = false;
       }
@@ -1905,7 +1915,7 @@ export default {
         await this.store.revokeMobileStreamSession(token);
         await this.loadMobileStream();
       } catch (err) {
-        this.mobileError = err.message || "Failed to revoke the mobile session.";
+        this.mobileError = err.message || "No se pudo revocar la sesión móvil.";
       } finally {
         this.mobileRevoking = "";
       }
@@ -1916,7 +1926,7 @@ export default {
         .getDeclaredLocation()
         .then((payload) => this.applyLocation(payload))
         .catch((err) => {
-          this.locationError = (err && err.message) || "Failed to load the sensor location";
+          this.locationError = (err && err.message) || "No se pudo cargar la ubicación del sensor";
         });
     },
     applyLocation(payload) {
@@ -1934,7 +1944,7 @@ export default {
         .setDeclaredLocation(this.locationDraft.lat, this.locationDraft.lon, this.locationDraft.label)
         .then((payload) => this.applyLocation(payload))
         .catch((err) => {
-          this.locationError = (err && err.message) || "Failed to save the sensor location";
+          this.locationError = (err && err.message) || "No se pudo guardar la ubicación del sensor";
         })
         .finally(() => {
           this.locationSubmitting = false;
@@ -1948,7 +1958,7 @@ export default {
         .clearDeclaredLocation()
         .then((payload) => this.applyLocation(payload))
         .catch((err) => {
-          this.locationError = (err && err.message) || "Failed to clear the sensor location";
+          this.locationError = (err && err.message) || "No se pudo borrar la ubicación del sensor";
         })
         .finally(() => {
           this.locationSubmitting = false;
@@ -1966,7 +1976,7 @@ export default {
             : [];
         })
         .catch((err) => {
-          this.detectionScopesError = (err && err.message) || "Failed to load the detection scope filter";
+          this.detectionScopesError = (err && err.message) || "No se pudo cargar el filtro de alcance de detección";
         });
     },
     async loadStorageStats() {
@@ -2055,12 +2065,12 @@ export default {
             .filter(([, value]) => Number(value) > 0)
             .map(([table, value]) => `${Number(value).toLocaleString()} ${table}`)
             .join(", ");
-          this.purgeResult = detail ? `Deleted ${detail}.` : "Nothing left to delete.";
+          this.purgeResult = detail ? `Eliminado: ${detail}.` : "No quedaba nada por eliminar.";
           this.purgeDialog = false;
           this.store.initRuntime();
         })
         .catch((err) => {
-          this.purgeError = (err && err.message) || "Failed to clear stored data";
+          this.purgeError = (err && err.message) || "No se pudieron limpiar los datos guardados";
         })
         .finally(() => {
           this.purging = false;
@@ -2090,7 +2100,7 @@ export default {
         })
         .catch((err) => {
           this.detectionScopes = previous;
-          this.detectionScopesError = (err && err.message) || "Failed to update the detection scope filter";
+          this.detectionScopesError = (err && err.message) || "No se pudo actualizar el filtro de alcance de detección";
         })
         .finally(() => {
           this.detectionScopesSubmitting = false;
@@ -2113,7 +2123,7 @@ export default {
       this.store
         .setSnifferInterfaces(normalized)
         .catch((err) => {
-          this.interfaceError = err && err.message ? err.message : "Failed to update interfaces";
+          this.interfaceError = err && err.message ? err.message : "No se pudieron actualizar las interfaces";
         })
         .finally(() => {
           this.interfaceSubmitting = false;
@@ -2124,10 +2134,16 @@ export default {
       const needle = String(query || "").trim().toLowerCase();
       if (!needle) return true;
       const raw = item && item.raw ? item.raw : item;
-      const haystack = [raw.proto, raw.port, raw.label, raw.source, raw.running ? "running" : "stopped"]
+      const haystack = [raw.proto, raw.port, raw.label, raw.source, this.sourceLabel(raw.source), raw.running ? "running en ejecución" : "stopped detenido"]
         .map((part) => String(part == null ? "" : part).toLowerCase())
         .join(" ");
       return haystack.includes(needle);
+    },
+    sourceLabel(value) {
+      const source = String(value || "").trim().toLowerCase();
+      if (source === "builtin") return "Integrado";
+      if (source === "custom") return "Personalizado";
+      return value || "-";
     },
     loadListeners() {
       return this.store
@@ -2138,7 +2154,7 @@ export default {
         })
         .catch((err) => {
           this.listeners = [];
-          this.listenersError = (err && err.message) || "Failed to load listeners";
+          this.listenersError = (err && err.message) || "No se pudieron cargar los listeners";
         });
     },
     toggleListener(listener, value) {
@@ -2151,7 +2167,7 @@ export default {
           this.listeners = this.store.extractArray(snapshot && snapshot.listeners);
         })
         .catch((err) => {
-          this.listenersError = (err && err.message) || `Failed to ${value ? "enable" : "disable"} ${listener.id}`;
+          this.listenersError = (err && err.message) || `No se pudo ${value ? "habilitar" : "deshabilitar"} ${listener.id}`;
         })
         .finally(() => {
           this.listenerTogglePending = "";
@@ -2165,12 +2181,12 @@ export default {
     createListener() {
       const port = Number(this.newListener.port);
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        this.newListenerError = "Port must be a whole number between 1 and 65535";
+        this.newListenerError = "El puerto debe ser un número entero entre 1 y 65535";
         return;
       }
       const listenerId = `${this.newListener.proto}/${port}`;
       if (this.listeners.some((item) => item.id === listenerId)) {
-        this.newListenerError = `${listenerId} already exists`;
+        this.newListenerError = `${listenerId} ya existe`;
         return;
       }
       this.newListenerSubmitting = true;
@@ -2182,7 +2198,7 @@ export default {
           this.newListenerDialog = false;
         })
         .catch((err) => {
-          this.newListenerError = (err && err.message) || "Failed to create listener";
+          this.newListenerError = (err && err.message) || "No se pudo crear el listener";
         })
         .finally(() => {
           this.newListenerSubmitting = false;
@@ -2206,8 +2222,8 @@ export default {
     modeLabel(value) {
       const mode = String(value || "").trim().toLowerCase();
       if (mode === "regex") return "Regex";
-      if (mode === "stateful") return "Stateful";
-      return "Rule";
+      if (mode === "stateful") return "Con estado";
+      return "Regla";
     },
     modeColor(value) {
       const mode = String(value || "").trim().toLowerCase();
@@ -2219,32 +2235,32 @@ export default {
       const match = item.match || {};
       const parts = [];
       if (match.protocols && match.protocols.length) parts.push(match.protocols.join("/").toUpperCase());
-      if (match.exclude_protocols && match.exclude_protocols.length) parts.push(`not ${match.exclude_protocols.join("/").toUpperCase()}`);
-      if (match.ports && match.ports.length) parts.push(`ports ${match.ports.join(",")}`);
-      if (match.src_ports && match.src_ports.length) parts.push(`src ${match.src_ports.join(",")}`);
-      if (match.dst_ports && match.dst_ports.length) parts.push(`dst ${match.dst_ports.join(",")}`);
-      if (match.exclude_ports && match.exclude_ports.length) parts.push(`not ports ${match.exclude_ports.join(",")}`);
+      if (match.exclude_protocols && match.exclude_protocols.length) parts.push(`sin ${match.exclude_protocols.join("/").toUpperCase()}`);
+      if (match.ports && match.ports.length) parts.push(`puertos ${match.ports.join(",")}`);
+      if (match.src_ports && match.src_ports.length) parts.push(`origen ${match.src_ports.join(",")}`);
+      if (match.dst_ports && match.dst_ports.length) parts.push(`destino ${match.dst_ports.join(",")}`);
+      if (match.exclude_ports && match.exclude_ports.length) parts.push(`sin puertos ${match.exclude_ports.join(",")}`);
       if (match.ips && match.ips.length) parts.push(`ips ${match.ips.join(",")}`);
-      if (match.exclude_ips && match.exclude_ips.length) parts.push(`not ips ${match.exclude_ips.join(",")}`);
+      if (match.exclude_ips && match.exclude_ips.length) parts.push(`sin ips ${match.exclude_ips.join(",")}`);
       if (match.eth_types && match.eth_types.length) {
         parts.push(`eth 0x${match.eth_types.map((value) => Number(value).toString(16)).join(",0x")}`);
       }
       if (match.payload_contains && match.payload_contains.length) {
-        parts.push(`contains "${match.payload_contains.join('", "')}"`);
+        parts.push(`contiene "${match.payload_contains.join('", "')}"`);
       }
       if (match.payload_regex && match.payload_regex.length) {
-        parts.push(`regex ${match.payload_regex.length === 1 ? match.payload_regex[0] : `${match.payload_regex.length} patterns`}`);
+        parts.push(`regex ${match.payload_regex.length === 1 ? match.payload_regex[0] : `${match.payload_regex.length} patrones`}`);
       }
       if (match.payload_regex_exclude && match.payload_regex_exclude.length) {
-        parts.push(`not regex ${match.payload_regex_exclude.length === 1 ? match.payload_regex_exclude[0] : `${match.payload_regex_exclude.length} patterns`}`);
+        parts.push(`sin regex ${match.payload_regex_exclude.length === 1 ? match.payload_regex_exclude[0] : `${match.payload_regex_exclude.length} patrones`}`);
       }
       if (match.min_length) parts.push(`>=${match.min_length}B`);
       if (match.max_length) parts.push(`<=${match.max_length}B`);
-      if (match.min_payload_text_length) parts.push(`>=${match.min_payload_text_length} readable chars`);
-      if (match.request_only) parts.push("request only");
-      if (match.all && match.all.length) parts.push(`all ${match.all.length}`);
-      if (match.any && match.any.length) parts.push(`any ${match.any.length}`);
-      if (match.none && match.none.length) parts.push(`none ${match.none.length}`);
+      if (match.min_payload_text_length) parts.push(`>=${match.min_payload_text_length} caracteres legibles`);
+      if (match.request_only) parts.push("solo solicitudes");
+      if (match.all && match.all.length) parts.push(`todas ${match.all.length}`);
+      if (match.any && match.any.length) parts.push(`cualquiera ${match.any.length}`);
+      if (match.none && match.none.length) parts.push(`ninguna ${match.none.length}`);
       return parts.length ? parts.join(" · ") : "-";
     },
     isValidRegex(pattern) {
@@ -2264,7 +2280,7 @@ export default {
           this.applyMonitorConfig(payload);
         })
         .catch((err) => {
-          this.configError = (err && err.message) || "Failed to update the persistence filter";
+          this.configError = (err && err.message) || "No se pudo actualizar el filtro de persistencia";
         })
         .finally(() => {
           this.configSubmitting = false;
@@ -2279,7 +2295,7 @@ export default {
           this.applyMonitorConfig(payload);
         })
         .catch((err) => {
-          this.configError = (err && err.message) || "Failed to update monitor severity";
+          this.configError = (err && err.message) || "No se pudo actualizar la severidad de monitores";
         })
         .finally(() => {
           this.configSubmitting = false;
@@ -2294,7 +2310,7 @@ export default {
           this.applyMonitorConfig(payload);
         })
         .catch((err) => {
-          this.configError = (err && err.message) || "Failed to update generated signal filter";
+          this.configError = (err && err.message) || "No se pudo actualizar el filtro de señales generadas";
         })
         .finally(() => {
           this.configSubmitting = false;
@@ -2315,7 +2331,7 @@ export default {
         .toggleMonitorEnabled(item.id, Boolean(value))
         .then(() => this.load())
         .catch((err) => {
-          this.error = (err && err.message) || "Failed to update monitor";
+          this.error = (err && err.message) || "No se pudo actualizar el monitor";
         })
         .finally(() => {
           this.setBusy(item.id, false);
@@ -2323,14 +2339,14 @@ export default {
     },
     removeMonitor(item) {
       if (item.source === "builtin") return;
-      const confirmed = typeof window !== "undefined" ? window.confirm(`Delete monitor "${item.name}"?`) : true;
+      const confirmed = typeof window !== "undefined" ? window.confirm(`¿Eliminar el monitor "${item.name}"?`) : true;
       if (!confirmed) return;
       this.setBusy(item.id, true);
       this.store
         .deleteMonitor(item.id)
         .then(() => this.load())
         .catch((err) => {
-          this.error = (err && err.message) || "Failed to delete monitor";
+          this.error = (err && err.message) || "No se pudo eliminar el monitor";
         })
         .finally(() => {
           this.setBusy(item.id, false);
@@ -2478,7 +2494,7 @@ export default {
       this.formError = "";
       const name = String(this.form.name || "").trim();
       if (!name) {
-        this.formError = "Name is required";
+        this.formError = "El nombre es obligatorio";
         return;
       }
       if (this.regexErrors.length) {
@@ -2492,13 +2508,13 @@ export default {
       if (this.form.mode === "regex") {
         const patterns = this.cleanTextList(this.form.payloadRegex);
         if (!patterns.length) {
-          this.formError = "Add at least one regex pattern";
+          this.formError = "Agrega al menos un patrón regex";
           return;
         }
       }
       if (this.form.mode === "stateful") {
         if (!(Number(this.form.countThreshold) > 0) || !(Number(this.form.windowSeconds) > 0)) {
-          this.formError = "Stateful monitors require count threshold and window seconds";
+          this.formError = "Los monitores con estado requieren umbral de conteo y ventana en segundos";
           return;
         }
       }
@@ -2506,7 +2522,7 @@ export default {
       try {
         match = this.buildMatchPayload();
       } catch (err) {
-        this.formError = (err && err.message) || "Invalid monitor match";
+        this.formError = (err && err.message) || "Coincidencia de monitor inválida";
         return;
       }
       const payload = {
@@ -2530,7 +2546,7 @@ export default {
           return this.load();
         })
         .catch((err) => {
-          this.formError = (err && err.message) || "Failed to save monitor";
+          this.formError = (err && err.message) || "No se pudo guardar el monitor";
         })
         .finally(() => {
           this.formSubmitting = false;
@@ -2545,13 +2561,13 @@ export default {
             this.monitors = this.store.extractArray(monitorsRes.value);
           } else {
             this.monitors = [];
-            this.error = (monitorsRes.reason && monitorsRes.reason.message) || "Failed to load monitors";
+            this.error = (monitorsRes.reason && monitorsRes.reason.message) || "No se pudieron cargar los monitores";
           }
           if (configRes.status === "fulfilled") {
             this.applyMonitorConfig(configRes.value);
             this.configError = "";
           } else {
-            this.configError = (configRes.reason && configRes.reason.message) || "Failed to load persistence filter state";
+            this.configError = (configRes.reason && configRes.reason.message) || "No se pudo cargar el estado del filtro de persistencia";
           }
           this.lastUpdated = new Date().toLocaleTimeString();
         })

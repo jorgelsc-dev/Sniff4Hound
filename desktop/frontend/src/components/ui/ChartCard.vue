@@ -59,7 +59,7 @@ export default {
     },
     emptyText: {
       type: String,
-      default: "No data available for this slice.",
+      default: "No hay datos disponibles para este período.",
     },
   },
 };

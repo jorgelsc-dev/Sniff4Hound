@@ -1,9 +1,9 @@
 <template>
   <div>
     <ViewHeader
-      overline="Telemetry"
+      overline="Telemetría"
       title="Sniffer"
-      description="Inspect every captured packet, choose which interfaces to listen on, and filter by protocol, direction, and state."
+      description="Inspecciona cada paquete capturado, elige interfaces de escucha y filtra por protocolo, dirección y estado."
       :refresh-loading="loading"
       :show-time-range="true"
       @refresh="load"
@@ -42,9 +42,9 @@
         <div class="sniffer-filter-field sniffer-filter-field--search">
           <v-text-field
             v-model.trim="filters.query"
-            label="Search packets"
+            label="Buscar paquetes"
             name="sniffer_packet_search"
-            placeholder="IP, port, payload, summary..."
+            placeholder="IP, puerto, payload, resumen..."
             prepend-inner-icon="mdi-magnify"
             clearable
             variant="outlined"
@@ -56,7 +56,7 @@
           <v-select
             v-model="filters.proto"
             :items="protocolOptions"
-            label="Protocol"
+            label="Protocolo"
             item-title="label"
             item-value="value"
             clearable
@@ -69,7 +69,7 @@
           <v-select
             v-model="filters.interface"
             :items="interfaceOptions"
-            label="Interface"
+            label="Interfaz"
             item-title="label"
             item-value="value"
             clearable
@@ -82,7 +82,7 @@
           <v-select
             v-model="filters.direction"
             :items="directionOptions"
-            label="Direction"
+            label="Dirección"
             item-title="label"
             item-value="value"
             clearable
@@ -95,7 +95,7 @@
           <v-select
             v-model="filters.state"
             :items="stateOptions"
-            label="State"
+            label="Estado"
             item-title="label"
             item-value="value"
             clearable
@@ -108,19 +108,19 @@
 
       <div class="d-flex flex-wrap ga-2 mb-4">
         <v-chip size="small" variant="tonal" color="info" prepend-icon="mdi-lan-check">
-          Selected: {{ selectedInterfacesLabel }}
+          Seleccionadas: {{ selectedInterfacesLabel }}
         </v-chip>
         <v-chip size="small" variant="outlined" prepend-icon="mdi-access-point-network">
-          Active interfaces: {{ activeInterfacesLabel }}
+          Interfaces activas: {{ activeInterfacesLabel }}
         </v-chip>
         <v-chip size="small" variant="outlined" prepend-icon="mdi-table-eye">
-          Visible rows: {{ filteredPackets.length }}
+          Filas visibles: {{ filteredPackets.length }}
         </v-chip>
         <v-chip size="small" variant="outlined" color="info" prepend-icon="mdi-download-network-outline">
-          Captured: {{ runtime.packets_seen || 0 }}
+          Capturados: {{ runtime.packets_seen || 0 }}
         </v-chip>
         <v-chip size="small" variant="outlined" color="success" prepend-icon="mdi-database-check">
-          Stored (detected): {{ runtime.packets_stored || 0 }}
+          Guardados (detectados): {{ runtime.packets_stored || 0 }}
         </v-chip>
         <v-chip
           v-if="unparseableCount > 0"
@@ -129,7 +129,7 @@
           color="warning"
           prepend-icon="mdi-alert-decagram-outline"
         >
-          Unparseable frames: {{ unparseableCount }}
+          Tramas no parseables: {{ unparseableCount }}
           <v-tooltip activator="parent" location="bottom">
             {{ unparseableTooltip }}
           </v-tooltip>
@@ -140,10 +140,10 @@
           color="primary"
           icon
           to="/monitors"
-          aria-label="View detection monitors"
+          aria-label="Ver monitores de detección"
         >
           <v-icon icon="mdi-target-account" />
-          <v-tooltip activator="parent" location="bottom">View detection monitors</v-tooltip>
+          <v-tooltip activator="parent" location="bottom">Ver monitores de detección</v-tooltip>
         </v-btn>
         <v-btn
           size="small"
@@ -151,29 +151,29 @@
           color="primary"
           icon
           to="/settings?section=capture"
-          aria-label="Configure interfaces"
+          aria-label="Configurar interfaces"
         >
           <v-icon icon="mdi-cog-outline" />
-          <v-tooltip activator="parent" location="bottom">Configure interfaces</v-tooltip>
+          <v-tooltip activator="parent" location="bottom">Configurar interfaces</v-tooltip>
         </v-btn>
       </div>
 
       <TimeHistogram
-        title="Packets over time"
-        subtitle="Volume of the packets currently loaded, bucketed by capture time."
+        title="Paquetes en el tiempo"
+        subtitle="Volumen de los paquetes cargados actualmente, agrupado por tiempo de captura."
         :rows="filteredPackets"
         timestamp-key="created_at"
         :loading="loading"
         :error="error"
         :last-updated="lastUpdated"
-        count-label="packets"
-        empty-text="No packets in the current window yet"
+        count-label="paquetes"
+        empty-text="Todavía no hay paquetes en la ventana actual"
         class="mb-4"
       />
 
       <EntityTablePanel
-        title="Packets"
-        subtitle="Newest packet rows emitted by the passive sniffer."
+        title="Paquetes"
+        subtitle="Filas de paquetes más recientes emitidas por el sniffer pasivo."
         v-model:live-enabled="liveRefreshEnabled"
         :rows="filteredPackets"
         :columns="columns"
@@ -184,7 +184,7 @@
         :last-updated="lastUpdated"
         :live-refresh="true"
         :page-size="40"
-        empty-text="No sniffer packets available"
+        empty-text="No hay paquetes del sniffer disponibles"
         :total-available="packetsMeta.totalAvailable"
         :truncated="packetsMeta.truncated"
         :range-label="timeRangeLabel"
@@ -196,12 +196,12 @@
         </template>
         <template #cell-interface="{ value }">
           <v-chip size="x-small" color="info" variant="tonal">
-            {{ value || "unknown" }}
+            {{ value || "desconocida" }}
           </v-chip>
         </template>
         <template #cell-proto="{ value }">
           <v-chip size="x-small" color="primary" variant="tonal">
-            {{ String(value || "unknown").toUpperCase() }}
+            {{ String(value || "desconocido").toUpperCase() }}
           </v-chip>
         </template>
         <template #cell-direction="{ value }">
@@ -210,12 +210,12 @@
             :color="String(value || '').trim().toLowerCase() === 'inbound' ? 'warning' : 'success'"
             variant="tonal"
           >
-            {{ value || "unknown" }}
+            {{ value || "desconocida" }}
           </v-chip>
         </template>
         <template #cell-state="{ value }">
           <v-chip size="x-small" :color="statusColor(value)" variant="tonal">
-            {{ value || "unknown" }}
+            {{ value || "desconocido" }}
           </v-chip>
         </template>
         <template #cell-src_ip="{ value }">
@@ -290,20 +290,20 @@ export default {
         state: "",
       },
       columns: [
-        { key: "updated_at", label: "Seen" },
-        { key: "interface", label: "Interface" },
+        { key: "updated_at", label: "Visto" },
+        { key: "interface", label: "Interfaz" },
         { key: "proto", label: "Proto" },
-        { key: "direction", label: "Direction" },
-        { key: "state", label: "State" },
-        { key: "src_ip", label: "Src IP" },
-        { key: "src_port", label: "Src Port" },
-        { key: "dst_ip", label: "Dst IP" },
-        { key: "dst_port", label: "Dst Port" },
-        { key: "size", label: "Size" },
-        { key: "route", label: "Network" },
-        { key: "flow_key", label: "Flow" },
-        { key: "detail", label: "Signal" },
-        { key: "summary", label: "Summary" },
+        { key: "direction", label: "Dirección" },
+        { key: "state", label: "Estado" },
+        { key: "src_ip", label: "IP origen" },
+        { key: "src_port", label: "Puerto origen" },
+        { key: "dst_ip", label: "IP destino" },
+        { key: "dst_port", label: "Puerto destino" },
+        { key: "size", label: "Tamaño" },
+        { key: "route", label: "Red" },
+        { key: "flow_key", label: "Flujo" },
+        { key: "detail", label: "Señal" },
+        { key: "summary", label: "Resumen" },
       ],
       feedHandle: null,
     };
@@ -326,7 +326,7 @@ export default {
       const entries = this.runtime.errors && typeof this.runtime.errors === "object"
         ? Object.entries(this.runtime.errors)
         : [];
-      if (!entries.length) return "Packet capture is blocked on the selected interfaces.";
+      if (!entries.length) return "La captura de paquetes está bloqueada en las interfaces seleccionadas.";
       return entries
         .slice(0, 2)
         .map(([name, message]) => `${name}: ${message}`)
@@ -341,17 +341,17 @@ export default {
       return [
         {
           key: "packets",
-          label: "Packets",
+          label: "Paquetes",
           value: packets.length,
-          caption: "Latest sniffer rows loaded into the grid",
+          caption: "Últimas filas del sniffer cargadas en la tabla",
           icon: "mdi-ethernet",
           colorClass: "text-success",
         },
         {
           key: "protocols",
-          label: "Protocols",
+          label: "Protocolos",
           value: protocols.size,
-          caption: "Observed protocol families in this slice",
+          caption: "Familias de protocolo observadas en este período",
           icon: "mdi-source-branch",
           colorClass: "text-info",
         },
@@ -359,15 +359,15 @@ export default {
           key: "interfaces",
           label: "Interfaces",
           value: interfaces.size,
-          caption: "Interfaces currently represented in rows",
+          caption: "Interfaces representadas actualmente en filas",
           icon: "mdi-lan",
           colorClass: "text-primary",
         },
         {
           key: "payloads",
-          label: "Payload Rows",
+          label: "Filas con payload",
           value: withPayload,
-          caption: `${inbound} inbound packets in the current slice`,
+          caption: `${inbound} paquetes entrantes en el período actual`,
           icon: "mdi-text-box-search",
           colorClass: "text-warning",
         },
@@ -375,30 +375,30 @@ export default {
     },
     protocolOptions() {
       const values = uniqueSorted(this.packets.map((item) => item.proto));
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: value.toUpperCase(), value }))];
+      return [{ label: "Todos", value: "" }, ...values.map((value) => ({ label: value.toUpperCase(), value }))];
     },
     interfaceOptions() {
       const values = uniqueSorted(this.packets.map((item) => item.interface));
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: value, value }))];
+      return [{ label: "Todas", value: "" }, ...values.map((value) => ({ label: value, value }))];
     },
     directionOptions() {
       const values = uniqueSorted(this.packets.map((item) => item.direction));
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: value, value }))];
+      return [{ label: "Todas", value: "" }, ...values.map((value) => ({ label: value, value }))];
     },
     stateOptions() {
       const values = uniqueSorted(this.packets.map((item) => item.state));
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: value, value }))];
+      return [{ label: "Todos", value: "" }, ...values.map((value) => ({ label: value, value }))];
     },
     selectedInterfacesLabel() {
       const values = Array.isArray(this.runtime.selected_interfaces) ? this.runtime.selected_interfaces : [];
-      if (!values.length) return "all visible";
+      if (!values.length) return "todas las visibles";
       return values.join(", ");
     },
     activeInterfacesLabel() {
       const values = Array.isArray(this.runtime.interfaces) ? this.runtime.interfaces : [];
-      if (!values.length) return "none";
+      if (!values.length) return "ninguna";
       if (values.length === 1) return values[0];
-      return `${values.length} active`;
+      return `${values.length} activas`;
     },
     unparseableCount() {
       return Number(this.runtime.packets_unparseable || 0);
@@ -521,7 +521,7 @@ export default {
     },
     applyFeed(payload) {
       if (payload && payload.type === "feed_error") {
-        this.error = payload.message || "The sniffer stream stopped updating";
+        this.error = payload.message || "El flujo del sniffer dejó de actualizarse";
         this.loading = false;
         return;
       }
@@ -553,7 +553,7 @@ export default {
           } else {
             this.packets = [];
             this.packetsMeta = { totalAvailable: null, returned: null, truncated: null };
-            this.error = (packetsRes.reason && packetsRes.reason.message) || "Failed to load sniffer packets";
+            this.error = (packetsRes.reason && packetsRes.reason.message) || "No se pudieron cargar los paquetes del sniffer";
           }
           this.syncFilters();
           this.lastUpdated = new Date().toLocaleTimeString();

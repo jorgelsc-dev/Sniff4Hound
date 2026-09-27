@@ -1,5 +1,5 @@
 <template>
-  <DataPanel :title="title" :subtitle="subtitle" variant="tonal" :count="entries.length" count-label="entries">
+  <DataPanel :title="title" :subtitle="subtitle" variant="tonal" :count="entries.length" count-label="entradas">
     <template #header-actions>
       <v-icon :icon="icon" />
     </template>
@@ -19,8 +19,8 @@
         <v-col cols="6" sm="3">
           <v-select
             v-model="draft.matchType"
-            :items="[{ title: 'Exact', value: 'exact' }, { title: 'Regex', value: 'regex' }]"
-            label="Match type"
+            :items="[{ title: 'Exacta', value: 'exact' }, { title: 'Regex', value: 'regex' }]"
+            label="Tipo"
             variant="outlined"
             density="comfortable"
             hide-details
@@ -29,7 +29,7 @@
         <v-col cols="6" sm="3">
           <v-text-field
             v-model.trim="draft.label"
-            label="Label (optional)"
+            label="Etiqueta (opcional)"
             variant="outlined"
             density="comfortable"
             hide-details
@@ -42,7 +42,7 @@
             @apply="(pattern) => (draft.value = pattern)"
           />
           <v-btn color="primary" variant="tonal" type="submit" :loading="submitting" block>
-            Add
+            Agregar
           </v-btn>
         </v-col>
       </v-row>
@@ -54,16 +54,16 @@
     <v-table density="comfortable" class="mt-4 blacklist-table">
       <thead>
         <tr>
-          <th>Value</th>
-          <th>Match</th>
-          <th>Label</th>
-          <th>Enabled</th>
+          <th>Valor</th>
+          <th>Coincidencia</th>
+          <th>Etiqueta</th>
+          <th>Habilitada</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
         <tr v-if="!entries.length">
-          <td colspan="5" class="text-medium-emphasis text-center py-4">No entries yet.</td>
+          <td colspan="5" class="text-medium-emphasis text-center py-4">Todavía no hay entradas.</td>
         </tr>
         <tr v-for="entry in entries" :key="entry.id">
           <td class="mono">{{ entry.value }}</td>

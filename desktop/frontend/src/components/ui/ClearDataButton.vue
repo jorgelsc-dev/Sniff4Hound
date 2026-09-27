@@ -11,7 +11,7 @@
     >
       <v-icon icon="mdi-database-remove-outline" />
       <v-tooltip activator="parent" location="bottom">
-        Delete every packet, flow and honeypot event. Monitors, listeners and settings survive.
+        Borra paquetes, flujos y eventos del honeypot. Monitores, listeners y ajustes se conservan.
       </v-tooltip>
     </v-btn>
 
@@ -19,18 +19,18 @@
       <v-card class="pa-4">
         <div class="d-flex align-center ga-2 mb-3">
           <v-icon icon="mdi-alert-outline" color="error" />
-          <span class="text-h6">Clear all captured data?</span>
+          <span class="text-h6">¿Borrar todos los datos capturados?</span>
         </div>
 
         <div class="text-body-2 mb-3">
-          This deletes everything capture and the honeypot have recorded, then compacts the
-          database file on disk. It cannot be undone.
+          Esto elimina todo lo que la captura y el honeypot hayan registrado, y después
+          compacta el archivo de base de datos en disco. No se puede deshacer.
         </div>
 
         <div class="clear-data-button__lists mb-3">
           <div class="clear-data-button__list clear-data-button__list--removed">
             <div class="text-caption font-weight-medium text-error mb-1">
-              <v-icon icon="mdi-close-circle-outline" size="x-small" class="mr-1" />Deleted
+              <v-icon icon="mdi-close-circle-outline" size="x-small" class="mr-1" />Se borra
             </div>
             <ul class="text-caption text-medium-emphasis">
               <li v-for="item in removedItems" :key="`removed-${item}`">{{ item }}</li>
@@ -38,7 +38,7 @@
           </div>
           <div class="clear-data-button__list clear-data-button__list--kept">
             <div class="text-caption font-weight-medium text-success mb-1">
-              <v-icon icon="mdi-check-circle-outline" size="x-small" class="mr-1" />Kept
+              <v-icon icon="mdi-check-circle-outline" size="x-small" class="mr-1" />Se conserva
             </div>
             <ul class="text-caption text-medium-emphasis">
               <li v-for="item in keptItems" :key="`kept-${item}`">{{ item }}</li>
@@ -47,8 +47,8 @@
         </div>
 
         <v-alert v-if="runtimeRunning" type="info" variant="tonal" density="compact" class="mb-3">
-          {{ runtimeLabel }} is still running, so new rows start arriving again immediately.
-          Stop it first for a clean slate.
+          {{ runtimeLabel }} sigue en ejecución, así que pueden volver a entrar filas nuevas
+          inmediatamente. Detenlo primero si quieres partir desde cero.
         </v-alert>
 
         <div v-if="busy" class="mb-3">
@@ -70,9 +70,9 @@
         </v-alert>
 
         <div class="d-flex justify-end ga-2">
-          <v-btn variant="text" :disabled="busy" @click="dialog = false">Cancel</v-btn>
+          <v-btn variant="text" :disabled="busy" @click="dialog = false">Cancelar</v-btn>
           <v-btn color="error" variant="flat" :loading="busy" @click="confirm">
-            Delete everything
+            Borrar todo
           </v-btn>
         </div>
       </v-card>
@@ -87,17 +87,17 @@ import store from "../../state/appStore";
 // database: the operator has to be able to see, before confirming, that the
 // catalogs they configured by hand are not part of the purge.
 const REMOVED_ITEMS = [
-  "Packets, tags and payloads",
-  "Flows, domains and paths",
-  "Capture sessions and counters",
-  "Honeypot connection, TLS and DNS events",
+  "Paquetes, etiquetas y payloads",
+  "Flujos, dominios y rutas",
+  "Sesiones de captura y contadores",
+  "Eventos de conexión, TLS y DNS del honeypot",
 ];
 
 const KEPT_ITEMS = [
-  "Monitor definitions and rulesets",
-  "Honeypot listener configuration",
-  "Whitelist and blacklist entries",
-  "Interface selection and settings",
+  "Definiciones de monitores y reglas",
+  "Configuración de listeners del honeypot",
+  "Entradas de listas blanca y negra",
+  "Selección de interfaces y ajustes",
 ];
 
 export default {
@@ -105,7 +105,7 @@ export default {
   props: {
     label: {
       type: String,
-      default: "Clear data",
+      default: "Borrar datos",
     },
     size: {
       type: String,
@@ -135,7 +135,7 @@ export default {
     },
     runtimeLabel() {
       const mode = String((this.store.state.runtime || {}).mode || "").trim().toLowerCase();
-      return mode === "honeypot" ? "The honeypot" : "The sniffer";
+      return mode === "honeypot" ? "El honeypot" : "El sniffer";
     },
     removedItems() {
       return REMOVED_ITEMS;
@@ -171,16 +171,16 @@ export default {
     },
     progressLabel() {
       const progress = this.progress;
-      if (!progress) return "Deleting...";
+      if (!progress) return "Borrando...";
       if (progress.phase === "deleting") {
         const done = Number(progress.rows_done) || 0;
         const total = Number(progress.rows_total) || 0;
-        return total ? `Deleting rows... (${done.toLocaleString()} / ${total.toLocaleString()})` : "Deleting rows...";
+        return total ? `Borrando filas... (${done.toLocaleString()} / ${total.toLocaleString()})` : "Borrando filas...";
       }
       if (progress.phase === "compacting") {
-        return "Compacting database file...";
+        return "Compactando base de datos...";
       }
-      return "Finishing up...";
+      return "Terminando...";
     },
   },
   methods: {
@@ -211,10 +211,10 @@ export default {
           this.store.pushNotification({
             kind: "data",
             severity: "info",
-            title: "Stored data cleared",
+            title: "Datos almacenados borrados",
             message: deleted
-              ? `Deleted ${deleted.toLocaleString()} rows. Monitors, listeners and settings were kept.`
-              : "There was nothing left to delete.",
+              ? `Se borraron ${deleted.toLocaleString()} filas. Monitores, listeners y ajustes se conservaron.`
+              : "No quedaba nada por borrar.",
             groupKey: "data:cleared",
           });
           this.dialog = false;
@@ -222,7 +222,7 @@ export default {
           this.$emit("cleared", payload);
         })
         .catch((err) => {
-          this.error = (err && err.message) || "Failed to clear stored data";
+          this.error = (err && err.message) || "No se pudieron borrar los datos almacenados";
         })
         .finally(() => {
           this.busy = false;

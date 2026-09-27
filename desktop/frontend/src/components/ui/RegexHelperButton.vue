@@ -6,25 +6,25 @@
       variant="text"
       color="info"
       density="comfortable"
-      aria-label="Regex helper"
+      aria-label="Ayudante de regex"
       @click="open"
     >
       <v-icon icon="mdi-auto-fix" />
-      <v-tooltip activator="parent" location="top">Regex helper</v-tooltip>
+      <v-tooltip activator="parent" location="top">Ayudante de regex</v-tooltip>
     </v-btn>
 
     <v-dialog v-model="dialogOpen" max-width="640">
       <v-card class="pa-4 regex-helper-card">
         <div class="d-flex align-center justify-space-between mb-2">
-          <div class="text-h6">Regex helper</div>
+          <div class="text-h6">Ayudante de regex</div>
           <v-btn icon="mdi-close" size="small" variant="text" @click="dialogOpen = false" />
         </div>
         <div class="text-caption text-medium-emphasis mb-4">
-          Build a pattern from common building blocks, then check it against a sample string before
-          using it. Patterns run case-insensitively against the packet's decoded text.
+          Construye un patrón con bloques comunes y pruébalo con una muestra antes de usarlo.
+          Los patrones se evalúan sin distinguir mayúsculas en el texto decodificado del paquete.
         </div>
 
-        <div class="text-subtitle-2 mb-1">Building blocks</div>
+        <div class="text-subtitle-2 mb-1">Bloques</div>
         <div class="d-flex flex-wrap ga-2 mb-4">
           <v-btn
             v-for="block in blocks"
@@ -40,7 +40,7 @@
 
         <v-textarea
           v-model="working"
-          label="Pattern"
+          label="Patrón"
           rows="2"
           auto-grow
           variant="outlined"
@@ -51,8 +51,8 @@
 
         <v-text-field
           v-model="sample"
-          label="Test string"
-          hint="Paste a sample line of traffic to see whether the pattern above matches it"
+          label="Texto de prueba"
+          hint="Pega una línea de tráfico para comprobar si coincide con el patrón"
           persistent-hint
           variant="outlined"
           density="comfortable"
@@ -69,7 +69,7 @@
           {{ testResult.message }}
         </v-alert>
 
-        <div class="text-caption text-medium-emphasis mt-4 mb-1">Cheat sheet</div>
+        <div class="text-caption text-medium-emphasis mt-4 mb-1">Referencia rápida</div>
         <div class="cheat-sheet">
           <div v-for="row in cheatSheet" :key="row.token" class="cheat-row">
             <code>{{ row.token }}</code>
@@ -79,9 +79,9 @@
 
         <v-card-actions class="px-0 mt-4">
           <v-spacer />
-          <v-btn variant="text" @click="dialogOpen = false">Cancel</v-btn>
+          <v-btn variant="text" @click="dialogOpen = false">Cancelar</v-btn>
           <v-btn color="primary" variant="flat" :disabled="!canApply" @click="apply">
-            Use this pattern
+            Usar patrón
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -98,29 +98,29 @@
 // to do with the emitted pattern (set a single value, or push onto an array
 // of patterns).
 const BUILDING_BLOCKS = [
-  { label: "Starts with...", snippet: "^" },
-  { label: "Ends with...", snippet: "$" },
-  { label: "Any characters", snippet: ".*" },
-  { label: "One or more digits", snippet: "\\d+" },
-  { label: "Word boundary", snippet: "\\b" },
-  { label: "One of these (OR)", snippet: "(?:optionA|optionB)" },
-  { label: "IP-address shaped", snippet: "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}" },
-  { label: "Domain-shaped", snippet: "[a-z0-9-]+\\.[a-z]{2,}" },
-  { label: "Optional group", snippet: "(?:...)?" },
-  { label: "Literal dot", snippet: "\\." },
+  { label: "Empieza con...", snippet: "^" },
+  { label: "Termina con...", snippet: "$" },
+  { label: "Cualquier texto", snippet: ".*" },
+  { label: "Uno o más dígitos", snippet: "\\d+" },
+  { label: "Límite de palabra", snippet: "\\b" },
+  { label: "Una opción (OR)", snippet: "(?:opcionA|opcionB)" },
+  { label: "Forma de IP", snippet: "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}" },
+  { label: "Forma de dominio", snippet: "[a-z0-9-]+\\.[a-z]{2,}" },
+  { label: "Grupo opcional", snippet: "(?:...)?" },
+  { label: "Punto literal", snippet: "\\." },
 ];
 
 const CHEAT_SHEET = [
-  { token: ".", meaning: "any single character" },
-  { token: "\\d", meaning: "a digit (0-9)" },
-  { token: "\\w", meaning: "a letter, digit, or underscore" },
-  { token: "\\s", meaning: "whitespace" },
-  { token: "+", meaning: "one or more of the previous token" },
-  { token: "*", meaning: "zero or more of the previous token" },
-  { token: "?", meaning: "zero or one of the previous token (optional)" },
-  { token: "{2,5}", meaning: "between 2 and 5 repeats" },
-  { token: "(?:a|b)", meaning: "either a or b (non-capturing)" },
-  { token: "^ / $", meaning: "start / end of the text" },
+  { token: ".", meaning: "cualquier carácter" },
+  { token: "\\d", meaning: "un dígito (0-9)" },
+  { token: "\\w", meaning: "letra, dígito o guion bajo" },
+  { token: "\\s", meaning: "espacio en blanco" },
+  { token: "+", meaning: "uno o más del token anterior" },
+  { token: "*", meaning: "cero o más del token anterior" },
+  { token: "?", meaning: "cero o uno del token anterior" },
+  { token: "{2,5}", meaning: "entre 2 y 5 repeticiones" },
+  { token: "(?:a|b)", meaning: "a o b, sin capturar" },
+  { token: "^ / $", meaning: "inicio / fin del texto" },
 ];
 
 export default {
@@ -148,7 +148,7 @@ export default {
         new RegExp(this.working, "i");
         return [];
       } catch (error) {
-        return [`Invalid pattern: ${(error && error.message) || "syntax error"}`];
+        return [`Patrón inválido: ${(error && error.message) || "error de sintaxis"}`];
       }
     },
     canApply() {
@@ -156,16 +156,16 @@ export default {
     },
     testResult() {
       if (!this.sample) return { ok: false, message: "" };
-      if (this.patternError.length) return { ok: false, message: "Fix the pattern above first." };
+      if (this.patternError.length) return { ok: false, message: "Corrige primero el patrón." };
       try {
         const re = new RegExp(this.working, "i");
         const match = this.sample.match(re);
         if (match) {
-          return { ok: true, message: `Matches: "${match[0]}"` };
+          return { ok: true, message: `Coincide con: "${match[0]}"` };
         }
-        return { ok: false, message: "No match against this test string." };
+        return { ok: false, message: "No coincide con este texto de prueba." };
       } catch {
-        return { ok: false, message: "Fix the pattern above first." };
+        return { ok: false, message: "Corrige primero el patrón." };
       }
     },
   },

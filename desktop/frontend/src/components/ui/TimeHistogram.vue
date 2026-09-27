@@ -16,6 +16,7 @@
     </template>
 
     <div v-if="!buckets.length" class="histogram-empty text-medium-emphasis">
+      <v-icon icon="mdi-chart-timeline-variant" size="28" />
       {{ emptyText }}
     </div>
 
@@ -66,7 +67,7 @@ export default {
   name: "TimeHistogram",
   components: { DataPanel },
   props: {
-    title: { type: String, default: "Volume over time" },
+    title: { type: String, default: "Volumen en el tiempo" },
     subtitle: { type: String, default: "" },
     rows: { type: Array, default: () => [] },
     // Which field carries the timestamp. Rows missing it are ignored rather
@@ -74,8 +75,8 @@ export default {
     timestampKey: { type: String, default: "created_at" },
     bucketCount: { type: Number, default: 48 },
     height: { type: Number, default: 132 },
-    countLabel: { type: String, default: "packets" },
-    emptyText: { type: String, default: "No data in this window yet" },
+    countLabel: { type: String, default: "paquetes" },
+    emptyText: { type: String, default: "Todavía no hay datos en esta ventana" },
     loading: { type: Boolean, default: false },
     error: { type: String, default: "" },
     lastUpdated: { type: String, default: "" },
@@ -152,7 +153,7 @@ export default {
       if (!this.buckets.length) return this.emptyText;
       const first = this.axisTicks[0];
       const last = this.axisTicks[this.axisTicks.length - 1];
-      return `${this.total} ${this.countLabel} between ${first ? first.label : "?"} and ${last ? last.label : "?"}, peak ${this.peakCount} per bucket`;
+      return `${this.total} ${this.countLabel} entre ${first ? first.label : "?"} y ${last ? last.label : "?"}, pico de ${this.peakCount} por bloque`;
     },
   },
   methods: {
@@ -248,9 +249,17 @@ export default {
 }
 
 .histogram-empty {
-  padding: 18px 0;
+  min-height: 112px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 18px 12px;
   text-align: center;
   font-size: 0.85rem;
+  border: 1px dashed rgba(157, 169, 184, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.018);
 }
 
 .histogram-tip strong {

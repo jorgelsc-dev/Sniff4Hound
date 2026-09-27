@@ -1,16 +1,16 @@
 <template>
   <div>
     <ViewHeader
-      overline="Packets"
-      title="Packet Intelligence"
-      description="Review captured packet activity by protocol."
+      overline="Paquetes"
+      title="Inteligencia de paquetes"
+      description="Revisa la actividad capturada por protocolo."
       :refresh-loading="loading"
       @refresh="load"
     />
 
     <DataPanel
-      title="Captured Packets"
-      subtitle="Switch protocol tabs and track endpoint state with WebSocket-assisted refresh."
+      title="Paquetes capturados"
+      subtitle="Cambia entre protocolos y sigue el estado de endpoints con refresco asistido por WebSocket."
       v-model:live-enabled="liveRefreshEnabled"
       :loading="loading"
       :show-skeleton="false"
@@ -20,7 +20,7 @@
       @refresh="load"
     >
       <v-alert v-if="!protocols.length && !loading" type="info" variant="tonal" class="mt-4">
-        No protocols available from backend.
+        No hay protocolos disponibles desde el backend.
       </v-alert>
 
       <template v-else>
@@ -28,9 +28,9 @@
           <v-col cols="12" md="7">
             <v-text-field
               v-model.trim="tableFilters.query"
-              label="Search packets"
+              label="Buscar paquetes"
               name="port_table_search"
-              placeholder="IP, port, state..."
+              placeholder="IP, puerto, estado..."
               prepend-inner-icon="mdi-magnify"
               clearable
               variant="outlined"
@@ -41,7 +41,7 @@
             <v-select
               v-model="tableFilters.state"
               :items="stateFilterOptions"
-              label="State"
+              label="Estado"
               name="port_table_state_filter"
               item-title="label"
               item-value="value"
@@ -57,10 +57,10 @@
               {{ activeProtoLabel }}
             </v-chip>
             <v-chip size="small" color="info" variant="tonal">
-              Visible rows: {{ visibleRowCount }}
+              Filas visibles: {{ visibleRowCount }}
             </v-chip>
             <v-chip size="small" variant="outlined">
-              Total rows: {{ totalRowCount }}
+              Filas totales: {{ totalRowCount }}
             </v-chip>
           </div>
         </div>
@@ -103,7 +103,7 @@
                     variant="text"
                     color="info"
                     class="ports-data-table__expand-button"
-                    :aria-label="isExpanded(internalItem) ? 'Collapse JSON view' : 'Expand JSON view'"
+                    :aria-label="isExpanded(internalItem) ? 'Contraer JSON' : 'Expandir JSON'"
                     @click.stop="toggleExpand(internalItem)"
                   >
                     <v-icon :icon="isExpanded(internalItem) ? 'mdi-chevron-down' : 'mdi-chevron-right'" />
@@ -116,13 +116,13 @@
 
                 <template v-slot:[portSlotNames.proto]="{ item }">
                   <v-chip size="x-small" color="primary" variant="tonal">
-                    {{ String(item.proto || proto || "unknown").toUpperCase() }}
+                    {{ String(item.proto || proto || "desconocido").toUpperCase() }}
                   </v-chip>
                 </template>
 
                 <template v-slot:[portSlotNames.interface]="{ item }">
                   <v-chip size="x-small" color="info" variant="tonal">
-                    {{ item.interface || "unknown" }}
+                    {{ item.interface || "desconocida" }}
                   </v-chip>
                 </template>
 
@@ -172,7 +172,7 @@
                       :disabled="loading || isPortActionLoading(item.id, 'start') || normalizePortScanState(item.scan_state) === 'active'"
                       @click="runPortAction(item, 'start')"
                     >
-                      Start
+                      Iniciar
                     </v-btn>
                     <v-btn
                       size="x-small"
@@ -181,7 +181,7 @@
                       :disabled="loading || isPortActionLoading(item.id, 'stop') || normalizePortScanState(item.scan_state) === 'stopped'"
                       @click="runPortAction(item, 'stop')"
                     >
-                      Stop
+                      Detener
                     </v-btn>
                     <v-btn
                       size="x-small"
@@ -190,7 +190,7 @@
                       :disabled="loading || isPortActionLoading(item.id, 'restart')"
                       @click="runPortAction(item, 'restart')"
                     >
-                      Restart
+                      Reiniciar
                     </v-btn>
                   </div>
                 </template>
@@ -199,7 +199,7 @@
                   <tr class="ports-data-table__expanded-row">
                     <td :colspan="columns.length" class="ports-data-table__expanded-cell">
                       <div class="ports-json-panel">
-                        <div class="ports-json-panel__label">Full packet JSON</div>
+                        <div class="ports-json-panel__label">JSON completo del paquete</div>
                         <pre class="ports-json">{{ formatPortRowJson(item) }}</pre>
                       </div>
                     </td>
@@ -208,7 +208,7 @@
 
                 <template #no-data>
                   <div class="text-medium-emphasis py-4 text-center">
-                    No {{ proto.toUpperCase() }} packets
+                    Sin paquetes {{ proto.toUpperCase() }}
                   </div>
                 </template>
               </v-data-table>
@@ -279,7 +279,7 @@ export default {
       )]
         .filter(Boolean)
         .sort();
-      return [{ label: "All", value: "" }, ...states.map((value) => ({ label: value, value }))];
+      return [{ label: "Todos", value: "" }, ...states.map((value) => ({ label: value, value }))];
     },
     activeProtoLabel() {
       const proto = String(this.tab || "").trim().toUpperCase();
@@ -310,22 +310,22 @@ export default {
       return [
         { title: String(PAGE_SIZE), value: PAGE_SIZE },
         { title: String(PAGE_SIZE * 2), value: PAGE_SIZE * 2 },
-        { title: "All", value: -1 },
+        { title: "Todos", value: -1 },
       ];
     },
     portTableHeaders() {
       return [
         { key: "data-table-expand", title: "", sortable: false, width: 48 },
-        { key: "updated_at", title: "Seen" },
+        { key: "updated_at", title: "Visto" },
         { key: "proto", title: "Proto" },
-        { key: "interface", title: "Interface" },
+        { key: "interface", title: "Interfaz" },
         { key: "ip", title: "IP" },
-        { key: "port", title: "Port" },
-        { key: "state", title: "Endpoint State" },
-        { key: "scan_state", title: "Response Status" },
-        { key: "progress", title: "Response Progress", sortable: false },
-        { key: "summary", title: "Summary", sortable: false },
-        { key: "actions", title: "Actions", sortable: false },
+        { key: "port", title: "Puerto" },
+        { key: "state", title: "Estado del endpoint" },
+        { key: "scan_state", title: "Estado de respuesta" },
+        { key: "progress", title: "Progreso de respuesta", sortable: false },
+        { key: "summary", title: "Resumen", sortable: false },
+        { key: "actions", title: "Acciones", sortable: false },
       ];
     },
     filteredRowsByProto() {
@@ -413,9 +413,9 @@ export default {
     },
     scanStatusLabel(value) {
       const status = this.normalizePortScanState(value);
-      if (status === "restarting") return "restarting";
-      if (status === "stopped") return "stopped";
-      return "active";
+      if (status === "restarting") return "reiniciando";
+      if (status === "stopped") return "detenido";
+      return "activo";
     },
     scanStatusColor(value) {
       const status = this.normalizePortScanState(value);
@@ -434,7 +434,7 @@ export default {
       const proto = String(row?.proto || "").trim().toLowerCase();
       const state = String(row?.state || "").trim().toLowerCase();
       if (!state) return "-";
-      if (proto === "icmp" && state === "filtered") return "no reply";
+      if (proto === "icmp" && state === "filtered") return "sin respuesta";
       return state;
     },
     portRowKey(proto, item) {
@@ -455,7 +455,7 @@ export default {
       try {
         return JSON.stringify(item || {}, null, 2);
       } catch (err) {
-        return JSON.stringify({ error: err && err.message ? err.message : "Unable to serialize row" }, null, 2);
+        return JSON.stringify({ error: err && err.message ? err.message : "No se pudo serializar la fila" }, null, 2);
       }
     },
     formatStateTooltip(row) {
@@ -463,10 +463,10 @@ export default {
       const state = String(row?.state || "").trim().toLowerCase();
       if (!state) return "-";
       if (proto === "icmp" && state === "filtered") {
-        return "ICMP echo reply was not received. The host may be down or a firewall may be dropping the probe.";
+        return "No se recibió respuesta ICMP echo. El host puede estar caído o un firewall puede estar descartando la prueba.";
       }
       if (proto === "icmp" && state === "open") {
-        return "ICMP echo reply received.";
+        return "Respuesta ICMP echo recibida.";
       }
       return state;
     },
@@ -643,7 +643,7 @@ export default {
           this.sortByByProto = {};
           this.expandedRowsByProto = {};
           this.lastUpdated = "";
-          this.error = err.message || "Failed to load packets";
+          this.error = err.message || "No se pudieron cargar los paquetes";
           this.syncFilters();
         })
         .finally(() => {
@@ -653,7 +653,7 @@ export default {
     runPortAction(item, action) {
       const endpointId = Number(item && item.id);
       if (!Number.isFinite(endpointId) || endpointId <= 0) {
-        this.error = "Invalid session id";
+        this.error = "ID de sesión inválido";
         return Promise.resolve();
       }
       const proto = String(item && item.proto || "").trim().toUpperCase() || "endpoint";
@@ -661,13 +661,13 @@ export default {
       const port = String(item && item.port != null ? item.port : "").trim() || "n/a";
       if (action === "stop") {
         const ok = typeof window !== "undefined"
-          ? window.confirm(`Stop ${proto} endpoint ${ip}:${port}?`)
+          ? window.confirm(`¿Detener endpoint ${proto} ${ip}:${port}?`)
           : true;
         if (!ok) return Promise.resolve();
       }
       if (action === "restart") {
         const ok = typeof window !== "undefined"
-          ? window.confirm(`Restart ${proto} endpoint ${ip}:${port} and clear collected response artifacts?`)
+          ? window.confirm(`¿Reiniciar endpoint ${proto} ${ip}:${port} y borrar los artefactos de respuesta recolectados?`)
           : true;
         if (!ok) return Promise.resolve();
       }
@@ -684,7 +684,7 @@ export default {
         })
         .then(() => this.refreshActiveProtocolRealtime())
         .catch((err) => {
-          this.error = err.message || `Failed to ${action} packet endpoint`;
+          this.error = err.message || `No se pudo ejecutar la acción ${action} en el endpoint`;
         })
         .finally(() => {
           this.portActionLoading = { id: null, action: "" };
