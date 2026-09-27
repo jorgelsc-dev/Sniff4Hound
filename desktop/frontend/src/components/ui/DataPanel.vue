@@ -30,11 +30,15 @@
           color="warning"
           class="panel-pending-chip"
           prepend-icon="mdi-arrow-up-bold-circle-outline"
+          role="button"
+          tabindex="0"
           @click="emitRefresh"
+          @keydown.enter.prevent="emitRefresh"
+          @keydown.space.prevent="emitRefresh"
         >
-          {{ pendingUpdates }} new
+          {{ pendingUpdates }} nuevos
           <v-tooltip activator="parent" location="bottom">
-            Live updates are paused - click to pull the latest rows.
+            Las actualizaciones en vivo están pausadas. Pulsa para traer las filas más recientes.
           </v-tooltip>
         </v-chip>
         <v-btn
@@ -58,11 +62,11 @@
           variant="text"
           color="primary"
           :loading="loading"
-          :aria-label="`Refresh ${title}`"
+          :aria-label="`Actualizar ${title}`"
           @click="emitRefresh"
         >
           <v-icon icon="mdi-refresh" />
-          <v-tooltip activator="parent" location="bottom">Refresh this panel</v-tooltip>
+          <v-tooltip activator="parent" location="bottom">Actualizar este panel</v-tooltip>
         </v-btn>
         <v-btn
           v-if="collapsible"
@@ -88,9 +92,9 @@
         <div v-if="loading" class="panel-loader-shell">
           <BrandMark :size="58" animated framed />
           <div class="panel-loader-copy">
-            <div class="panel-loader-title">Loading {{ title }}</div>
+            <div class="panel-loader-title">Cargando {{ title }}</div>
             <div class="panel-loader-text">
-              {{ loadingText || "Fetching the latest rows from the API." }}
+              {{ loadingText || "Obteniendo las filas más recientes desde la API." }}
             </div>
           </div>
         </div>
@@ -221,18 +225,18 @@ export default {
       const honeypot = runtime.honeypot && typeof runtime.honeypot === "object" ? runtime.honeypot : {};
       const capturing = Boolean(sniffer.running || honeypot.running);
       if (wsStatus === "locked") {
-        return { tone: "offline", label: "Realtime locked - authenticate to resume the live stream" };
+        return { tone: "offline", label: "Tiempo real bloqueado: autentica para reanudar el flujo" };
       }
       if (wsStatus !== "online") {
-        return { tone: "offline", label: `Realtime ${wsStatus || "offline"} - showing the last loaded snapshot` };
+        return { tone: "offline", label: `Tiempo real ${wsStatus || "offline"}: mostrando la última instantánea cargada` };
       }
       if (!capturing) {
-        return { tone: "idle", label: "Realtime connected, capture stopped - no new traffic is arriving" };
+        return { tone: "idle", label: "Tiempo real conectado, captura detenida: no llega tráfico nuevo" };
       }
       if (this.liveRefresh && !this.liveEnabled) {
-        return { tone: "paused", label: "Live refresh paused - this panel is frozen for analysis" };
+        return { tone: "paused", label: "Actualización en vivo pausada: este panel queda congelado para análisis" };
       }
-      return { tone: "live", label: "Live - capture running and realtime stream connected" };
+      return { tone: "live", label: "En vivo: captura activa y flujo de tiempo real conectado" };
     },
   },
   watch: {
@@ -299,6 +303,7 @@ export default {
   flex: 0 1 auto;
   justify-content: flex-end;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 /* The dot is a status indicator, not decoration: it only animates while data

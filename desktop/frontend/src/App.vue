@@ -35,15 +35,15 @@
         </div>
 
         <div v-else class="auth-stage">
-          <v-sheet class="auth-stage-card" rounded="xl" elevation="0">
-            <div class="auth-stage-kicker">Protected Console</div>
-            <h1 class="auth-stage-title">Authentication required</h1>
+          <v-sheet class="auth-stage-card" rounded="lg" elevation="0">
+            <div class="auth-stage-kicker">Consola protegida</div>
+            <h1 class="auth-stage-title">Autenticación requerida</h1>
             <p class="auth-stage-copy">
-              Enter the security code shown in the terminal to unlock the dashboard and
-              resume HTTP and WebSocket access.
+              Introduce el código de seguridad mostrado en la terminal para desbloquear el
+              panel y reanudar el acceso HTTP y WebSocket.
             </p>
             <v-btn color="primary" size="large" variant="flat" @click="openAuthPrompt">
-              Enter code
+              Introducir código
             </v-btn>
             <v-alert
               v-if="authError"
@@ -60,13 +60,13 @@
     </v-main>
 
     <v-dialog :model-value="authPromptOpen" persistent max-width="520">
-      <v-card class="auth-dialog-card" rounded="xl">
+      <v-card class="auth-dialog-card" rounded="lg">
         <div class="auth-dialog-topline" />
-        <v-card-title class="text-h5 pt-6">Security Code</v-card-title>
+        <v-card-title class="text-h5 pt-6">Código de seguridad</v-card-title>
         <v-card-text class="pt-4">
           <p class="auth-dialog-copy">
-            Open the startup link from the `sniff4hound` terminal or enter the
-            8-character code here. The dashboard uses it for API and WebSocket access.
+            Abre el enlace de inicio desde la terminal de `sniff4hound` o introduce aquí
+            el código de 8 caracteres. El panel lo usa para el acceso API y WebSocket.
           </p>
           <v-alert
             type="info"
@@ -75,13 +75,13 @@
             class="mb-4"
             icon="mdi-shield-lock-outline"
           >
-            The startup link keeps the code for this tab. Sign out or enter a fresh
-            code to replace it.
+            El enlace de inicio conserva el código para esta pestaña. Cierra sesión o
+            introduce un código nuevo para reemplazarlo.
           </v-alert>
           <v-text-field
             ref="authInput"
             v-model="accessTokenInput"
-            label="Security code"
+            label="Código de seguridad"
             variant="outlined"
             density="comfortable"
             autocapitalize="off"
@@ -101,7 +101,7 @@
             :loading="authSubmitting"
             @click="submitAccessToken"
           >
-            Authenticate
+            Autenticar
           </v-btn>
         </v-card-actions>
       </v-card>
