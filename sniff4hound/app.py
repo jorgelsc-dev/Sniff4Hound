@@ -647,6 +647,7 @@ ENDPOINTS = [
     {"method": "POST", "path": "/api/monitors/", "desc": "Create a custom monitor."},
     {"method": "PUT", "path": "/api/monitors/", "desc": "Update a custom monitor."},
     {"method": "DELETE", "path": "/api/monitors/", "desc": "Delete a custom monitor."},
+    {"method": "GET", "path": "/api/monitors/traffic/", "desc": "Summary counts plus monitors that have matched traffic."},
     {"method": "POST", "path": "/api/monitors/toggle", "desc": "Enable/disable any monitor, including builtins, without editing or deleting it."},
     {"method": "GET", "path": "/api/monitors/config", "desc": "Read the monitor persistence-filter toggle."},
     {"method": "POST", "path": "/api/monitors/config", "desc": "Toggle whether only detected traffic is persisted."},
@@ -2863,6 +2864,16 @@ def monitors_collection(request):
         store.delete_monitor(monitor_id)
         return {"status": "ok"}
     raise ValueError("Unsupported method")
+
+
+@app.api("/api/monitors/traffic/", methods=("GET",))
+def monitors_traffic(request):
+    rows = store.list_monitors_with_traffic()
+    match_counts = {str(row.get("id")): int(row.get("match_count") or 0) for row in rows}
+    return {
+        "stats": store.monitor_catalog_stats(),
+        "monitors": [_monitor_row(row, match_counts) for row in rows],
+    }
 
 
 @app.api("/api/monitors/toggle", methods=("POST",))

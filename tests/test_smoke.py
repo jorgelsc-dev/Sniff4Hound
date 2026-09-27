@@ -635,6 +635,36 @@ class SmokeTests(unittest.TestCase):
         )
         self.assertEqual(app_module.app.dispatch(missing_enabled).status, 400)
 
+    def test_monitors_traffic_endpoint_returns_summary_not_full_catalog(self):
+        _auth_module, app_module = _reload_auth_stack("0")
+        self.addCleanup(app_module.store.close)
+        app_module.store.register_packet(
+            {
+                "src_ip": "10.0.0.5",
+                "dst_ip": "10.0.0.9",
+                "proto": "tcp",
+                "transport": "tcp",
+                "interface": "eth0",
+                "length": 60,
+                "src_port": 51234,
+                "dst_port": 3389,
+                "tags": [
+                    {"key": "monitor", "value": "Admin port", "severity": "medium"},
+                    {"key": "monitor_id", "value": "builtin-admin-ports"},
+                ],
+            }
+        )
+
+        request = Request("GET", "/api/monitors/traffic/", "", {}, b"", ("127.0.0.1", 0))
+        response = app_module.app.dispatch(request)
+        payload = json.loads(response.body.decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertGreater(payload["stats"]["total"], 1000)
+        self.assertGreater(payload["stats"]["enabled"], 0)
+        self.assertEqual([row["id"] for row in payload["monitors"]], ["builtin-admin-ports"])
+        self.assertEqual(payload["monitors"][0]["match_count"], 1)
+
     def test_runtime_api_supports_start_and_stop_actions(self):
         _auth_module, app_module = _reload_auth_stack("0")
         self.addCleanup(app_module.store.close)
@@ -1556,4 +1586,3 @@ class SmokeTests(unittest.TestCase):
                     os.environ.pop("SNIFF4HOUND_REQUIRE_AUTH", None)
                 else:
                     os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = previous_auth
-
