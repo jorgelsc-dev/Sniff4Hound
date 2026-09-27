@@ -237,28 +237,26 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .flow {
-  border: 1px solid #263445;
-  border-radius: 14px;
-  background:
-    radial-gradient(120% 140% at 12% 0%, #12263a 0%, transparent 58%),
-    linear-gradient(180deg, #0c1826 0%, #091320 100%);
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+  background: var(--surface-1);
   overflow: hidden;
   transition: border-color 400ms ease;
 }
-.flow.is-idle { border-color: #23303f; }
+.flow.is-idle { border-color: var(--stroke); }
 .flow__bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 13px 20px;
-  border-bottom: 1px solid #1d2b3b;
-  background: #0a141f99;
+  padding: 11px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(8, 14, 22, 0.82);
 }
 .flow__identity { display: flex; align-items: center; gap: 11px; min-width: 0; }
-.flow__identity h2 { font-size: 15px; font-weight: 650; color: #e6edf5; white-space: nowrap; }
+.flow__identity h2 { font-size: 14px; font-weight: 650; color: #e6edf5; white-space: nowrap; }
 .flow__sub {
-  font-size: 12px; color: #7c8ca0; border-left: 1px solid #27374a;
+  font-size: 12px; color: #7c8ca0; border-left: 1px solid rgba(255, 255, 255, 0.1);
   padding-left: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .flow__pulse { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: #46576b; }
@@ -266,16 +264,16 @@ onBeforeUnmount(() => {
 .flow__pulse.is-live { background: #4ad7b7; animation: flow-pulse 1.9s ease-in-out infinite; }
 .flow__rate { display: flex; align-items: baseline; gap: 5px; flex: 0 0 auto; }
 .flow__rate output {
-  font-size: 21px; font-weight: 680; color: #0fe8ff;
-  font-variant-numeric: tabular-nums; letter-spacing: -0.4px;
+  font-size: 20px; font-weight: 680; color: #0fe8ff;
+  font-variant-numeric: tabular-nums; letter-spacing: 0;
 }
 .flow__rate span { font-size: 11px; color: #74889c; }
 
 .flow__canvas {
   position: relative;
-  height: 318px;
+  height: 286px;
   overflow: hidden;
-  background-image: radial-gradient(#1b2836 1px, transparent 1px);
+  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
   background-size: 21px 21px;
 }
 .flow__world { position: absolute; inset: 0; transform-origin: 0 0; }
@@ -295,15 +293,15 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 3px;
   text-align: left;
-  border: 1px solid #2b3a4c;
-  border-radius: 11px;
-  background: linear-gradient(180deg, #16263a 0%, #101e2f 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: var(--surface-2);
   color: #dce6f1;
   cursor: pointer;
-  box-shadow: 0 6px 18px #0004;
+  box-shadow: none;
   transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1), border-color 200ms ease, box-shadow 200ms ease;
 }
-.flow__node:hover { transform: translateY(-3px); border-color: var(--stage); box-shadow: 0 12px 28px #0006; }
+.flow__node:hover { transform: translateY(-2px); border-color: var(--stage); box-shadow: 0 10px 24px #0004; }
 .flow__node:focus-visible { outline: 2px solid var(--stage); outline-offset: 3px; }
 .flow__node.is-live { border-color: color-mix(in srgb, var(--stage) 55%, #2b3a4c); }
 .flow__node.is-muted { opacity: 0.55; }
@@ -312,7 +310,7 @@ onBeforeUnmount(() => {
 .flow__metric { display: flex; align-items: baseline; gap: 5px; margin-top: auto; }
 .flow__metric b {
   font-size: 23px; font-weight: 660; color: #f2f7fb;
-  font-variant-numeric: tabular-nums; letter-spacing: -0.6px;
+  font-variant-numeric: tabular-nums; letter-spacing: 0;
 }
 .flow__metric i { font-style: normal; font-size: 11px; color: #7f91a6; }
 .flow__status { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: #8698ac; }
@@ -324,7 +322,11 @@ onBeforeUnmount(() => {
   0%, 100% { box-shadow: 0 0 0 0 #4ad7b755; }
   50% { box-shadow: 0 0 0 5px #4ad7b700; }
 }
-@media (max-width: 860px) { .flow__canvas { height: 270px; } .flow__sub { display: none; } }
+@media (max-width: 860px) {
+  .flow__bar { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .flow__canvas { height: 248px; }
+  .flow__sub { display: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .flow__wire-signal, .flow__pulse.is-live { animation: none; }
   .flow__node { transition: none; }

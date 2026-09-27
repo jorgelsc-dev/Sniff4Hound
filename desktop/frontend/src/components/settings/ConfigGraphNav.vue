@@ -259,27 +259,28 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .config-workspace {
-  --config-bg: #111215;
-  --config-panel: #191a1e;
-  height: calc(100dvh - 92px);
+  --config-bg: var(--bg-0);
+  --config-panel: var(--surface-1);
+  height: calc(100dvh - 72px);
   min-height: 560px;
   display: flex;
   flex-direction: column;
-  color: #e8e9ec;
+  color: var(--text-soft);
   background: var(--config-bg);
-  border: 1px solid #303138;
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
   overflow: hidden;
   letter-spacing: 0;
 }
-.config-toolbar { min-height: 64px; flex: 0 0 auto; padding: 10px 18px; border-bottom: 1px solid #2d2e35; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #17181c; }
+.config-toolbar { min-height: 58px; flex: 0 0 auto; padding: 10px 16px; border-bottom: 1px solid var(--stroke); display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--surface-1); }
 .config-title, .config-tools { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .config-title > .v-icon { color: #b79aeb; }
 .config-title h1 { font-size: 19px; font-weight: 650; letter-spacing: 0; }
-.config-project { font-size: 12px; color: #92949f; border-left: 1px solid #393a42; padding-left: 12px; }
+.config-project { font-size: 12px; color: var(--text-dim); border-left: 1px solid var(--stroke); padding-left: 12px; }
 .config-jump { width: 220px; }
 .config-workspace__body { flex: 1; display: flex; min-height: 0; position: relative; }
 .config-canvas-shell { flex: 1; min-width: 0; position: relative; overflow: hidden; }
-.config-canvas { position: absolute; inset: 0 0 58px; overflow: hidden; outline: none; cursor: grab; touch-action: none; background-image: radial-gradient(#33343a 0.8px, transparent 0.8px); background-size: 22px 22px; }
+.config-canvas { position: absolute; inset: 0 0 54px; overflow: hidden; outline: none; cursor: grab; touch-action: none; background-color: var(--surface-0); background-image: radial-gradient(rgba(255, 255, 255, 0.07) 0.8px, transparent 0.8px); background-size: 22px 22px; }
 .config-canvas:active { cursor: grabbing; }
 .config-canvas:focus-visible { outline: 1px solid #b79aeb; outline-offset: -2px; }
 .config-world { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
@@ -288,16 +289,16 @@ onBeforeUnmount(() => {
 .is-related .config-wire { opacity: 0.85; stroke-width: 2; }
 .config-wire-signal { fill: none; stroke-width: 2.4; stroke-dasharray: 8 160; animation: wire-flow 4s linear infinite; opacity: 0.75; }
 .config-column { position: absolute; top: 22px; font-size: 12px; font-weight: 600; }
-.config-node { position: absolute; width: 238px; height: 112px; padding: 14px 16px 0; border: 1px solid #3b3c44; border-radius: 8px; background: #1c1d22; color: #ebecef; text-align: left; cursor: grab; box-shadow: 0 5px 16px #0003; transition: border-color 160ms, background 160ms, box-shadow 160ms; user-select: none; touch-action: none; }
-.config-node:hover { background: #24252b; border-color: var(--node-color); }
+.config-node { position: absolute; width: 238px; height: 112px; padding: 14px 16px 0; border: 1px solid var(--stroke); border-radius: 8px; background: var(--surface-1); color: var(--text-soft); text-align: left; cursor: grab; box-shadow: none; transition: border-color 160ms, background 160ms, box-shadow 160ms; user-select: none; touch-action: none; }
+.config-node:hover { background: var(--surface-2); border-color: var(--node-color); }
 .config-node:active { cursor: grabbing; }
-.config-node:focus-visible, .config-node.is-selected { outline: 2px solid var(--node-color); outline-offset: 3px; border-color: var(--node-color); box-shadow: 0 6px 24px #0006; }
+.config-node:focus-visible, .config-node.is-selected { outline: 2px solid var(--node-color); outline-offset: 3px; border-color: var(--node-color); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36); }
 .config-node__head { display: flex; align-items: center; gap: 9px; }
 .config-node__head strong { font-size: 14px; font-weight: 600; flex: 1; letter-spacing: 0; }
 .config-node__icon { color: var(--node-color); display: flex; }
 .config-node__open { color: #7d7f8c; }
-.config-node__detail { display: block; font-size: 11px; color: #a8aab5; margin: 7px 0 12px; }
-.config-node__status { margin: 0 -16px; padding: 8px 14px; height: 31px; border-top: 1px solid #34353b; display: flex; align-items: center; gap: 7px; font-size: 10px; color: #aeb0ba; background: #ffffff03; border-radius: 0 0 8px 8px; }
+.config-node__detail { display: block; font-size: 11px; color: var(--text-dim); margin: 7px 0 12px; }
+.config-node__status { margin: 0 -16px; padding: 8px 14px; height: 31px; border-top: 1px solid var(--stroke); display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--text-dim); background: rgba(255, 255, 255, 0.025); border-radius: 0 0 8px 8px; }
 .config-node__status > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .config-node__dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #81838e; }
 .is-running .config-node__dot { background: #69c798; }
@@ -305,14 +306,14 @@ onBeforeUnmount(() => {
 .config-node__port { position: absolute; width: 7px; height: 7px; border: 1px solid #70727e; border-radius: 50%; background: #202126; top: 52px; }
 .config-node__port--in { left: -4px; }
 .config-node__port--out { right: -4px; }
-.config-canvas-tools { position: absolute; bottom: 0; left: 0; right: 0; height: 58px; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid #2d2e35; background: #17181c; }
-.config-component-count { color: #999ba6; font-size: 11px; }
+.config-canvas-tools { position: absolute; bottom: 0; left: 0; right: 0; height: 54px; padding: 9px 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--stroke); background: var(--surface-1); }
+.config-component-count { color: var(--text-dim); font-size: 11px; }
 .config-zoom { display: flex; align-items: center; gap: 3px; }
 .config-zoom output { width: 42px; text-align: center; font-size: 11px; color: #b2b4bf; font-variant-numeric: tabular-nums; }
 .config-tool-divider { height: 18px; width: 1px; background: #3b3c43; margin: 0 5px; }
-.config-overlay { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: 32px; background: #08080bd9; backdrop-filter: blur(3px); }
-.config-overlay__card { display: flex; flex-direction: column; width: min(980px, 100%); max-height: 100%; background: var(--config-panel); border: 1px solid #3c3d45; border-top: 3px solid var(--node-color, #b79aeb); border-radius: 10px; box-shadow: 0 24px 60px #000a; overflow: hidden; }
-.config-overlay__header { display: flex; align-items: center; gap: 12px; padding: 18px 22px; border-bottom: 1px solid #33343c; flex: 0 0 auto; }
+.config-overlay { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: 32px; background: rgba(5, 8, 12, 0.84); backdrop-filter: blur(8px); }
+.config-overlay__card { display: flex; flex-direction: column; width: min(980px, 100%); max-height: 100%; background: var(--config-panel); border: 1px solid var(--stroke-strong); border-top: 3px solid var(--node-color, #b79aeb); border-radius: 8px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.62); overflow: hidden; }
+.config-overlay__header { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--stroke); flex: 0 0 auto; }
 .config-overlay__icon { display: flex; color: var(--node-color, #b79aeb); }
 .config-overlay__title { flex: 1; min-width: 0; }
 .config-overlay__title span { font-size: 11px; color: #aaaeba; }
@@ -325,7 +326,7 @@ onBeforeUnmount(() => {
 @keyframes wire-flow { to { stroke-dashoffset: -168; } }
 @media (max-width: 1100px) { .config-project { display: none; } }
 @media (max-width: 700px) {
-  .config-workspace { height: calc(100dvh - 116px); min-height: 540px; }
+  .config-workspace { height: calc(100dvh - 96px); min-height: 540px; }
   .config-toolbar { padding: 10px; gap: 8px; }
   .config-title { gap: 6px; }
   .config-title h1 { font-size: 17px; }

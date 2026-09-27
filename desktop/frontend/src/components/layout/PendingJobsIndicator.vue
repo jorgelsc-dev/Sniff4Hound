@@ -57,20 +57,20 @@ export default {
 <style scoped>
 .pending {
   position: fixed;
+  right: 18px;
   bottom: 18px;
-  left: 50%;
-  transform: translateX(-50%);
   z-index: 2400;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 15px;
-  border-radius: 20px;
-  border: 1px solid #2f3a49;
-  background: #121821ee;
-  backdrop-filter: blur(6px);
-  box-shadow: 0 10px 30px #0007;
-  color: #d5dde8;
+  max-width: min(360px, calc(100vw - 36px));
+  padding: 9px 13px;
+  border-radius: 8px;
+  border: 1px solid var(--stroke-strong);
+  background: rgba(18, 24, 33, 0.94);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
+  color: var(--text-soft);
   font-size: 12.5px;
 }
 .pending__spinner {
@@ -84,7 +84,16 @@ export default {
 }
 @keyframes pending-spin { to { transform: rotate(360deg); } }
 .pending-enter-active, .pending-leave-active { transition: opacity 180ms ease, transform 180ms ease; }
-.pending-enter-from, .pending-leave-to { opacity: 0; transform: translateX(-50%) translateY(6px); }
+.pending-enter-from, .pending-leave-to { opacity: 0; transform: translateY(6px); }
+:global(body.sniff4hound-desktop-shell) .pending {
+  right: 22px;
+}
+@media (max-width: 640px) {
+  .pending {
+    right: 12px;
+    bottom: 76px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .pending__spinner { animation-duration: 2s; }
   .pending-enter-active, .pending-leave-active { transition: none; }

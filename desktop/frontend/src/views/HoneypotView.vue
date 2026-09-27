@@ -604,11 +604,11 @@ export default {
 
 <style scoped>
 .metric-card {
-  border-radius: 16px;
+  border-radius: 8px;
 }
 
 .engine-card {
-  border-radius: 16px;
+  border-radius: 8px;
 }
 
 .metric-icon {

@@ -149,7 +149,7 @@ export default {
 <style scoped>
 .flow-shell {
   position: relative;
-  margin-bottom: 14px;
+  margin-bottom: 18px;
 }
 
 .flow-shell__toggle,
@@ -163,7 +163,7 @@ export default {
   color: var(--text-dim);
   font: inherit;
   font-size: 0.78rem;
-  padding: 5px 11px;
+  padding: 6px 11px;
   cursor: pointer;
   transition: border-color 0.16s ease, color 0.16s ease;
 }
@@ -177,13 +177,16 @@ export default {
 .flow-shell__toggle {
   position: absolute;
   right: 10px;
-  bottom: -11px;
+  bottom: 10px;
+  background: rgba(8, 14, 22, 0.88);
+  backdrop-filter: blur(10px);
 }
 
 .flow-shell__strip {
   width: 100%;
   justify-content: flex-start;
   margin-bottom: 14px;
+  min-height: 38px;
 }
 
 .flow-shell__strip strong {

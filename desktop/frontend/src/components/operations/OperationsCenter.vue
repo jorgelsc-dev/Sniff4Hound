@@ -255,16 +255,16 @@ export default {
 
 <style scoped>
 .operations-center { margin-top: 18px; }
-.operations-card { border-radius: 18px; overflow: hidden; }
+.operations-card { border-radius: 8px; overflow: hidden; }
 .operations-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 18px 12px; }
 .quick-commands { display: flex; flex-wrap: wrap; gap: 8px; }
 .operations-log { height: 330px; overflow-y: auto; padding: 12px 16px; background: rgba(2, 8, 14, 0.72); border-block: 1px solid rgba(var(--brand-sky-rgb), 0.12); }
 .operations-empty, .alerts-empty { min-height: 180px; display: grid; place-content: center; gap: 10px; text-align: center; color: var(--text-dim); }
-.operations-message { max-width: 86%; margin: 0 0 10px; padding: 9px 11px; border-radius: 12px; background: rgba(var(--brand-sky-rgb), 0.08); border: 1px solid rgba(var(--brand-sky-rgb), 0.14); }
+.operations-message { max-width: 86%; margin: 0 0 10px; padding: 9px 11px; border-radius: 8px; background: rgba(var(--brand-sky-rgb), 0.08); border: 1px solid rgba(var(--brand-sky-rgb), 0.14); }
 .operations-message.is-self { margin-left: auto; background: rgba(var(--brand-cyan-rgb), 0.11); }
 .operations-message.kind-command, .operations-message.kind-command_result { font-family: var(--font-mono); }
 .operations-message.kind-command_result { max-width: 96%; background: rgba(var(--brand-violet-rgb), 0.1); }
-.operations-message__meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; color: var(--text-dim); font-size: 0.68rem; text-transform: uppercase; }
+.operations-message__meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; color: var(--text-dim); font-size: 0.68rem; text-transform: none; }
 .operations-message__content { margin: 0; color: var(--text-soft); font-size: 0.82rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word; font: inherit; }
 .operations-compose { display: flex; gap: 10px; align-items: center; padding: 14px 16px 16px; }
 .alerts-list { height: 352px; overflow-y: auto; padding: 0 12px; }

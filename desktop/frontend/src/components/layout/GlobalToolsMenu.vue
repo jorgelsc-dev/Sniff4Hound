@@ -503,18 +503,18 @@ export default {
 <style scoped>
 .desktop-activity-bar {
   position: fixed;
-  top: 40px;
+  top: 48px;
   left: 0;
   bottom: 0;
   z-index: 2800;
-  width: 52px;
+  width: 56px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding: 10px 0 12px;
-  border-right: 1px solid rgba(var(--brand-sky-rgb), 0.16);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
   background:
     linear-gradient(180deg, rgba(9, 17, 29, 0.98), rgba(5, 11, 20, 0.98)),
     #07101b;
@@ -550,7 +550,7 @@ export default {
 
 .desktop-activity-item {
   position: relative;
-  width: 44px;
+  width: 46px;
   height: 42px;
   display: inline-flex;
   align-items: center;
@@ -581,7 +581,7 @@ export default {
 .desktop-activity-item--active,
 .desktop-activity-item--open {
   color: rgba(244, 248, 252, 0.95);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .desktop-activity-item--active::before {
@@ -663,7 +663,7 @@ export default {
 .desktop-runtime-button,
 .desktop-power-button {
   position: relative;
-  width: 42px;
+  width: 44px;
   height: 38px;
   display: inline-flex;
   align-items: center;
@@ -756,7 +756,7 @@ export default {
 }
 
 :global(body.sniff4hound-desktop-shell .app-main) {
-  padding-left: 52px;
+  padding-left: 56px;
 }
 
 :global(body.sniff4hound-desktop-shell .app-container),

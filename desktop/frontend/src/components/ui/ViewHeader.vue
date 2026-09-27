@@ -1,8 +1,8 @@
 <template>
-  <div class="view-header d-flex align-center justify-space-between flex-wrap mb-4 ga-3">
-    <div>
-      <div class="text-overline text-primary">{{ overline }}</div>
-      <div class="text-h5 font-weight-bold">{{ title }}</div>
+  <div class="view-header d-flex align-start justify-space-between flex-wrap mb-4 ga-3">
+    <div class="view-header__copy">
+      <div v-if="overline" class="text-overline text-primary">{{ overline }}</div>
+      <div class="text-h5 font-weight-bold view-header__title">{{ title }}</div>
       <div v-if="description" class="text-body-2 text-medium-emphasis">
         {{ description }}
       </div>
@@ -118,6 +118,7 @@ export default {
 <style scoped>
 .view-header {
   position: relative;
+  padding-bottom: 2px;
 }
 
 .view-header::after {
@@ -125,18 +126,29 @@ export default {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: -6px;
+  bottom: -7px;
   height: 1px;
   background: linear-gradient(
     90deg,
-    rgba(92, 193, 237, 0.55),
-    rgba(92, 193, 237, 0.08),
+    rgba(255, 255, 255, 0.16),
+    rgba(255, 255, 255, 0.06),
     transparent
   );
 }
 
+.view-header__copy {
+  min-width: min(100%, 280px);
+  max-width: 820px;
+}
+
+.view-header__title {
+  letter-spacing: 0;
+}
+
 .header-actions {
   min-height: 34px;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .time-range-toggle {
@@ -152,6 +164,18 @@ export default {
 }
 
 @media (max-width: 600px) {
+  .view-header {
+    display: block !important;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: flex-start;
+    margin-left: 0;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
   .time-range-toggle :deep(.v-btn) {
     min-width: 38px;
     padding-inline: 5px;
