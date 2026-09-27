@@ -405,6 +405,10 @@ function listMonitors() {
   return fetchJsonPromise("/api/monitors/");
 }
 
+function listMonitorTraffic() {
+  return fetchJsonPromise("/api/monitors/traffic/");
+}
+
 function saveMonitor(payload) {
   const method = payload && payload.id ? "PUT" : "POST";
   return fetchJsonPromise("/api/monitors/", {
@@ -2291,6 +2295,7 @@ export default {
   setSnifferInterface,
   setSnifferInterfaces,
   listMonitors,
+  listMonitorTraffic,
   saveMonitor,
   deleteMonitor,
   toggleMonitorEnabled,
