@@ -467,6 +467,45 @@ function setDetectionScopes(scopes) {
   });
 }
 
+function listMobileStreamInterfaces() {
+  return fetchJsonPromise("/api/mobile-stream/interfaces");
+}
+
+function getMobileStreamStatus() {
+  return fetchJsonPromise("/api/mobile-stream/status");
+}
+
+function startMobileStreamServer(interfaceName, port) {
+  return fetchJsonPromise("/api/mobile-stream/server", {
+    method: "POST",
+    body: JSON.stringify({ interface: interfaceName, port }),
+  });
+}
+
+function stopMobileStreamServer() {
+  return fetchJsonPromise("/api/mobile-stream/server", {
+    method: "DELETE",
+  });
+}
+
+function createMobileStreamPairing(interfaceName, port) {
+  return fetchJsonPromise("/api/mobile-stream/pairings", {
+    method: "POST",
+    body: JSON.stringify({ interface: interfaceName, port }),
+  });
+}
+
+function getMobileStreamPairing(id) {
+  return fetchJsonPromise(`/api/mobile-stream/pairings?id=${encodeURIComponent(id)}`);
+}
+
+function revokeMobileStreamSession(token) {
+  return fetchJsonPromise("/api/mobile-stream/sessions/revoke", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
 function listChatMessages(limit = 100) {
   return fetchJsonPromise(`/api/chat/messages?limit=${encodeURIComponent(limit)}`);
 }
@@ -2241,6 +2280,13 @@ export default {
   reviewPacket,
   getDetectionScopes,
   setDetectionScopes,
+  listMobileStreamInterfaces,
+  getMobileStreamStatus,
+  startMobileStreamServer,
+  stopMobileStreamServer,
+  createMobileStreamPairing,
+  getMobileStreamPairing,
+  revokeMobileStreamSession,
   getDeclaredLocation,
   setDeclaredLocation,
   clearDeclaredLocation,
