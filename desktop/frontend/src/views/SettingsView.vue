@@ -991,6 +991,97 @@
           Autenticar
         </v-btn>
         <v-btn class="mt-4" variant="outlined" prepend-icon="mdi-refresh" :loading="statusRefreshing" @click="refreshGraph">Actualizar conexión</v-btn>
+
+        <DataPanel
+          title="Mobile live stream"
+          subtitle="Pair a phone with a QR code and a 6-digit one-time code. The mobile page is read-only and receives redacted live events only."
+          variant="tonal"
+          class="mt-5"
+          :count="mobileSessions.length"
+          count-label="mobile sessions"
+        >
+          <template #header-actions>
+            <v-chip size="small" :color="mobileServer.running ? 'success' : 'default'" variant="tonal" prepend-icon="mdi-cellphone-link">
+              {{ mobileServer.running ? `${mobileServer.interface} · ${mobileServer.address}` : "offline" }}
+            </v-chip>
+          </template>
+
+          <v-row class="mt-1" align="start">
+            <v-col cols="12" md="5">
+              <v-select
+                v-model="mobileInterface"
+                :items="mobileInterfaceOptions"
+                item-title="label"
+                item-value="name"
+                label="Listening interface"
+                variant="outlined"
+                density="comfortable"
+                hide-details="auto"
+                :loading="mobileLoading"
+                :disabled="mobileLoading"
+              />
+              <v-text-field
+                v-model.number="mobilePort"
+                class="mt-3"
+                label="Port"
+                type="number"
+                min="1"
+                max="65535"
+                variant="outlined"
+                density="comfortable"
+                hide-details="auto"
+              />
+              <div class="d-flex flex-wrap ga-2 mt-3">
+                <v-btn color="primary" prepend-icon="mdi-qrcode" :loading="mobilePairingBusy" :disabled="!mobileInterface" @click="createMobilePairing">
+                  New QR
+                </v-btn>
+                <v-btn variant="outlined" prepend-icon="mdi-refresh" :loading="mobileLoading" @click="loadMobileStream">
+                  Refresh
+                </v-btn>
+                <v-btn v-if="mobileServer.running" variant="outlined" color="error" prepend-icon="mdi-stop-circle-outline" :loading="mobileStopping" @click="stopMobileStream">
+                  Stop
+                </v-btn>
+              </div>
+              <v-alert v-if="mobileError" class="mt-3" type="error" variant="tonal" density="comfortable">
+                {{ mobileError }}
+              </v-alert>
+            </v-col>
+            <v-col cols="12" md="4">
+              <div v-if="mobilePairing.url" class="mobile-qr-wrap">
+                <img v-if="mobileQrDataUrl" :src="mobileQrDataUrl" alt="Mobile stream QR" class="mobile-qr" />
+                <div class="text-caption text-medium-emphasis mt-2">{{ mobilePairing.url }}</div>
+              </div>
+              <v-alert v-else type="info" variant="tonal" density="comfortable">
+                Pick an interface and create a QR. The phone must be on the same network.
+              </v-alert>
+            </v-col>
+            <v-col cols="12" md="3">
+              <div class="mobile-code-box">
+                <div class="text-caption text-medium-emphasis">Pairing code</div>
+                <div class="mobile-code">{{ mobilePairing.code || "------" }}</div>
+                <div class="text-caption text-medium-emphasis">
+                  {{ mobilePairingStatus }}
+                </div>
+              </div>
+            </v-col>
+          </v-row>
+
+          <v-divider class="my-4" />
+          <div class="text-subtitle-2 mb-2">Active phones</div>
+          <v-list v-if="mobileSessions.length" density="compact" bg-color="transparent">
+            <v-list-item v-for="session in mobileSessions" :key="session.token">
+              <template #prepend>
+                <v-icon icon="mdi-cellphone-check" />
+              </template>
+              <v-list-item-title>{{ session.client || "mobile device" }}</v-list-item-title>
+              <v-list-item-subtitle>{{ session.user_agent || session.token_hint }} · {{ session.event_count || 0 }} events</v-list-item-subtitle>
+              <template #append>
+                <v-btn icon="mdi-close" variant="text" color="error" :loading="mobileRevoking === session.token" @click="revokeMobileSession(session.token)" />
+              </template>
+            </v-list-item>
+          </v-list>
+          <div v-else class="text-caption text-medium-emphasis">No paired phones.</div>
+        </DataPanel>
       </v-window-item>
 
       <v-window-item value="notifications">
@@ -1025,6 +1116,7 @@
 </template>
 
 <script>
+import QRCode from "qrcode";
 import store from "../state/appStore";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
@@ -1149,6 +1241,7 @@ export default {
       activeTab: VALID_TABS.has(requested) ? requested : "",
       statusRefreshing: false,
       graphStatusTimer: null,
+      mobilePairingTimer: null,
       aiSnapshot: null,
       enginePending: "",
       engineError: "",
@@ -1171,6 +1264,19 @@ export default {
       purging: false,
       purgeError: "",
       purgeResult: "",
+
+      // Mobile stream
+      mobileLoading: false,
+      mobileStopping: false,
+      mobilePairingBusy: false,
+      mobileRevoking: "",
+      mobileError: "",
+      mobileInterfaces: [],
+      mobileInterface: "",
+      mobilePort: 45679,
+      mobileStatus: null,
+      mobilePairing: {},
+      mobileQrDataUrl: "",
 
       // Service listeners
       listeners: [],
@@ -1243,6 +1349,29 @@ export default {
         connection: state(online ? "Conectado" : "Sin conexión", online),
         notifications: state(this.store.state.notifySoundEnabled ? "Sonido activado" : "Sonido desactivado", online && this.store.state.notifySoundEnabled),
       };
+    },
+    mobileInterfaceOptions() {
+      return (this.mobileInterfaces || [])
+        .filter((item) => !item.loopback)
+        .map((item) => ({
+          ...item,
+          label: item.label || `${item.name} - ${item.address}`,
+        }));
+    },
+    mobileServer() {
+      return (this.mobileStatus && typeof this.mobileStatus === "object") ? this.mobileStatus : {};
+    },
+    mobileSessions() {
+      return Array.isArray(this.mobileServer.sessions)
+        ? this.mobileServer.sessions.filter((item) => !item.revoked)
+        : [];
+    },
+    mobilePairingStatus() {
+      const status = String(this.mobilePairing.status || "").replace("_", " ");
+      if (!this.mobilePairing.id) return "Waiting for QR";
+      const expires = Number(this.mobilePairing.expires_in || 0);
+      if (this.mobilePairing.code) return `${status || "waiting"} · ${expires}s`;
+      return `${status || "pending"} · scan QR`;
     },
     runtime() {
       return this.store.state.runtime || {};
@@ -1387,10 +1516,12 @@ export default {
     this.loadListeners();
     this.loadDetectionScopes();
     this.loadLocation();
+    this.loadMobileStream();
     this.load();
   },
   beforeUnmount() {
     clearInterval(this.graphStatusTimer);
+    clearInterval(this.mobilePairingTimer);
   },
   methods: {
     async refreshGraph() {
@@ -1417,6 +1548,87 @@ export default {
     },
     formatTimestamp,
     matchesSearch,
+    async loadMobileStream() {
+      this.mobileLoading = true;
+      this.mobileError = "";
+      try {
+        const [interfaces, status] = await Promise.all([
+          this.store.listMobileStreamInterfaces(),
+          this.store.getMobileStreamStatus(),
+        ]);
+        this.mobileInterfaces = Array.isArray(interfaces.interfaces) ? interfaces.interfaces : [];
+        this.mobileStatus = status || {};
+        if (!this.mobileInterface) {
+          const current = String(status?.interface || "");
+          const fallback = this.mobileInterfaceOptions[0]?.name || "";
+          this.mobileInterface = current || fallback;
+        }
+        if (Number(status?.port)) this.mobilePort = Number(status.port);
+      } catch (err) {
+        this.mobileError = err.message || "Failed to load mobile stream settings.";
+      } finally {
+        this.mobileLoading = false;
+      }
+    },
+    async createMobilePairing() {
+      if (!this.mobileInterface || this.mobilePairingBusy) return;
+      this.mobilePairingBusy = true;
+      this.mobileError = "";
+      clearInterval(this.mobilePairingTimer);
+      try {
+        const payload = await this.store.createMobileStreamPairing(this.mobileInterface, this.mobilePort);
+        this.mobilePairing = payload || {};
+        this.mobileStatus = payload.server || this.mobileStatus;
+        this.mobileQrDataUrl = payload.url
+          ? await QRCode.toDataURL(payload.url, { margin: 1, width: 240, errorCorrectionLevel: "M" })
+          : "";
+        this.mobilePairingTimer = setInterval(this.refreshMobilePairing, 1500);
+      } catch (err) {
+        this.mobileError = err.message || "Failed to create a mobile pairing QR.";
+      } finally {
+        this.mobilePairingBusy = false;
+      }
+    },
+    async refreshMobilePairing() {
+      if (!this.mobilePairing.id) return;
+      try {
+        this.mobilePairing = await this.store.getMobileStreamPairing(this.mobilePairing.id);
+        const status = String(this.mobilePairing.status || "");
+        if (["paired", "closed", "expired"].includes(status) || Number(this.mobilePairing.expires_in || 0) <= 0) {
+          clearInterval(this.mobilePairingTimer);
+          await this.loadMobileStream();
+        }
+      } catch {
+        clearInterval(this.mobilePairingTimer);
+        await this.loadMobileStream();
+      }
+    },
+    async stopMobileStream() {
+      this.mobileStopping = true;
+      this.mobileError = "";
+      try {
+        this.mobileStatus = await this.store.stopMobileStreamServer();
+        this.mobilePairing = {};
+        this.mobileQrDataUrl = "";
+        clearInterval(this.mobilePairingTimer);
+      } catch (err) {
+        this.mobileError = err.message || "Failed to stop the mobile stream.";
+      } finally {
+        this.mobileStopping = false;
+      }
+    },
+    async revokeMobileSession(token) {
+      this.mobileRevoking = token;
+      this.mobileError = "";
+      try {
+        await this.store.revokeMobileStreamSession(token);
+        await this.loadMobileStream();
+      } catch (err) {
+        this.mobileError = err.message || "Failed to revoke the mobile session.";
+      } finally {
+        this.mobileRevoking = "";
+      }
+    },
     // Capture
     loadLocation() {
       this.store
@@ -2087,6 +2299,39 @@ export default {
   color: rgba(229, 239, 249, 0.88);
   font-size: 0.86rem;
   line-height: 1.45;
+}
+
+.mobile-qr-wrap {
+  max-width: 280px;
+}
+
+.mobile-qr {
+  display: block;
+  width: 240px;
+  max-width: 100%;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.mobile-code-box {
+  min-height: 144px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(118, 191, 232, 0.16);
+  background: linear-gradient(180deg, rgba(10, 18, 29, 0.82), rgba(9, 15, 24, 0.76));
+}
+
+.mobile-code {
+  font-family: var(--font-mono);
+  font-size: clamp(28px, 9vw, 42px);
+  line-height: 1;
+  letter-spacing: 0;
 }
 
 .settings-view :deep(.v-field) {
