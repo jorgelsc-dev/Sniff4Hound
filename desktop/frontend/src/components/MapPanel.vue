@@ -1433,16 +1433,13 @@ export default {
 
 .map-wrapper {
   position: relative;
-  border-radius: 24px;
+  border-radius: 8px;
   overflow: hidden;
-  border: 1px solid rgba(94, 176, 226, 0.24);
+  border: 1px solid var(--stroke);
   /* Flat backdrop: the corner glows competed with the arcs and host points
      drawn on top, which are the part of this panel that carries data. */
   background: linear-gradient(175deg, rgba(4, 14, 28, 0.99), rgba(3, 9, 17, 0.98));
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.03),
-    inset 0 30px 80px rgba(47, 124, 196, 0.06),
-    0 24px 60px rgba(4, 8, 15, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
 .map-wrapper::before {
@@ -1493,9 +1490,9 @@ export default {
 
 .map-projection-toggle {
   padding: 4px;
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(6, 14, 28, 0.72);
-  border: 1px solid rgba(102, 188, 229, 0.16);
+  border: 1px solid var(--stroke);
   backdrop-filter: blur(10px);
 }
 
@@ -1530,11 +1527,8 @@ export default {
 }
 
 .map-wrapper--immersive {
-  border-radius: 28px;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.03),
-    inset 0 40px 120px rgba(47, 124, 196, 0.08),
-    0 30px 80px rgba(4, 8, 15, 0.58);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
 .map-origin__halo {
@@ -1578,7 +1572,7 @@ export default {
   z-index: 3;
   width: min(300px, calc(100% - 28px));
   padding: 12px 14px;
-  border-radius: 14px;
+  border-radius: 8px;
   background: rgba(9, 18, 32, 0.94);
   border: 1px solid rgba(122, 210, 255, 0.34);
   backdrop-filter: blur(6px);
@@ -1663,8 +1657,8 @@ export default {
   align-items: center;
   gap: 8px;
   padding: 7px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(143, 231, 202, 0.18);
+  border-radius: 8px;
+  border: 1px solid var(--stroke);
   background: rgba(255, 255, 255, 0.03);
   text-align: left;
   cursor: pointer;
@@ -1782,7 +1776,7 @@ export default {
 }
 .map-summary__metric {
   padding: 8px 12px;
-  border-radius: 10px;
+  border-radius: 8px;
   background: rgba(10, 24, 36, .72);
   border: 1px solid rgba(118, 201, 220, .16);
 }
@@ -1810,7 +1804,7 @@ export default {
 }
 .map-info-dock__heading > .v-btn {
   background: rgba(6, 15, 25, .8);
-  border-radius: 10px;
+  border-radius: 8px;
 }
 .map-info-dock__status {
   display: flex;
@@ -1857,8 +1851,8 @@ export default {
   display: flex;
   align-items: center;
   gap: 4px;
-  border: 1px solid #69cad533;
-  border-radius: 24px;
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
   background: #071321dd;
   backdrop-filter: blur(12px);
   font-size: 12px;

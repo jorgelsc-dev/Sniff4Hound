@@ -97,7 +97,7 @@ async function stopTournament() {
 .learning-progress { padding: 6px 2px; color: var(--text-soft); font-size: .65rem; }
 .progress-heading, .selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: .63rem; letter-spacing: .08em; }
 .progress-heading > span:first-child, .selection-heading > span:first-child { display: flex; align-items: center; gap: 6px; }
-.status-pill { color: #4ddbc4; background: #32d3b511; border: 1px solid #32d3b522; border-radius: 20px; padding: 3px 8px; letter-spacing: 0; }
+.status-pill { color: #4ddbc4; background: #32d3b511; border: 1px solid #32d3b522; border-radius: 6px; padding: 3px 8px; letter-spacing: 0; }
 .readiness { display: flex; gap: 14px; align-items: center; margin: 12px 0; }
 .ring-value { font-size: .65rem; font-weight: 700; }
 .class-progress { flex: 1; min-width: 0; }

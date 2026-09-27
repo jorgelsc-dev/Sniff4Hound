@@ -124,7 +124,7 @@ onBeforeUnmount(() => {
   height: calc(100dvh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
   width: 100%;
   overflow: hidden;
-  background: radial-gradient(ellipse at center, #0b202d 0%, #060d16 75%);
+  background: var(--bg-0);
   box-sizing: border-box;
 }
 .rnn-stage__empty {
