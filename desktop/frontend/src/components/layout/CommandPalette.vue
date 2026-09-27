@@ -12,6 +12,8 @@
               class="palette__input"
               placeholder="Buscar vistas, ajustes y acciones..."
               aria-label="Buscar"
+              aria-controls="command-palette-results"
+              :aria-activedescendant="activeId ? `palette-option-${activeId}` : undefined"
               autocomplete="off"
               spellcheck="false"
               @keydown.down.prevent="move(1)"
@@ -22,12 +24,13 @@
             <kbd class="palette__hint">ESC</kbd>
           </div>
 
-          <div ref="list" class="palette__results" role="listbox">
+          <div id="command-palette-results" ref="list" class="palette__results" role="listbox">
             <template v-for="group in grouped" :key="group.name">
               <div class="palette__group">{{ group.name }}</div>
               <button
                 v-for="item in group.items"
                 :key="item.id"
+                :id="`palette-option-${item.id}`"
                 type="button"
                 class="palette__item"
                 :class="{ 'is-active': item.id === activeId }"
@@ -310,5 +313,32 @@ export default {
 @media (prefers-reduced-motion: reduce) {
   .palette-enter-active, .palette-leave-active,
   .palette-enter-active .palette__card, .palette-leave-active .palette__card { transition: none; }
+}
+
+@media (max-width: 560px) {
+  .palette {
+    padding: 12px;
+  }
+
+  .palette__card {
+    max-height: calc(100vh - 24px);
+  }
+
+  .palette__search {
+    height: 50px;
+    padding-inline: 12px;
+  }
+
+  .palette__badge {
+    max-width: 112px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .palette__foot {
+    gap: 10px;
+    overflow-x: auto;
+  }
 }
 </style>

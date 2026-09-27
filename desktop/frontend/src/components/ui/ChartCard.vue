@@ -12,8 +12,8 @@
       </v-chip>
     </div>
 
-    <div v-if="series.length" class="chart-stack mt-4">
-      <div v-for="item in series" :key="item.label" class="chart-row">
+    <div v-if="series.length" class="chart-stack mt-4" role="list">
+      <div v-for="item in series" :key="item.label" class="chart-row" role="listitem">
         <div class="chart-row__label" :title="item.label">
           {{ item.label }}
         </div>
@@ -27,6 +27,7 @@
     </div>
 
     <div v-else class="chart-empty text-medium-emphasis mt-4">
+      <v-icon icon="mdi-chart-bar" size="28" />
       {{ emptyText }}
     </div>
   </v-card>
@@ -77,9 +78,10 @@ export default {
 
 .chart-row {
   display: grid;
-  grid-template-columns: minmax(74px, 1.1fr) minmax(0, 2.8fr) auto;
+  grid-template-columns: minmax(92px, 1.15fr) minmax(96px, 2.7fr) minmax(5ch, auto);
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .chart-row__label {
@@ -116,8 +118,22 @@ export default {
   min-height: 118px;
   display: grid;
   place-items: center;
+  align-content: center;
+  gap: 8px;
   padding: 16px 0 4px;
   font-size: 0.92rem;
   color: var(--text-dim);
+  text-align: center;
+}
+
+@media (max-width: 520px) {
+  .chart-row {
+    grid-template-columns: minmax(0, 1fr) minmax(5ch, auto);
+  }
+
+  .chart-row__track {
+    grid-column: 1 / -1;
+    order: 3;
+  }
 }
 </style>

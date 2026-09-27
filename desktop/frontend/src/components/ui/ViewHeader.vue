@@ -3,7 +3,7 @@
     <div class="view-header__copy">
       <div v-if="overline" class="text-overline text-primary">{{ overline }}</div>
       <div class="text-h5 font-weight-bold view-header__title">{{ title }}</div>
-      <div v-if="description" class="text-body-2 text-medium-emphasis">
+      <div v-if="description" class="text-body-2 text-medium-emphasis view-header__description">
         {{ description }}
       </div>
     </div>
@@ -137,15 +137,24 @@ export default {
 }
 
 .view-header__copy {
+  flex: 1 1 360px;
   min-width: min(100%, 280px);
   max-width: 820px;
 }
 
 .view-header__title {
   letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.view-header__description {
+  max-width: 72ch;
+  overflow-wrap: anywhere;
 }
 
 .header-actions {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
   min-height: 34px;
   justify-content: flex-end;
   margin-left: auto;

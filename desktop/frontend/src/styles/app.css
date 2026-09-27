@@ -90,9 +90,7 @@ samp {
 .v-application .text-subtitle-1,
 .v-application .text-subtitle-2 {
   font-family: var(--font-heading);
-  /* Negative tracking on headings, positive on small caps - Inter's own
-     recommendation, and the opposite of what condensed faces wanted. */
-  letter-spacing: -0.014em;
+  letter-spacing: 0;
   font-weight: 600;
   line-height: 1.25;
 }
@@ -110,7 +108,7 @@ samp {
    shadow, so a page of them read as a pile of floating slabs competing for
    attention instead of a calm grid of content. */
 .v-card {
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid var(--stroke);
   background: var(--surface-1);
   box-shadow: none;
@@ -136,7 +134,7 @@ samp {
 }
 
 .v-skeleton-loader__bone {
-  border-radius: 10px;
+  border-radius: 8px;
   background: linear-gradient(
     90deg,
     var(--skel-a) 0%,
@@ -187,7 +185,7 @@ samp {
   text-transform: none;
   font-weight: 600;
   font-family: var(--font-heading);
-  transition: transform 0.15s ease, box-shadow 0.18s ease;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.18s ease;
 }
 
 .v-btn--variant-flat,
@@ -201,12 +199,20 @@ samp {
 }
 
 .v-btn:hover {
-  transform: translateY(-1px);
   box-shadow: 0 8px 26px rgba(var(--brand-cyan-rgb), 0.1);
 }
 
 .v-btn--icon:hover {
   box-shadow: none;
+}
+
+.v-btn:focus-visible,
+.v-chip:focus-visible,
+.v-field:focus-within,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid rgba(var(--brand-cyan-rgb), 0.62);
+  outline-offset: 2px;
 }
 
 .v-chip {
