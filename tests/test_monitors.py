@@ -993,6 +993,21 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.assertEqual(counts.get("builtin-admin-ports"), 2)
         self.assertNotIn("builtin-credentials", counts)
 
+    def test_monitor_traffic_summary_keeps_catalog_counts_with_small_rows(self):
+        self.sniffer._store_packet(self._base_packet(dst_port=3389))
+
+        stats = self.store.monitor_catalog_stats()
+        rows = self.store.list_monitors_with_traffic()
+
+        self.assertGreater(stats["total"], 1000)
+        self.assertGreater(stats["enabled"], 0)
+        self.assertGreater(stats["builtin"], 0)
+        self.assertEqual(stats["custom"], stats["total"] - stats["builtin"])
+        self.assertEqual([row["id"] for row in rows], ["builtin-admin-ports"])
+        self.assertEqual(rows[0]["match_count"], 1)
+        self.assertIn(3389, rows[0]["match"]["ports"])
+        self.assertEqual(rows[0]["action"]["severity"], "medium")
+
     def test_list_packets_by_monitor_includes_matched_value(self):
         self.sniffer._store_packet(self._base_packet(dst_port=3389))
         rows = self.store.list_packets_by_monitor("builtin-admin-ports")

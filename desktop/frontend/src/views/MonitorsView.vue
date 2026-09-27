@@ -216,6 +216,7 @@ export default {
       error: "",
       lastUpdated: "",
       monitors: [],
+      monitorStats: null,
       liveRefreshEnabled: true,
       wsRefreshTimer: null,
       stopTableRefreshSubscription: null,
@@ -233,14 +234,21 @@ export default {
     },
     metricCards() {
       const monitors = this.monitors;
-      const enabled = monitors.filter((item) => item.enabled).length;
-      const builtin = monitors.filter((item) => item.source === "builtin").length;
-      const custom = monitors.length - builtin;
+      const stats = this.monitorStats || {};
+      const numberOr = (value, fallback) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : fallback;
+      };
+      const builtinFallback = monitors.filter((item) => item.source === "builtin").length;
+      const total = numberOr(stats.total, monitors.length);
+      const enabled = numberOr(stats.enabled, monitors.filter((item) => item.enabled).length);
+      const builtin = numberOr(stats.builtin, builtinFallback);
+      const custom = numberOr(stats.custom, total - builtin);
       return [
         {
           key: "total",
           label: "Monitors",
-          value: monitors.length,
+          value: total,
           caption: "Total detection definitions",
           icon: "mdi-target-account",
           colorClass: "text-primary",
@@ -364,13 +372,16 @@ export default {
       if (!options.silent) this.loading = true;
       this.error = "";
       return this.store
-        .listMonitors()
+        .listMonitorTraffic()
         .then((payload) => {
-          this.monitors = this.store.extractArray(payload);
+          const rowPayload = payload && Array.isArray(payload.monitors) ? payload.monitors : payload;
+          this.monitors = this.store.extractArray(rowPayload);
+          this.monitorStats = payload && payload.stats ? payload.stats : null;
           this.lastUpdated = new Date().toLocaleTimeString();
         })
         .catch((err) => {
           this.monitors = [];
+          this.monitorStats = null;
           this.error = (err && err.message) || "Failed to load monitors";
         })
         .finally(() => {

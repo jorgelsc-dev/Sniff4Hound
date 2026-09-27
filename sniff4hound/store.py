@@ -3575,6 +3575,49 @@ class SniffStore:
             row["enabled"] = bool(row.get("enabled"))
         return rows
 
+    def monitor_catalog_stats(self) -> dict:
+        row = self._fetchone(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN enabled != 0 THEN 1 ELSE 0 END), 0) AS enabled,
+                COALESCE(SUM(CASE WHEN source = 'builtin' THEN 1 ELSE 0 END), 0) AS builtin,
+                COALESCE(SUM(CASE WHEN source != 'builtin' THEN 1 ELSE 0 END), 0) AS custom
+            FROM monitors
+            """
+        ) or {}
+        return {
+            "total": int(row.get("total") or 0),
+            "enabled": int(row.get("enabled") or 0),
+            "builtin": int(row.get("builtin") or 0),
+            "custom": int(row.get("custom") or 0),
+        }
+
+    def list_monitors_with_traffic(self):
+        """Monitor definitions that already have at least one matched packet.
+
+        The full monitor catalog is tens of thousands of rows and tens of
+        megabytes over HTTP because each row includes its match/action JSON.
+        The Monitors page only needs the small active slice plus summary
+        counts, so keep that path independent of the heavyweight settings
+        catalog.
+        """
+        rows = self._fetchall(
+            """
+            SELECT monitors.*, COUNT(DISTINCT tags.packet_id) AS match_count
+            FROM monitors
+            JOIN tags ON tags.key = 'monitor_id' AND tags.value = monitors.id
+            GROUP BY monitors.id
+            ORDER BY match_count DESC, monitors.priority ASC, monitors.name ASC
+            """
+        )
+        for row in rows:
+            row["match"] = _coerce_json(row.get("match_json"), {}) or {}
+            row["action"] = _coerce_json(row.get("action_json"), {}) or {}
+            row["enabled"] = bool(row.get("enabled"))
+            row["match_count"] = int(row.get("match_count") or 0)
+        return rows
+
     def monitor_match_counts(self) -> dict:
         """Matched-packet count per monitor id, in one grouped query - not
         folded into list_monitors() itself since that's also polled every
