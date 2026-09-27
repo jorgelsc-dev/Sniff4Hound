@@ -2,16 +2,16 @@
   <div class="monitor-matches pa-4">
     <div class="d-flex flex-wrap align-center ga-2 mb-4">
       <v-chip size="small" variant="tonal" color="primary">
-        Matched: {{ stats.total }}
+        Coincidencias: {{ stats.total }}
       </v-chip>
       <v-chip size="small" variant="tonal" color="info">
-        Unique sources: {{ stats.uniqueSrc }}
+        Orígenes únicos: {{ stats.uniqueSrc }}
       </v-chip>
       <v-chip size="small" variant="tonal" color="secondary">
-        Unique targets: {{ stats.uniqueDst }}
+        Destinos únicos: {{ stats.uniqueDst }}
       </v-chip>
       <v-chip size="small" variant="outlined">
-        Last match: {{ stats.lastSeen || "-" }}
+        Última coincidencia: {{ stats.lastSeen || "-" }}
       </v-chip>
       <v-spacer />
       <v-btn
@@ -22,7 +22,7 @@
         :loading="loading"
         @click="load()"
       >
-        Refresh
+        Actualizar
       </v-btn>
       <v-btn
         size="small"
@@ -32,7 +32,7 @@
         :disabled="!rows.length"
         @click="downloadJson"
       >
-        Download JSON
+        Descargar JSON
       </v-btn>
     </div>
 
@@ -54,16 +54,16 @@
             </div>
             <!-- Guarded on `loading`: unguarded this said "No data yet" on
                  every chart while the first request was still in flight. -->
-            <div v-if="loading && !chart.series.length" class="text-caption text-medium-emphasis">Loading…</div>
-            <div v-else-if="!chart.series.length" class="text-caption text-medium-emphasis">No data yet</div>
+            <div v-if="loading && !chart.series.length" class="text-caption text-medium-emphasis">Cargando…</div>
+            <div v-else-if="!chart.series.length" class="text-caption text-medium-emphasis">Sin datos todavía</div>
           </div>
         </v-card>
       </v-col>
     </v-row>
 
     <EntityTablePanel
-      title="Matched packets"
-      :subtitle="`Traffic that triggered '${monitor.name}'. The Match column shows the specific value that satisfied this monitor. Expand a row for the full packet record.`"
+      title="Paquetes coincidentes"
+      :subtitle="`Tráfico que activó '${monitor.name}'. La columna Coincidencia muestra el valor específico que cumplió este monitor. Expande una fila para ver el registro completo.`"
       v-model:live-enabled="liveRefreshEnabled"
       :live-refresh="true"
       :rows="rows"
@@ -73,11 +73,11 @@
       :packet-review-enabled="true"
       variant="flat"
       search-enabled
-      search-label="Search matched traffic"
-      search-placeholder="IP, port, summary, matched value..."
+      search-label="Buscar tráfico coincidente"
+      search-placeholder="IP, puerto, resumen, valor coincidente..."
       :search-fields="searchFields"
       :page-size="10"
-      empty-text="No traffic has matched this monitor yet"
+      empty-text="Todavía no hay tráfico que coincida con este monitor"
       @refresh="load"
     >
       <template #cell-matched_value="{ value }">
@@ -88,12 +88,12 @@
       </template>
       <template #cell-proto="{ value }">
         <v-chip size="x-small" color="primary" variant="tonal">
-          {{ String(value || "unknown").toUpperCase() }}
+          {{ String(value || "desconocido").toUpperCase() }}
         </v-chip>
       </template>
       <template #cell-state="{ value }">
         <v-chip size="x-small" :color="statusColor(value)" variant="tonal">
-          {{ value || "unknown" }}
+          {{ value || "desconocido" }}
         </v-chip>
       </template>
       <template #cell-src_ip="{ item, value }">
@@ -196,16 +196,16 @@ export default {
       loading: true,
       error: "",
       columns: [
-        { key: "matched_value", label: "Match" },
-        { key: "updated_at", label: "Seen" },
+        { key: "matched_value", label: "Coincidencia" },
+        { key: "updated_at", label: "Visto" },
         { key: "proto", label: "Proto" },
-        { key: "state", label: "State" },
-        { key: "src_ip", label: "Src IP" },
-        { key: "src_port", label: "Src Port" },
-        { key: "dst_ip", label: "Dst IP" },
-        { key: "dst_port", label: "Dst Port" },
-        { key: "size", label: "Size" },
-        { key: "summary", label: "Summary" },
+        { key: "state", label: "Estado" },
+        { key: "src_ip", label: "IP origen" },
+        { key: "src_port", label: "Puerto origen" },
+        { key: "dst_ip", label: "IP destino" },
+        { key: "dst_port", label: "Puerto destino" },
+        { key: "size", label: "Tamaño" },
+        { key: "summary", label: "Resumen" },
       ],
       liveRefreshEnabled: true,
       wsRefreshTimer: null,
@@ -245,19 +245,19 @@ export default {
       return [
         {
           key: "matches",
-          title: "Top matched values",
+          title: "Valores coincidentes principales",
           fill: "linear-gradient(90deg, rgba(52, 230, 255, 0.94), rgba(74, 136, 255, 0.85))",
           series: buildCountSeries(this.rows, (row) => row.matched_value),
         },
         {
           key: "proto",
-          title: "By protocol",
+          title: "Por protocolo",
           fill: "linear-gradient(90deg, rgba(255, 159, 67, 0.92), rgba(243, 177, 75, 0.78))",
           series: buildCountSeries(this.rows, (row) => String(row.proto || "").toUpperCase()),
         },
         {
           key: "timeline",
-          title: "Recent activity (by hour)",
+          title: "Actividad reciente (por hora)",
           fill: "linear-gradient(90deg, rgba(158, 130, 255, 0.92), rgba(120, 96, 230, 0.78))",
           series: buildTimelineSeries(this.rows),
         },
@@ -335,7 +335,7 @@ export default {
         })
         .catch((err) => {
           this.rows = [];
-          this.error = (err && err.message) || "Failed to load matched traffic";
+          this.error = (err && err.message) || "No se pudo cargar el tráfico coincidente";
         })
         .finally(() => {
           this.loading = false;

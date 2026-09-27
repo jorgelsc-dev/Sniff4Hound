@@ -8,7 +8,7 @@
       </div>
     </div>
     <div class="d-flex align-center ga-2 header-actions">
-      <div v-if="showTimeRange" class="time-range" role="group" aria-label="Time range">
+      <div v-if="showTimeRange" class="time-range" role="group" aria-label="Rango de tiempo">
         <v-btn-toggle
           :model-value="activeTimeRange"
           density="compact"
@@ -76,7 +76,7 @@ export default {
     },
     refreshLabel: {
       type: String,
-      default: "Refresh",
+      default: "Actualizar",
     },
     refreshLoading: {
       type: Boolean,

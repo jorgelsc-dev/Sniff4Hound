@@ -23,7 +23,7 @@
             variant="text"
             color="secondary"
             :disabled="!filteredRows.length"
-            aria-label="Export rows"
+            aria-label="Exportar filas"
           >
             <v-icon icon="mdi-tray-arrow-down" />
             <v-tooltip activator="parent" location="bottom">Exportar las filas filtradas</v-tooltip>
@@ -142,7 +142,7 @@
       >
         {{ vf.label || vf.key }}: {{ vf.value }}
         <v-tooltip activator="parent" location="bottom">
-          Click to switch to {{ vf.mode === "exclude" ? "include" : "exclude" }}
+          Pulsa para cambiar a {{ vf.mode === "exclude" ? "incluir" : "excluir" }}
         </v-tooltip>
       </v-chip>
       <v-btn size="small" variant="text" color="secondary" @click="clearValueFilters">Limpiar</v-btn>
@@ -220,7 +220,7 @@
                 v-if="isInvestigableColumn(column, slotProps.item)"
                 type="button"
                 class="cell-filter-btn cell-filter-btn--investigate"
-                :aria-label="`Investigate ${column.label || column.key}`"
+                :aria-label="`Investigar ${column.label || column.key}`"
                 @click.stop="investigateCell(column, slotProps.item)"
               >
                 <v-icon icon="mdi-magnify-scan" size="12" />
@@ -229,7 +229,7 @@
                 <button
                   type="button"
                   class="cell-filter-btn cell-filter-btn--include"
-                  aria-label="Filter for value"
+                  aria-label="Filtrar por este valor"
                   @click.stop="addValueFilter(column, slotProps.item, 'include')"
                 >
                   <v-icon icon="mdi-plus" size="12" />
@@ -237,7 +237,7 @@
                 <button
                   type="button"
                   class="cell-filter-btn cell-filter-btn--exclude"
-                  aria-label="Filter out value"
+                  aria-label="Excluir este valor"
                   @click.stop="addValueFilter(column, slotProps.item, 'exclude')"
                 >
                   <v-icon icon="mdi-minus" size="12" />
@@ -247,7 +247,7 @@
                 v-if="isCopyableColumn(column, slotProps.item)"
                 type="button"
                 class="cell-filter-btn cell-filter-btn--copy"
-                :aria-label="`Copy ${column.label || column.key}`"
+                :aria-label="`Copiar ${column.label || column.key}`"
                 @click.stop="copyCell(column, slotProps.item)"
               >
                 <v-icon icon="mdi-content-copy" size="11" />
@@ -440,7 +440,7 @@ export default {
     },
     emptyText: {
       type: String,
-      default: "No data",
+      default: "Sin datos",
     },
     rowKey: {
       type: String,
@@ -472,11 +472,11 @@ export default {
     },
     searchLabel: {
       type: String,
-      default: "Search",
+      default: "Buscar",
     },
     searchPlaceholder: {
       type: String,
-      default: "Search rows",
+      default: "Buscar filas",
     },
     searchFields: {
       type: Array,
@@ -630,7 +630,7 @@ export default {
         .sort((left, right) => left - right);
       return [
         ...values.map((value) => ({ title: String(value), value })),
-        { title: "All", value: -1 },
+        { title: "Todas", value: -1 },
       ];
     },
     pickableColumns() {
@@ -806,11 +806,11 @@ export default {
     buildFilterItems(definition) {
       const providedItems = this.normalizeFilterItems(definition.options);
       if (providedItems.length) {
-        return [{ label: definition.allLabel || "All", value: "" }, ...providedItems];
+        return [{ label: definition.allLabel || "Todos", value: "" }, ...providedItems];
       }
       const values = uniqueSorted(this.normalizedRows.map((item) => this.resolveFilterValue(item, definition)));
       return [
-        { label: definition.allLabel || "All", value: "" },
+        { label: definition.allLabel || "Todos", value: "" },
         ...values.map((value) => ({
           label: typeof definition.optionLabel === "function" ? definition.optionLabel(value) : value,
           value,
@@ -898,17 +898,17 @@ export default {
     copyCell(column, item) {
       this.copyValue(this.resolveValue(item, column), column.label || column.key);
     },
-    copyValue(value, label = "Value") {
+    copyValue(value, label = "Valor") {
       const text = value === null || value === undefined ? "" : String(value);
       if (!text) return;
       copyText(text).then((copied) => {
         store.pushNotification({
           kind: "clipboard",
           severity: copied ? "info" : "medium",
-          title: copied ? `${label} copied` : `Could not copy ${label}`,
+          title: copied ? `${label} copiado` : `No se pudo copiar ${label}`,
           message: copied
             ? text.length > 80 ? `${text.slice(0, 80)}...` : text
-            : "The browser blocked clipboard access.",
+            : "El navegador bloqueó el acceso al portapapeles.",
           groupKey: `clipboard:${label}`,
         });
       });
@@ -974,14 +974,14 @@ export default {
       store.pushNotification({
         kind: "export",
         severity: "info",
-        title: `${this.title} exported`,
-        message: `${rows.length} row(s) written as ${String(format).toUpperCase()}.`,
+        title: `${this.title} exportado`,
+        message: `${rows.length} fila(s) escritas como ${String(format).toUpperCase()}.`,
         groupKey: `export:${this.title}`,
       });
     },
     copyRowsAsJson() {
       if (!this.filteredRows.length) return;
-      this.copyValue(JSON.stringify(this.filteredRows, null, 2), `${this.title} rows`);
+      this.copyValue(JSON.stringify(this.filteredRows, null, 2), `filas de ${this.title}`);
     },
     isFilterableColumn(column, item) {
       if (!column || !column.key) return false;
