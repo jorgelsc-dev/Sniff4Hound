@@ -5,7 +5,7 @@
         :viewBox="`0 0 ${width} ${height}`"
         class="location-map"
         role="application"
-        aria-label="Click the map to set this sensor's location"
+        aria-label="Haz clic en el mapa para definir la ubicación del sensor"
         @click="onMapClick"
       >
         <defs>
@@ -52,7 +52,7 @@
       </svg>
 
       <div v-if="!worldPaths.length" class="location-map-note text-caption text-medium-emphasis">
-        {{ geometryError || "Loading world geometry…" }}
+        {{ geometryError || "Cargando geometría mundial…" }}
       </div>
     </div>
 
@@ -60,7 +60,7 @@
       <v-col cols="12" md="3">
         <v-text-field
           :model-value="latInput"
-          label="Latitude"
+          label="Latitud"
           type="number"
           step="0.0001"
           min="-90"
@@ -74,7 +74,7 @@
       <v-col cols="12" md="3">
         <v-text-field
           :model-value="lonInput"
-          label="Longitude"
+          label="Longitud"
           type="number"
           step="0.0001"
           min="-180"
@@ -88,8 +88,8 @@
       <v-col cols="12" md="6">
         <v-text-field
           :model-value="labelInput"
-          label="Site label (optional)"
-          placeholder="e.g. Main office"
+          label="Etiqueta del sitio (opcional)"
+          placeholder="p. ej. Oficina principal"
           density="compact"
           variant="outlined"
           hide-details="auto"
