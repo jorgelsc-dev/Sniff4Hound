@@ -66,13 +66,13 @@ export default {
 
 <style scoped>
 .chart-card {
-  border-radius: 16px;
+  border-radius: 8px;
   height: 100%;
 }
 
 .chart-stack {
   display: grid;
-  gap: 10px;
+  gap: 9px;
 }
 
 .chart-row {
@@ -92,10 +92,10 @@ export default {
 
 .chart-row__track {
   position: relative;
-  height: 10px;
+  height: 8px;
   overflow: hidden;
-  border-radius: 999px;
-  background: rgba(9, 16, 24, 0.86);
+  border-radius: 4px;
+  background: rgba(9, 16, 24, 0.78);
   box-shadow: inset 0 0 0 1px rgba(103, 176, 219, 0.08);
 }
 
@@ -113,7 +113,11 @@ export default {
 }
 
 .chart-empty {
+  min-height: 118px;
+  display: grid;
+  place-items: center;
   padding: 16px 0 4px;
   font-size: 0.92rem;
+  color: var(--text-dim);
 }
 </style>

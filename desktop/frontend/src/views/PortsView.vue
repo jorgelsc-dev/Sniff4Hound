@@ -719,7 +719,7 @@ export default {
 }
 
 .ports-table-wrap {
-  border-radius: 14px;
+  border-radius: 8px;
 }
 
 .ports-data-table :deep(.v-table__wrapper) {
@@ -770,8 +770,8 @@ export default {
 
 .ports-json-panel {
   padding: 14px 16px;
-  border-top: 1px solid rgba(99, 173, 219, 0.14);
-  background: linear-gradient(180deg, rgba(11, 19, 31, 0.94), rgba(7, 13, 21, 0.88));
+  border-top: 1px solid var(--stroke);
+  background: var(--surface-1);
 }
 
 .ports-json-panel__label {

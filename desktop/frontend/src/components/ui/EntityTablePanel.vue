@@ -62,37 +62,69 @@
       </div>
     </v-alert>
 
-    <v-row v-if="showTableControls" density="compact" class="mb-3">
-      <v-col v-if="searchEnabled" cols="12" md="6">
-        <v-text-field
-          v-model.trim="tableSearchQuery"
-          :label="searchLabel"
-          :placeholder="searchPlaceholder"
-          prepend-inner-icon="mdi-magnify"
-          clearable
-          variant="outlined"
-          density="compact"
-        />
-      </v-col>
-      <v-col
-        v-for="definition in resolvedFilterDefinitions"
-        :key="`filter-${definition.key}`"
-        cols="12"
-        sm="6"
-        md="3"
-      >
-        <v-select
-          v-model="tableFilterValues[definition.key]"
-          :items="definition.items"
-          :label="definition.label"
-          item-title="label"
-          item-value="value"
-          clearable
-          variant="outlined"
-          density="compact"
-        />
-      </v-col>
-    </v-row>
+    <div class="entity-table-toolbar mb-3">
+      <v-row v-if="showTableControls" density="compact" class="entity-table-controls">
+        <v-col v-if="searchEnabled" cols="12" md="6">
+          <v-text-field
+            v-model.trim="tableSearchQuery"
+            :label="searchLabel"
+            :placeholder="searchPlaceholder"
+            prepend-inner-icon="mdi-magnify"
+            clearable
+            variant="outlined"
+            density="compact"
+          />
+        </v-col>
+        <v-col
+          v-for="definition in resolvedFilterDefinitions"
+          :key="`filter-${definition.key}`"
+          cols="12"
+          sm="6"
+          md="3"
+        >
+          <v-select
+            v-model="tableFilterValues[definition.key]"
+            :items="definition.items"
+            :label="definition.label"
+            item-title="label"
+            item-value="value"
+            clearable
+            variant="outlined"
+            density="compact"
+          />
+        </v-col>
+      </v-row>
+
+      <v-menu :close-on-content-click="false" location="bottom end">
+        <template #activator="{ props: menuProps }">
+          <v-btn
+            v-bind="menuProps"
+            icon
+            size="small"
+            variant="text"
+            color="secondary"
+            aria-label="Choose columns"
+            class="entity-table-toolbar__columns"
+          >
+            <v-icon icon="mdi-table-cog" />
+            <v-tooltip activator="parent" location="bottom">Choose columns</v-tooltip>
+          </v-btn>
+        </template>
+        <v-card class="pa-3 column-picker-menu" min-width="220" rounded="lg">
+          <div class="text-caption text-medium-emphasis mb-2">Show columns</div>
+          <v-checkbox
+            v-for="column in pickableColumns"
+            :key="`colpick-${column.key}`"
+            v-model="visibleColumnKeys"
+            :value="column.key"
+            :label="column.label || column.key"
+            density="compact"
+            hide-details
+            class="column-picker-menu__item"
+          />
+        </v-card>
+      </v-menu>
+    </div>
 
     <div v-if="valueFilters.length" class="d-flex flex-wrap align-center ga-2 mb-3">
       <span class="text-caption text-medium-emphasis">Filters:</span>
@@ -114,36 +146,6 @@
         </v-tooltip>
       </v-chip>
       <v-btn size="small" variant="text" color="secondary" @click="clearValueFilters">Clear all</v-btn>
-    </div>
-    <div class="d-flex justify-end mb-2">
-      <v-menu :close-on-content-click="false" location="bottom end">
-        <template #activator="{ props: menuProps }">
-          <v-btn
-            v-bind="menuProps"
-            icon
-            size="small"
-            variant="text"
-            color="secondary"
-            aria-label="Choose columns"
-          >
-            <v-icon icon="mdi-table-cog" />
-            <v-tooltip activator="parent" location="bottom">Choose columns</v-tooltip>
-          </v-btn>
-        </template>
-        <v-card class="pa-3 column-picker-menu" min-width="220" rounded="lg">
-          <div class="text-caption text-medium-emphasis mb-2">Show columns</div>
-          <v-checkbox
-            v-for="column in pickableColumns"
-            :key="`colpick-${column.key}`"
-            v-model="visibleColumnKeys"
-            :value="column.key"
-            :label="column.label || column.key"
-            density="compact"
-            hide-details
-            class="column-picker-menu__item"
-          />
-        </v-card>
-      </v-menu>
     </div>
     <div class="entity-table-wrap mt-1">
       <v-data-table
@@ -345,7 +347,8 @@
 
         <template #no-data>
           <div class="entity-table-empty text-medium-emphasis text-center">
-            {{ emptyText }}
+            <v-icon icon="mdi-database-search-outline" size="28" />
+            <div>{{ emptyText }}</div>
           </div>
         </template>
       </v-data-table>
@@ -1035,14 +1038,30 @@ export default {
   border-radius: 8px;
 }
 
+.entity-table-toolbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.entity-table-controls {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.entity-table-toolbar__columns {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
 .entity-data-table :deep(.v-table__wrapper) {
   overflow: auto;
 }
 
 .entity-data-table :deep(.v-data-table__td),
 .entity-data-table :deep(.v-data-table__th) {
-  height: 38px;
-  padding-inline: 10px;
+  height: 40px;
+  padding-inline: 12px;
 }
 
 .entity-data-table :deep(table) {
@@ -1058,7 +1077,7 @@ export default {
 }
 
 .entity-data-table :deep(tbody tr) {
-  transition: background-color 0.16s ease, transform 0.16s ease;
+  transition: background-color 0.16s ease;
 }
 
 .entity-data-table :deep(tbody td) {
@@ -1071,8 +1090,6 @@ export default {
 }
 
 .entity-data-table :deep(tbody tr:hover > td) {
-  transform: translateY(-1px);
-  box-shadow: inset 0 0 0 1px rgba(108, 186, 228, 0.18);
   background: rgba(14, 23, 36, 0.88);
 }
 
@@ -1125,7 +1142,17 @@ export default {
 }
 
 .entity-table-empty {
-  padding: 18px 14px;
+  min-height: 132px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 24px 14px;
+  color: var(--text-dim);
+}
+
+.entity-table-empty :deep(.v-icon) {
+  opacity: 0.74;
 }
 
 .entity-data-table :deep(.v-data-table__tr--mobile) {
@@ -1168,6 +1195,7 @@ export default {
 .cell-filter-wrap__content {
   min-width: 0;
   flex: 1 1 auto;
+  overflow-wrap: anywhere;
 }
 
 .cell-filter-wrap__actions {
@@ -1258,5 +1286,15 @@ export default {
 
 .column-picker-menu__item :deep(.v-selection-control) {
   min-height: 0;
+}
+
+@media (max-width: 720px) {
+  .entity-table-toolbar {
+    align-items: stretch;
+  }
+
+  .entity-table-toolbar__columns {
+    margin-top: 0;
+  }
 }
 </style>

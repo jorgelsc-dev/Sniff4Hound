@@ -4,18 +4,18 @@
       v-if="showHeader"
       class="d-flex align-center justify-space-between flex-wrap ga-2 mb-3 panel-head"
     >
-      <div class="d-flex align-center ga-3">
+      <div class="d-flex align-center ga-3 panel-head__identity">
         <span class="panel-pulse" :class="`panel-pulse--${liveState.tone}`" role="img" :aria-label="liveState.label">
           <v-tooltip activator="parent" location="bottom">{{ liveState.label }}</v-tooltip>
         </span>
-        <div>
+        <div class="panel-head__copy">
           <div class="text-subtitle-1 font-weight-medium">{{ title }}</div>
           <div v-if="subtitle" class="text-body-2 text-medium-emphasis">
             {{ subtitle }}
           </div>
         </div>
       </div>
-      <div class="d-flex align-center ga-2">
+      <div class="d-flex align-center ga-2 panel-head__actions">
         <v-chip v-if="count !== null && count !== undefined" size="small" variant="tonal" color="primary">
           {{ count }} {{ countLabel }}
         </v-chip>
@@ -203,9 +203,9 @@ export default {
     };
   },
   computed: {
-    // "refresh" is intentionally NOT declared in emits so the listener stays
-    // visible in $attrs: that is how the panel knows whether the parent
-    // actually wired a handler, instead of rendering a dead button.
+    // Vue keeps declared component listeners visible in $attrs here, which
+    // lets the panel avoid rendering a dead refresh button when the parent
+    // did not wire one.
     canRefresh() {
       return Boolean(this.showRefresh && this.$attrs.onRefresh);
     },
@@ -277,7 +277,28 @@ export default {
 
 .panel-head {
   padding-bottom: 8px;
-  border-bottom: 1px solid rgba(104, 178, 221, 0.14);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.panel-head__identity {
+  min-width: min(100%, 260px);
+  flex: 1 1 auto;
+}
+
+.panel-head__copy {
+  min-width: 0;
+}
+
+.panel-head__copy .text-subtitle-1,
+.panel-head__copy .text-body-2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-head__actions {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 /* The dot is a status indicator, not decoration: it only animates while data
@@ -321,12 +342,9 @@ export default {
   margin-bottom: 12px;
   padding: 10px 12px;
   border-radius: 8px;
-  border: 1px solid rgba(var(--brand-sky-rgb), 0.16);
-  background:
-    radial-gradient(circle at 14% 26%, rgba(var(--brand-cyan-rgb), 0.13), transparent 38%),
-    radial-gradient(circle at 90% 82%, rgba(var(--brand-violet-rgb), 0.14), transparent 44%),
-    linear-gradient(145deg, rgba(10, 17, 28, 0.9), rgba(8, 14, 23, 0.82));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 16px 32px rgba(2, 7, 13, 0.18);
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .panel-loader-copy {
@@ -383,6 +401,11 @@ export default {
 }
 
 @media (max-width: 600px) {
+  .panel-head__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .panel-loader-shell {
     align-items: flex-start;
   }

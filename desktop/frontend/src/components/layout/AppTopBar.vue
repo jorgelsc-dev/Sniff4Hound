@@ -2,7 +2,7 @@
   <v-app-bar
     color="transparent"
     flat
-    height="40"
+    height="48"
     class="top-bar"
     :class="{ 'top-bar--desktop': desktopMode }"
   >
@@ -159,15 +159,13 @@ export default {
   position: relative;
   /* Was overflow:hidden (only needed to clip the ::after accent line) - but
      that also clipped the notification bell's floating badge, which sits a
-     few px above the bell icon and pokes past this 40px bar's edge. The
-     accent line is a 2px strip pinned to top:0/left:0/right:0, so it never
+     few px above the bell icon and pokes past this compact bar's edge. The
+     accent line is pinned to top:0/left:0/right:0, so it never
      needs clipping in the first place. */
-  border-bottom: 1px solid rgba(var(--brand-sky-rgb), 0.18);
-  backdrop-filter: blur(18px) saturate(130%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px) saturate(125%);
   background:
-    radial-gradient(circle at 18% 0%, rgba(var(--brand-cyan-rgb), 0.14), transparent 34%),
-    radial-gradient(circle at 82% 0%, rgba(var(--brand-violet-rgb), 0.16), transparent 40%),
-    linear-gradient(180deg, rgba(6, 11, 18, 0.94) 0%, rgba(9, 17, 29, 0.78) 72%, rgba(9, 17, 29, 0.18) 100%);
+    linear-gradient(180deg, rgba(8, 14, 22, 0.96) 0%, rgba(8, 14, 22, 0.86) 100%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
@@ -181,7 +179,7 @@ export default {
   top: 0;
   left: 0;
   right: 0;
-  height: 2px;
+  height: 1px;
   background: linear-gradient(
     90deg,
     rgba(var(--brand-cyan-rgb), 0),
@@ -205,9 +203,9 @@ export default {
 }
 
 .brand-avatar {
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -227,7 +225,7 @@ export default {
 }
 
 .brand-copy .text-body-2 {
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
 }
 
 .status-rail {
@@ -245,16 +243,16 @@ export default {
   -webkit-app-region: no-drag;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-left: 22px;
-  padding: 0 9px;
-  height: 26px;
-  min-width: 210px;
-  border: 1px solid rgba(var(--brand-sky-rgb), 0.16);
-  border-radius: 7px;
-  background: rgba(4, 10, 18, 0.5);
-  color: rgba(197, 210, 227, 0.62);
-  font-size: 12px;
+  gap: 9px;
+  margin-left: clamp(12px, 3vw, 28px);
+  padding: 0 10px;
+  height: 32px;
+  width: clamp(190px, 24vw, 340px);
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+  background: rgba(4, 10, 18, 0.62);
+  color: rgba(197, 210, 227, 0.72);
+  font-size: 12.5px;
   cursor: pointer;
   transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
 }
@@ -277,7 +275,7 @@ export default {
 
 .command-trigger kbd {
   font-size: 10px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   padding: 1px 6px;
   border-radius: 4px;
   border: 1px solid rgba(var(--brand-sky-rgb), 0.2);
@@ -286,7 +284,7 @@ export default {
 }
 
 @media (max-width: 820px) {
-  .command-trigger { min-width: 0; margin-left: 12px; }
+  .command-trigger { width: 34px; margin-left: 12px; padding: 0; justify-content: center; }
   .command-trigger span, .command-trigger kbd { display: none; }
 }
 
@@ -298,9 +296,9 @@ export default {
 .desktop-window-controls {
   display: inline-flex;
   align-items: center;
-  gap: 1px;
+  gap: 2px;
   padding: 3px;
-  border: 1px solid rgba(var(--brand-sky-rgb), 0.16);
+  border: 1px solid var(--stroke);
   border-radius: 8px;
   background: rgba(4, 10, 18, 0.46);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);

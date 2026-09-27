@@ -8,7 +8,7 @@
       :loading="submitting === action.kind"
       :disabled="Boolean(submitting) || !value"
       :aria-label="action.aria"
-      size="x-small"
+      size="small"
       variant="text"
       density="comfortable"
       class="list-actions__btn"
@@ -128,8 +128,13 @@ export default {
 </script>
 
 <style scoped>
-.list-actions { display: inline-flex; align-items: center; gap: 1px; }
+.list-actions { display: inline-flex; align-items: center; gap: 2px; }
 .list-actions--inline { margin-left: 4px; vertical-align: middle; }
+.list-actions__btn {
+  min-width: 28px;
+  width: 28px;
+  height: 28px;
+}
 /* Dimmed rather than hidden-until-hover: these are meant to be easy to reach,
    and a control that only exists on hover is invisible to a touch screen and
    easy to miss entirely. Full strength on hover, focus, and once confirmed. */

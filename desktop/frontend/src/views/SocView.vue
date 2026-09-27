@@ -1136,15 +1136,16 @@ export default {
 .soc-hero {
   position: relative;
   overflow: hidden;
-  border: 1px solid rgba(104, 184, 229, 0.22);
-  background:
-    linear-gradient(145deg, rgba(12, 21, 32, 0.96), rgba(9, 16, 25, 0.92));
+  border: 1px solid var(--stroke);
+  border-radius: 8px !important;
+  background: var(--surface-1);
 }
 
 .soc-hero__title {
-  margin: 10px 0 0;
-  font-size: clamp(2rem, 4vw, 3.25rem);
-  line-height: 1;
+  margin: 8px 0 0;
+  font-size: clamp(1.55rem, 2.8vw, 2.25rem);
+  line-height: 1.12;
+  letter-spacing: 0;
 }
 
 .soc-hero__copy {
@@ -1181,11 +1182,10 @@ export default {
 
 .soc-hero__panel {
   position: relative;
-  padding: 18px 18px 16px;
-  border: 1px solid rgba(104, 184, 229, 0.18);
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(8, 15, 24, 0.76), rgba(7, 13, 21, 0.9));
-  backdrop-filter: blur(10px);
+  padding: 16px;
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+  background: var(--surface-2);
 }
 
 .soc-hero__panel-kicker {
@@ -1213,8 +1213,8 @@ export default {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(4, 10, 18, 0.42);
+  border-radius: 8px;
+  background: var(--surface-1);
 }
 
 .soc-hero__stat span {
@@ -1239,9 +1239,9 @@ export default {
 }
 
 .soc-tabs :deep(.v-tab) {
-  min-height: 74px;
-  padding-inline: 18px;
-  border-radius: 18px 18px 0 0;
+  min-height: 64px;
+  padding-inline: 14px;
+  border-radius: 8px 8px 0 0;
   background: rgba(8, 14, 22, 0.46);
   color: rgba(204, 223, 244, 0.88);
   transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
@@ -1297,7 +1297,7 @@ export default {
 
 .soc-finding-preview__item {
   padding: 12px;
-  border-radius: 14px;
+  border-radius: 8px;
   background: rgba(4, 10, 18, 0.38);
   border: 1px solid rgba(104, 184, 229, 0.12);
 }
@@ -1325,7 +1325,7 @@ export default {
   gap: 10px;
   line-height: 1.55;
   padding: 10px 12px;
-  border-radius: 14px;
+  border-radius: 8px;
   background: rgba(4, 10, 18, 0.38);
   border: 1px solid rgba(104, 184, 229, 0.12);
 }
@@ -1340,7 +1340,7 @@ export default {
 }
 
 .chart-card {
-  border-radius: 16px;
+  border-radius: 8px;
 }
 
 .chart-stack {
@@ -1364,15 +1364,15 @@ export default {
 }
 
 .chart-row__track {
-  height: 10px;
-  border-radius: 999px;
+  height: 8px;
+  border-radius: 4px;
   overflow: hidden;
   background: rgba(124, 145, 165, 0.18);
 }
 
 .chart-row__fill {
   height: 100%;
-  border-radius: 999px;
+  border-radius: 4px;
 }
 
 .chart-row__value {
@@ -1391,7 +1391,7 @@ export default {
 }
 
 .metric-card {
-  border-radius: 16px;
+  border-radius: 8px;
 }
 
 .metric-icon {

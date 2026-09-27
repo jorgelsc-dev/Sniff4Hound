@@ -773,7 +773,7 @@ export default {
 }
 
 .metric-card {
-  border-radius: 16px;
+  border-radius: 8px;
 }
 
 .metric-icon {
