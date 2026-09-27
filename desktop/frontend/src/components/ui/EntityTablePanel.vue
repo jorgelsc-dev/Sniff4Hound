@@ -9,8 +9,8 @@
     :variant="variant"
     :collapsible="collapsible"
     :default-collapsed="defaultCollapsed"
-    :count="normalizedRows.length"
-    :count-label="countLabel"
+    :count="filteredRows.length"
+    :count-label="displayCountLabel"
   >
     <template #header-actions>
       <slot name="header-actions" />
@@ -26,13 +26,13 @@
             aria-label="Export rows"
           >
             <v-icon icon="mdi-tray-arrow-down" />
-            <v-tooltip activator="parent" location="bottom">Export the filtered rows</v-tooltip>
+            <v-tooltip activator="parent" location="bottom">Exportar las filas filtradas</v-tooltip>
           </v-btn>
         </template>
         <v-list density="compact">
-          <v-list-item prepend-icon="mdi-file-delimited-outline" title="Export CSV" @click="exportRows('csv')" />
-          <v-list-item prepend-icon="mdi-code-json" title="Export JSON" @click="exportRows('json')" />
-          <v-list-item prepend-icon="mdi-content-copy" title="Copy as JSON" @click="copyRowsAsJson" />
+          <v-list-item prepend-icon="mdi-file-delimited-outline" title="Exportar CSV" @click="exportRows('csv')" />
+          <v-list-item prepend-icon="mdi-code-json" title="Exportar JSON" @click="exportRows('json')" />
+          <v-list-item prepend-icon="mdi-content-copy" title="Copiar como JSON" @click="copyRowsAsJson" />
         </v-list>
       </v-menu>
     </template>
@@ -54,10 +54,10 @@
           color="info"
           icon
           @click="$emit('load-more')"
-          aria-label="Load more"
+          aria-label="Cargar más"
         >
           <v-icon icon="mdi-tray-arrow-up" />
-          <v-tooltip activator="parent" location="bottom">Load more</v-tooltip>
+          <v-tooltip activator="parent" location="bottom">Cargar más</v-tooltip>
         </v-btn>
       </div>
     </v-alert>
@@ -103,15 +103,15 @@
             size="small"
             variant="text"
             color="secondary"
-            aria-label="Choose columns"
+            aria-label="Elegir columnas"
             class="entity-table-toolbar__columns"
           >
             <v-icon icon="mdi-table-cog" />
-            <v-tooltip activator="parent" location="bottom">Choose columns</v-tooltip>
+            <v-tooltip activator="parent" location="bottom">Elegir columnas</v-tooltip>
           </v-btn>
         </template>
         <v-card class="pa-3 column-picker-menu" min-width="220" rounded="lg">
-          <div class="text-caption text-medium-emphasis mb-2">Show columns</div>
+          <div class="text-caption text-medium-emphasis mb-2">Columnas visibles</div>
           <v-checkbox
             v-for="column in pickableColumns"
             :key="`colpick-${column.key}`"
@@ -127,7 +127,7 @@
     </div>
 
     <div v-if="valueFilters.length" class="d-flex flex-wrap align-center ga-2 mb-3">
-      <span class="text-caption text-medium-emphasis">Filters:</span>
+      <span class="text-caption text-medium-emphasis">Filtros:</span>
       <v-chip
         v-for="(vf, index) in valueFilters"
         :key="`vf-${index}-${vf.key}-${vf.value}`"
@@ -145,7 +145,7 @@
           Click to switch to {{ vf.mode === "exclude" ? "include" : "exclude" }}
         </v-tooltip>
       </v-chip>
-      <v-btn size="small" variant="text" color="secondary" @click="clearValueFilters">Clear all</v-btn>
+      <v-btn size="small" variant="text" color="secondary" @click="clearValueFilters">Limpiar</v-btn>
     </div>
     <div class="entity-table-wrap mt-1">
       <v-data-table
@@ -178,7 +178,7 @@
             variant="text"
             color="info"
             class="entity-data-table__expand-button"
-            :aria-label="isExpanded(internalItem) ? 'Collapse JSON view' : 'Expand JSON view'"
+            :aria-label="isExpanded(internalItem) ? 'Contraer JSON' : 'Expandir JSON'"
             @click.stop="toggleExpand(internalItem)"
           >
             <v-icon :icon="isExpanded(internalItem) ? 'mdi-chevron-down' : 'mdi-chevron-right'" />
@@ -300,7 +300,7 @@
                     </v-btn>
                   </div>
                   <div class="d-flex align-center flex-wrap ga-2 mb-2">
-                    <div class="entity-json-panel__label mb-0">Full row JSON</div>
+                    <div class="entity-json-panel__label mb-0">JSON completo de la fila</div>
                     <v-spacer />
                     <v-btn
                       size="x-small"
@@ -308,10 +308,10 @@
                       color="secondary"
                       icon
                       @click="copyValue(formatJson(item), 'Row JSON')"
-                      aria-label="Copy JSON"
+                      aria-label="Copiar JSON"
                     >
                       <v-icon icon="mdi-content-copy" />
-                      <v-tooltip activator="parent" location="bottom">Copy JSON</v-tooltip>
+                      <v-tooltip activator="parent" location="bottom">Copiar JSON</v-tooltip>
                     </v-btn>
                     <v-btn
                       v-if="item.payload_text"
@@ -320,10 +320,10 @@
                       color="secondary"
                       icon
                       @click="copyValue(item.payload_text, 'Payload text')"
-                      aria-label="Copy payload"
+                      aria-label="Copiar payload"
                     >
                       <v-icon icon="mdi-content-copy" />
-                      <v-tooltip activator="parent" location="bottom">Copy payload</v-tooltip>
+                      <v-tooltip activator="parent" location="bottom">Copiar payload</v-tooltip>
                     </v-btn>
                     <v-btn
                       v-if="item.payload_hex"
@@ -332,10 +332,10 @@
                       color="secondary"
                       icon
                       @click="copyValue(item.payload_hex, 'Payload hex')"
-                      aria-label="Copy hex"
+                      aria-label="Copiar hex"
                     >
                       <v-icon icon="mdi-content-copy" />
-                      <v-tooltip activator="parent" location="bottom">Copy hex</v-tooltip>
+                      <v-tooltip activator="parent" location="bottom">Copiar hex</v-tooltip>
                     </v-btn>
                   </div>
                   <pre class="entity-json">{{ formatJson(item) }}</pre>
@@ -496,7 +496,7 @@ export default {
     },
     countLabel: {
       type: String,
-      default: "rows",
+      default: "filas",
     },
     // Server-side pagination envelope (total_available / returned / truncated,
     // as fields or as X-* headers). Any of them may be null while the backend
@@ -616,6 +616,11 @@ export default {
         return true;
       });
     },
+    displayCountLabel() {
+      const total = this.normalizedRows.length;
+      if (this.filteredRows.length === total) return this.countLabel;
+      return `${this.countLabel} filtradas`;
+    },
     pageCount() {
       return Math.max(1, Math.ceil(this.filteredRows.length / this.safePageSize));
     },
@@ -681,11 +686,11 @@ export default {
       const isTruncated =
         this.truncated === true || (this.truncated === null && total !== null && total > shown);
       if (!isTruncated) return "";
-      const scope = this.rangeLabel ? ` in ${this.rangeLabel}` : "";
+      const scope = this.rangeLabel ? ` en ${this.rangeLabel}` : "";
       if (total !== null) {
-        return `Showing the ${shown.toLocaleString()} most recent rows${scope} of ${total.toLocaleString()} stored. Narrow the time range or load more to see the rest.`;
+        return `Mostrando las ${shown.toLocaleString()} filas más recientes${scope} de ${total.toLocaleString()} almacenadas. Acota el rango de tiempo o carga más para ver el resto.`;
       }
-      return `Showing the ${shown.toLocaleString()} most recent rows${scope}; older records are stored but not displayed.`;
+      return `Mostrando las ${shown.toLocaleString()} filas más recientes${scope}; los registros anteriores están almacenados pero no se muestran.`;
     },
   },
   watch: {
@@ -1149,6 +1154,9 @@ export default {
   gap: 8px;
   padding: 24px 14px;
   color: var(--text-dim);
+  border: 1px dashed rgba(157, 169, 184, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.018);
 }
 
 .entity-table-empty :deep(.v-icon) {
@@ -1265,7 +1273,7 @@ export default {
 }
 
 .truncation-notice {
-  border-radius: 12px;
+  border-radius: 8px;
 }
 
 .value-filter-chip {

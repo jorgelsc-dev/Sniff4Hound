@@ -20,6 +20,7 @@
         type="button"
         class="command-trigger"
         aria-label="Buscar vistas, ajustes y acciones"
+        aria-keyshortcuts="Control+K Meta+K"
         @click="store.state.commandPaletteOpen = true"
       >
         <v-icon icon="mdi-magnify" size="15" />
@@ -194,11 +195,14 @@ export default {
 .app-topbar {
   max-width: 1560px;
   width: 100%;
+  gap: 10px;
+  padding-inline: 12px;
 }
 
 .brand-lockup {
   display: flex;
   align-items: center;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
@@ -233,7 +237,8 @@ export default {
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: max-content;
   -webkit-app-region: no-drag;
 }
 
@@ -284,8 +289,33 @@ export default {
 }
 
 @media (max-width: 820px) {
-  .command-trigger { width: 34px; margin-left: 12px; padding: 0; justify-content: center; }
+  .command-trigger { width: 34px; margin-left: 4px; padding: 0; justify-content: center; flex: 0 0 34px; }
   .command-trigger span, .command-trigger kbd { display: none; }
+}
+
+@media (max-width: 520px) {
+  .app-topbar {
+    padding-inline: 8px;
+    gap: 6px;
+  }
+
+  .brand-copy {
+    display: none;
+  }
+
+  .brand-avatar {
+    margin-right: 0 !important;
+  }
+
+  .desktop-window-controls {
+    gap: 0;
+    padding: 2px;
+  }
+
+  .window-control {
+    width: 28px;
+    min-width: 28px;
+  }
 }
 
 .shutdown-btn {
