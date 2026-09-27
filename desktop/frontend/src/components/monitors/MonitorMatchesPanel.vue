@@ -401,7 +401,7 @@ export default {
 }
 
 .chart-card {
-  border-radius: 14px;
+  border-radius: 8px;
   height: 100%;
 }
 
@@ -429,8 +429,8 @@ export default {
   position: relative;
   height: 8px;
   overflow: hidden;
-  border-radius: 999px;
-  background: rgba(9, 16, 24, 0.86);
+  border-radius: 4px;
+  background: rgba(9, 16, 24, 0.78);
   box-shadow: inset 0 0 0 1px rgba(103, 176, 219, 0.08);
 }
 

@@ -77,7 +77,7 @@ export default {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 12px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.06);
 }
 </style>

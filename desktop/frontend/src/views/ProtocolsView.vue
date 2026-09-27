@@ -1565,15 +1565,16 @@ export default {
 .protocol-hero {
   position: relative;
   overflow: hidden;
-  border: 1px solid rgba(96, 177, 223, 0.24);
-  background:
-    linear-gradient(145deg, rgba(12, 21, 32, 0.96), rgba(9, 16, 25, 0.92));
+  border: 1px solid var(--stroke);
+  border-radius: 8px !important;
+  background: var(--surface-1);
 }
 
 .protocol-hero__title {
-  margin: 10px 0 0;
-  font-size: clamp(2rem, 4vw, 3.25rem);
-  line-height: 1;
+  margin: 8px 0 0;
+  font-size: clamp(1.55rem, 2.8vw, 2.25rem);
+  line-height: 1.12;
+  letter-spacing: 0;
 }
 
 .protocol-hero__copy {
@@ -1592,11 +1593,10 @@ export default {
 
 .protocol-hero__panel {
   position: relative;
-  padding: 18px 18px 16px;
-  border: 1px solid rgba(104, 184, 229, 0.18);
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(8, 15, 24, 0.76), rgba(7, 13, 21, 0.9));
-  backdrop-filter: blur(10px);
+  padding: 16px;
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+  background: var(--surface-2);
 }
 
 .protocol-hero__panel-kicker {
@@ -1626,8 +1626,8 @@ export default {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(4, 10, 18, 0.42);
+  border-radius: 8px;
+  background: var(--surface-1);
 }
 
 .protocol-hero__stat span {
@@ -1666,7 +1666,7 @@ export default {
 
 .protocol-card {
   min-height: 170px;
-  border: 1px solid rgba(104, 184, 229, 0.18);
+  border: 1px solid var(--stroke);
   text-decoration: none;
 }
 
@@ -1677,7 +1677,7 @@ export default {
 
 .protocol-card--active {
   border-color: rgba(52, 230, 255, 0.56);
-  box-shadow: 0 18px 34px rgba(3, 8, 15, 0.42);
+  box-shadow: 0 10px 24px rgba(3, 8, 15, 0.34);
 }
 
 .protocol-card__top {
@@ -1696,7 +1696,7 @@ export default {
 }
 
 .metric-card {
-  border-radius: 16px;
+  border-radius: 8px;
 }
 
 .metric-icon {
@@ -1704,7 +1704,7 @@ export default {
 }
 
 .chart-card {
-  border-radius: 16px;
+  border-radius: 8px;
 }
 
 .chart-stack {
@@ -1729,10 +1729,10 @@ export default {
 
 .chart-row__track {
   position: relative;
-  height: 10px;
+  height: 8px;
   overflow: hidden;
-  border-radius: 999px;
-  background: rgba(9, 16, 24, 0.86);
+  border-radius: 4px;
+  background: rgba(9, 16, 24, 0.78);
   box-shadow: inset 0 0 0 1px rgba(103, 176, 219, 0.08);
 }
 

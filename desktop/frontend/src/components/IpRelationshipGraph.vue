@@ -1449,8 +1449,8 @@ export default {
   font-size: 0.72rem;
   color: var(--text-soft);
   background: rgba(255, 255, 255, 0.05);
-  border-radius: 999px;
-  padding: 2px 8px;
+  border-radius: 6px;
+  padding: 3px 8px;
 }
 
 .ip-graph-inspector__link {
@@ -1475,8 +1475,8 @@ export default {
   font-size: 0.74rem;
   color: var(--text-soft);
   background: rgba(255, 255, 255, 0.05);
-  border-radius: 999px;
-  padding: 2px 8px;
+  border-radius: 6px;
+  padding: 3px 8px;
 }
 
 .ip-graph-inspector__connection--muted {
