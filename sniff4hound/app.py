@@ -668,6 +668,7 @@ ENDPOINTS = [
     {"method": "POST", "path": "/api/data/clear/", "desc": "Clear stored data for a scope: 'monitors', 'honeypot', 'all' (detection history), or 'everything' (also flows/domains/paths/sessions). Never deletes monitor/listener definitions."},
     {"method": "GET", "path": "/api/data/storage", "desc": "Database file size split into live data and reclaimable free pages, plus whether this database can reclaim space incrementally (auto_vacuum)."},
     {"method": "POST", "path": "/api/data/compact/", "desc": "Rewrite the database file, reclaiming every free page and enabling incremental reclaim. For a database that grew before incremental reclaim worked; holds the write lock for the rewrite, so capture pauses briefly."},
+    {"method": "GET", "path": "/api/data/retention", "desc": "Effective retention configuration: general and alert retention windows, max-packet backstop, sweep interval, and per-table row-count limits. All values are fixed at startup from SNIFF4HOUND_* environment variables."},
     {"method": "GET", "path": "/api/export/", "desc": "Available IOC export datasets, formats and column sets."},
     {"method": "GET", "path": "/api/export/alerts", "desc": "Monitor hits as indicators (rule, severity, 5-tuple, first/last seen). ?format=csv|json"},
     {"method": "GET", "path": "/api/export/endpoints", "desc": "Observed IPs with hit counts, worst severity and the rules that flagged them. ?format=csv|json"},
@@ -3269,6 +3270,35 @@ def data_storage_api(request):
     /api/data/compact/ runs.
     """
     return store.database_storage_stats()
+
+
+@app.api("/api/data/retention", methods=("GET",))
+def data_retention_config_api(request):
+    """Effective retention configuration for this instance.
+
+    Values are resolved once at startup from SNIFF4HOUND_* environment
+    variables; changing them requires a restart.
+    """
+    from .settings import (RETENTION_DAYS, RETENTION_ALERT_DAYS,
+                           RETENTION_MAX_PACKETS, RETENTION_INTERVAL_SECONDS)
+    from .store import (PACKET_TABLE_LIMIT, PAYLOAD_TABLE_LIMIT, FLOW_TABLE_LIMIT,
+                        TAG_TABLE_LIMIT, DOMAIN_TABLE_LIMIT, PATH_TABLE_LIMIT,
+                        SESSION_TABLE_LIMIT)
+    return {
+        "retention_days": RETENTION_DAYS,
+        "retention_alert_days": RETENTION_ALERT_DAYS,
+        "retention_max_packets": RETENTION_MAX_PACKETS,
+        "retention_interval_seconds": RETENTION_INTERVAL_SECONDS,
+        "table_limits": {
+            "packets": PACKET_TABLE_LIMIT,
+            "payloads": PAYLOAD_TABLE_LIMIT,
+            "flows": FLOW_TABLE_LIMIT,
+            "tags": TAG_TABLE_LIMIT,
+            "domains": DOMAIN_TABLE_LIMIT,
+            "paths": PATH_TABLE_LIMIT,
+            "sessions": SESSION_TABLE_LIMIT,
+        },
+    }
 
 
 @app.api("/api/data/compact/", methods=("POST",))
