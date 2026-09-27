@@ -1066,6 +1066,43 @@
             </v-col>
           </v-row>
 
+          <!-- A device has reached the link but is trusted with nothing yet.
+               No code exists until this is accepted, so this card is the
+               security decision: the operator judges the address and browser
+               shown here before anything is issued. -->
+          <v-alert
+            v-if="mobilePairingAwaitingApproval"
+            class="mt-3"
+            type="warning"
+            variant="tonal"
+            density="comfortable"
+            prepend-icon="mdi-shield-account-outline"
+          >
+            <div class="text-subtitle-2">A device is asking to connect</div>
+            <div class="text-caption mt-1">
+              Address {{ mobilePairing.client || "unknown" }}
+              <span v-if="mobilePairing.seen_at"> · {{ mobilePairing.seen_at }}</span>
+            </div>
+            <div class="text-caption text-medium-emphasis mobile-approval-ua">
+              {{ mobilePairing.user_agent || "no User-Agent reported" }}
+            </div>
+            <div class="text-caption mt-2">
+              Approve only if this is the phone in your hand. Accepting generates the
+              6-digit code and starts its short entry window, counted down above.
+            </div>
+            <template #append>
+              <v-btn
+                color="warning"
+                variant="flat"
+                prepend-icon="mdi-check"
+                :loading="mobileApproving"
+                @click="approveMobilePairing"
+              >
+                Accept
+              </v-btn>
+            </template>
+          </v-alert>
+
           <v-divider class="my-4" />
           <div class="text-subtitle-2 mb-2">Active phones</div>
           <v-list v-if="mobileSessions.length" density="compact" bg-color="transparent">
@@ -1269,6 +1306,7 @@ export default {
       mobileLoading: false,
       mobileStopping: false,
       mobilePairingBusy: false,
+      mobileApproving: false,
       mobileRevoking: "",
       mobileError: "",
       mobileInterfaces: [],
@@ -1367,11 +1405,15 @@ export default {
         : [];
     },
     mobilePairingStatus() {
-      const status = String(this.mobilePairing.status || "").replace("_", " ");
+      const status = String(this.mobilePairing.status || "").replace(/_/g, " ");
       if (!this.mobilePairing.id) return "Waiting for QR";
       const expires = Number(this.mobilePairing.expires_in || 0);
       if (this.mobilePairing.code) return `${status || "waiting"} · ${expires}s`;
+      if (this.mobilePairingAwaitingApproval) return `${status} · accept to issue a code`;
       return `${status || "pending"} · scan QR`;
+    },
+    mobilePairingAwaitingApproval() {
+      return String(this.mobilePairing.status || "") === "awaiting_approval";
     },
     runtime() {
       return this.store.state.runtime || {};
@@ -1587,6 +1629,20 @@ export default {
         this.mobileError = err.message || "Failed to create a mobile pairing QR.";
       } finally {
         this.mobilePairingBusy = false;
+      }
+    },
+    async approveMobilePairing() {
+      if (!this.mobilePairing.id || this.mobileApproving) return;
+      this.mobileApproving = true;
+      this.mobileError = "";
+      try {
+        // The response already carries the freshly issued code, so the
+        // operator sees it without waiting for the next poll tick.
+        this.mobilePairing = await this.store.approveMobileStreamPairing(this.mobilePairing.id);
+      } catch (err) {
+        this.mobileError = err.message || "Failed to approve the device.";
+      } finally {
+        this.mobileApproving = false;
       }
     },
     async refreshMobilePairing() {
@@ -2313,6 +2369,13 @@ export default {
   border-radius: 8px;
   background: #fff;
   padding: 10px;
+}
+
+/* A User-Agent is long and has no spaces to wrap on; without this the
+   approval card stretches instead of wrapping. */
+.mobile-approval-ua {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 .mobile-code-box {
