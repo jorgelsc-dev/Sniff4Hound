@@ -1150,6 +1150,15 @@ class Sniffer:
                     data, _ = sock.recvfrom(CAPTURE_BUFFER_BYTES)
                     consecutive_socket_errors = 0
                 except socket.timeout:
+                    # A timeout is the socket working: it blocked for the poll
+                    # window and nothing arrived. Only a *successful read* used
+                    # to clear the counter, so on a quiet interface - where
+                    # timeouts are the normal state - occasional transient
+                    # errors accumulated across hours with nothing to reset
+                    # them, and capture eventually gave up on a link that had
+                    # recovered between each one. A dead interface still fails
+                    # fast, because it raises OSError rather than timing out.
+                    consecutive_socket_errors = 0
                     continue
                 except OSError as exc:
                     if self._stop_event.is_set():
