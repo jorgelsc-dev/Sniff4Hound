@@ -9,7 +9,12 @@
       "tests.test_ws_snapshot_channel",
       "tests.test_runtime_tls",
       "tests.test_jobs",
-      "tests.test_mobile_stream"
+      "tests.test_mobile_stream",
+      "tests.test_job_storage",
+      "tests.test_log_setup",
+      "tests.test_monitor_false_positives",
+      "tests.test_packet_pipeline",
+      "tests.test_resource_guard"
     ],
     [
       "tests.test_monitors.TestLoadBuiltinMonitors",
