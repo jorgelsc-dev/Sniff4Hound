@@ -485,6 +485,10 @@ export default {
       return this.isActive(tool.to) || (tool.children || []).some((child) => this.isActive(child.to));
     },
     toggleGroup(tool, event) {
+      // A group is also a destination: its icon goes to the group's own page
+      // and opens the sub-page menu. Before, the icon only opened the menu, so
+      // clicking "Dashboard" appeared to do nothing until a sub-item was picked.
+      if (tool.to && this.$route.path !== tool.to) this.$router.push(tool.to);
       if (this.openGroup === tool.to) {
         this.closeGroup();
         return;

@@ -99,10 +99,16 @@
         </p>
       </v-col>
       <v-col cols="12" md="6">
-        <div class="text-caption text-medium-emphasis">{{ floating ? `Grupo LOF · ${learningConfigDraft.min_cohort}` : 'Tamaño mínimo de grupo (detector LOF)' }}</div>
+        <div class="d-flex align-center justify-space-between mb-1">
+          <div class="text-caption text-medium-emphasis">{{ floating ? `Grupo LOF · ${learningConfigDraft.min_cohort}` : 'Tamaño mínimo de grupo (detector LOF)' }}</div>
+          <v-chip v-if="!floating" size="small" color="primary" variant="tonal">{{ learningConfigDraft.min_cohort }} paquetes</v-chip>
+        </div>
         <v-slider aria-label="Tamaño mínimo de grupo LOF" v-model="learningConfigDraft.min_cohort" :min="minCohortMin" :max="minCohortMax" :step="1"
-          :thumb-label="floating ? true : 'always'" hide-details />
-        <p v-if="!floating" class="text-caption text-medium-emphasis mt-1">
+          :thumb-label="floating ? true : false" color="primary" hide-details />
+        <div v-if="!floating" class="d-flex justify-space-between text-caption text-medium-emphasis nnc-range">
+          <span>{{ minCohortMin }}</span><span>{{ minCohortMax }}</span>
+        </div>
+        <p v-if="!floating" class="text-caption text-medium-emphasis mt-2">
           Cuántos paquetes del mismo protocolo hacen falta antes de que el LOF empiece a puntuar ese grupo.
           Más bajo: cubre protocolos poco frecuentes antes, pero con puntuaciones menos estables.
         </p>
@@ -365,6 +371,20 @@ async function importModel(event) {
 .layer-count-field {
   max-width: 76px;
 }
+/* Main (non-floating) layout: aligned layer rows, no overlapping slider label. */
+.nnc-range { margin-top: 2px; }
+.hidden-layer-row {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.hidden-layer-row__label {
+  flex: 0 0 64px;
+  font-weight: 500;
+  color: var(--text-soft);
+}
+.neuron-count-field { max-width: 120px; }
 .nnc-floating {
   padding: 6px 4px;
   background: transparent;

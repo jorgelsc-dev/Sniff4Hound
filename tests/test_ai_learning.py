@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from sniff4hound.ai_learning import (
     ONLINE_BATCH_SIZE,
+    _balanced_batch,
+    _collapsed,
     TOURNAMENT_CANDIDATES_PER_ROUND,
     export_model,
     features,
@@ -66,7 +68,15 @@ class LearningTests(unittest.TestCase):
 
     def test_feedback_uses_bounded_online_batches_and_persisted_weights(self):
         state = {}
-        with patch('sniff4hound.ai_learning.train', side_effect=AssertionError('full replay used')):
+        real_train = train
+        full_replays = []
+
+        def spy(*args, **kwargs):
+            full_replays.append(True)
+            return real_train(*args, **kwargs)
+
+        modes = []
+        with patch('sniff4hound.ai_learning.train', side_effect=spy):
             for index in range(20):
                 state = update_feedback(
                     state,
@@ -75,9 +85,14 @@ class LearningTests(unittest.TestCase):
                     2,
                     '',
                 )
+                modes.append(state['training']['mode'])
+        # A full replay is only allowed as a collapse rebuild; every other
+        # update stays a bounded online mini-batch.
+        self.assertEqual(len(full_replays), modes.count('full_retrain_on_collapse'))
+        self.assertTrue(set(modes) <= {'online_mini_batch', 'full_retrain_on_collapse'})
         self.assertEqual(state['training']['updates'], 20)
-        self.assertLessEqual(state['training']['batch_size'], ONLINE_BATCH_SIZE)
-        self.assertEqual(state['training']['samples_seen'], sum(min(i, ONLINE_BATCH_SIZE) for i in range(1, 21)))
+        if state['training']['mode'] == 'online_mini_batch':
+            self.assertLessEqual(state['training']['batch_size'], ONLINE_BATCH_SIZE)
         self.assertTrue(state['training']['weights_persisted'])
 
     def test_duplicate_frames_do_not_multiply_reward(self):
@@ -286,6 +301,44 @@ class LearningTests(unittest.TestCase):
         self.assertTrue(hidden_sizes_of(state['model']))  # doesn't crash, has the new shape
         self.assertEqual(state['training']['mode'], 'full_retrain_on_config_change')
         self.assertEqual(len(state['examples']), 2)  # the old example wasn't discarded
+
+    def test_balanced_batch_keeps_both_classes_when_the_tail_is_one_class(self):
+        examples = [dict(key=f'm{i}', features=[1.0] * 8, label='malicious', confidence=2) for i in range(6)]
+        examples += [dict(key=f'b{i}', features=[0.0] * 8, label='benign', confidence=2) for i in range(20)]
+        batch = _balanced_batch(examples, 'new', dict(key='new', features=[0.0] * 8, label='benign', confidence=2))
+        labels = [e['label'] for e in batch]
+        self.assertEqual(labels.count('malicious'), 4)
+        self.assertEqual(labels.count('benign'), 4)
+        self.assertIn('new', [e['key'] for e in batch])
+
+    def test_benign_only_stream_does_not_erase_the_malicious_class(self):
+        # The collapse seen in production: long runs of benign traffic used to
+        # push every answer to "benign". Balanced batches must keep malicious.
+        state = {}
+        for index in range(6):
+            state = update_feedback(state, packet(index + 1, bytes([index + 1]) * 256), 'malicious', 3, '')
+        for index in range(40):
+            state = update_feedback(state, packet(100 + index, bytes([200 - index % 50]) * 256), 'benign', 1, '')
+        malicious_examples = [e for e in state['examples'] if e['label'] == 'malicious']
+        self.assertTrue(malicious_examples)
+        hits = [forward(state['model'], e['features'])[1] >= 0.5 for e in malicious_examples]
+        self.assertTrue(any(hits))
+
+    def test_collapsed_model_is_detected_and_rebuilt_from_retained_examples(self):
+        examples = [dict(key=f'm{i}', features=[1.0] * 8, label='malicious', confidence=3) for i in range(5)]
+        examples += [dict(key=f'b{i}', features=[0.0] * 8, label='benign', confidence=3) for i in range(5)]
+        collapsed = initial_model([3])
+        # Push every output to benign, as the production model had become.
+        for _ in range(300):
+            for example in examples:
+                from sniff4hound.ai_learning import _backprop_step
+                _backprop_step(collapsed, example['features'], 0, 3, 0.2)
+        self.assertTrue(_collapsed(collapsed, examples))
+        self.assertFalse(_collapsed(initial_model([3]), examples[:5]))  # one class only
+        state = dict(revision=5, examples=examples, model=collapsed, history=[], audit=[], training={})
+        state = update_feedback(state, packet(999, bytes([7]) * 256), 'malicious', 3, '', hidden_sizes=[3])
+        self.assertEqual(state['training']['mode'], 'full_retrain_on_collapse')
+        self.assertFalse(_collapsed(state['model'], state['examples']))
 
     def test_export_and_import_model_round_trips_architecture_and_weights(self):
         state = update_feedback({}, packet(1), 'malicious', 2, '', hidden_sizes=[7, 4])

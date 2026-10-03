@@ -85,6 +85,40 @@ apagarlo cuando la IA ya puede operar sin el catalogo de reglas.
 `raw_retention_enabled` para que el frontend sepa si puede ofrecer el
 interruptor de IA y el propio interruptor de retencion de bytes crudos.
 
+## Pipeline de paquetes (caché y jobs)
+
+La captura ya no evalúa cada paquete dentro del hilo que lo lee. Cada hilo de
+captura deposita el paquete en una caché acotada en memoria, y N jobs lo toman,
+lo evalúan (monitores, anomalías, IA) y persisten los que corresponden en
+SniffStore.
+
+- **Límite de retención** (`cache_limit`, 1.000-1.000.000, por defecto 20.000):
+  paquetes que pueden esperar entre captura y procesamiento. Si la caché se
+  llena se descartan los más antiguos y el contador `cache_dropped` lo registra.
+- **Jobs** (`jobs`, 1-16, por defecto 2): workers que consumen la caché. Se
+  aplica al iniciar la captura.
+- **Persistencia** (`persist_mode`): `alerts` (por defecto) guarda solo lo que
+  genera alerta, como antes; `all` guarda todo paquete procesado.
+
+`GET`/`POST /api/pipeline/config` lee y guarda estos valores. `cache_limit` y
+`persist_mode` se aplican a la captura en marcha; `jobs` al siguiente inicio.
+El estado en vivo (`packet_pipeline` dentro del estado del sniffer) muestra:
+
+- Caché: `cache_depth` (en espera), `cache_limit`, `cache_accepted`,
+  `cache_dropped` (descartados por límite) y `cache_peak` (pico de ocupación).
+- Jobs: `processed`, `persisted`, `skipped` (procesados sin alerta) y `errors`.
+- `persist_mode` y `since` (desde cuándo se cuentan).
+
+`POST /api/pipeline/reset` pone a cero los contadores (aceptados, descartados,
+pico, procesados, persistidos, omitidos y errores) desde el inspector de cada
+tarjeta. No cambia la configuración ni los paquetes en espera.
+
+```bash
+curl -X POST -H "X-Security-Code: $CODE" -H "Content-Type: application/json" \
+  -d '{"cache_limit":40000,"jobs":4,"persist_mode":"alerts"}' \
+  http://127.0.0.1:45678/api/pipeline/config
+```
+
 ## Ubicacion del sensor y mapa
 
 `GET`/`POST /api/settings/location` guarda donde esta fisicamente esta maquina.

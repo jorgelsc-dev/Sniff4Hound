@@ -115,7 +115,7 @@
               :to="{ path: '/investigate', query: { monitor: monitor.id } }"
               @click.stop
             >
-              {{ monitor.name }}
+              <span class="monitor-name" :title="monitor.name">{{ monitor.name }}</span>
             </router-link>
             <v-chip size="x-small" :color="modeColor(monitor.mode)" variant="tonal">
               {{ modeLabel(monitor.mode) }}
@@ -393,6 +393,14 @@ export default {
 </script>
 
 <style scoped>
+.monitor-name {
+  display: inline-block;
+  max-width: 520px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
 .match-count-chip {
   font-variant-numeric: tabular-nums;
   font-weight: 700;

@@ -65,10 +65,13 @@
     <div class="entity-table-toolbar mb-3">
       <v-row v-if="showTableControls" density="compact" class="entity-table-controls">
         <v-col v-if="searchEnabled" cols="12" md="6">
+          <!-- A placeholder drawn over a visible label collides with it, so the
+               hint moves to the tooltip whenever the field has a label. -->
           <v-text-field
             v-model.trim="tableSearchQuery"
             :label="searchLabel"
-            :placeholder="searchPlaceholder"
+            :placeholder="searchLabel ? undefined : searchPlaceholder"
+            :title="searchPlaceholder"
             prepend-inner-icon="mdi-magnify"
             clearable
             variant="outlined"
@@ -1067,6 +1070,9 @@ export default {
 .entity-data-table :deep(.v-data-table__th) {
   height: 40px;
   padding-inline: 12px;
+  /* Numbers, times and ports stay on one line; the table scrolls sideways
+     instead of breaking them character by character. */
+  white-space: nowrap;
 }
 
 .entity-data-table :deep(table) {

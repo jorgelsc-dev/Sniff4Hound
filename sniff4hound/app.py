@@ -22,6 +22,7 @@ from wsbuilder import App, Request, Response, parse_close_payload
 
 from . import __version__
 from . import access_log
+from . import log_setup
 from .auth import authenticate_request, extract_token_from_header, RATE_LIMITER, REQUIRE_AUTH
 from .export import (
     EXPORT_DATASETS,
@@ -52,6 +53,7 @@ from .settings import (
 )
 from .tls import public_ca_pem
 from .process_control import process_shutdown_requested, request_process_shutdown
+from .runtime_paths import ensure_data_dir
 from .store import SniffStore
 from .utils import (
     bytes_to_hex_preview,
@@ -288,6 +290,8 @@ def _install_access_log():
 
 _install_access_log()
 store = SniffStore(DB_PATH)
+log_setup.configure("web", log_setup.default_log_dir(), store.get_log_config())
+log_setup.start_reload_loop(store.get_log_config)
 
 
 class WebSocketHub:
@@ -491,6 +495,9 @@ class RuntimeControllerClient:
     def set_honeypot_listener_enabled(self, listener_id: str, enabled: bool):
         return self._ipc_client.call("set_honeypot_listener_enabled", listener_id=listener_id, enabled=enabled)
 
+    def reset_packet_pipeline(self):
+        return self._ipc_client.call("reset_packet_pipeline")
+
 
 def _on_capture_event(payload: dict) -> None:
     hub.broadcast(payload)
@@ -607,6 +614,9 @@ ENDPOINTS = [
     {"method": "POST", "path": "/api/ai/tournament", "desc": "Start or stop a background architecture tournament (action: 'start' or 'stop') - live progress on ai_tournament from /api/ai/packets/, final champion surfaces via /api/ai/suggestion like any other auto-tuning suggestion."},
     {"method": "GET", "path": "/api/detection/exclusions", "desc": "Shared exclusion filter (IP type, CIDR, port, protocol)."},
     {"method": "POST", "path": "/api/detection/exclusions", "desc": "Set the shared exclusion filter - matching traffic is silenced from Sniffer detection, Monitors and AI sampling (raw capture/storage is unaffected)."},
+    {"method": "GET", "path": "/api/pipeline/config", "desc": "Packet pipeline settings: cache_limit (packets held between capture and processing), jobs (processing workers, applied on the next capture start) and persist_mode (alerts | all)."},
+    {"method": "POST", "path": "/api/pipeline/reset", "desc": "Zeroes the pipeline counters (cache accepted/dropped/peak and job processed/persisted/skipped/errors). Settings and waiting packets are unchanged."},
+    {"method": "POST", "path": "/api/pipeline/config", "desc": "Update any of cache_limit (1000-1000000), jobs (1-16) or persist_mode (alerts | all). cache_limit and persist_mode apply to the running capture; jobs applies when capture is next started."},
     {"method": "POST", "path": "/api/console/execute", "desc": "Execute a safe registered Sniff4Hound operation from the dashboard console."},
     {"method": "GET", "path": "/api/runtime/", "desc": "Runtime mode and engine snapshot."},
     {"method": "POST", "path": "/api/runtime/", "desc": "Start/stop engines and update the sniffer interface. Sniffer and honeypot are independent: {\"engines\": {\"sniffer\": true, \"honeypot\": true}} runs both, {\"engine\": \"honeypot\", \"action\": \"stop\"} stops one."},
@@ -669,7 +679,15 @@ ENDPOINTS = [
     {"method": "POST", "path": "/api/data/clear/", "desc": "Clear stored data for a scope: 'monitors', 'honeypot', 'all' (detection history), or 'everything' (also flows/domains/paths/sessions). Never deletes monitor/listener definitions."},
     {"method": "GET", "path": "/api/data/storage", "desc": "Database file size split into live data and reclaimable free pages, plus whether this database can reclaim space incrementally (auto_vacuum)."},
     {"method": "POST", "path": "/api/data/compact/", "desc": "Rewrite the database file, reclaiming every free page and enabling incremental reclaim. For a database that grew before incremental reclaim worked; holds the write lock for the rewrite, so capture pauses briefly."},
-    {"method": "GET", "path": "/api/data/retention", "desc": "Effective retention configuration: general and alert retention windows, max-packet backstop, sweep interval, and per-table row-count limits. All values are fixed at startup from SNIFF4HOUND_* environment variables."},
+    {"method": "GET", "path": "/api/data/retention", "desc": "Effective retention policy: general and alert windows, max-packet base, sweep interval and per-table row limits, plus the env defaults and which values are overridden."},
+    {"method": "GET", "path": "/api/logs/config", "desc": "Log level (DEBUG|INFO|WARNING|ERROR), rotation size in MB and backup count, retention days, and the slow-statement threshold in ms. Shared by the web and capture processes."},
+    {"method": "POST", "path": "/api/logs/config", "desc": "Update any of level, max_mb (1-1024), backups (0-100), retention_days (0-3650), slow_ms (10-60000). Applies immediately here and within ~10 s in the capture process."},
+    {"method": "GET", "path": "/api/monitors/stats", "desc": "Monitor catalog counts only: total, enabled, builtin and custom. Cached for five seconds."},
+    {"method": "GET", "path": "/api/limits", "desc": "CPU, RAM and storage limits (0 = off), the resume threshold and sample interval, plus the live guard state: paused, reason, last measurement, and trip counters."},
+    {"method": "POST", "path": "/api/limits", "desc": "Update cpu_percent (0-100), ram_mb, storage_mb (0 = off), resume_percent (10-99), sample_seconds (1-300). Applied on the capture side's next sample."},
+    {"method": "POST", "path": "/api/limits/reset", "desc": "Zeroes the limit trip and paused-time counters."},
+    {"method": "GET", "path": "/api/logs/tail", "desc": "Last records of the web or capture log. ?source=web|capture&lines=200&level=WARNING."},
+    {"method": "POST", "path": "/api/data/retention", "desc": "Override any part of the retention policy (retention_days, retention_alert_days, retention_interval_seconds, retention_max_packets, table_limits{table: n}). null clears an override back to the env default. Applies on the next sweep, no restart."},
     {"method": "GET", "path": "/api/export/", "desc": "Available IOC export datasets, formats and column sets."},
     {"method": "GET", "path": "/api/export/alerts", "desc": "Monitor hits as indicators (rule, severity, 5-tuple, first/last seen). ?format=csv|json"},
     {"method": "GET", "path": "/api/export/endpoints", "desc": "Observed IPs with hit counts, worst severity and the rules that flagged them. ?format=csv|json"},
@@ -2067,21 +2085,56 @@ def tags_sctp(request):
     return tags(request)
 
 
+# The dashboard snapshot aggregates the whole window and the dashboard polls it
+# every few seconds from several panels at once. Cache the store part briefly
+# per window and density; runtime and client counts are read fresh every time.
+_DASHBOARD_TTL_SECONDS = 3.0
+_DASHBOARD_CACHE: dict[tuple, tuple[float, dict]] = {}
+_DASHBOARD_LOCK = threading.Lock()
+
+
 @app.api("/api/dashboard/", methods=("GET",))
 def dashboard(request):
     compact = str(request.query.get("compact") or "").strip().lower() in {"1", "true", "yes", "on"}
-    payload = store.dashboard_snapshot(
-        ws_clients=hub.list_clients(),
-        compact=compact,
-        since=_normalize_since(request),
-    )
+    since = _normalize_since(request)
+    key = (compact, str(request.query.get("since") or "").strip())
+    now = time.monotonic()
+    with _DASHBOARD_LOCK:
+        cached = _DASHBOARD_CACHE.get(key)
+    if cached and now - cached[0] < _DASHBOARD_TTL_SECONDS:
+        payload = dict(cached[1])
+    else:
+        payload = store.dashboard_snapshot(
+            ws_clients=hub.list_clients(),
+            compact=compact,
+            since=since,
+        )
+        with _DASHBOARD_LOCK:
+            _DASHBOARD_CACHE[key] = (now, payload)
     payload["runtime"] = runtime.snapshot()
     return payload
 
 
+# The analytics snapshot costs seconds on a large store and the dashboard asks
+# for it on every refresh. Cache it briefly per window label (the cutoff itself
+# moves every second, so the label is the stable key).
+_ANALYTICS_TTL_SECONDS = 10.0
+_ANALYTICS_CACHE: dict[str, tuple[float, dict]] = {}
+_ANALYTICS_LOCK = threading.Lock()
+
+
 @app.api("/api/charts/analytics", methods=("GET",))
 def charts_analytics(request):
-    return store.analytics_snapshot(since=_normalize_since(request))
+    label = str(request.query.get("since") or "").strip()
+    now = time.monotonic()
+    with _ANALYTICS_LOCK:
+        cached = _ANALYTICS_CACHE.get(label)
+        if cached and now - cached[0] < _ANALYTICS_TTL_SECONDS:
+            return cached[1]
+    snapshot = store.analytics_snapshot(since=_normalize_since(request))
+    with _ANALYTICS_LOCK:
+        _ANALYTICS_CACHE[label] = (time.monotonic(), snapshot)
+    return snapshot
 
 
 @app.api("/api/map/scan", methods=("GET",))
@@ -2585,6 +2638,27 @@ def detection_exclusions(request):
     return {"exclusion_filters": store.set_exclusion_filters(payload.get("exclusion_filters"))}
 
 
+@app.api("/api/pipeline/config", methods=("GET", "POST"))
+def pipeline_config(request):
+    """Packet cache limit, processing job count and persist mode.
+
+    The sniffer reads these from the store, so the web process only writes
+    them. cache_limit and persist_mode take effect on the running capture;
+    jobs is applied when capture is next started.
+    """
+    if request.method.upper() == "GET":
+        return store.get_packet_pipeline_config()
+    payload = _read_json_body(request)
+    return store.set_packet_pipeline_config(payload)
+
+
+@app.api("/api/pipeline/reset", methods=("POST",))
+def pipeline_reset(request):
+    """Zeroes the cache/jobs counters (accepted, dropped, peak, processed,
+    persisted, skipped, errors) without touching the settings or the queue."""
+    return runtime.reset_packet_pipeline()
+
+
 @app.api("/api/ai/model", methods=("GET", "POST"))
 def ai_model(request):
     """Export (GET) or import (POST) the feedback-trained classifier's
@@ -2847,6 +2921,21 @@ def catalog_presets(request):
         store.write_catalog_file(filename, rows)
         return {"status": "ok"}
     raise ValueError("Unsupported method")
+
+
+# Counts only, for screens that show how many monitors exist. The full catalog
+# (every match and action body) is tens of megabytes; asking for it just to
+# count rows made the UI pay that cost on every refresh.
+_MONITOR_STATS_CACHE: dict = {"at": 0.0, "value": None}
+
+
+@app.api("/api/monitors/stats", methods=("GET",))
+def monitors_stats(request):
+    now = time.monotonic()
+    if _MONITOR_STATS_CACHE["value"] is None or now - _MONITOR_STATS_CACHE["at"] > 5.0:
+        _MONITOR_STATS_CACHE["value"] = store.monitor_catalog_stats()
+        _MONITOR_STATS_CACHE["at"] = now
+    return _MONITOR_STATS_CACHE["value"]
 
 
 @app.api("/api/monitors/", methods=("GET", "POST", "PUT", "DELETE"))
@@ -3283,33 +3372,68 @@ def data_storage_api(request):
     return store.database_storage_stats()
 
 
-@app.api("/api/data/retention", methods=("GET",))
+@app.api("/api/data/retention", methods=("GET", "POST"))
 def data_retention_config_api(request):
-    """Effective retention configuration for this instance.
+    """Effective retention policy. GET returns it; POST overrides any part.
 
-    Values are resolved once at startup from SNIFF4HOUND_* environment
-    variables; changing them requires a restart.
+    Each value falls back to its SNIFF4HOUND_* environment default when no
+    override is stored (null in POST clears it). Overrides are read by the
+    capture-side sweep on its next run, so no restart is needed.
     """
-    from .settings import (RETENTION_DAYS, RETENTION_ALERT_DAYS,
-                           RETENTION_MAX_PACKETS, RETENTION_INTERVAL_SECONDS)
-    from .store import (PACKET_TABLE_LIMIT, PAYLOAD_TABLE_LIMIT, FLOW_TABLE_LIMIT,
-                        TAG_TABLE_LIMIT, DOMAIN_TABLE_LIMIT, PATH_TABLE_LIMIT,
-                        SESSION_TABLE_LIMIT)
-    return {
-        "retention_days": RETENTION_DAYS,
-        "retention_alert_days": RETENTION_ALERT_DAYS,
-        "retention_max_packets": RETENTION_MAX_PACKETS,
-        "retention_interval_seconds": RETENTION_INTERVAL_SECONDS,
-        "table_limits": {
-            "packets": PACKET_TABLE_LIMIT,
-            "payloads": PAYLOAD_TABLE_LIMIT,
-            "flows": FLOW_TABLE_LIMIT,
-            "tags": TAG_TABLE_LIMIT,
-            "domains": DOMAIN_TABLE_LIMIT,
-            "paths": PATH_TABLE_LIMIT,
-            "sessions": SESSION_TABLE_LIMIT,
-        },
-    }
+    if request.method.upper() == "POST":
+        return store.set_retention_config(_read_json_body(request))
+    return store.get_retention_config()
+
+
+@app.api("/api/logs/config", methods=("GET", "POST"))
+def logs_config_api(request):
+    """Log level, rotation (size and backups) and retention for both processes.
+
+    POST stores the change and applies it here at once; the capture process
+    picks it up on its next reload (about ten seconds).
+    """
+    if request.method.upper() == "POST":
+        config = store.set_log_config(_read_json_body(request))
+        log_setup.apply_config(config)
+        return config
+    return store.get_log_config()
+
+
+@app.api("/api/limits", methods=("GET", "POST"))
+def limits_api(request):
+    """CPU, RAM and storage limits for the capture process, plus the live state
+    the capture side writes (paused, reason, last measurement, counters).
+
+    POST stores new limits; the capture process applies them on its next sample.
+    """
+    if request.method.upper() == "POST":
+        store.set_limit_config(_read_json_body(request))
+    state = store.get_limit_state()
+    return {"config": store.get_limit_config(), "state": state}
+
+
+@app.api("/api/limits/reset", methods=("POST",))
+def limits_reset_api(request):
+    """Zeroes the trip and paused-time counters. Limits and pause state stay as they are."""
+    state = store.get_limit_state()
+    state["counters"] = {"trips": 0, "by_kind": {"cpu": 0, "ram": 0, "storage": 0}, "paused_seconds": 0.0}
+    store.set_limit_state(state)
+    return {"config": store.get_limit_config(), "state": state}
+
+
+@app.api("/api/logs/tail", methods=("GET",))
+def logs_tail_api(request):
+    """Last records of one process's log, newest last. ?source=web|capture
+    &lines=200 &level=WARNING (minimum level)."""
+    source = str(request.query.get("source") or "web").strip().lower()
+    if source not in {"web", "capture"}:
+        raise ValueError("source must be web or capture")
+    lines = _normalize_limit(request.query.get("lines"), default=200, maximum=2000)
+    level = str(request.query.get("level") or "").strip().upper() or None
+    if level is not None and level not in log_setup.LOG_LEVELS:
+        raise ValueError(f"level must be one of: {', '.join(log_setup.LOG_LEVELS)}")
+    rows = log_setup.tail(source, lines=lines, min_level=level)
+    return {"source": source, "rows": rows, "returned": len(rows)}
 
 
 @app.api("/api/data/compact/", methods=("POST",))
@@ -4047,8 +4171,13 @@ def _apply_api_job_queue():
 
         @wraps(current_handler)
         def queued_handler(request, *args, _handler=current_handler, _path=path, **kwargs):
-            kind = f"{getattr(request, 'method', 'GET')} {_path}"
-            finished, payload = job_queue.submit(kind, lambda: _handler(request, *args, **kwargs))
+            method = str(getattr(request, 'method', 'GET') or 'GET').upper()
+            kind = f"{method} {_path}"
+            # Reads never persist a job row (see JobQueue.submit): under a busy
+            # database a row per GET starved the capture writer and fed itself.
+            finished, payload = job_queue.submit(
+                kind, lambda: _handler(request, *args, **kwargs), persist=method not in ("GET", "HEAD"),
+            )
             if finished:
                 return payload
             return Response.json(

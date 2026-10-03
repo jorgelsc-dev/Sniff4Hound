@@ -326,7 +326,7 @@
         <!-- Retention policy -->
         <DataPanel
           title="Política de retención"
-          subtitle="Valores efectivos para esta instancia. Se fijan al arrancar desde variables de entorno SNIFF4HOUND_* y requieren reinicio para cambiarlos."
+          subtitle="Editable. Se guarda en la base y se aplica en el siguiente barrido, sin reiniciar. Sin valor propio, cada campo usa su variable de entorno SNIFF4HOUND_*."
           variant="tonal"
           class="mb-4 retention-card"
         >
@@ -342,43 +342,72 @@
             </v-chip>
           </template>
 
-          <v-row v-if="retentionConfig" density="compact" class="mt-2">
-            <!-- Temporal policy -->
+          <v-row v-if="retentionConfig && retentionDraft" density="compact" class="mt-2">
             <v-col cols="12" class="pb-1">
               <div class="text-caption font-weight-medium text-medium-emphasis mb-2 text-uppercase" style="letter-spacing:.06em">Política temporal (primaria)</div>
             </v-col>
             <v-col cols="12" sm="6" md="4">
-              <div class="retention-field">
-                <div class="text-caption text-medium-emphasis">Ventana general</div>
-                <div class="text-h6 font-weight-bold">{{ retentionConfig.retention_days }}<span class="text-body-2 ml-1">días</span></div>
-                <div class="text-caption mono text-medium-emphasis">SNIFF4HOUND_RETENTION_DAYS</div>
-              </div>
+              <v-text-field
+                v-model.number="retentionDraft.retention_days"
+                label="Ventana general"
+                type="number"
+                min="0"
+                max="3650"
+                suffix="días"
+                variant="outlined"
+                density="compact"
+                :disabled="retentionSaving"
+                :hint="retentionFieldHint('retention_days', 'SNIFF4HOUND_RETENTION_DAYS')"
+                persistent-hint
+              />
             </v-col>
             <v-col cols="12" sm="6" md="4">
-              <div class="retention-field">
-                <div class="text-caption text-medium-emphasis">Alertas high/critical</div>
-                <div class="text-h6 font-weight-bold">{{ retentionConfig.retention_alert_days }}<span class="text-body-2 ml-1">días</span></div>
-                <div class="text-caption mono text-medium-emphasis">SNIFF4HOUND_RETENTION_ALERT_DAYS</div>
-              </div>
+              <v-text-field
+                v-model.number="retentionDraft.retention_alert_days"
+                label="Alertas high/critical"
+                type="number"
+                min="0"
+                max="3650"
+                suffix="días"
+                variant="outlined"
+                density="compact"
+                :disabled="retentionSaving"
+                :hint="retentionFieldHint('retention_alert_days', 'SNIFF4HOUND_RETENTION_ALERT_DAYS')"
+                persistent-hint
+              />
             </v-col>
             <v-col cols="12" sm="6" md="4">
-              <div class="retention-field">
-                <div class="text-caption text-medium-emphasis">Intervalo de barrido</div>
-                <div class="text-h6 font-weight-bold">{{ retentionConfig.retention_interval_seconds }}<span class="text-body-2 ml-1">s</span></div>
-                <div class="text-caption mono text-medium-emphasis">SNIFF4HOUND_RETENTION_INTERVAL_SECONDS</div>
-              </div>
+              <v-text-field
+                v-model.number="retentionDraft.retention_interval_seconds"
+                label="Intervalo de barrido"
+                type="number"
+                min="5"
+                max="86400"
+                suffix="s"
+                variant="outlined"
+                density="compact"
+                :disabled="retentionSaving"
+                :hint="retentionFieldHint('retention_interval_seconds', 'SNIFF4HOUND_RETENTION_INTERVAL_SECONDS')"
+                persistent-hint
+              />
             </v-col>
 
-            <!-- Row-count backstops -->
             <v-col cols="12" class="pb-1 mt-3">
               <div class="text-caption font-weight-medium text-medium-emphasis mb-2 text-uppercase" style="letter-spacing:.06em">Topes de filas (freno ante picos)</div>
             </v-col>
             <v-col cols="12" sm="6" md="4">
-              <div class="retention-field">
-                <div class="text-caption text-medium-emphasis">Base (RETENTION_MAX_PACKETS)</div>
-                <div class="text-h6 font-weight-bold">{{ (retentionConfig.retention_max_packets || 0).toLocaleString() }}</div>
-                <div class="text-caption mono text-medium-emphasis">SNIFF4HOUND_RETENTION_MAX_PACKETS</div>
-              </div>
+              <v-text-field
+                v-model.number="retentionDraft.retention_max_packets"
+                label="Base de paquetes"
+                type="number"
+                min="1000"
+                step="1000"
+                variant="outlined"
+                density="compact"
+                :disabled="retentionSaving"
+                :hint="retentionFieldHint('retention_max_packets', 'SNIFF4HOUND_RETENTION_MAX_PACKETS')"
+                persistent-hint
+              />
             </v-col>
             <v-col cols="12">
               <v-table density="compact" class="retention-table rounded-lg">
@@ -387,18 +416,46 @@
                     <th>Tabla</th>
                     <th>Límite de filas</th>
                     <th>Origen</th>
+                    <th class="text-right">Acción</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(limit, table) in retentionConfig.table_limits" :key="table">
+                  <tr v-for="table in retentionTables" :key="table">
                     <td class="mono">{{ table }}</td>
-                    <td>{{ limit.toLocaleString() }}</td>
-                    <td class="text-caption text-medium-emphasis">
-                      {{ tableLimitOrigin(table, limit) }}
+                    <td class="retention-table__input">
+                      <v-text-field
+                        v-model.number="retentionDraft.table_limits[table]"
+                        type="number"
+                        min="100"
+                        max="5000000"
+                        variant="underlined"
+                        density="compact"
+                        hide-details
+                        :disabled="retentionSaving"
+                        aria-label="Límite de filas"
+                      />
+                    </td>
+                    <td class="text-caption text-medium-emphasis">{{ retentionTableOrigin(table) }}</td>
+                    <td class="text-right">
+                      <v-btn
+                        v-if="retentionOverridden(`limit_${table}`)"
+                        size="x-small"
+                        variant="text"
+                        :disabled="retentionSaving"
+                        @click="clearRetentionOverride({ table })"
+                      >Restablecer</v-btn>
                     </td>
                   </tr>
                 </tbody>
               </v-table>
+            </v-col>
+            <v-col cols="12">
+              <v-alert v-if="retentionError" type="error" variant="tonal" density="comfortable" class="mb-3">{{ retentionError }}</v-alert>
+              <v-alert v-if="retentionSaved" type="success" variant="tonal" density="comfortable" class="mb-3">Política guardada. Se aplica en el siguiente barrido.</v-alert>
+              <div class="d-flex justify-end ga-2">
+                <v-btn variant="text" :disabled="retentionSaving || !retentionOverriddenAny" @click="clearRetentionOverride({})">Restablecer todo</v-btn>
+                <v-btn color="primary" variant="tonal" :loading="retentionSaving" :disabled="retentionSaving || !retentionDirty" @click="saveRetentionConfig">Guardar política</v-btn>
+              </div>
             </v-col>
           </v-row>
           <div v-else-if="retentionLoading" class="text-caption text-medium-emphasis">Cargando política…</div>
@@ -1334,6 +1391,64 @@
         <v-card variant="tonal" class="pa-4 notify-card">
           <div class="d-flex align-start justify-space-between flex-wrap ga-3">
             <div>
+              <div class="text-subtitle-2 font-weight-medium">Notificar detecciones de monitores</div>
+              <div class="text-caption text-medium-emphasis mt-1">
+                Una notificación por cada detección de un monitor, sin agrupar ni silenciar.
+                Se guarda localmente en el navegador.
+              </div>
+            </div>
+            <v-switch
+              :model-value="store.state.notifyDetectionsEnabled"
+              aria-label="Notificar detecciones de monitores"
+              color="primary"
+              hide-details
+              inset
+              @update:model-value="(value) => store.setNotifyDetectionsEnabled(value)"
+            />
+          </div>
+          <div class="d-flex align-start justify-space-between flex-wrap ga-3 mt-4">
+            <div>
+              <div class="text-subtitle-2 font-weight-medium">Notificar alertas de la IA</div>
+              <div class="text-caption text-medium-emphasis mt-1">
+                Una notificación por cada alerta del clasificador. Se guarda localmente en el navegador.
+              </div>
+            </div>
+            <v-switch
+              :model-value="store.state.notifyAiEnabled"
+              aria-label="Notificar alertas de la IA"
+              color="primary"
+              hide-details
+              inset
+              @update:model-value="(value) => store.setNotifyAiEnabled(value)"
+            />
+          </div>
+          <div class="d-flex align-start justify-space-between flex-wrap ga-3 mt-4">
+            <div>
+              <div class="text-subtitle-2 font-weight-medium">Severidad mínima para notificar</div>
+              <div class="text-caption text-medium-emphasis mt-1">
+                Por debajo de esta severidad las detecciones siguen en la lista pero no avisan.
+                Por defecto, media en adelante.
+              </div>
+            </div>
+            <v-select
+              :model-value="store.state.notifyMinSeverity"
+              :items="[
+                { title: 'Info', value: 'info' },
+                { title: 'Baja', value: 'low' },
+                { title: 'Media', value: 'medium' },
+                { title: 'Alta', value: 'high' },
+                { title: 'Crítica', value: 'critical' },
+              ]"
+              aria-label="Severidad mínima para notificar"
+              variant="outlined"
+              density="compact"
+              hide-details
+              style="max-width: 180px"
+              @update:model-value="(value) => store.setNotifyMinSeverity(value)"
+            />
+          </div>
+          <div class="d-flex align-start justify-space-between flex-wrap ga-3 mt-4">
+            <div>
               <div class="text-subtitle-2 font-weight-medium">Sonido de notificación</div>
               <div class="text-caption text-medium-emphasis mt-1">
                 Reproduce un sonido en esta pestaña cuando llegue una alerta nueva. Se guarda
@@ -1349,6 +1464,247 @@
               @update:model-value="(value) => store.setNotifySoundEnabled(value)"
             />
           </div>
+        </v-card>
+      </v-window-item>
+
+      <v-window-item value="packetcache">
+        <v-card variant="tonal" class="pa-4 pipeline-card">
+          <div class="text-subtitle-2 font-weight-medium">Caché de paquetes</div>
+          <div class="text-caption text-medium-emphasis mt-1 mb-3">
+            El sniffer deposita cada paquete capturado en esta caché y los jobs lo consumen desde aquí, así que la captura no espera al procesamiento. Si la caché se llena, se descartan los paquetes más antiguos.
+          </div>
+          <v-text-field
+            v-model.number="pipelineDraft.cache_limit"
+            label="Límite de retención (paquetes)"
+            type="number"
+            min="1000"
+            max="1000000"
+            step="1000"
+            variant="outlined"
+            density="comfortable"
+            :disabled="!pipelineConfig || pipelineSaving"
+            hint="Entre 1.000 y 1.000.000 paquetes en espera."
+            persistent-hint
+          />
+          <div v-if="pipelineLive" class="mt-4">
+            <div class="d-flex align-center justify-space-between mb-2">
+              <span class="text-caption text-medium-emphasis">Contadores desde {{ formatTimestamp(pipelineLive.since) || "el inicio" }}</span>
+              <v-btn size="small" variant="tonal" prepend-icon="mdi-restart" :loading="pipelineResetting" :disabled="pipelineResetting" @click="resetPipelineCounters">
+                Reiniciar contadores
+              </v-btn>
+            </div>
+            <v-row dense>
+              <v-col cols="6">
+                <div class="text-caption text-medium-emphasis">En espera</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_depth ?? 0).toLocaleString() }}</div>
+              </v-col>
+              <v-col cols="6">
+                <div class="text-caption text-medium-emphasis">Límite</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_limit ?? 0).toLocaleString() }}</div>
+              </v-col>
+              <v-col cols="6">
+                <div class="text-caption text-medium-emphasis">Aceptados</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_accepted ?? 0).toLocaleString() }}</div>
+              </v-col>
+              <v-col cols="6">
+                <div class="text-caption text-medium-emphasis">Descartados por límite</div>
+                <div class="text-body-1 font-weight-medium text-warning">{{ (pipelineLive.cache_dropped ?? 0).toLocaleString() }}</div>
+              </v-col>
+              <v-col cols="6">
+                <div class="text-caption text-medium-emphasis">Pico de ocupación</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_peak ?? 0).toLocaleString() }}</div>
+              </v-col>
+            </v-row>
+          </div>
+          <v-alert v-if="pipelineError" type="error" variant="tonal" density="comfortable" class="mt-3">
+            {{ pipelineError }}
+          </v-alert>
+          <div class="d-flex justify-end mt-3">
+            <v-btn color="primary" variant="tonal" :loading="pipelineSaving" :disabled="!pipelineConfig" @click="savePipelineConfig">
+              Guardar
+            </v-btn>
+          </div>
+        </v-card>
+      </v-window-item>
+
+      <v-window-item value="packetjobs">
+        <v-card variant="tonal" class="pa-4 pipeline-card">
+          <div class="text-subtitle-2 font-weight-medium">Jobs de procesamiento</div>
+          <div class="text-caption text-medium-emphasis mt-1 mb-3">
+            Workers que toman paquetes de la caché, los evalúan con monitores e IA, y persisten los que corresponden en SniffStore.
+          </div>
+          <v-text-field
+            v-model.number="pipelineDraft.jobs"
+            label="Número de jobs"
+            type="number"
+            min="1"
+            max="16"
+            variant="outlined"
+            density="comfortable"
+            :disabled="!pipelineConfig || pipelineSaving"
+            hint="Entre 1 y 16. Se aplica al iniciar la captura."
+            persistent-hint
+            class="mb-2"
+          />
+          <v-select
+            v-model="pipelineDraft.persist_mode"
+            label="Persistencia"
+            :items="[{ title: 'Solo paquetes con alerta', value: 'alerts' }, { title: 'Todo el tráfico procesado', value: 'all' }]"
+            item-title="title"
+            item-value="value"
+            variant="outlined"
+            density="comfortable"
+            :disabled="!pipelineConfig || pipelineSaving"
+            hint="Qué paquetes llegan a SniffStore después de procesarse. «Todo» escribe cada paquete en la base de datos."
+            persistent-hint
+          />
+          <div v-if="pipelineLive" class="mt-4">
+            <div class="d-flex align-center justify-space-between mb-2">
+              <span class="text-caption text-medium-emphasis">Contadores desde {{ formatTimestamp(pipelineLive.since) || "el inicio" }}</span>
+              <v-btn size="small" variant="tonal" prepend-icon="mdi-restart" :loading="pipelineResetting" :disabled="pipelineResetting" @click="resetPipelineCounters">
+                Reiniciar contadores
+              </v-btn>
+            </div>
+            <v-row dense>
+              <v-col cols="6">
+                <div class="text-caption text-medium-emphasis">Procesados</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.processed ?? 0).toLocaleString() }}</div>
+              </v-col>
+              <v-col cols="6">
+                <div class="text-caption text-medium-emphasis">Persistidos</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.persisted ?? 0).toLocaleString() }}</div>
+              </v-col>
+              <v-col cols="6">
+                <div class="text-caption text-medium-emphasis">Omitidos (sin alerta)</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.skipped ?? 0).toLocaleString() }}</div>
+              </v-col>
+              <v-col cols="6">
+                <div class="text-caption text-medium-emphasis">Escrituras fallidas (BD)</div>
+                <div class="text-body-1 font-weight-medium text-warning">{{ (pipelineLive.write_errors ?? 0).toLocaleString() }}</div>
+              </v-col>
+              <v-col cols="6">
+                <div class="text-caption text-medium-emphasis">Errores de evaluación</div>
+                <div class="text-body-1 font-weight-medium text-warning">{{ (pipelineLive.errors ?? 0).toLocaleString() }}</div>
+              </v-col>
+            </v-row>
+          </div>
+          <v-alert v-if="pipelineError" type="error" variant="tonal" density="comfortable" class="mt-3">
+            {{ pipelineError }}
+          </v-alert>
+          <div class="d-flex justify-end mt-3">
+            <v-btn color="primary" variant="tonal" :loading="pipelineSaving" :disabled="!pipelineConfig" @click="savePipelineConfig">
+              Guardar
+            </v-btn>
+          </div>
+        </v-card>
+      </v-window-item>
+
+      <v-window-item value="limits">
+        <v-card variant="tonal" class="pa-4 mb-4">
+          <div class="text-subtitle-2 font-weight-medium">Límites de recursos</div>
+          <div class="text-caption text-medium-emphasis mt-1 mb-3">
+            Si la captura supera un límite en dos mediciones seguidas, se paran la captura y los jobs de procesamiento, como en un reinicio. Vuelven solos cuando todos los valores bajan del porcentaje de reanudación. Un valor de 0 desactiva ese límite.
+          </div>
+          <v-row dense v-if="limitDraft">
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field v-model.number="limitDraft.cpu_percent" label="CPU máxima" type="number" min="0" max="100" suffix="%" variant="outlined" density="comfortable" :disabled="limitSaving" hint="Del total de la máquina. 0 = sin límite." persistent-hint />
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field v-model.number="limitDraft.ram_mb" label="RAM máxima" type="number" min="0" suffix="MB" variant="outlined" density="comfortable" :disabled="limitSaving" hint="Memoria del proceso de captura." persistent-hint />
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field v-model.number="limitDraft.storage_mb" label="Almacenamiento máximo" type="number" min="0" suffix="MB" variant="outlined" density="comfortable" :disabled="limitSaving" hint="Base de datos, WAL y logs." persistent-hint />
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field v-model.number="limitDraft.resume_percent" label="Reanudar al" type="number" min="10" max="99" suffix="%" variant="outlined" density="comfortable" :disabled="limitSaving" hint="Porcentaje del límite por debajo del cual se reanuda." persistent-hint />
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field v-model.number="limitDraft.sample_seconds" label="Medición cada" type="number" min="1" max="300" suffix="s" variant="outlined" density="comfortable" :disabled="limitSaving" />
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field v-model.number="limitDraft.cooldown_seconds" label="Espera antes de reanudar" type="number" min="0" max="3600" suffix="s" variant="outlined" density="comfortable" :disabled="limitSaving" hint="Evita encender y apagar la captura en bucle." persistent-hint />
+            </v-col>
+          </v-row>
+          <div v-if="limitsData" class="mt-3">
+            <div class="d-flex align-center justify-space-between mb-2">
+              <span class="text-caption text-medium-emphasis">
+                Estado: {{ limitsData.state && limitsData.state.paused ? `pausado (${limitsData.state.reason || 'límite'})` : 'capturando' }}
+                <span v-if="limitsData.state && limitsData.state.paused_at"> · desde {{ formatTimestamp(limitsData.state.paused_at) }}</span>
+              </span>
+              <v-btn size="small" variant="tonal" prepend-icon="mdi-restart" :loading="limitResetting" :disabled="limitResetting" @click="resetLimitCounters">Reiniciar contadores</v-btn>
+            </div>
+            <v-row dense>
+              <v-col cols="6" sm="3"><div class="text-caption text-medium-emphasis">Pausas totales</div><div class="text-body-1 font-weight-medium">{{ (limitsData.state?.counters?.trips ?? 0).toLocaleString() }}</div></v-col>
+              <v-col cols="6" sm="3"><div class="text-caption text-medium-emphasis">Por CPU</div><div class="text-body-1 font-weight-medium">{{ limitsData.state?.counters?.by_kind?.cpu ?? 0 }}</div></v-col>
+              <v-col cols="6" sm="3"><div class="text-caption text-medium-emphasis">Por RAM</div><div class="text-body-1 font-weight-medium">{{ limitsData.state?.counters?.by_kind?.ram ?? 0 }}</div></v-col>
+              <v-col cols="6" sm="3"><div class="text-caption text-medium-emphasis">Por almacenamiento</div><div class="text-body-1 font-weight-medium">{{ limitsData.state?.counters?.by_kind?.storage ?? 0 }}</div></v-col>
+              <v-col cols="12"><div class="text-caption text-medium-emphasis">Tiempo pausado acumulado</div><div class="text-body-1 font-weight-medium">{{ Math.round(limitsData.state?.counters?.paused_seconds ?? 0) }} s</div></v-col>
+            </v-row>
+          </div>
+          <v-alert v-if="limitError" type="error" variant="tonal" density="comfortable" class="mt-3">{{ limitError }}</v-alert>
+          <v-alert v-if="limitSaved" type="success" variant="tonal" density="comfortable" class="mt-3">Límites guardados.</v-alert>
+          <div class="d-flex justify-end mt-3">
+            <v-btn color="primary" variant="tonal" :loading="limitSaving" :disabled="!limitDraft || limitSaving" @click="saveLimits">Guardar</v-btn>
+          </div>
+        </v-card>
+      </v-window-item>
+
+      <v-window-item value="logs">
+        <v-card variant="tonal" class="pa-4 mb-4">
+          <div class="text-subtitle-2 font-weight-medium">Configuración de logs</div>
+          <div class="text-caption text-medium-emphasis mt-1 mb-3">
+            Un archivo NDJSON por proceso en la carpeta de datos (<code>logs/web.ndjson</code> y <code>logs/capture.ndjson</code>). Rota al alcanzar el tamaño y conserva las copias y los días indicados. Los cambios se aplican sin reiniciar.
+          </div>
+          <v-row dense v-if="logDraft">
+            <v-col cols="12" sm="6" md="4">
+              <v-select
+                v-model="logDraft.level"
+                label="Nivel"
+                :items="['DEBUG', 'INFO', 'WARNING', 'ERROR']"
+                variant="outlined"
+                density="comfortable"
+                :disabled="logSaving"
+                hint="DEBUG registra el ciclo de vida de jobs, lotes de captura y sentencias SQL."
+                persistent-hint
+              />
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field v-model.number="logDraft.max_mb" label="Tamaño por archivo" type="number" min="1" max="1024" suffix="MB" variant="outlined" density="comfortable" :disabled="logSaving" />
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field v-model.number="logDraft.backups" label="Copias rotadas" type="number" min="0" max="100" variant="outlined" density="comfortable" :disabled="logSaving" hint="0 = sin copias, el archivo se trunca." persistent-hint />
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field v-model.number="logDraft.retention_days" label="Retención" type="number" min="0" max="3650" suffix="días" variant="outlined" density="comfortable" :disabled="logSaving" hint="0 = conservar todas las copias." persistent-hint />
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field v-model.number="logDraft.slow_ms" label="Sentencia SQL lenta" type="number" min="10" max="60000" suffix="ms" variant="outlined" density="comfortable" :disabled="logSaving" hint="Por encima de este tiempo se registra como WARNING." persistent-hint />
+            </v-col>
+          </v-row>
+          <v-alert v-if="logError" type="error" variant="tonal" density="comfortable" class="mt-3">{{ logError }}</v-alert>
+          <v-alert v-if="logSaved" type="success" variant="tonal" density="comfortable" class="mt-3">Configuración de logs guardada.</v-alert>
+          <div class="d-flex justify-end mt-3">
+            <v-btn color="primary" variant="tonal" :loading="logSaving" :disabled="!logDraft || logSaving" @click="saveLogConfig">Guardar</v-btn>
+          </div>
+        </v-card>
+
+        <v-card variant="tonal" class="pa-4">
+          <div class="d-flex align-center flex-wrap ga-2 mb-3">
+            <div class="text-subtitle-2 font-weight-medium mr-auto">Registro</div>
+            <v-select v-model="logSource" :items="[{ title: 'Web', value: 'web' }, { title: 'Captura', value: 'capture' }]" item-title="title" item-value="value" label="Origen" variant="outlined" density="compact" hide-details style="max-width:160px" @update:model-value="loadLogTail" />
+            <v-select v-model="logLevel" :items="[{ title: 'Todos', value: '' }, { title: 'Desde INFO', value: 'INFO' }, { title: 'Desde WARNING', value: 'WARNING' }, { title: 'Solo ERROR', value: 'ERROR' }]" item-title="title" item-value="value" label="Nivel" variant="outlined" density="compact" hide-details style="max-width:170px" @update:model-value="loadLogTail" />
+            <v-btn variant="tonal" prepend-icon="mdi-refresh" :loading="logTailLoading" @click="loadLogTail">Actualizar</v-btn>
+          </div>
+          <v-alert v-if="logTailError" type="error" variant="tonal" density="comfortable" class="mb-3">{{ logTailError }}</v-alert>
+          <div v-if="logRows.length" class="log-tail">
+            <div v-for="(row, index) in logRows" :key="index" class="log-tail__row" :class="'is-' + String(row.level || '').toLowerCase()">
+              <span class="log-tail__time">{{ String(row.timestamp || '').replace('T', ' ').slice(11, 23) }}</span>
+              <span class="log-tail__level">{{ row.level }}</span>
+              <span class="log-tail__logger">{{ row.logger }}</span>
+              <span class="log-tail__msg">{{ row.message }}<span v-if="logExtras(row)" class="log-tail__extra"> {{ logExtras(row) }}</span></span>
+            </div>
+          </div>
+          <div v-else class="text-caption text-medium-emphasis">Sin registros. Pulsa Actualizar para leer el archivo.</div>
         </v-card>
       </v-window-item>
 
@@ -1489,6 +1845,29 @@ export default {
       graphStatusTimer: null,
       mobilePairingTimer: null,
       aiSnapshot: null,
+      pipelineConfig: null,
+      pipelineDraft: { cache_limit: 20000, jobs: 2, persist_mode: "alerts" },
+      pipelineSaving: false,
+      pipelineError: "",
+      limitsData: null,
+      limitDraft: null,
+      limitSaving: false,
+      limitSaved: false,
+      limitError: "",
+      limitResetting: false,
+      logConfig: null,
+      logDraft: null,
+      logSaving: false,
+      logSaved: false,
+      logError: "",
+      logSource: "web",
+      logLevel: "",
+      logLines: 200,
+      logRows: [],
+      logTailLoading: false,
+      logTailError: "",
+      pipelineResetting: false,
+      graphExtras: { blacklist: null, whitelist: null, exclusions: null, retentionDays: null },
       enginePending: "",
       engineError: "",
       ruleDetailOpen: false,
@@ -1521,7 +1900,11 @@ export default {
 
       // Retention config
       retentionConfig: null,
+      retentionDraft: null,
       retentionLoading: false,
+      retentionSaving: false,
+      retentionSaved: false,
+      retentionError: "",
 
       // Mobile stream
       mobileLoading: false,
@@ -1559,6 +1942,7 @@ export default {
       error: "",
       lastUpdated: "",
       monitors: [],
+      monitorStats: null,
       filterEnabled: true,
       monitorMinSeverity: "info",
       suppressGeneratedInfo: true,
@@ -1589,25 +1973,168 @@ export default {
   computed: {
     graphStates() {
       const online = this.store.state.wsStatus === "online";
-      const live = online && Boolean(this.runtime.sniffer?.running || this.runtime.honeypot?.running);
-      const state = (label, active = live) => ({ label, active: online && active, unknown: !online });
-      const engineState = (name) => !online
-        ? state("Sin conexión", false)
-        : state(this.runtime[name]?.running ? "En ejecución" : "Detenido", Boolean(this.runtime[name]?.running));
+      const runtime = this.runtime;
+      const sniffer = runtime.sniffer || {};
+      const honeypot = runtime.honeypot || {};
+      const live = online && Boolean(sniffer.running || honeypot.running);
+      const pipeline = this.pipelineLive || {};
+      const cfg = this.pipelineConfig || {};
+      const extras = this.graphExtras || {};
+      const ai = this.aiSnapshot || {};
+      const learning = ai.learning_config || {};
+      const exclusions = extras.exclusions || {};
+      const storage = this.storageStats || null;
+      const show = (value) => (online ? value : "—");
+      const num = (value) => Number(value || 0).toLocaleString();
+      const metric = (label, value, tone = "") => ({ label, value: show(value), tone: online ? tone : "" });
+      const state = (label, active, metrics = []) => ({ label, metrics, active: online && Boolean(active), unknown: !online });
+      const engineState = (name) => state(
+        !online ? "Sin conexión" : runtime[name]?.running ? "En ejecución" : "Detenido",
+        runtime[name]?.running,
+      );
+      const errorCount = (map) => Object.keys(map || {}).length;
+      const listenersEnabled = this.listeners.filter(item => item.enabled).length;
+      const freeBytes = storage ? Number(storage.free_bytes || 0) : 0;
+      const liveBytes = storage ? Number(storage.live_bytes || 0) : 0;
+      const configured = this.locationConfigured;
+      const saved = this.locationSaved || {};
+      // Counts from the stats endpoint; the full catalog is only loaded for the detection tab.
+      const enabledMonitors = this.monitorStats ? this.monitorStats.enabled : this.monitors.filter(item => item.enabled).length;
+      const totalMonitors = this.monitorStats ? this.monitorStats.total : this.monitors.length;
+      const ipCount = (exclusions.ip_types || []).length;
+      const hiddenLayers = (learning.hidden_sizes || []).length;
       return {
-        runtime: state(online ? (live ? "Captura activa" : "Motores detenidos") : "Sin conexión", live),
-        capture: engineState("sniffer"),
-        honeypot: { ...engineState("honeypot"), label: online ? `${this.listeners.filter(item => item.enabled).length} listeners habilitados` : "Sin conexión" },
-        location: state(this.locationConfigured ? this.locationSummary : "Sin ubicación"),
-        detection: state(this.error ? "Sin datos" : `${this.monitors.filter(item => item.enabled).length} reglas habilitadas`),
-        scope: state(this.detectionScopes.length ? `${this.detectionScopes.length} ámbitos silenciados` : "Todo el tráfico"),
-        ai: state(!this.aiSnapshot || !online ? "Sin datos" : this.aiSnapshot.training_enabled ? "Entrenamiento activo" : this.aiSnapshot.ai_alert_mode_enabled ? "Alertas de IA activas" : "Entrenamiento detenido", live && Boolean(this.aiSnapshot?.training_enabled || this.aiSnapshot?.ai_alert_mode_enabled)),
-        storage: state(online ? (this.storageStats ? this.formatDbBytes(this.storageStats.live_bytes) + " datos vivos" : "SQLite local") : "Sin conexión"),
-        exclusions: state("Filtros compartidos"),
-        blacklist: state("Bloqueados / permitidos"),
-        connection: state(online ? "Conectado" : "Sin conexión", online),
-        notifications: state(this.store.state.notifySoundEnabled ? "Sonido activado" : "Sonido desactivado", online && this.store.state.notifySoundEnabled),
+        runtime: state(online ? (live ? "Captura activa" : "Motores detenidos") : "Sin conexión", live, [
+          metric("Motores", `${(runtime.running_engines || []).length}/2`, live ? "ok" : ""),
+          metric("Modo", runtime.mode ? runtime.mode.charAt(0).toUpperCase() + runtime.mode.slice(1) : "—"),
+          metric("Concurrentes", runtime.concurrent ? "Sí" : "No"),
+          metric("Auto-inicio", runtime.auto_start ? "Sí" : "No"),
+        ]),
+        capture: {
+          ...engineState("sniffer"),
+          metrics: [
+            metric("Interfaces", num((sniffer.selected_interfaces || []).length)),
+            metric("Vistos", num(sniffer.packets_seen)),
+            metric("Almacenados", num(sniffer.packets_stored)),
+            metric("Errores", num(errorCount(sniffer.errors)), errorCount(sniffer.errors) ? "alert" : "ok"),
+          ],
+        },
+        honeypot: {
+          ...engineState("honeypot"),
+          label: online ? `${listenersEnabled} listeners habilitados` : "Sin conexión",
+          metrics: [
+            metric("Habilitados", num(honeypot.enabled_listener_count ?? listenersEnabled)),
+            metric("Escuchando", num(honeypot.running_listener_count)),
+            metric("Vistos", num(honeypot.packets_seen)),
+            metric("Errores", num(errorCount(honeypot.errors)), errorCount(honeypot.errors) ? "alert" : "ok"),
+          ],
+        },
+        location: state(this.locationConfigured ? this.locationSummary : "Sin ubicación", true, [
+          metric("Latitud", configured && Number.isFinite(saved.lat) ? Number(saved.lat).toFixed(4) : "—"),
+          metric("Longitud", configured && Number.isFinite(saved.lon) ? Number(saved.lon).toFixed(4) : "—"),
+          metric("Estado", configured ? "Configurada" : "Pendiente", configured ? "ok" : "warn"),
+          metric("Etiqueta", saved.label || "—"),
+        ]),
+        detection: state(this.error ? "Sin datos" : enabledMonitors ? `${enabledMonitors} reglas habilitadas` : "Detección apagada", enabledMonitors > 0, [
+          metric("Habilitadas", `${enabledMonitors}/${totalMonitors}`),
+          metric("Severidad mín.", String(this.monitorMinSeverity || "info").toUpperCase()),
+          metric("Info generada", this.suppressGeneratedInfo ? "Silenciada" : "Visible"),
+          metric("Ámbitos", num(this.detectionScopes.length), this.detectionScopes.length ? "warn" : ""),
+        ]),
+        scope: state(this.detectionScopes.length ? `${this.detectionScopes.length} ámbitos silenciados` : "Todo el tráfico", true, [
+          metric("Silenciados", num(this.detectionScopes.length), this.detectionScopes.length ? "warn" : "ok"),
+          metric("Disponibles", num(this.detectionScopeOptions.length)),
+        ]),
+        ai: state(!this.aiSnapshot || !online ? "Sin datos" : ai.training_enabled ? "Entrenamiento activo" : ai.ai_alert_mode_enabled ? "Alertas de IA activas" : "Entrenamiento detenido", live && Boolean(ai.training_enabled || ai.ai_alert_mode_enabled), [
+          metric("Modo", !this.aiSnapshot ? "—" : ai.training_enabled ? "Entrenando" : ai.ai_alert_mode_enabled ? "Alertas IA" : "Detenida", ai.training_enabled || ai.ai_alert_mode_enabled ? "ok" : ""),
+          metric("Capas", num(hiddenLayers)),
+          metric("Cohorte mín.", num(learning.min_cohort)),
+          metric("Captura benigna", ai.training_capture_enabled ? "Sí" : "No"),
+        ]),
+        storage: state(online ? (storage ? this.formatDbBytes(liveBytes) + " datos vivos" : "SQLite local") : "Sin conexión", true, [
+          metric("Datos", storage ? this.formatDbBytes(liveBytes) : "—"),
+          metric("Libre", storage ? this.formatDbBytes(freeBytes) : "—", storage && freeBytes > liveBytes * 0.2 ? "warn" : ""),
+          metric("Retención", extras.retentionDays != null ? `${extras.retentionDays} días` : "—"),
+          metric("Auto-vacuum", storage ? (storage.incremental_reclaim ? "Activa" : "Inactiva") : "—", storage && !storage.incremental_reclaim ? "warn" : "ok"),
+        ]),
+        exclusions: state("Filtros compartidos", true, [
+          metric("Tipos IP", num(ipCount)),
+          metric("CIDR", num((exclusions.cidrs || []).length)),
+          metric("Puertos", num((exclusions.ports || []).length)),
+          metric("Protocolos", num((exclusions.protocols || []).length)),
+        ]),
+        blacklist: state("Bloqueados / permitidos", true, [
+          metric("Bloqueados", num(extras.blacklist?.length)),
+          metric("Permitidos", num(extras.whitelist?.length), "ok"),
+        ]),
+        connection: state(online ? "Conectado" : "Sin conexión", online, [
+          metric("Estado", online ? "En línea" : "Caída", online ? "ok" : "alert"),
+          metric("Canal", online ? "WebSocket" : "—"),
+        ]),
+        logs: state(this.logConfig ? `${this.logConfig.level} · ${this.logConfig.max_mb} MB por archivo` : "Sin datos", online && Boolean(this.logConfig), [
+          metric("Nivel", this.logConfig ? this.logConfig.level : "—", this.logConfig && this.logConfig.level === "DEBUG" ? "warn" : ""),
+          metric("Rotación", this.logConfig ? `${this.logConfig.max_mb} MB` : "—"),
+          metric("Copias", this.logConfig ? num(this.logConfig.backups) : "—"),
+          metric("Retención", this.logConfig ? `${this.logConfig.retention_days} días` : "—"),
+        ]),
+        limits: (() => {
+          const data = this.limitsData;
+          const cfg = data?.config || {};
+          const st = data?.state || {};
+          const m = st.measured || {};
+          const cap = (value, limit) => (limit ? `${num(value)} / ${num(limit)}` : `${num(value)} / ∞`);
+          const label = !data ? "Sin datos" : st.paused ? `Pausado · ${st.reason || "límite"}` : "Dentro de los límites";
+          return state(label, online && data && !st.paused, [
+            metric("CPU", data ? cap(m.cpu_percent ?? 0, cfg.cpu_percent) + " %" : "—", st.paused ? "alert" : ""),
+            metric("RAM", data ? cap(m.ram_mb ?? 0, cfg.ram_mb) + " MB" : "—", st.paused ? "alert" : ""),
+            metric("Disco", data ? cap(m.storage_mb ?? 0, cfg.storage_mb) + " MB" : "—", st.paused ? "alert" : ""),
+            metric("Pausas", data ? num(st.counters?.trips ?? 0) : "—", (st.counters?.trips ?? 0) ? "warn" : "ok"),
+          ]);
+        })(),
+        notifications: state(this.store.state.notifySoundEnabled ? "Sonido activado" : "Sonido desactivado", online && this.store.state.notifySoundEnabled, [
+          metric("Sonido", this.store.state.notifySoundEnabled ? "Activo" : "Apagado", this.store.state.notifySoundEnabled ? "ok" : ""),
+          metric("Alcance", "Este equipo"),
+        ]),
+        packetcache: state(
+          pipeline.cache_limit ? `${num(pipeline.cache_depth)} / ${num(pipeline.cache_limit)} en espera` : `Límite ${num(cfg.cache_limit)}`,
+          live,
+          [
+            metric("En espera", num(pipeline.cache_depth)),
+            metric("Límite", num(pipeline.cache_limit ?? cfg.cache_limit)),
+            metric("Descartados", num(pipeline.cache_dropped), pipeline.cache_dropped ? "warn" : "ok"),
+            metric("Pico", num(pipeline.cache_peak)),
+          ],
+        ),
+        packetjobs: state(
+          cfg.jobs ? `${cfg.jobs} jobs · ${cfg.persist_mode === "all" ? "todo el tráfico" : "solo alertas"}` : "Sin datos",
+          live,
+          [
+            metric("Procesados", num(pipeline.processed)),
+            metric("Persistidos", num(pipeline.persisted), "ok"),
+            metric("Escrituras fallidas", num(pipeline.write_errors), pipeline.write_errors ? "alert" : "ok"),
+            metric("Errores", num(pipeline.errors), pipeline.errors ? "warn" : "ok"),
+          ],
+        ),
       };
+    },
+    retentionTables() {
+      return this.retentionConfig ? Object.keys(this.retentionConfig.table_limits || {}) : [];
+    },
+    retentionOverriddenAny() {
+      return Boolean(this.retentionConfig && this.retentionConfig.overridden && this.retentionConfig.overridden.length);
+    },
+    retentionDirty() {
+      if (!this.retentionConfig || !this.retentionDraft) return false;
+      const config = this.retentionConfig;
+      const draft = this.retentionDraft;
+      const fields = ["retention_days", "retention_alert_days", "retention_interval_seconds", "retention_max_packets"];
+      if (fields.some((field) => Number(draft[field]) !== config[field])) return true;
+      return this.retentionTables.some((table) => Number(draft.table_limits[table]) !== config.table_limits[table]);
+    },
+    pipelineLive() {
+      // Counters live in the capture process and survive a stop, so they stay
+      // readable whether or not capture is running.
+      return this.runtime.sniffer?.packet_pipeline || null;
     },
     mobileInterfaceOptions() {
       return (this.mobileInterfaces || [])
@@ -1767,6 +2294,8 @@ export default {
     },
     activeTab(next) {
       if (String(this.$route.query.section || "") === next) return;
+      // The full catalog is tens of megabytes: fetch it only when its tab opens.
+      if (next === "detection" && !this.loading) this.load({ silent: true });
       const query = { ...this.$route.query };
       if (next) query.section = next;
       else delete query.section;
@@ -1782,7 +2311,8 @@ export default {
     this.loadMobileStream();
     this.loadStorageStats();
     this.loadRetentionConfig();
-    this.load();
+    // Opened straight on the detection tab (deep link): the watcher will not fire on mount.
+    if (this.activeTab === "detection") this.load({ silent: true });
   },
   beforeUnmount() {
     clearInterval(this.graphStatusTimer);
@@ -1795,9 +2325,155 @@ export default {
       const results = await Promise.allSettled([
         this.store.initRuntime(),
         this.store.fetchJsonPromise("/api/ai/config"),
+        this.store.fetchJsonPromise("/api/pipeline/config"),
+        this.store.fetchJsonPromise("/api/blacklist/"),
+        this.store.fetchJsonPromise("/api/whitelist/"),
+        this.store.fetchJsonPromise("/api/detection/exclusions"),
+        this.store.fetchJsonPromise("/api/data/retention"),
+        this.store.fetchJsonPromise("/api/logs/config"),
+        this.store.getStorageStats(),
+        this.store.fetchJsonPromise("/api/limits"),
+        this.store.fetchJsonPromise("/api/monitors/stats"),
       ]);
       this.aiSnapshot = results[1].status === "fulfilled" ? results[1].value : null;
+      const value = (index) => (results[index].status === "fulfilled" ? results[index].value : null);
+      this.graphExtras = {
+        blacklist: value(3),
+        whitelist: value(4),
+        exclusions: value(5)?.exclusion_filters || null,
+        retentionDays: value(6)?.retention_days ?? null,
+      };
+      // Indices follow the request list above: logs is 7, storage is 8.
+      if (value(8)) this.storageStats = value(8);
+      if (value(10)) this.monitorStats = value(10);
+      if (value(9)) {
+        this.limitsData = value(9);
+        if (!this.limitDraft) this.limitDraft = { ...value(9).config };
+      }
+      if (value(7)) {
+        this.logConfig = value(7);
+        if (!this.logDraft) this.logDraft = { ...value(7) };
+      }
+      // Seed the form from the server only on first load: a periodic refresh
+      // must not overwrite values the operator is still typing.
+      if (results[2].status === "fulfilled") {
+        if (!this.pipelineConfig) this.pipelineDraft = { ...results[2].value };
+        this.pipelineConfig = results[2].value;
+      }
       this.statusRefreshing = false;
+    },
+    async saveLimits() {
+      if (this.limitSaving || !this.limitDraft) return;
+      this.limitSaving = true;
+      this.limitSaved = false;
+      this.limitError = "";
+      try {
+        const payload = Object.fromEntries(
+          ["cpu_percent", "ram_mb", "storage_mb", "resume_percent", "sample_seconds", "cooldown_seconds"].map((f) => [f, Number(this.limitDraft[f])]),
+        );
+        this.limitsData = await this.store.fetchJsonPromise("/api/limits", { method: "POST", body: JSON.stringify(payload) });
+        this.limitDraft = { ...this.limitsData.config };
+        this.limitSaved = true;
+      } catch (err) {
+        this.limitError = err.message || "No se pudieron guardar los límites.";
+      } finally {
+        this.limitSaving = false;
+      }
+    },
+    async resetLimitCounters() {
+      if (this.limitResetting) return;
+      this.limitResetting = true;
+      this.limitError = "";
+      try {
+        this.limitsData = await this.store.fetchJsonPromise("/api/limits/reset", { method: "POST" });
+      } catch (err) {
+        this.limitError = err.message || "No se pudieron reiniciar los contadores.";
+      } finally {
+        this.limitResetting = false;
+      }
+    },
+    async saveLogConfig() {
+      if (this.logSaving || !this.logDraft) return;
+      this.logSaving = true;
+      this.logSaved = false;
+      this.logError = "";
+      try {
+        const payload = Object.fromEntries(
+          ["level", "max_mb", "backups", "retention_days", "slow_ms"].map((field) => [field, this.logDraft[field]]),
+        );
+        this.logConfig = await this.store.fetchJsonPromise("/api/logs/config", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        this.logDraft = { ...this.logConfig };
+        this.logSaved = true;
+      } catch (err) {
+        this.logError = err.message || "No se pudo guardar la configuración de logs.";
+      } finally {
+        this.logSaving = false;
+      }
+    },
+    async loadLogTail() {
+      if (this.logTailLoading) return;
+      this.logTailLoading = true;
+      this.logTailError = "";
+      try {
+        const params = new URLSearchParams({ source: this.logSource, lines: String(this.logLines) });
+        if (this.logLevel) params.set("level", this.logLevel);
+        const payload = await this.store.fetchJsonPromise(`/api/logs/tail?${params.toString()}`);
+        this.logRows = (payload.rows || []).slice().reverse();
+      } catch (err) {
+        this.logRows = [];
+        this.logTailError = err.message || "No se pudo leer el log.";
+      } finally {
+        this.logTailLoading = false;
+      }
+    },
+    logExtras(row) {
+      const skip = new Set(["timestamp", "level", "logger", "message", "module", "function", "line"]);
+      const extras = Object.entries(row).filter(([key]) => !skip.has(key));
+      return extras.length ? extras.map(([key, value]) => `${key}=${typeof value === "object" ? JSON.stringify(value) : value}`).join(" ") : "";
+    },
+    async resetPipelineCounters() {
+      if (this.pipelineResetting) return;
+      this.pipelineResetting = true;
+      this.pipelineError = "";
+      try {
+        await this.store.fetchJsonPromise("/api/pipeline/reset", { method: "POST" });
+        await this.refreshGraph();
+      } catch (err) {
+        this.pipelineError = err.message || "No se pudieron reiniciar los contadores.";
+      } finally {
+        this.pipelineResetting = false;
+      }
+    },
+    async savePipelineConfig() {
+      if (this.pipelineSaving) return;
+      const fields = { cache_limit: "Límite de retención", jobs: "Número de jobs" };
+      for (const [field, label] of Object.entries(fields)) {
+        if (!Number.isInteger(Number(this.pipelineDraft[field])) || this.pipelineDraft[field] === "") {
+          this.pipelineError = `${label}: introduce un número entero.`;
+          return;
+        }
+      }
+      this.pipelineSaving = true;
+      this.pipelineError = "";
+      try {
+        const saved = await this.store.fetchJsonPromise("/api/pipeline/config", {
+          method: "POST",
+          body: JSON.stringify({
+            cache_limit: Number(this.pipelineDraft.cache_limit),
+            jobs: Number(this.pipelineDraft.jobs),
+            persist_mode: this.pipelineDraft.persist_mode,
+          }),
+        });
+        this.pipelineConfig = saved;
+        this.pipelineDraft = { ...saved };
+      } catch (err) {
+        this.pipelineError = err.message || "No se pudo guardar la configuración de la caché.";
+      } finally {
+        this.pipelineSaving = false;
+      }
     },
     async toggleEngine(engine, enabled) {
       if (this.enginePending) return;
@@ -2025,6 +2701,7 @@ export default {
       this.retentionLoading = true;
       try {
         this.retentionConfig = await this.store.getRetentionConfig();
+        this.retentionDraft = this.retentionDraftFrom(this.retentionConfig);
       } catch {
         // Non-critical: the tab still works without it
       } finally {
@@ -2039,12 +2716,75 @@ export default {
       if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
       return `${n} B`;
     },
-    tableLimitOrigin(table, limit) {
-      if (!this.retentionConfig) return "";
-      const mp = this.retentionConfig.retention_max_packets;
-      if (limit === mp) return "= RETENTION_MAX_PACKETS";
-      if (limit === mp * 2) return "= RETENTION_MAX_PACKETS × 2";
+    retentionFieldHint(field, envName) {
+      const config = this.retentionConfig;
+      if (!config) return envName;
+      const overridden = this.retentionOverridden(field);
+      return overridden ? `Propio: ${config[field]} · Por defecto (${envName}): ${config.defaults[field]}` : `Por defecto: ${envName}`;
+    },
+    retentionOverridden(key) {
+      return Boolean(this.retentionConfig && this.retentionConfig.overridden && this.retentionConfig.overridden.includes(key));
+    },
+    retentionTableOrigin(table) {
+      if (this.retentionOverridden(`limit_${table}`)) return "valor propio";
+      if (["packets", "payloads", "flows"].includes(table)) return "= base de paquetes";
+      if (table === "tags") return "= base × 2";
       return "fijo";
+    },
+    async saveRetentionConfig() {
+      if (!this.retentionConfig || !this.retentionDraft) return;
+      const config = this.retentionConfig;
+      const payload = {};
+      for (const field of ["retention_days", "retention_alert_days", "retention_interval_seconds", "retention_max_packets"]) {
+        const value = Number(this.retentionDraft[field]);
+        if (Number.isFinite(value) && value !== config[field]) payload[field] = value;
+      }
+      const tables = {};
+      for (const table of this.retentionTables) {
+        const value = Number(this.retentionDraft.table_limits[table]);
+        if (Number.isFinite(value) && value !== config.table_limits[table]) tables[table] = value;
+      }
+      if (Object.keys(tables).length) payload.table_limits = tables;
+      await this.submitRetentionPayload(payload);
+    },
+    async clearRetentionOverride({ table = "" } = {}) {
+      if (!this.retentionConfig) return;
+      if (table) {
+        await this.submitRetentionPayload({ table_limits: { [table]: null } });
+        return;
+      }
+      const payload = {
+        retention_days: null,
+        retention_alert_days: null,
+        retention_interval_seconds: null,
+        retention_max_packets: null,
+        table_limits: Object.fromEntries(this.retentionTables.map((name) => [name, null])),
+      };
+      await this.submitRetentionPayload(payload);
+    },
+    async submitRetentionPayload(payload) {
+      if (this.retentionSaving) return;
+      this.retentionSaving = true;
+      this.retentionError = "";
+      this.retentionSaved = false;
+      try {
+        this.retentionConfig = await this.store.setRetentionConfig(payload);
+        this.retentionDraft = this.retentionDraftFrom(this.retentionConfig);
+        this.retentionSaved = true;
+      } catch (err) {
+        this.retentionError = err.message || "No se pudo guardar la política de retención.";
+      } finally {
+        this.retentionSaving = false;
+      }
+    },
+    retentionDraftFrom(config) {
+      return {
+        retention_days: config.retention_days,
+        retention_alert_days: config.retention_alert_days,
+        retention_interval_seconds: config.retention_interval_seconds,
+        retention_max_packets: config.retention_max_packets,
+        table_limits: { ...config.table_limits },
+      };
     },
     openPurge(scope) {
       this.purgeScope = scope;
@@ -2580,6 +3320,17 @@ export default {
 </script>
 
 <style scoped>
+
+.log-tail { max-height: 460px; overflow: auto; font-family: ui-monospace, Consolas, monospace; font-size: 12px; border-radius: 6px; background: rgba(0,0,0,.25); padding: 6px 8px; }
+.log-tail__row { display: grid; grid-template-columns: 96px 70px 170px 1fr; gap: 10px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+.log-tail__time { color: var(--text-dim); }
+.log-tail__level { font-weight: 600; color: #8fb8ff; }
+.log-tail__row.is-warning .log-tail__level { color: #e4b96c; }
+.log-tail__row.is-error .log-tail__level, .log-tail__row.is-critical .log-tail__level { color: #ef7a7a; }
+.log-tail__row.is-debug .log-tail__level { color: #7d7f8c; }
+.log-tail__logger { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-tail__msg { word-break: break-word; }
+.log-tail__extra { color: var(--text-dim); }
 .settings-view { min-width: 0; }
 .settings-engine { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid #35363e; }
 .settings-engine h3 { font-size: 15px; }

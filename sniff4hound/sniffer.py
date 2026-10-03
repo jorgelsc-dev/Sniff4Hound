@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import ipaddress
+import logging
 import math
 import queue
 import re
@@ -13,6 +15,7 @@ from dataclasses import dataclass, field
 from .ai_learning import features as ai_features, forward as ai_forward, is_current_model_shape
 from .anomaly import AnomalyEngine
 from .logger import get_capture_logger
+from .packet_pipeline import PACKET_JOBS_DEFAULT, PACKET_CACHE_LIMIT_DEFAULT, PIPELINE_BATCH_MAX, PacketCache
 from .monitors import RuleAlertThrottle, ensure_monitor_index, evaluate_packet, indexed_monitors_by_id
 from .packet_ai import packet_bytes
 from .regex_safety import compiled_regex, regex_search
@@ -22,6 +25,9 @@ from .settings import (
     CAPTURE_BUFFER_BYTES,
     CAPTURE_POLL_TIMEOUT,
     CAPTURE_PROMISCUOUS,
+    CAPTURE_REOPEN_ATTEMPTS,
+    CAPTURE_REOPEN_BACKOFF_MAX,
+    CAPTURE_REOPEN_BACKOFF_STEP,
     CAPTURE_SOCKET_ERROR_LIMIT,
     MONITOR_MIN_SEVERITY_DEFAULT,
     MONITOR_SEVERITIES,
@@ -128,7 +134,8 @@ SOL_PACKET = 263
 PACKET_ADD_MEMBERSHIP = 1
 PACKET_MR_PROMISC = 1
 ETH_P_ALL = 0x0003
-MONITOR_CACHE_TTL_SECONDS = 2.0
+MONITOR_CACHE_TTL_SECONDS = 5.0
+TRACE_PACKETS_PER_SECOND = 3
 # Cap on Sniffer._tls_flows (see its docstring) - a busy sniffed network can
 # accumulate many thousands of concurrent flows; this is a best-effort
 # memory, not a correctness-critical structure, so a wholesale clear once
@@ -136,6 +143,11 @@ MONITOR_CACHE_TTL_SECONDS = 2.0
 TLS_FLOW_MEMORY_CAP = 20000
 RULESET_CACHE_TTL_SECONDS = 2.0
 STATS_BROADCAST_MIN_INTERVAL_SECONDS = 1.0
+# Every alert is an alert. The per-source rate limit on repeated medium+ hits
+# silenced real repeats (a scan, a flapping host) before they reached the
+# store, the feed or a notification, so it is off. Operators keep their own
+# controls: monitor enable/disable, scopes, exclusions and whitelist.
+RULE_ALERT_THROTTLE_ENABLED = False
 
 LOGGER = get_capture_logger()
 
@@ -599,6 +611,26 @@ class Sniffer:
         )
         self._selected_interfaces: tuple[str, ...] = ()
         self._stop_event = threading.Event()
+        # Capture threads hand packets to _packet_cache; the jobs in
+        # _pipeline_threads evaluate and persist them. Both exist only while
+        # running (see start/stop). _pipeline_persist_all mirrors the
+        # store's persist_mode and is refreshed with the other settings.
+        self._packet_cache: PacketCache | None = None
+        self._pipeline_threads: list = []
+        self._pipeline_jobs = PACKET_JOBS_DEFAULT
+        self._pipeline_persist_all = False
+        self._trace_window_start = 0.0
+        self._trace_budget = 0
+        # Job-side counters. Guarded by a lock: several jobs bump them at once.
+        self._pipeline_lock = threading.Lock()
+        self._pipeline_processed = 0
+        self._pipeline_persisted = 0
+        self._pipeline_errors = 0
+        self._pipeline_write_errors = 0
+        self._pipeline_since = ""
+        # Per-thread counter buffer: a job collects its batch's counts and
+        # applies them only once the batch has committed.
+        self._pipeline_tls = threading.local()
         self._threads: list[threading.Thread] = []
         self._state_lock = threading.RLock()
         self.state = CaptureState()
@@ -613,6 +645,7 @@ class Sniffer:
         self._exclusion_filters: dict = {"ip_types": [], "cidrs": [], "protocols": [], "ports": []}
         self._exclusion_networks: list = []
         self._monitor_cache_at = 0.0
+        self._monitor_stamp = None
         self._monitor_refresh_lock = threading.Lock()
         self._monitor_refresh_in_flight = False
         self._ruleset_cache: list[dict] = []
@@ -726,6 +759,30 @@ class Sniffer:
             return selected[0]
         return f"{len(selected)} interfaces"
 
+    def _pipeline_snapshot(self) -> dict:
+        cache = self._packet_cache
+        with self._pipeline_lock:
+            processed = self._pipeline_processed
+            persisted = self._pipeline_persisted
+            errors = self._pipeline_errors
+            write_errors = self._pipeline_write_errors
+            since = self._pipeline_since
+        return {
+            "cache_limit": cache.limit if cache else None,
+            "cache_depth": len(cache) if cache else 0,
+            "cache_accepted": cache.accepted if cache else 0,
+            "cache_dropped": cache.dropped if cache else 0,
+            "cache_peak": cache.peak if cache else 0,
+            "jobs": len(self._pipeline_threads),
+            "processed": processed,
+            "persisted": persisted,
+            "skipped": max(0, processed - persisted),
+            "errors": errors,
+            "write_errors": write_errors,
+            "persist_mode": "all" if self._pipeline_persist_all else "alerts",
+            "since": since,
+        }
+
     def snapshot(self):
         with self._state_lock:
             selected = list(self._selected_interfaces)
@@ -756,6 +813,7 @@ class Sniffer:
                 "last_packet_at": self.state.last_packet_at,
                 "active_threads": active_threads,
                 "ai_training": self.ai_training_stats(),
+                "packet_pipeline": self._pipeline_snapshot(),
             }
 
     def start(self):
@@ -784,6 +842,22 @@ class Sniffer:
                 )
                 threads.append(thread)
             self._threads = threads
+            pipeline = self._read_pipeline_config()
+            self._pipeline_jobs = pipeline["jobs"]
+            self._pipeline_persist_all = pipeline["persist_mode"] == "all"
+            self._packet_cache = PacketCache(pipeline["cache_limit"])
+            self._reset_pipeline_counters_locked()
+            self._pipeline_threads = []
+            for index in range(self._pipeline_jobs):
+                job = threading.Thread(
+                    target=self._pipeline_worker,
+                    args=(self._packet_cache,),
+                    name=f"sniff4hound-pipeline-{index}",
+                    daemon=True,
+                )
+                self._pipeline_threads.append(job)
+            for thread in self._pipeline_threads:
+                thread.start()
             for thread in threads:
                 thread.start()
         return self.snapshot()
@@ -796,6 +870,18 @@ class Sniffer:
             if thread.is_alive():
                 thread.join(timeout=0.8)
         self._threads = []
+        # Capture is stopped, so nothing new arrives. Closing discards what is
+        # still waiting in the cache: stop() must not be held up draining a
+        # backlog, and the stopped capture is not going to be resumed from it.
+        cache = self._packet_cache
+        if cache is not None:
+            cache.close()
+        for thread in list(self._pipeline_threads):
+            if thread.is_alive():
+                thread.join(timeout=0.8)
+        self._pipeline_threads = []
+        # The cache object is kept (closed) so its counters stay readable until
+        # the next start(); _enqueue_packet evaluates inline once it is closed.
         # Same signal already covers the AI training worker (it polls
         # _stop_event - see _run_ai_training_worker), it just also needs
         # joining so a caller that closes the store right after stop()
@@ -1032,7 +1118,18 @@ class Sniffer:
 
     def _refresh_monitor_cache(self):
         try:
-            monitors = self.store.list_monitors()
+            # Reload the catalog only when its fingerprint moved. Reusing the
+            # same list object also keeps ensure_monitor_index() from rebuilding
+            # the pattern automaton on every refresh.
+            stamp_fn = getattr(self.store, "monitor_catalog_stamp", None)
+            stamp = stamp_fn() if callable(stamp_fn) else None
+            reloaded = True
+            if stamp is not None and stamp == self._monitor_stamp and self._monitor_cache is not None:
+                monitors = self._monitor_cache
+                reloaded = False
+            else:
+                monitors = self.store.list_monitors()
+                self._monitor_stamp = stamp
             list_whitelist = getattr(self.store, "list_whitelist_entries", None)
             whitelist = list_whitelist() if callable(list_whitelist) else []
             if not isinstance(whitelist, list):
@@ -1075,11 +1172,20 @@ class Sniffer:
             # for this exact list object; its own expensive part (the
             # multi-pattern automaton) is itself built in a further
             # background thread - see that module.
-            ensure_monitor_index(monitors)
+            # Only a reloaded catalog needs indexing. Re-fingerprinting the same
+            # 18k+ monitors every refresh cost 1-2 s of CPU per cycle, holding
+            # the GIL the packet pipeline needs.
+            if reloaded:
+                ensure_monitor_index(monitors)
             self._monitor_cache = monitors
             self._whitelist_cache = whitelist
             self._monitor_filter_enabled = filter_enabled
             self._store_raw_packet_bytes = raw_retention_enabled
+            pipeline = self._read_pipeline_config()
+            self._pipeline_persist_all = pipeline["persist_mode"] == "all"
+            cache = self._packet_cache
+            if cache is not None and cache.limit != pipeline["cache_limit"]:
+                cache.set_limit(pipeline["cache_limit"])
             self._monitor_min_severity = min_severity
             self._monitor_suppress_generated_info = suppress_generated_info
             self._detection_exclude_scopes = exclude_scopes
@@ -1107,6 +1213,25 @@ class Sniffer:
             self._ruleset_cache_at = now
         return self._ruleset_cache
 
+    def _reopen_capture_socket(self, interface: str):
+        """Opens and binds a fresh capture socket, or returns None."""
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(ETH_P_ALL))
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, CAPTURE_BUFFER_BYTES)
+            sock.settimeout(CAPTURE_POLL_TIMEOUT)
+            sock.bind((interface, 0))
+            if CAPTURE_PROMISCUOUS:
+                self._enable_promiscuous(sock, interface)
+            return sock
+        except Exception:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            return None
+
     def _capture_worker(self, interface: str):
         sock = None
         try:
@@ -1132,6 +1257,9 @@ class Sniffer:
                     sock.close()
             except Exception:
                 pass
+            # Without this the sniffer kept reporting itself as running with
+            # no capture thread behind it.
+            self._mark_capture_worker_stopped(interface)
             return
         except Exception as exc:
             self._set_error(interface, f"socket unavailable: {exc}")
@@ -1145,10 +1273,12 @@ class Sniffer:
 
         try:
             consecutive_socket_errors = 0
+            reopens = 0
             while not self._stop_event.is_set():
                 try:
                     data, _ = sock.recvfrom(CAPTURE_BUFFER_BYTES)
                     consecutive_socket_errors = 0
+                    reopens = 0
                 except socket.timeout:
                     # A timeout is the socket working: it blocked for the poll
                     # window and nothing arrived. Only a *successful read* used
@@ -1165,13 +1295,34 @@ class Sniffer:
                         break
                     consecutive_socket_errors += 1
                     self._set_error(interface, str(exc))
-                    if consecutive_socket_errors >= CAPTURE_SOCKET_ERROR_LIMIT:
-                        self._set_error(
-                            interface,
-                            f"socket receive failed repeatedly: {exc}",
-                        )
+                    if consecutive_socket_errors < CAPTURE_SOCKET_ERROR_LIMIT:
+                        time.sleep(min(0.25, CAPTURE_POLL_TIMEOUT))
+                        continue
+                    # Sustained receive failures are usually the link dropping
+                    # (Wi-Fi roam, power save, driver reset), not the interface
+                    # going away. Reopen the socket with a growing backoff
+                    # rather than ending capture on the first burst; only a
+                    # long outage with every reopen failing ends it.
+                    LOGGER.warning("Capture socket on %s failed repeatedly (%s); reopening", interface, exc)
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                    sock = None
+                    give_up = False
+                    while sock is None and not self._stop_event.is_set():
+                        reopens += 1
+                        if reopens > CAPTURE_REOPEN_ATTEMPTS:
+                            give_up = True
+                            break
+                        self._set_error(interface, f"link lost, reopening ({reopens}/{CAPTURE_REOPEN_ATTEMPTS}): {exc}")
+                        time.sleep(min(CAPTURE_REOPEN_BACKOFF_MAX, CAPTURE_REOPEN_BACKOFF_STEP * reopens))
+                        sock = self._reopen_capture_socket(interface)
+                    if give_up or sock is None:
+                        self._set_error(interface, f"socket receive failed repeatedly: {exc}")
+                        LOGGER.warning("Capture on %s stopped after %d failed reopens", interface, reopens - 1)
                         break
-                    time.sleep(min(0.25, CAPTURE_POLL_TIMEOUT))
+                    consecutive_socket_errors = 0
                     continue
                 if not data:
                     continue
@@ -1187,9 +1338,9 @@ class Sniffer:
                 if not packet:
                     packet = self._build_unparseable_packet(interface, data, reason="frame too short to parse")
                 try:
-                    self._store_packet(packet)
+                    self._enqueue_packet(packet)
                 except Exception:
-                    LOGGER.exception("Failed to process captured packet on %s", interface)
+                    LOGGER.exception("Failed to queue captured packet on %s", interface)
         finally:
             try:
                 if sock is not None:
@@ -1362,11 +1513,175 @@ class Sniffer:
         with self._ai_training_stats_lock:
             return dict(self._ai_training_stats)
 
+    def _read_pipeline_config(self) -> dict:
+        get_config = getattr(self.store, "get_packet_pipeline_config", None)
+        if callable(get_config):
+            try:
+                return get_config()
+            except Exception:
+                LOGGER.exception("Failed to read packet pipeline config; using defaults")
+        return {
+            "cache_limit": PACKET_CACHE_LIMIT_DEFAULT,
+            "jobs": PACKET_JOBS_DEFAULT,
+            "persist_mode": "alerts",
+        }
+
+    def _enqueue_packet(self, packet: dict):
+        cache = self._packet_cache
+        if cache is None or cache.closed:
+            # Not running through start() (direct use, e.g. tests): evaluate inline.
+            self._store_packet(packet)
+            return
+        cache.put(packet)
+
+    def _pipeline_worker(self, cache: PacketCache):
+        while True:
+            first = cache.get(timeout=0.5)
+            if first is None:
+                if cache.closed:
+                    return
+                continue
+            self._process_batch([first] + cache.get_many(PIPELINE_BATCH_MAX - 1))
+
+    def _process_batch(self, batch: list):
+        """Evaluates and persists a batch of packets, one packet at a time.
+
+        The store's connection is shared with the API, so nothing here may hold
+        the store lock across more than one packet: a lock taken for the whole
+        batch would park every API request behind the evaluation. Counters are
+        buffered per batch and applied at the end, so a batch that aborts is
+        still accounted for.
+        """
+        pending: dict = {}
+        self._pipeline_tls.pending = pending
+        self._pipeline_tls.deferred = []
+        started = time.perf_counter()
+        try:
+            for packet in batch:
+                try:
+                    self._store_packet(packet)
+                    self._count_pipeline("processed")
+                except sqlite3.Error:
+                    self._count_pipeline("write_errors")
+                    LOGGER.exception("Failed to write packet from pipeline job")
+                except Exception:
+                    self._count_pipeline("errors")
+                    LOGGER.exception("Failed to process packet in pipeline job")
+            self._flush_deferred()
+        finally:
+            self._pipeline_tls.deferred = None
+            self._pipeline_tls.pending = None
+            self._apply_pipeline_counts(pending)
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            fields = {"size": len(batch), "ms": round(elapsed_ms, 1), **pending}
+            if elapsed_ms >= 1000:
+                LOGGER.warning("pipeline batch slow", extra={"extra_fields": fields})
+            else:
+                LOGGER.debug("pipeline batch", extra={"extra_fields": fields})
+
+    def _flush_deferred(self):
+        """Writes the batch's deferred packets in one transaction, then runs
+        each packet's follow-up steps with its saved row."""
+        deferred = self._pipeline_tls.deferred or []
+        self._pipeline_tls.deferred = []
+        if not deferred:
+            return
+        items = [(packet, allow_raw) for packet, allow_raw, _ in deferred]
+        register_many = getattr(self.store, "register_packets", None)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                if callable(register_many):
+                    outcomes = register_many(items)
+                else:
+                    outcomes = [self.store.register_packet(p, allow_raw_retention=a) for p, a in items]
+                break
+            except sqlite3.OperationalError as exc:
+                # "database is locked" is the other process holding the write
+                # lock for a moment (the web side). Retry the whole batch a few
+                # times before giving up on it.
+                if "locked" in str(exc).lower() and attempt < 3:
+                    LOGGER.debug("write batch waiting on the database lock",
+                                 extra={"extra_fields": {"attempt": attempt, "size": len(items)}})
+                    time.sleep(0.25 * attempt)
+                    continue
+                self._count_pipeline("write_errors", len(deferred))
+                LOGGER.exception("Pipeline write batch of %d packets was not committed", len(deferred))
+                return
+            except Exception:
+                # The transaction did not land: none of the batch was persisted.
+                self._count_pipeline("write_errors", len(deferred))
+                LOGGER.exception("Pipeline write batch of %d packets was not committed", len(deferred))
+                return
+        for (_, _, finish), outcome in zip(deferred, outcomes):
+            if isinstance(outcome, Exception):
+                self._count_pipeline("write_errors")
+                LOGGER.warning("Failed to write packet from pipeline job",
+                               extra={"extra_fields": {"error": str(outcome)}})
+                continue
+            try:
+                finish(outcome)
+            except Exception:
+                LOGGER.exception("Post-persist step failed for a stored packet")
+
+    def _apply_pipeline_counts(self, counts: dict):
+        with self._pipeline_lock:
+            for name, amount in counts.items():
+                attr = f"_pipeline_{name}"
+                setattr(self, attr, getattr(self, attr) + amount)
+
+    def _count_pipeline(self, name: str, amount: int = 1):
+        pending = getattr(self._pipeline_tls, "pending", None)
+        if pending is not None:
+            pending[name] = pending.get(name, 0) + amount
+            return
+        self._apply_pipeline_counts({name: amount})
+
+    def _reset_pipeline_counters_locked(self):
+        with self._pipeline_lock:
+            self._pipeline_processed = 0
+            self._pipeline_persisted = 0
+            self._pipeline_errors = 0
+            self._pipeline_write_errors = 0
+            self._pipeline_since = utc_now()
+        if self._packet_cache is not None:
+            self._packet_cache.reset_counters()
+
+    def reset_pipeline_counters(self) -> dict:
+        """Zeroes the pipeline counters from the operator (RPC from the web)."""
+        self._reset_pipeline_counters_locked()
+        return self._pipeline_snapshot()
+
+    def _trace_packet(self, packet: dict, stage: str, **fields) -> None:
+        """DEBUG trace of one packet's path through detection, rate-limited to a
+        few lines a second so a busy link cannot flood the log."""
+        if not LOGGER.isEnabledFor(logging.DEBUG):
+            return
+        now = time.monotonic()
+        if now - self._trace_window_start >= 1.0:
+            self._trace_window_start = now
+            self._trace_budget = TRACE_PACKETS_PER_SECOND
+        if self._trace_budget <= 0:
+            return
+        self._trace_budget -= 1
+        LOGGER.debug("packet trace", extra={"extra_fields": {
+            "stage": stage,
+            "proto": str(packet.get("proto") or ""),
+            "src": f"{packet.get('src_ip')}:{packet.get('src_port')}",
+            "dst": f"{packet.get('dst_ip')}:{packet.get('dst_port')}",
+            "payload_len": safe_int(packet.get("payload_len"), 0),
+            "payload_head": str(packet.get("payload_text") or "")[:60],
+            **fields,
+        }})
+
     def _store_packet(self, packet: dict):
         if self._is_own_dashboard_traffic(packet):
             self._touch_packet(packet, stored=False)
             return
+        self._trace_packet(packet, "received")
         if self._whitelisted(packet):
+            self._trace_packet(packet, "dropped", reason="whitelisted")
             # Whitelisting an IP (from the IP graph's popup, or Settings)
             # is a deliberate "stop tracking this host" action, distinct
             # from a mute/exclusion scope - those still persist traffic
@@ -1408,9 +1723,10 @@ class Sniffer:
                 # gets tagged below, so "matched but rate-limited" stays
                 # distinguishable from "never matched". Only the allowed half
                 # counts as an alert, so this does not undo the rate limit.
-                monitor_hits, suppressed_hits = self._rule_throttle.partition(
-                    monitor_hits, packet.get("src_ip")
-                )
+                if RULE_ALERT_THROTTLE_ENABLED:
+                    monitor_hits, suppressed_hits = self._rule_throttle.partition(
+                        monitor_hits, packet.get("src_ip")
+                    )
             # Anomaly detectors run unconditionally, regardless of filter_enabled —
             # a rate/state-based detector that only ever saw already-matched
             # traffic could never build a useful baseline.
@@ -1423,6 +1739,9 @@ class Sniffer:
             if anomaly_hits:
                 monitor_hits = list(monitor_hits) + list(anomaly_hits)
         is_alert = bool(monitor_hits)
+        self._trace_packet(packet, "evaluated", muted=detection_muted, filter_enabled=filter_enabled,
+                           catalog_monitors=len(monitors), hits=len(monitor_hits),
+                           suppressed=len(suppressed_hits))
         # Training mode wants benign examples alongside alerts, so a clean
         # (non-muted, non-alerting) packet gets persisted too while it's on,
         # marked so purge_training_capture_packets() can find and drop
@@ -1464,7 +1783,7 @@ class Sniffer:
         # exception to "clean traffic is dropped": it persists otherwise-
         # clean packets on purpose, tagged 'training_capture', to give the
         # AI classifier benign examples to learn from.
-        should_persist = detection_muted or is_alert or training_sample
+        should_persist = detection_muted or is_alert or training_sample or self._pipeline_persist_all
         packet["ai_sample"] = False
         if should_persist:
             # Muted/excluded traffic (detection_muted, no is_alert) is
@@ -1476,29 +1795,41 @@ class Sniffer:
             # alerts (still gated by the global raw-retention toggle inside
             # register_packet) since bytes are the whole point of capturing
             # them.
-            saved = self.store.register_packet(packet, allow_raw_retention=is_alert or training_sample)
-            self._touch_packet(saved or packet, stored=True)
-            self._broadcast_packet(saved or packet, persisted=True)
-            self._record_intel(packet)
-            if (
-                self._training_enabled
-                and not detection_muted
-                and filter_enabled
-                and self._store_raw_packet_bytes
-                and saved
-                and saved.get("id")
-            ):
-                # Labels use the actual monitor verdict before notification
-                # suppression/throttling. Only red (high/critical) hits are
-                # positive training examples; informational/lesser hits and
-                # evaluated clean capture samples are benign by policy.
-                malicious = any(
-                    str(hit.get("severity") or "info").strip().lower() in {"high", "critical"}
-                    for hit in training_hits
-                )
-                label = "malicious" if malicious else "benign"
-                confidence = self._training_confidence(training_hits) if malicious else 0.6
-                self._enqueue_ai_training(saved["id"], label, confidence, "auto:training")
+            def finish(saved, packet=packet):
+                if saved:
+                    self._count_pipeline("persisted")
+                self._touch_packet(saved or packet, stored=True)
+                self._broadcast_packet(saved or packet, persisted=True)
+                self._record_intel(packet)
+                if (
+                    self._training_enabled
+                    and not detection_muted
+                    and filter_enabled
+                    and self._store_raw_packet_bytes
+                    and saved
+                    and saved.get("id")
+                ):
+                    # Labels use the actual monitor verdict before notification
+                    # suppression/throttling. Only red (high/critical) hits are
+                    # positive training examples; informational/lesser hits and
+                    # evaluated clean capture samples are benign by policy.
+                    malicious = any(
+                        str(hit.get("severity") or "info").strip().lower() in {"high", "critical"}
+                        for hit in training_hits
+                    )
+                    label = "malicious" if malicious else "benign"
+                    confidence = self._training_confidence(training_hits) if malicious else 0.6
+                    self._enqueue_ai_training(saved["id"], label, confidence, "auto:training")
+
+            allow_raw = is_alert or training_sample
+            deferred = getattr(self._pipeline_tls, "deferred", None)
+            if deferred is not None:
+                # Inside a job batch the write waits until the whole batch has
+                # been evaluated, then lands in one transaction (see
+                # _flush_deferred). Nothing here holds the store lock.
+                deferred.append((packet, allow_raw, finish))
+            else:
+                finish(self.store.register_packet(packet, allow_raw_retention=allow_raw))
         else:
             # Clean traffic can arrive at wire speed; broadcasting a full
             # "packet" event for every one of them would flood connected

@@ -147,3 +147,62 @@ class JobQueueTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JobTimeoutTests(unittest.TestCase):
+    def test_wedged_job_is_answered_as_an_error_and_the_queue_keeps_moving(self):
+        import time as _time
+        from unittest.mock import patch as _patch
+
+        from sniff4hound import jobs as jobs_module
+
+        release = threading.Event()
+        queue = JobQueue(workers=1, timeout=0.2)
+        self.addCleanup(queue.shutdown)
+
+        def wedged():
+            release.wait(timeout=5)
+            return "late"
+
+        with _patch.object(jobs_module, "WATCHDOG_INTERVAL_SECONDS", 0.05):
+            done, job_id = queue.submit("wedged", wedged, inline_window=0)
+            self.assertFalse(done)
+            deadline = _time.monotonic() + 3
+            snapshot = queue.get(job_id)
+            while snapshot["status"] != "error" and _time.monotonic() < deadline:
+                _time.sleep(0.05)
+                snapshot = queue.get(job_id)
+            self.assertEqual(snapshot["status"], "error")
+            self.assertEqual(snapshot["error_type"], "TimeoutError")
+
+            # The single worker is still inside the wedged handler; the
+            # watchdog must have replaced it, or this would never run.
+            done, value = queue.submit("quick", lambda: "ok", inline_window=2.0)
+            self.assertTrue(done)
+            self.assertEqual(value, "ok")
+        release.set()
+
+
+class ReadJobsNeverPersistTests(unittest.TestCase):
+    def test_slow_read_answers_on_the_request_and_writes_no_job_row(self):
+        queue = JobQueue(workers=1, timeout=5)
+        writes = []
+        queue._persist = lambda job: writes.append(job.id)
+
+        def slow_read():
+            time.sleep(0.5)  # well past the 0.2 s inline window
+            return {"ok": True}
+
+        finished, payload = queue.submit("GET /api/example", slow_read, persist=False)
+        self.assertTrue(finished)
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(writes, [])
+
+    def test_slow_write_still_persists_and_returns_a_job_id(self):
+        queue = JobQueue(workers=1, timeout=5)
+        writes = []
+        queue._persist = lambda job: writes.append(job.id)
+
+        finished, job_id = queue.submit("POST /api/example", lambda: time.sleep(0.5) or {"ok": True})
+        self.assertFalse(finished)
+        self.assertEqual(writes, [job_id])
