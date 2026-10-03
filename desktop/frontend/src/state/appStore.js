@@ -10,6 +10,11 @@ const LEGACY_STORAGE_KEY_AUTH = "sniff4hound.sessionToken";
 const QUERY_AUTH_KEYS = ["code"];
 const QUERY_API_BASE_KEY = "api_base";
 const STORAGE_KEY_NOTIFY_SOUND = "sniff4hound.notifySoundEnabled";
+const STORAGE_KEY_NOTIFY_DETECTIONS = "sniff4hound.notifyDetectionsEnabled";
+const STORAGE_KEY_NOTIFY_AI = "sniff4hound.notifyAiEnabled";
+const STORAGE_KEY_NOTIFY_MIN_SEVERITY = "sniff4hound.notifyMinSeverity";
+export const NOTIFY_SEVERITIES = ["info", "low", "medium", "high", "critical"];
+const NOTIFY_MIN_SEVERITY_DEFAULT = "medium";
 const STORAGE_KEY_TIME_RANGE = "sniff4hound.timeRange";
 // Relative windows understood by the API's `since` query parameter. The empty
 // value means "no temporal filter" (everything the store still holds).
@@ -39,7 +44,6 @@ const WS_REFRESH_EVENT_TYPES = new Set([
 ]);
 // What counts as "important enough for a popup" - everything else stays
 // available in the regular views (Monitors/SOC/etc.) without interrupting.
-const NOTIFY_MONITOR_SEVERITIES = new Set(["high", "critical"]);
 
 const state = reactive({
   apiBase: "",
@@ -59,6 +63,13 @@ const state = reactive({
   commandPaletteOpen: false,
   shutdownPending: false,
   notifySoundEnabled: true,
+  // Every detection notifies unless the operator turns that kind off in
+  // Configuración > Notificaciones. Nothing is filtered by severity here.
+  notifyDetectionsEnabled: true,
+  notifyAiEnabled: true,
+  // Alerts below this severity stay on screen but never notify. Info and low
+  // are visibility feeds; medium and up are alerts.
+  notifyMinSeverity: NOTIFY_MIN_SEVERITY_DEFAULT,
   // Incremented on every inbound chat frame; ChatView watches it.
   chatRevision: 0,
   timeRange: "",
@@ -77,6 +88,8 @@ const state = reactive({
   // zero means the UI is waiting on the backend for something that outran the
   // inline window.
   pendingJobs: 0,
+  // Every request in flight, shown by PendingJobsIndicator: { id, label, startedAt, queued }.
+  tasks: [],
 });
 
 const tableRefreshSubscribers = new Set();
@@ -704,6 +717,13 @@ function getRetentionConfig() {
   return fetchJsonPromise("/api/data/retention");
 }
 
+function setRetentionConfig(payload) {
+  return fetchJsonPromise("/api/data/retention", {
+    method: "POST",
+    body: JSON.stringify(payload || {}),
+  });
+}
+
 function clearDetections(scope) {
   return fetchJsonPromise("/api/data/clear/", {
     method: "POST",
@@ -960,7 +980,63 @@ function wsGet(path) {
   });
 }
 
+let taskSeq = 0;
+const TASK_LABELS = [
+  ["/api/dashboard", "Dashboard"], ["/api/charts/analytics", "Analítica"], ["/ports", "Paquetes"],
+  ["/api/ai/packets", "Detecciones IA"], ["/api/map", "Mapa"], ["/api/intel", "IPs observadas"],
+  ["/api/monitors", "Monitores"], ["/api/runtime", "Runtime"], ["/api/ai", "IA"],
+  ["/api/data", "Almacenamiento"], ["/api/logs", "Logs"], ["/api/limits", "Límites"],
+  ["/api/pipeline", "Pipeline"], ["/api/honeypot", "Honeypot"], ["/api/blacklist", "Listas de acceso"],
+  ["/api/whitelist", "Listas de acceso"], ["/api/detection", "Detección"], ["/api/soc", "SOC"],
+  ["/api/export", "Exportar"], ["/api/settings", "Ajustes"], ["/tags", "Etiquetas"],
+  ["/targets", "Targets"], ["/banners", "Banners"], ["/api/domains", "Dominios"], ["/api/paths", "Rutas"],
+];
+
+function taskLabelFor(path) {
+  const clean = String(path || "").split("?")[0];
+  const hit = TASK_LABELS.find(([prefix]) => clean.startsWith(prefix));
+  return hit ? hit[1] : clean;
+}
+
+// Job polls and the websocket ticket are plumbing, not work the operator is
+// waiting on, so they are not listed.
+function beginTask(path) {
+  const clean = String(path || "");
+  if (clean.startsWith("/api/jobs") || clean.startsWith("/api/ws/ticket")) return null;
+  taskSeq += 1;
+  const task = { id: `task-${taskSeq}`, label: taskLabelFor(clean), startedAt: Date.now(), queued: false };
+  state.tasks.push(task);
+  return task;
+}
+
+function endTask(task) {
+  if (!task) return;
+  const index = state.tasks.findIndex((item) => item.id === task.id);
+  if (index >= 0) state.tasks.splice(index, 1);
+}
+
+function markTaskQueued(task) {
+  if (!task) return;
+  const live = state.tasks.find((item) => item.id === task.id);
+  if (live) live.queued = true;
+}
+
 function fetchWithMeta(path, options = {}, config = {}) {
+  const task = config.trackTask === false ? null : beginTask(path);
+  const tracked = { ...config, _task: task };
+  return fetchWithMetaUntracked(path, options, tracked).then(
+    (result) => {
+      endTask(task);
+      return result;
+    },
+    (err) => {
+      endTask(task);
+      throw err;
+    },
+  );
+}
+
+function fetchWithMetaUntracked(path, options = {}, config = {}) {
   const opts = { ...options };
   const attachAuth = config.attachAuth !== false;
   const token = Object.prototype.hasOwnProperty.call(config, "token")
@@ -1002,6 +1078,7 @@ function httpFetchWithMeta(path, opts, config) {
       // each call site so every existing caller keeps its plain "promise of
       // the payload" contract and needs no change.
       if (res.status === 201 && data && data.job_id) {
+        markTaskQueued(config._task);
         return awaitJob(data.job_id, config).then(result => ({ data: result, response: res }));
       }
       return { data, response: res };
@@ -1450,6 +1527,42 @@ function initNotifySound() {
   state.notifySoundEnabled = stored === null ? true : stored === "1";
 }
 
+function readNotifyFlag(key) {
+  if (typeof window === "undefined" || !window.localStorage) return true;
+  const stored = window.localStorage.getItem(key);
+  return stored === null ? true : stored === "1";
+}
+
+function writeNotifyFlag(key, enabled) {
+  if (typeof window !== "undefined" && window.localStorage) {
+    window.localStorage.setItem(key, enabled ? "1" : "0");
+  }
+}
+
+function initNotifyKinds() {
+  state.notifyDetectionsEnabled = readNotifyFlag(STORAGE_KEY_NOTIFY_DETECTIONS);
+  state.notifyAiEnabled = readNotifyFlag(STORAGE_KEY_NOTIFY_AI);
+  let stored = null;
+  try { stored = window.localStorage.getItem(STORAGE_KEY_NOTIFY_MIN_SEVERITY); } catch { /* storage unavailable */ }
+  state.notifyMinSeverity = NOTIFY_SEVERITIES.includes(stored) ? stored : NOTIFY_MIN_SEVERITY_DEFAULT;
+}
+
+function setNotifyMinSeverity(severity) {
+  const value = NOTIFY_SEVERITIES.includes(severity) ? severity : NOTIFY_MIN_SEVERITY_DEFAULT;
+  state.notifyMinSeverity = value;
+  try { window.localStorage.setItem(STORAGE_KEY_NOTIFY_MIN_SEVERITY, value); } catch { /* not persisted */ }
+}
+
+function setNotifyDetectionsEnabled(enabled) {
+  state.notifyDetectionsEnabled = Boolean(enabled);
+  writeNotifyFlag(STORAGE_KEY_NOTIFY_DETECTIONS, state.notifyDetectionsEnabled);
+}
+
+function setNotifyAiEnabled(enabled) {
+  state.notifyAiEnabled = Boolean(enabled);
+  writeNotifyFlag(STORAGE_KEY_NOTIFY_AI, state.notifyAiEnabled);
+}
+
 function setNotifySoundEnabled(enabled) {
   state.notifySoundEnabled = Boolean(enabled);
   if (typeof window !== "undefined" && window.localStorage) {
@@ -1607,27 +1720,34 @@ function notifyForPacketEvent(payload) {
   const packet = payload && payload.packet;
   const tags = parsePacketTags(packet);
   if (!tags.length) return;
-  const hits = extractMonitorHitsFromTags(tags).filter((hit) => NOTIFY_MONITOR_SEVERITIES.has(hit.severity));
+  const floor = NOTIFY_SEVERITIES.indexOf(state.notifyMinSeverity);
+  const hits = extractMonitorHitsFromTags(tags).filter(
+    (hit) => NOTIFY_SEVERITIES.indexOf(hit.severity) >= (floor < 0 ? NOTIFY_SEVERITIES.indexOf(NOTIFY_MIN_SEVERITY_DEFAULT) : floor),
+  );
   if (!hits.length) return;
   const srcIp = String((packet && packet.src_ip) || "").trim();
   const dstIp = String((packet && packet.dst_ip) || "").trim();
   const dstPort = (packet && packet.dst_port) || "";
   const route = srcIp && dstIp ? `${srcIp} → ${dstIp}${dstPort ? `:${dstPort}` : ""}` : "";
+  // One tag per occurrence: the OS replaces a notification that shares a tag,
+  // so a shared tag hid every repeat of the same detection. Each detection
+  // now stays on screen on its own.
+  const occurrence = packet && packet.id != null ? packet.id : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   hits.forEach((hit) => {
+    const isAiHit = hit.monitorId === "ai-classifier";
+    const enabled = isAiHit ? state.notifyAiEnabled : state.notifyDetectionsEnabled;
+    if (!enabled) return;
     // Honeypot hits have no real entry in the monitors catalog - this traffic
     // never runs through evaluate_packet/AnomalyEngine, so send it to the
     // dedicated honeypot table instead.
     const isHoneypotHit = hit.monitorId === "builtin-honeypot-hit";
     pushNotification({
-      kind: "monitor",
+      kind: isAiHit ? "ai" : "monitor",
       severity: hit.severity,
       title: hit.label,
       message: route,
-      // Grouped by monitor alone (not monitor+source) - "solo una por
-      // monitor maximo": every hit for the same monitor bumps one counter
-      // instead of piling up a separate entry per source IP.
-      groupKey: `monitor:${hit.monitorId || hit.label}`,
-      href: isHoneypotHit ? "/honeypot" : `/monitors?monitor=${encodeURIComponent(hit.monitorId || hit.label)}`,
+      groupKey: `${isAiHit ? "ai" : "monitor"}:${hit.monitorId || hit.label}:${occurrence}`,
+      href: isHoneypotHit ? "/honeypot" : isAiHit ? "/ai" : `/monitors?monitor=${encodeURIComponent(hit.monitorId || hit.label)}`,
     });
   });
 }
@@ -2339,6 +2459,7 @@ export default {
   getStorageStats,
   compactDatabase,
   getRetentionConfig,
+  setRetentionConfig,
   clearDetections,
   downloadIocExport,
   reconnectRealtime,
@@ -2356,6 +2477,10 @@ export default {
   authenticateSessionToken,
   signOut,
   initNotifySound,
+  initNotifyKinds,
   setNotifySoundEnabled,
+  setNotifyDetectionsEnabled,
+  setNotifyAiEnabled,
+  setNotifyMinSeverity,
   pushNotification,
 };

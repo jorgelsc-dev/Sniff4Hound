@@ -51,6 +51,7 @@ const vuetify = createVuetify({
 
 store.initApiBase();
 store.initNotifySound();
+store.initNotifyKinds();
 store.initTimeRange();
 store.bootstrap();
 
