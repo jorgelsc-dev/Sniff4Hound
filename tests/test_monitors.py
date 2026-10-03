@@ -930,7 +930,9 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.sniffer._monitor_cache_at = 999999999.0
         self.sniffer._ruleset_cache = []
         self.sniffer._ruleset_cache_at = 999999999.0
-        self.sniffer._store_packet(self._base_packet(payload_text="HTTP/1.1 200 OK\r\nContent-Type: application/json"))
+        # A client request: generated signals are request-side only, so this
+        # checks the persistence gate with a packet they are allowed to see.
+        self.sniffer._store_packet(self._base_packet(payload_text="POST /api HTTP/1.1\r\nContent-Type: application/json"))
         self.assertEqual(self.store.list_count("packets"), 1)
 
     def test_undetected_packets_are_time_throttled_on_the_websocket(self):
