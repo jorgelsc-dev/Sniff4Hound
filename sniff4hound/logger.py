@@ -139,6 +139,11 @@ def get_logger(name: str, log_file: Path | str | None = None, level: int = loggi
         Configured logger instance
     """
     logger = logging.getLogger(name)
+    if log_file is None:
+        # Output is owned by log_setup.configure() on the `sniff4hound` logger;
+        # the level and handlers are inherited from there.
+        logger.setLevel(logging.NOTSET)
+        return logger
     logger.setLevel(level)
 
     # Remove any existing handlers to prevent duplicates and close file
@@ -151,16 +156,13 @@ def get_logger(name: str, log_file: Path | str | None = None, level: int = loggi
             pass
     logger.propagate = False
 
-    # Console handler (stderr)
+    # Console handler (stderr) and the explicit file for this logger
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(NDJsonFormatter())
     logger.addHandler(console_handler)
-
-    # File handler if specified
-    if log_file:
-        file_handler = NDJsonHandler(log_file)
-        file_handler.setFormatter(NDJsonFormatter())
-        logger.addHandler(file_handler)
+    file_handler = NDJsonHandler(log_file)
+    file_handler.setFormatter(NDJsonFormatter())
+    logger.addHandler(file_handler)
 
     return logger
 

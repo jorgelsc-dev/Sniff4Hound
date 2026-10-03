@@ -599,16 +599,75 @@ class TestSnifferParsing(unittest.TestCase):
         with patch("socket.socket", return_value=fake_sock), \
              patch("sniff4hound.sniffer.CAPTURE_PROMISCUOUS", False), \
              patch("sniff4hound.sniffer.CAPTURE_SOCKET_ERROR_LIMIT", 2), \
+             patch("sniff4hound.sniffer.CAPTURE_REOPEN_ATTEMPTS", 1), \
              patch("sniff4hound.sniffer.time.sleep") as sleep:
             self.sniffer._capture_worker("wlan0")
 
-        self.assertEqual(fake_sock.recvfrom.call_count, 2)
-        sleep.assert_called_once()
-        fake_sock.close.assert_called_once()
+        # Two errors trip the limit, one reopen is allowed and also fails with
+        # the same error, so capture gives up after the second burst.
+        self.assertEqual(fake_sock.recvfrom.call_count, 4)
+        # One short pause per error below the limit (2), one reopen backoff,
+        # and the short pause after the reopened socket's first error.
+        self.assertEqual(sleep.call_count, 3)
+        # Each failed burst closes its socket before reopening or giving up.
+        self.assertEqual(fake_sock.close.call_count, 2)
         snapshot = self.sniffer.snapshot()
         self.assertFalse(snapshot["running"])
         self.assertEqual(snapshot["capture_state"], "blocked")
         self.assertIn("socket receive failed repeatedly", snapshot["errors"]["wlan0"])
+
+    def test_capture_recovers_when_the_link_comes_back_after_a_drop(self):
+        # A dropped Wi-Fi link used to end capture for good after one burst of
+        # errors. Now the socket is reopened and reading resumes.
+        dropped = iter([OSError("network is down")] * 2)
+        packet = b"\x00" * 20
+        reads = {"n": 0}
+
+        def _recv(_size):
+            try:
+                raise next(dropped)
+            except StopIteration:
+                reads["n"] += 1
+                if reads["n"] == 1:
+                    return packet, None
+                self.sniffer._stop_event.set()
+                raise socket.timeout()
+
+        first, second = MagicMock(), MagicMock()
+        first.recvfrom.side_effect = _recv
+        second.recvfrom.side_effect = _recv
+        self.sniffer._stop_event = threading.Event()
+        self.sniffer.state.running = True
+        self.sniffer.state.interfaces = ["wlan0"]
+        self.sniffer._threads = [threading.current_thread()]
+        stored = []
+
+        with patch("socket.socket", side_effect=[first, second]), \
+             patch("sniff4hound.sniffer.CAPTURE_PROMISCUOUS", False), \
+             patch("sniff4hound.sniffer.CAPTURE_SOCKET_ERROR_LIMIT", 2), \
+             patch.object(self.sniffer, "parse_packet", return_value={"proto": "tcp"}), \
+             patch.object(self.sniffer, "_store_packet", side_effect=stored.append), \
+             patch("sniff4hound.sniffer.time.sleep"):
+            self.sniffer._capture_worker("wlan0")
+
+        self.assertEqual(len(stored), 1)
+        self.assertNotIn("socket receive failed repeatedly", self.sniffer.state.errors.get("wlan0", ""))
+        self.assertTrue(self.sniffer.state.running)
+        first.close.assert_called_once()
+
+    def test_permission_denied_marks_capture_stopped(self):
+        # Regression: this path returned without telling the sniffer, so it
+        # kept reporting itself as running with no capture thread behind it.
+        self.sniffer._stop_event = threading.Event()
+        self.sniffer.state.running = True
+        self.sniffer.state.interfaces = ["wlan0"]
+        self.sniffer._threads = [threading.current_thread()]
+
+        with patch("socket.socket", side_effect=PermissionError("operation not permitted")):
+            self.sniffer._capture_worker("wlan0")
+
+        self.assertFalse(self.sniffer.state.running)
+        self.assertIn("permission denied", self.sniffer.state.errors["wlan0"])
 
     def test_a_quiet_interface_does_not_accumulate_towards_giving_up(self):
         # Only a successful *read* used to clear the error counter. On a quiet
