@@ -672,6 +672,47 @@ def _trim_examples_per_class(examples, limit):
     return trimmed
 
 
+def _collapsed(model, examples):
+    """True when both classes are retained but the model answers one class for
+    every one of them - the signature of a boundary that online updates have
+    pushed past the minority class."""
+    if {e['label'] for e in examples} != {'malicious', 'benign'}:
+        return False
+    answers = {forward(model, e['features'])[1] >= 0.5 for e in examples}
+    return len(answers) == 1
+
+
+def _training_mode(stale_architecture, full_retrain):
+    if stale_architecture:
+        return 'full_retrain_on_config_change'
+    if full_retrain:
+        return 'full_retrain_on_collapse'
+    return 'online_mini_batch'
+
+
+def _balanced_batch(examples, key, changed_example, size=ONLINE_BATCH_SIZE):
+    """Online mini-batch with the most recent examples of *each* class.
+
+    Capture is dominated by benign traffic, so the newest examples are almost
+    always benign. A batch taken from the tail alone is single-class, and eight
+    epochs on it push the output towards 0 until the malicious class is
+    forgotten - the classifier then answers "benign" for everything. Taking an
+    equal share of each class keeps both sides of the boundary in every update.
+    When only one class exists yet, the batch is that class alone.
+    """
+    per_class = max(1, size // 2)
+    chosen = []
+    for label in ('malicious', 'benign'):
+        chosen.extend([e for e in examples if e['label'] == label][-per_class:])
+    if changed_example is not None and all(e['key'] != key for e in chosen):
+        same_class = [i for i, e in enumerate(chosen) if e['label'] == changed_example['label']]
+        if same_class:
+            chosen[same_class[0]] = changed_example
+        else:
+            chosen.append(changed_example)
+    return chosen
+
+
 def update_feedback(state, packet, label, confidence, note, *, hidden_sizes=None):
     data, _, _ = packet_bytes(packet)
     if not data:
@@ -710,17 +751,22 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_sizes=None
     stale_architecture = bool(existing_model) and (
         not existing_model_current or hidden_sizes_of(existing_model) != normalized_sizes
     )
+    full_retrain = False
     if not examples:
         # With no remaining evidence there is nothing legitimate to retain.
         model = initial_model(normalized_sizes)
         new_history = [{'epoch': revision, 'loss': None, 'batch_size': 0, 'epochs': 0}]
         batch_size = 0
-    elif stale_architecture:
+    elif stale_architecture or (existing_model_current and _collapsed(existing_model, examples)):
+        # Full rebuild from the retained evidence: cheap at this size (about a
+        # second for 1000 examples) and the only way back from a collapsed
+        # boundary, since online updates cannot re-learn a class they forgot.
         model, full_history = train(examples, hidden_sizes=normalized_sizes)
         entry = dict(full_history[-1]) if full_history else {'loss': None}
         entry.update(epoch=revision, batch_size=len(examples))
         new_history = [entry]
         batch_size = len(examples)
+        full_retrain = True
     elif changed_example is None:
         # Retraction removes the example from the replay buffer immediately.
         # Existing weights remain the accumulated online knowledge; future
@@ -732,9 +778,7 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_sizes=None
         # The corrected/new example is always in the batch, accompanied by a
         # few recent labels to reduce catastrophic forgetting.  Work stays
         # bounded even when the retained audit set reaches MAX_EXAMPLES_PER_CLASS.
-        batch = examples[-ONLINE_BATCH_SIZE:]
-        if all(example['key'] != key for example in batch):
-            batch = [*batch[1:], changed_example]
+        batch = _balanced_batch(examples, key, changed_example)
         model, new_history = train_incremental(
             existing_model or initial_model(normalized_sizes), batch, step=revision - 1, hidden_sizes=normalized_sizes
         )
@@ -743,7 +787,7 @@ def update_feedback(state, packet, label, confidence, note, *, hidden_sizes=None
     audit = (state.get('audit', []) + [dict(packet_id=packet['id'], label=label, confidence=confidence,
              note=note, previous=previous['label'] if previous else None, revision=revision, at=now)])[-100:]
     training = {
-        'mode': 'full_retrain_on_config_change' if stale_architecture else 'online_mini_batch',
+        'mode': _training_mode(stale_architecture, full_retrain),
         'updates': int(previous_training.get('updates', state.get('revision', 0))) + 1,
         'batch_size': batch_size,
         'batch_limit': ONLINE_BATCH_SIZE,
