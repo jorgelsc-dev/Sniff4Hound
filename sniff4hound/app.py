@@ -22,6 +22,7 @@ from wsbuilder import App, Request, Response, parse_close_payload
 
 from . import __version__
 from . import access_log
+from . import http3_listener
 from . import log_setup
 from .auth import authenticate_request, extract_token_from_header, RATE_LIMITER, REQUIRE_AUTH
 from .export import (
@@ -143,7 +144,12 @@ def _is_benign_http_send_error(exc: Exception) -> bool:
     }
 
 
-def _guarded_send_http_response(conn, response, *, send_body=True):
+def _guarded_send_http_response(conn, response, *, send_body=True, keep_alive=False, version=None):
+    # wsbuilder decides keep-alive per request and passes it down. HTTP/0.9 has
+    # no status line or headers at all, so that case stays with wsbuilder's own
+    # writer rather than being re-implemented here.
+    if version == _WSBUILDER_HTTP_0_9:
+        return _WSBUILDER_SEND_HTTP_RESPONSE(conn, response, send_body=send_body, version=version)
     status_code = int(response.status)
     if not 100 <= status_code <= 599:
         raise ValueError("HTTP response status must be between 100 and 599")
@@ -180,7 +186,10 @@ def _guarded_send_http_response(conn, response, *, send_body=True):
     elif "content-length" not in lowermap:
         headers["Content-Length"] = str(len(response.body))
         lowermap = {k.lower(): v for k, v in headers.items()}
-    if "connection" not in lowermap:
+    if "connection" not in lowermap and not keep_alive:
+        # HTTP/1.1 keeps the socket open by default, so an explicit keep-alive
+        # token is noise; announcing close while the server reuses the socket
+        # would make the client drop it.
         headers["Connection"] = "close"
         lowermap = {k.lower(): v for k, v in headers.items()}
     allow_headers = lowermap.get("access-control-allow-headers", "")
@@ -232,6 +241,10 @@ _WSBUILDER_SEND_MODULES = (
 )
 
 
+_WSBUILDER_SEND_HTTP_RESPONSE = _wsbuilder_http.send_http_response
+_WSBUILDER_HTTP_0_9 = _wsbuilder_http.HTTP_0_9
+
+
 def _install_wsbuilder_http_send_guard():
     # Only modules that already bind the name are patched. `wsbuilder/__init__`
     # does not re-export `send_http_response`, so assigning it there created an
@@ -279,6 +292,9 @@ def _install_access_log():
         except BaseException:
             access_log.log_request(request, 500, 0, time.perf_counter() - started_at)
             raise
+        advertised = http3_listener.alt_svc_value()
+        if advertised and hasattr(response, "headers"):
+            response.headers.setdefault("Alt-Svc", advertised)
         try:
             access_log.log_response(request, response, started_at)
         except Exception:
