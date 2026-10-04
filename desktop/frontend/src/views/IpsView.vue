@@ -371,6 +371,12 @@ export default {
 .device-cell__confidence {
   margin-top: 3px;
   color: var(--text-dim);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 600px) {
+  .device-cell { min-width: 0; max-width: 100%; align-items: flex-start; }
+  .device-cell > .v-avatar { flex: 0 0 auto; }
+  .device-cell > div { min-width: 0; overflow-wrap: anywhere; }
 }
 </style>

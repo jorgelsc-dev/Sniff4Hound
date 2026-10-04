@@ -104,6 +104,11 @@ class RuntimeController:
         except Exception:
             return False
 
+    def reset_packet_pipeline(self):
+        # Counters live on the sniffer (capture process); reset there and hand
+        # back the fresh pipeline snapshot.
+        return self._sniffer.reset_pipeline_counters()
+
     def snapshot(self):
         sniffer = self._engine_snapshot("sniffer")
         honeypot = self._engine_snapshot("honeypot")
