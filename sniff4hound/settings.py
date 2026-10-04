@@ -50,7 +50,7 @@ DEFAULT_PORT = 45678
 
 HOST = str(_env("SNIFF4HOUND_HOST", _env("HOST", "127.0.0.1"))).strip() or "127.0.0.1"
 PORT = _as_int(_env("SNIFF4HOUND_PORT", str(DEFAULT_PORT)), DEFAULT_PORT)
-TLS_ENABLED = _as_bool(_env("SNIFF4HOUND_TLS", "0"), default=False)
+TLS_ENABLED = _as_bool(_env("SNIFF4HOUND_TLS", "1"), default=True)
 TLS_CERT_DAYS = max(1, _as_int(_env("SNIFF4HOUND_TLS_CERT_DAYS", "1"), 1))
 # X-Forwarded-* are set by whoever speaks to us, so by default the same-origin
 # guard trusts only the real Host header. Turn this on solely when a reverse
