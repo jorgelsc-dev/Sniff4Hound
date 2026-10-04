@@ -1647,7 +1647,7 @@ export default {
 
 .map-country-rail {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr));
   gap: 8px;
   margin-top: 14px;
 }
@@ -1655,6 +1655,8 @@ export default {
 .map-country-rail__item {
   display: flex;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
   gap: 8px;
   padding: 7px 10px;
   border-radius: 8px;
