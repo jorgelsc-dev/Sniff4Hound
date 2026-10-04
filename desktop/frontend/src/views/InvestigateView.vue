@@ -640,10 +640,12 @@ export default {
       return "secondary";
     },
     loadMonitors() {
+      // Only monitors that have matched traffic are needed to name a hit here.
+      // The full catalog (~30k rows) was fetched on every visit.
       return this.store
-        .listMonitors()
+        .fetchJsonPromise("/api/monitors/traffic/")
         .then((payload) => {
-          this.monitors = this.store.extractArray(payload);
+          this.monitors = this.store.extractArray(payload?.monitors ?? payload);
         })
         .catch(() => {
           // Best-effort enrichment only - activeMonitor already falls back

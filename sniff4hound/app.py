@@ -2719,19 +2719,46 @@ def monitors_stats(request):
     return _MONITOR_STATS_CACHE["value"]
 
 
+# The full catalog is ~30k rows: listing and parsing it costs about a second
+# and tens of megabytes per call, and several views ask for it at once. The
+# list is cached briefly; any write through this process drops the cache.
+_MONITORS_LIST_TTL_SECONDS = 5.0
+_MONITORS_LIST_CACHE: dict = {"at": 0.0, "payload": None}
+_MONITORS_LIST_LOCK = threading.Lock()
+
+
+def _invalidate_monitors_list():
+    with _MONITORS_LIST_LOCK:
+        _MONITORS_LIST_CACHE["payload"] = None
+
+
 @app.api("/api/monitors/", methods=("GET", "POST", "PUT", "DELETE"))
 def monitors_collection(request):
     if request.method.upper() == "GET":
+        now = time.monotonic()
+        with _MONITORS_LIST_LOCK:
+            cached = _MONITORS_LIST_CACHE["payload"]
+            if cached is not None and now - _MONITORS_LIST_CACHE["at"] < _MONITORS_LIST_TTL_SECONDS:
+                return cached
         match_counts = store.monitor_match_counts()
-        return [_monitor_row(row, match_counts) for row in store.list_monitors()]
+        payload = [_monitor_row(row, match_counts) for row in store.list_monitors()]
+        with _MONITORS_LIST_LOCK:
+            _MONITORS_LIST_CACHE.update(at=now, payload=payload)
+        return payload
     payload = _read_json_body(request)
     if request.method.upper() in {"POST", "PUT"}:
-        return _monitor_row(store.save_monitor(payload))
+        try:
+            return _monitor_row(store.save_monitor(payload))
+        finally:
+            _invalidate_monitors_list()
     if request.method.upper() == "DELETE":
         monitor_id = str(payload.get("id") or "").strip()
         if not monitor_id:
             raise ValueError("id is required")
-        store.delete_monitor(monitor_id)
+        try:
+            store.delete_monitor(monitor_id)
+        finally:
+            _invalidate_monitors_list()
         return {"status": "ok"}
     raise ValueError("Unsupported method")
 
@@ -2753,7 +2780,10 @@ def monitors_toggle(request):
     if not monitor_id:
         raise ValueError("id is required")
     enabled = _required_json_bool(payload, "enabled")
-    return _monitor_row(store.set_monitor_enabled(monitor_id, enabled))
+    try:
+        return _monitor_row(store.set_monitor_enabled(monitor_id, enabled))
+    finally:
+        _invalidate_monitors_list()
 
 
 @app.api("/api/monitors/config", methods=("GET", "POST"))
