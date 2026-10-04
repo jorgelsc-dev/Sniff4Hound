@@ -100,3 +100,31 @@ class MonitorFalsePositiveTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MaimonScanTests(unittest.TestCase):
+    MAIMON = "builtin-tcp-scan-maimon"
+
+    def _monitor(self):
+        # Fetched once per test: the catalog copy costs about a second, and a
+        # per-probe copy would stretch the probe burst past its 10 s window.
+        if not hasattr(self, "_cached_monitor"):
+            self._cached_monitor = monitor_by_id(self.MAIMON)
+        return self._cached_monitor
+
+    def test_a_single_fin_ack_close_is_not_a_scan(self):
+        from sniff4hound.anomaly import GenericThresholdDetector
+        detector = GenericThresholdDetector(self.MAIMON)
+        close = packet(proto="tcp", transport="tcp", src_ip="192.168.15.18", dst_ip="64.233.190.188",
+                       src_port=43266, dst_port=5228, tcp_flags="FIN,ACK", payload_len=0)
+        self.assertIsNone(detector.evaluate(close, self._monitor(), packet_text=""))
+
+    def test_many_fin_ack_probes_from_one_source_are_a_scan(self):
+        from sniff4hound.anomaly import GenericThresholdDetector
+        detector = GenericThresholdDetector(self.MAIMON)
+        hit = None
+        for port in range(1, 26):
+            probe = packet(proto="tcp", transport="tcp", src_ip="10.9.9.9", dst_ip="192.168.15.18",
+                           src_port=40000, dst_port=port, tcp_flags="FIN,ACK", payload_len=0)
+            hit = detector.evaluate(probe, self._monitor(), packet_text="") or hit
+        self.assertIsNotNone(hit)
