@@ -135,8 +135,10 @@ const edges = computed(() => {
 .tournament-graph--disqualified { opacity: 0.65; }
 .tournament-graph--training { border-color: #0fe8ff55; }
 .tournament-graph__head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.tournament-graph__progress { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
-.tournament-graph__progress .text-caption { min-width: 5.5em; }
+.tournament-graph__progress { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: 6px 8px; margin: 8px 0; }
+.tournament-graph__progress :deep(.v-progress-linear) { grid-column: 1 / -1; grid-row: 2; }
+.tournament-graph__progress .text-caption { min-width: 0; overflow-wrap: anywhere; }
+.tournament-graph__progress .text-caption:last-child { text-align: end; }
 /* No inner scroller: the viewBox already grows with the deepest layer, so the
    whole topology fits the card and the per-card zoom controls it used to need
    are gone with it. */

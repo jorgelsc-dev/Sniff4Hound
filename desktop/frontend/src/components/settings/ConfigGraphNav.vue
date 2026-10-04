@@ -103,7 +103,7 @@
         <div class="config-canvas-tools">
           <span class="config-component-count">{{ nodes.length }} componentes</span>
           <div class="config-zoom">
-            <v-btn icon="mdi-minus" size="x-small" variant="text" :disabled="transform.k <= 0.35" aria-label="Alejar" @click="zoomBy(0.8)">
+            <v-btn icon="mdi-minus" size="x-small" variant="text" :disabled="transform.k <= 0.15" aria-label="Alejar" @click="zoomBy(0.8)">
               <v-icon icon="mdi-minus" /><v-tooltip activator="parent">Alejar</v-tooltip>
             </v-btn>
             <output aria-label="Zoom">{{ Math.round(transform.k * 100) }}%</output>
@@ -216,7 +216,7 @@ function closeInspector() {
   nextTick(() => nodeEls.get(id)?.focus({ preventScroll: true }));
 }
 const zoomBehavior = zoom()
-  .scaleExtent([0.35, 1.8])
+  .scaleExtent([0.15, 1.8])
   .extent(() => [[0, 0], [viewport.value.clientWidth, viewport.value.clientHeight]])
   .filter(event => !event.target.closest(".config-node") && !event.button)
   .on("zoom", event => { transform.value = event.transform; });
@@ -226,8 +226,8 @@ function fitGraph() {
   const bounds = graphBounds(nodes.value);
   const width = viewport.value.clientWidth;
   const height = viewport.value.clientHeight;
-  // Keep cards readable on narrow screens; the canvas remains pannable.
-  const scale = Math.max(0.62, Math.min(1, (width - 32) / bounds.width, (height - 30) / bounds.height));
+  // Fit the entire graph; zoom and the section selector retain access to details.
+  const scale = Math.max(0.15, Math.min(1, (width - 32) / bounds.width, (height - 30) / bounds.height));
   const x = width < bounds.width * scale ? 16 - bounds.x * scale : (width - bounds.width * scale) / 2 - bounds.x * scale;
   const y = Math.max(12, (height - bounds.height * scale) / 2) - bounds.y * scale;
   selection.call(zoomBehavior.transform, zoomIdentity.translate(x, y).scale(scale));
@@ -289,21 +289,21 @@ onBeforeUnmount(() => {
 .config-workspace {
   --config-bg: var(--bg-0);
   --config-panel: var(--surface-1);
-  height: calc(100dvh - 72px);
-  min-height: 560px;
+  height: var(--app-canvas-height);
+  min-height: 0;
   display: flex;
   flex-direction: column;
   color: var(--text-soft);
   background: var(--config-bg);
-  border: 1px solid var(--stroke);
-  border-radius: 8px;
+  border: 0;
+  border-radius: 0;
   overflow: hidden;
   letter-spacing: 0;
 }
 .config-toolbar { min-height: 58px; flex: 0 0 auto; padding: 10px 16px; border-bottom: 1px solid var(--stroke); display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--surface-1); }
 .config-title, .config-tools { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .config-title > .v-icon { color: #b79aeb; }
-.config-title h1 { font-size: 19px; font-weight: 650; letter-spacing: 0; }
+.config-title h1 { font-size: 19px; font-weight: 650; letter-spacing: 0; white-space: nowrap; }
 .config-project { font-size: 12px; color: var(--text-dim); border-left: 1px solid var(--stroke); padding-left: 12px; }
 .config-jump { width: 220px; }
 .config-workspace__body { flex: 1; display: flex; min-height: 0; position: relative; }
@@ -370,8 +370,7 @@ onBeforeUnmount(() => {
 .config-overlay-enter-from .config-overlay__card, .config-overlay-leave-to .config-overlay__card { opacity: 0; transform: scale(0.96) translateY(8px); }
 @media (max-width: 1100px) { .config-project { display: none; } }
 @media (max-width: 700px) {
-  .config-workspace { height: calc(100dvh - 96px); min-height: 540px; }
-  .config-toolbar { padding: 10px; gap: 8px; }
+  .config-toolbar { padding: 10px; gap: 8px; flex-wrap: wrap; }
   .config-title { gap: 6px; }
   .config-title h1 { font-size: 17px; }
   .config-jump { width: 154px; }
@@ -382,6 +381,11 @@ onBeforeUnmount(() => {
   .config-overlay__body { padding: 14px; }
   .config-component-count { display: none; }
   .config-canvas-tools { justify-content: center; }
+}
+@media (max-width: 480px) {
+  .config-tools { flex: 1 1 100%; }
+  .config-jump { width: auto; flex: 1; }
+  .config-title h1 { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
     .config-node, .config-overlay-enter-active, .config-overlay-leave-active { transition: none; }

@@ -1507,7 +1507,7 @@ export default {
 }
 
 .ip-graph-card.ip-graph-card--canvas {
-  height: calc(100dvh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
+  height: var(--app-canvas-height);
   padding: 0;
   border: 0;
   border-radius: 0 !important;

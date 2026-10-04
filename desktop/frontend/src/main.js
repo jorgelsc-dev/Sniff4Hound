@@ -7,10 +7,9 @@ import App from "./App.vue";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 
-import "./styles/app.css";
-
 import "vuetify/styles";
 import "@mdi/font/css/materialdesignicons.css";
+import "./styles/app.css";
 import { createVuetify } from "vuetify";
 import { aliases, mdi } from "vuetify/iconsets/mdi";
 import router from "./router";

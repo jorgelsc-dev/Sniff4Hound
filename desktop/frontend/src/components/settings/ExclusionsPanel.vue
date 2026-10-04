@@ -59,7 +59,7 @@
           />
         </v-col>
       </v-row>
-      <div class="d-flex ga-2 mt-2">
+      <div class="d-flex flex-wrap ga-2 mt-2">
         <v-btn color="primary" variant="flat" :loading="saving" @click="save">Guardar filtro</v-btn>
         <v-btn variant="text" :disabled="saving" @click="resetDraft">Descartar cambios</v-btn>
         <v-chip v-if="activeFilterCount" size="small" color="warning" class="align-self-center">

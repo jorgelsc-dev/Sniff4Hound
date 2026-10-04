@@ -92,9 +92,12 @@
         <tbody>
           <tr v-for="packet in visibleRows" :key="packet.id" :class="{ 'is-selected': selectedId === packet.id }">
             <td>
-              <div class="packet-thumb">
+              <div class="packet-thumb" :tabindex="packet.image ? 0 : undefined">
                 <img v-if="packet.image" :src="packet.image" :alt="`Bytes del paquete ${packet.id} en escala de grises`" />
                 <span v-else class="packet-thumb__empty">—</span>
+                <v-tooltip v-if="packet.image" activator="parent" location="right">
+                  <img class="packet-preview" :src="packet.image" :alt="`Vista ampliada del paquete ${packet.id}`" />
+                </v-tooltip>
               </div>
             </td>
             <td>
@@ -134,7 +137,7 @@
         <v-select v-model="reviewConfidence" label="Confianza / incentivo" :items="[1, 2, 3]" />
         <v-textarea v-model="reviewNote" label="Evidencia o motivo" maxlength="500" counter="500" rows="3" />
         <v-alert v-if="feedbackError" type="error" class="mb-3">{{ feedbackError }}</v-alert>
-        <div class="d-flex ga-3 justify-end"><v-btn :disabled="savingFeedback" @click="reviewOpen = false">Cancelar</v-btn><v-btn color="primary" :loading="savingFeedback" :disabled="!reviewLabel" @click="sendFeedback">Guardar y aprender</v-btn></div>
+        <div class="d-flex flex-wrap ga-3 justify-end"><v-btn :disabled="savingFeedback" @click="reviewOpen = false">Cancelar</v-btn><v-btn color="primary" :loading="savingFeedback" :disabled="!reviewLabel" @click="sendFeedback">Guardar y aprender</v-btn></div>
       </v-card>
     </v-dialog>
   </div>
@@ -282,14 +285,13 @@ onBeforeUnmount(() => { disposed = true; feed?.close(); clearInterval(fallbackTi
 </script>
 
 <style scoped>
-.endpoints { overflow-wrap: anywhere; font-family: monospace; font-size: 0.78rem; }
-.packet-status { max-width: 260px; }
+.endpoints { min-width: 220px; max-width: 280px; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 0.78rem; }
+.packet-status { min-width: 200px; max-width: 260px; }
 
-/* Vuetify's v-table__wrapper clips horizontal overflow by default, which
-   would crop the enlarged hover preview below - this table's content
-   otherwise fits the card width, so trading that clipping away is safe. */
-.packet-table :deep(.v-table__wrapper) { overflow: visible; }
+.packet-table :deep(.v-table__wrapper) { overflow: auto; }
+.packet-table :deep(table) { min-width: 1080px; }
 .packet-table :deep(td) { vertical-align: top; padding-top: 10px; padding-bottom: 10px; }
+.packet-table :deep(.is-selected > td) { background: rgba(var(--brand-cyan-rgb), 0.07); }
 
 .packet-thumb {
   position: relative;
@@ -303,22 +305,20 @@ onBeforeUnmount(() => { disposed = true; feed?.close(); clearInterval(fallbackTi
   border-radius: 6px;
   overflow: hidden;
 }
-.packet-thumb:hover { overflow: visible; z-index: 20; }
 .packet-thumb__empty { font-size: 0.6rem; color: var(--text-dim); }
 .packet-thumb img {
   width: 100%;
   height: 100%;
   object-fit: contain;
   image-rendering: pixelated;
-  transform-origin: top left;
-  transition: transform 0.15s ease;
 }
-/* Scaling (not resizing) keeps this a pure hover effect - it never shifts
-   row layout, only what paints on top once it's showing. */
-.packet-thumb:hover img {
-  transform: scale(6);
+.packet-preview {
+  display: block;
+  width: 240px;
+  height: 240px;
+  object-fit: contain;
+  image-rendering: pixelated;
   background: #080c13;
   border-radius: 4px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px #344054;
 }
 </style>

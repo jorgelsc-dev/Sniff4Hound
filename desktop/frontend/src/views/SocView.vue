@@ -30,7 +30,7 @@
     </ViewHeader>
 
     <v-row dense>
-      <v-col v-for="metric in metricCards" :key="metric.key" cols="12" sm="6" xl="2">
+      <v-col v-for="metric in metricCards" :key="metric.key" cols="12" sm="6" md="4" lg="2">
         <v-card variant="tonal" class="pa-5 metric-card">
           <div class="d-flex align-center justify-space-between ga-3">
             <div>
@@ -59,7 +59,7 @@
       Live refresh paused. This assessment stays fixed until you refresh or change its parameters.
     </v-alert>
 
-    <v-card class="soc-hero pa-6 pa-md-7 mt-4" rounded="xl" variant="tonal" :style="heroStyle">
+    <section class="soc-hero mt-4" :style="heroStyle">
       <v-row dense class="align-center">
         <v-col cols="12" lg="8">
           <div class="text-overline">Current assessment</div>
@@ -157,7 +157,7 @@
           </div>
         </v-col>
       </v-row>
-    </v-card>
+    </section>
 
     <v-card variant="outlined" class="pa-4 mt-4">
       <div class="text-subtitle-2">Evidence coverage · {{ store.timeRangeLabel() || "all retained traffic" }}</div>
@@ -1135,15 +1135,13 @@ export default {
 
 .soc-hero {
   position: relative;
-  overflow: hidden;
-  border: 1px solid var(--stroke);
-  border-radius: 8px !important;
-  background: var(--surface-1);
+  padding: 16px 0 24px;
+  border-bottom: 1px solid var(--stroke);
 }
 
 .soc-hero__title {
   margin: 8px 0 0;
-  font-size: clamp(1.55rem, 2.8vw, 2.25rem);
+  font-size: 1.5rem;
   line-height: 1.12;
   letter-spacing: 0;
 }
@@ -1182,17 +1180,15 @@ export default {
 
 .soc-hero__panel {
   position: relative;
-  padding: 16px;
-  border: 1px solid var(--stroke);
-  border-radius: 8px;
-  background: var(--surface-2);
+  padding: 0 0 0 20px;
+  border-left: 1px solid var(--stroke);
 }
 
 .soc-hero__panel-kicker {
   color: rgba(120, 220, 255, 0.92);
   font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1203,7 +1199,7 @@ export default {
 
 .soc-hero__stats {
   display: grid;
-  gap: 10px;
+  gap: 0;
   margin-top: 10px;
 }
 
@@ -1212,9 +1208,8 @@ export default {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--surface-1);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--stroke);
 }
 
 .soc-hero__stat span {
@@ -1234,7 +1229,7 @@ export default {
 }
 
 .soc-tabs :deep(.v-slide-group__content) {
-  gap: 10px;
+  gap: 4px;
   padding-bottom: 2px;
 }
 
@@ -1267,7 +1262,7 @@ export default {
 
 .soc-tab__kicker {
   font-size: 0.72rem;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: rgba(140, 156, 176, 0.88);
 }
@@ -1402,5 +1397,16 @@ export default {
   .chart-row {
     grid-template-columns: minmax(72px, 1fr) minmax(0, 2fr) auto;
   }
+}
+
+@media (max-width: 1144px) {
+  .soc-hero__panel { padding: 16px 0 0; border-left: 0; }
+  .soc-hero__stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+}
+
+@media (max-width: 600px) {
+  .soc-hero__stats { grid-template-columns: minmax(0, 1fr); }
+  .soc-cycle-toggle { max-width: 100%; }
+  .soc-cycle-toggle :deep(.v-btn) { min-width: 36px; padding-inline: 8px; }
 }
 </style>

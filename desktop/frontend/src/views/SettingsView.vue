@@ -161,7 +161,7 @@
             @update:label="locationDraft.label = $event"
           />
 
-          <div class="d-flex justify-end ga-2 mt-3">
+          <div class="d-flex flex-wrap justify-end ga-2 mt-3">
             <v-btn
               size="small"
               variant="text"
@@ -228,7 +228,7 @@
                   height="10"
                   class="mb-2"
                 />
-                <div class="d-flex justify-space-between text-caption text-medium-emphasis mb-3">
+                <div class="d-flex flex-wrap ga-2 justify-space-between text-caption text-medium-emphasis mb-3">
                   <span>{{ formatDbBytes(storageStats.live_bytes) }} datos</span>
                   <span>{{ formatDbBytes(storageStats.free_bytes) }} libres</span>
                   <span>{{ formatDbBytes(storageStats.file_bytes) }} total</span>
@@ -314,7 +314,7 @@
             <div class="text-caption text-medium-emphasis mb-3">
               Reescribe el archivo SQLite recuperando todas las páginas libres y activa la recuperación automática incremental. La captura se pausa brevemente durante la reescritura. No elimina ningún dato.
             </div>
-            <div class="d-flex justify-end ga-2">
+            <div class="d-flex flex-wrap justify-end ga-2">
               <v-btn variant="text" @click="compactDialog = false">Cancelar</v-btn>
               <v-btn color="primary" variant="flat" :loading="compacting" @click="confirmCompact">
                 Compactar
@@ -452,7 +452,7 @@
             <v-col cols="12">
               <v-alert v-if="retentionError" type="error" variant="tonal" density="comfortable" class="mb-3">{{ retentionError }}</v-alert>
               <v-alert v-if="retentionSaved" type="success" variant="tonal" density="comfortable" class="mb-3">Política guardada. Se aplica en el siguiente barrido.</v-alert>
-              <div class="d-flex justify-end ga-2">
+              <div class="d-flex flex-wrap justify-end ga-2">
                 <v-btn variant="text" :disabled="retentionSaving || !retentionOverriddenAny" @click="clearRetentionOverride({})">Restablecer todo</v-btn>
                 <v-btn color="primary" variant="tonal" :loading="retentionSaving" :disabled="retentionSaving || !retentionDirty" @click="saveRetentionConfig">Guardar política</v-btn>
               </div>
@@ -519,7 +519,7 @@
                 Elimina paquetes, etiquetas y payloads almacenados. Flows, dominios, paths y sesiones se conservan. No se puede deshacer.
               </template>
             </div>
-            <div class="d-flex justify-end ga-2">
+            <div class="d-flex flex-wrap justify-end ga-2">
               <v-btn variant="text" @click="purgeDialog = false">Cancelar</v-btn>
               <v-btn color="error" variant="flat" :loading="purging" @click="confirmPurge">
                 {{ purgeScope === "everything" ? "Eliminar todo" : "Limpiar historial" }}
@@ -635,7 +635,7 @@
             <v-alert v-if="newListenerError" type="error" variant="tonal" density="comfortable" class="mb-3">
               {{ newListenerError }}
             </v-alert>
-            <div class="d-flex justify-end ga-2">
+            <div class="d-flex flex-wrap justify-end ga-2">
               <v-btn variant="text" @click="newListenerDialog = false">Cancelar</v-btn>
               <v-btn color="primary" variant="flat" :loading="newListenerSubmitting" @click="createListener">
                 Crear
@@ -1487,7 +1487,7 @@
             persistent-hint
           />
           <div v-if="pipelineLive" class="mt-4">
-            <div class="d-flex align-center justify-space-between mb-2">
+            <div class="d-flex flex-wrap align-center justify-space-between ga-2 mb-2">
               <span class="text-caption text-medium-emphasis">Contadores desde {{ formatTimestamp(pipelineLive.since) || "el inicio" }}</span>
               <v-btn size="small" variant="tonal" prepend-icon="mdi-restart" :loading="pipelineResetting" :disabled="pipelineResetting" @click="resetPipelineCounters">
                 Reiniciar contadores
@@ -1559,7 +1559,7 @@
             persistent-hint
           />
           <div v-if="pipelineLive" class="mt-4">
-            <div class="d-flex align-center justify-space-between mb-2">
+            <div class="d-flex flex-wrap align-center justify-space-between ga-2 mb-2">
               <span class="text-caption text-medium-emphasis">Contadores desde {{ formatTimestamp(pipelineLive.since) || "el inicio" }}</span>
               <v-btn size="small" variant="tonal" prepend-icon="mdi-restart" :loading="pipelineResetting" :disabled="pipelineResetting" @click="resetPipelineCounters">
                 Reiniciar contadores
@@ -1626,7 +1626,7 @@
             </v-col>
           </v-row>
           <div v-if="limitsData" class="mt-3">
-            <div class="d-flex align-center justify-space-between mb-2">
+            <div class="d-flex flex-wrap align-center justify-space-between ga-2 mb-2">
               <span class="text-caption text-medium-emphasis">
                 Estado: {{ limitsData.state && limitsData.state.paused ? `pausado (${limitsData.state.reason || 'límite'})` : 'capturando' }}
                 <span v-if="limitsData.state && limitsData.state.paused_at"> · desde {{ formatTimestamp(limitsData.state.paused_at) }}</span>
@@ -3322,7 +3322,7 @@ export default {
 <style scoped>
 
 .log-tail { max-height: 460px; overflow: auto; font-family: ui-monospace, Consolas, monospace; font-size: 12px; border-radius: 6px; background: rgba(0,0,0,.25); padding: 6px 8px; }
-.log-tail__row { display: grid; grid-template-columns: 96px 70px 170px 1fr; gap: 10px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+.log-tail__row { display: grid; grid-template-columns: 96px 70px 170px minmax(0, 1fr); gap: 10px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
 .log-tail__time { color: var(--text-dim); }
 .log-tail__level { font-weight: 600; color: #8fb8ff; }
 .log-tail__row.is-warning .log-tail__level { color: #e4b96c; }
@@ -3339,27 +3339,23 @@ export default {
 .settings-connection { display: grid; grid-template-columns: auto 1fr; gap: 18px; font-size: 13px; }
 .settings-connection dt { color: #a4a6b1; }
 .settings-connection dd { margin: 0; overflow-wrap: anywhere; }
-.settings-view :deep(.config-inspector .data-panel),
-.settings-view :deep(.config-inspector .filter-card),
-.settings-view :deep(.config-inspector .notify-card) {
+.settings-view :deep(.config-overlay__body .data-panel),
+.settings-view :deep(.config-overlay__body .v-window-item > .v-card) {
   padding: 0 !important;
   background: transparent !important;
   border: 0;
   box-shadow: none;
   border-radius: 0;
 }
-.settings-view :deep(.config-inspector .v-card__underlay) { display: none; }
-.settings-view :deep(.config-inspector .panel-pulse) { display: none; }
-.settings-view :deep(.config-inspector .panel-head) { align-items: flex-start !important; }
-.settings-view :deep(.config-inspector .panel-head > div) { min-width: 0; flex-wrap: wrap; }
-.settings-view :deep(.config-inspector .text-subtitle-1) { font-size: 15px !important; }
-.settings-view :deep(.config-inspector .text-body-2) { font-size: 12px !important; line-height: 1.6; }
-.settings-view :deep(.config-inspector .v-col) { flex: 0 0 100%; max-width: 100%; }
-.settings-view :deep(.config-inspector .v-btn) { letter-spacing: 0; max-width: 100%; }
-.settings-view :deep(.config-inspector .v-btn__content) { white-space: normal; }
-.settings-view :deep(.config-inspector .v-window) { overflow: visible; }
-.settings-view :deep(.config-inspector .v-window-item) { transition: none !important; }
-.settings-view :deep(.config-inspector .v-window__container) { height: auto !important; }
+.settings-view :deep(.config-overlay__body .v-card__underlay) { display: none; }
+.settings-view :deep(.config-overlay__body .panel-pulse) { display: none; }
+.settings-view :deep(.config-overlay__body .panel-head) { align-items: flex-start !important; }
+.settings-view :deep(.config-overlay__body .panel-head > div) { min-width: 0; flex-wrap: wrap; }
+.settings-view :deep(.config-overlay__body .v-btn) { max-width: 100%; }
+.settings-view :deep(.config-overlay__body .v-btn__content) { white-space: normal; }
+.settings-view :deep(.config-overlay__body .v-window) { overflow: visible; }
+.settings-view :deep(.config-overlay__body .v-window-item) { transition: none !important; }
+.settings-view :deep(.config-overlay__body .v-window__container) { height: auto !important; }
 
 .interface-card,
 .scope-card,
@@ -3426,7 +3422,7 @@ export default {
 }
 
 .monitor-dialog-card {
-  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
   display: flex;
   flex-direction: column;
 }
@@ -3497,12 +3493,21 @@ export default {
 
 .mobile-code {
   font-family: var(--font-mono);
-  font-size: clamp(28px, 9vw, 42px);
+  font-size: 2rem;
   line-height: 1;
   letter-spacing: 0;
 }
 
 .settings-view :deep(.v-field) {
   border-radius: 8px;
+}
+
+@media (max-width: 600px) {
+  .log-tail__row { grid-template-columns: 96px minmax(0, 1fr); gap: 4px 8px; padding-block: 8px; }
+  .log-tail__logger, .log-tail__msg { grid-column: 1 / -1; }
+  .settings-connection { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .settings-connection dd { margin-bottom: 12px; }
+  .storage-stat-grid { grid-template-columns: minmax(0, 1fr); }
+  .settings-engine { gap: 10px; }
 }
 </style>

@@ -129,6 +129,12 @@ export default {
     },
   },
   watch: {
+    "store.state.commandPaletteOpen"(open) {
+      if (!open) return;
+      this.query = "";
+      this.activeId = this.results[0]?.id || "";
+      this.$nextTick(() => this.$refs.input?.focus());
+    },
     // Any keystroke can drop the highlighted row out of the result set; without
     // this the selection would silently point at nothing and Enter would open
     // whatever happened to be first.
@@ -147,6 +153,11 @@ export default {
   methods: {
     handleKeydown(event) {
       const key = String(event.key || "").toLowerCase();
+      if (key === "escape" && this.store.state.commandPaletteOpen) {
+        event.preventDefault();
+        this.close();
+        return;
+      }
       if (key === "k" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         this.store.state.commandPaletteOpen ? this.close() : this.show();
@@ -154,12 +165,10 @@ export default {
     },
     show() {
       this.store.state.commandPaletteOpen = true;
-      this.query = "";
-      this.activeId = this.results.length ? this.results[0].id : "";
-      this.$nextTick(() => this.$refs.input?.focus());
     },
     close() {
       this.store.state.commandPaletteOpen = false;
+      this.$nextTick(() => document.querySelector(".command-trigger")?.focus({ preventScroll: true }));
     },
     move(delta) {
       const list = this.results;
