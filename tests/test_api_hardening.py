@@ -84,6 +84,11 @@ class AuthGuardHardeningTests(unittest.TestCase):
         self.auth._SESSION_TOKEN = "Ab12Cd34"
         self.auth.RATE_LIMITER.reset()
         self.addCleanup(self.auth.RATE_LIMITER.reset)
+        # These cases use plain http origins; TLS (and therefore https origins)
+        # is covered by the dedicated test below.
+        tls_patch = patch.object(self.app, "TLS_ENABLED", False)
+        tls_patch.start()
+        self.addCleanup(tls_patch.stop)
 
     def _dispatch(self, **kwargs):
         return self.app.app.dispatch(_request("/api/hello", **kwargs))
@@ -140,6 +145,22 @@ class AuthGuardHardeningTests(unittest.TestCase):
         self.assertEqual(response.status, 403)
         payload = json.loads(response.body.decode("utf-8"))
         self.assertEqual(payload["code"], "bad_origin")
+
+    def test_same_origin_state_change_is_allowed_over_tls(self):
+        with patch.object(self.app, "TLS_ENABLED", True):
+            response = self.app.app.dispatch(
+                _request(
+                    "/api/echo",
+                    method="POST",
+                    headers={
+                        "x-security-code": "Ab12Cd34",
+                        "host": "127.0.0.1:45678",
+                        "origin": "https://127.0.0.1:45678",
+                    },
+                    body="hello",
+                )
+            )
+        self.assertEqual(response.status, 200)
 
     def test_same_origin_state_change_is_allowed(self):
         response = self.app.app.dispatch(

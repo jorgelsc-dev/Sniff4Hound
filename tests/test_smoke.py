@@ -1260,7 +1260,7 @@ class SmokeTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(auth_module, "get_session_token", return_value="Ab12Cd34"), patch.object(
             auth_module, "REQUIRE_AUTH", True
-        ), redirect_stdout(output):
+        ), patch.object(manage_module, "TLS_ENABLED", False), redirect_stdout(output):
             manage_module._print_startup_banner("127.0.0.1", 45678)
 
         banner = output.getvalue()
@@ -1323,7 +1323,10 @@ class SmokeTests(unittest.TestCase):
         stop_mock.assert_called_once_with(fake_process)
         notice_mock.assert_called_once_with(45678, 45670)
         banner_mock.assert_called_once_with("127.0.0.1", 45670)
-        run_mock.assert_called_once_with("127.0.0.1", 45670)
+        run_mock.assert_called_once()
+        self.assertEqual(run_mock.call_args.args, ("127.0.0.1", 45670))
+        # TLS is on by default, so the listener must be handed a TLS context.
+        self.assertIsNotNone(run_mock.call_args.kwargs.get("ssl_context"))
 
     def test_manage_exits_cleanly_when_no_fallback_port_is_available(self):
         import sniff4hound.manage as manage_module
