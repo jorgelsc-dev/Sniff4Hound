@@ -198,6 +198,21 @@ function runtimeCertificateIsAcceptable(hostname, origin, certificate) {
   return isOwnLocalBackend(hostname);
 }
 
+// Electron's certificate-verify request carries the hostname but no URL, so the
+// origin is unknown there. Match the pinned CAs by host instead and accept the
+// certificate only if one of them actually signed it. The port is not visible to
+// this callback, so two sensors on the same host with different CAs are both
+// candidates; the signature check is what decides.
+function runtimeCertificateIsPinnedForHost(hostname, certificate) {
+  if (!hostname) return false;
+  for (const trusted of trustedRuntimeCas.values()) {
+    if (trusted.host === hostname && electronCertificateIsTrusted(certificate, trusted)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function installRuntimeCertificateTrust() {
   if (certificateTrustInstalled) return;
   certificateTrustInstalled = true;
@@ -207,7 +222,10 @@ function installRuntimeCertificateTrust() {
       return;
     }
     const origin = normalizeOrigin(request.url);
-    if (runtimeCertificateIsAcceptable(request.hostname, origin, request.certificate)) {
+    if (
+      runtimeCertificateIsAcceptable(request.hostname, origin, request.certificate) ||
+      runtimeCertificateIsPinnedForHost(request.hostname, request.certificate)
+    ) {
       callback(0);
       return;
     }

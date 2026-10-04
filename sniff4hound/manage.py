@@ -973,6 +973,7 @@ def main():
     console_thread = None
     capture_process = None
     capture_supervisor = None
+    http3_server = None
 
     if selected_port is None:
         _print_address_in_use_error(host, requested_port)
@@ -1074,6 +1075,9 @@ def main():
         capture_supervisor.start()
         bootstrap_capture()
         if tls_material:
+            from .http3_listener import start_http3, stop_http3
+
+            http3_server = start_http3(app, tls_material, host, selected_port)
             app.run(host, selected_port, ssl_context=tls_material.ssl_context)
         else:
             app.run(host, selected_port)
@@ -1095,6 +1099,8 @@ def main():
             # A restart replaced the handle main() is still holding; signaling
             # the stale one would leave the live child orphaned as root.
             capture_process = capture_supervisor.process
+        if http3_server is not None:
+            stop_http3(http3_server)
         _stop_interactive_console(console_thread)
         shutdown_capture()
         _stop_capture_child(capture_process)
@@ -1123,6 +1129,7 @@ def main_web():
         return 1
 
     tls_material = None
+    http3_server = None
     if TLS_ENABLED:
         from .tls import ensure_runtime_tls
 
@@ -1152,6 +1159,9 @@ def main_web():
         )
         bootstrap_capture()
         if tls_material:
+            from .http3_listener import start_http3, stop_http3
+
+            http3_server = start_http3(app, tls_material, host, selected_port)
             app.run(host, selected_port, ssl_context=tls_material.ssl_context)
         else:
             app.run(host, selected_port)
@@ -1163,6 +1173,8 @@ def main_web():
     except KeyboardInterrupt:
         print("\n\n🛑 Shutting down gracefully...\n")
     finally:
+        if http3_server is not None:
+            stop_http3(http3_server)
         _stop_interactive_console(console_thread)
         shutdown_capture()
         reset_process_shutdown_request()
