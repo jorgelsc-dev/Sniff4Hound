@@ -1211,8 +1211,17 @@ DEFAULT_MONITORS = [
         "enabled": True,
         "priority": 7,
         "source": "builtin",
-        "mode": "rule",
-        "match": {"protocols": ['tcp'], "tcp_flags": ['FIN,ACK']},
+        # A single FIN+ACK is how every TCP connection closes, so the flag alone
+        # is not a scan. A probe is many of them from one source in a short
+        # window, which is what the stateful count expresses.
+        "mode": "stateful",
+        "match": {
+            "protocols": ['tcp'],
+            "tcp_flags": ['FIN,ACK'],
+            "count_threshold": 20,
+            "window_seconds": 10,
+            "group_by": "src_ip",
+        },
         "action": {"tag": "scan-maimon", "label": "TCP Maimon scan", "severity": "high"},
     },
     {
