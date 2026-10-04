@@ -84,9 +84,6 @@
             <v-chip size="small" :color="visibleAlerts.length ? 'error' : 'success'" variant="tonal">
               {{ visibleAlerts.length }} visibles
             </v-chip>
-            <v-chip size="small" color="warning" variant="tonal" prepend-icon="mdi-brain">
-              IA {{ aiCandidates.length }}
-            </v-chip>
             <v-btn icon="mdi-refresh" size="x-small" variant="text" :loading="loadingAlerts" aria-label="Actualizar alertas" @click="loadAlerts" />
           </div>
         </div>
@@ -136,7 +133,6 @@ export default {
       store,
       messages: [],
       alerts: [],
-      aiCandidates: [],
       draft: "",
       sending: false,
       loadingChat: false,
@@ -155,13 +151,7 @@ export default {
   computed: {
     visibleAlerts() {
       const monitorAlerts = this.alerts.map((alert) => ({ ...alert, kind: "monitor" }));
-      const aiAlerts = this.aiCandidates.map((packet) => ({
-        ...packet,
-        kind: "ai",
-        severity: Number(packet.priority_score || 0) >= 80 ? "high" : "medium",
-        detail: `Prioridad ${packet.priority_score ?? packet.score ?? "—"}/100 · candidato sin alerta de reglas`,
-      }));
-      return [...monitorAlerts, ...aiAlerts]
+      return [...monitorAlerts]
         .sort((left, right) => String(right.created_at || "").localeCompare(String(left.created_at || "")))
         .slice(0, 8);
     },
@@ -195,10 +185,9 @@ export default {
         : "mdi-shield-alert-outline";
     },
     alertTitle(alert) {
-      return alert.kind === "ai" ? "Posible anomalía detectada por IA" : (alert.monitor || alert.monitor_id || "Detección");
+      return alert.monitor || alert.monitor_id || "Detección";
     },
     alertLink(alert) {
-      if (alert.kind === "ai") return { path: "/ai" };
       return { path: "/monitors", query: { monitor: alert.monitor_id, packet: alert.packet_id } };
     },
     loadMessages() {
@@ -216,15 +205,9 @@ export default {
     loadAlerts() {
       if (this.loadingAlerts) return Promise.resolve();
       this.loadingAlerts = true;
-      return Promise.allSettled([
-        this.store.fetchListPromise("/api/alerts/recent", { limit: 8 }),
-        this.store.fetchJsonPromise("/api/ai/packets/?threshold=50", {}, { preferHttp: true }),
-      ])
-        .then(([alertsResult, aiResult]) => {
-          if (alertsResult.status === "fulfilled") this.alerts = alertsResult.value.rows || [];
-          if (aiResult.status === "fulfilled") {
-            this.aiCandidates = (aiResult.value.rows || []).filter((packet) => packet.candidate && !packet.reviewed).slice(0, 5);
-          }
+      return this.store.fetchListPromise("/api/alerts/recent", { limit: 8 })
+        .then((alertsResult) => {
+          this.alerts = alertsResult.rows || [];
         })
         .finally(() => { this.loadingAlerts = false; });
     },

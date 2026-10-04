@@ -220,9 +220,17 @@ class EngineTogglesOverRealIpcTests(unittest.TestCase):
         token = generate_ipc_token()
         self.server = IpcServer(socket_path, token)
         sink = IpcEventSink(self.server)
-        # "lo" only: a raw AF_PACKET socket needs root, so the capture threads
-        # will record a permission error - irrelevant here, and it keeps the
-        # sniffer from touching every interface on the machine.
+        # A raw AF_PACKET socket needs root, so the real capture thread would
+        # fail with a permission error and report the sniffer stopped. These
+        # tests are about engine control, not capture, so stand in a worker
+        # that stays alive until stop() - the sniffer is genuinely "running".
+        def _idle_capture_worker(sniffer_self, _interface):
+            sniffer_self._stop_event.wait()
+
+        patcher = patch.object(Sniffer, "_capture_worker", _idle_capture_worker)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # "lo" only, so the sniffer never touches every interface on the machine.
         self.sniffer = Sniffer(self.store, sink, interfaces=("lo",))
         self.honeypot = HoneypotEngine(self.store, sink, bind_host="127.0.0.1")
         self.addCleanup(self.honeypot.stop)

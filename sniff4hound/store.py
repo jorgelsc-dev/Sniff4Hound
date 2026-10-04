@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import sys
 import threading
+from contextlib import contextmanager
 import time
 import uuid
 from collections import Counter, defaultdict
@@ -17,6 +18,19 @@ from pathlib import Path
 
 from . import ip_registry
 from .logger import get_logger
+from .log_setup import LOG_DEFAULTS, coerce_log_settings, note_statement
+from .resource_guard import LIMIT_BOUNDS, LIMIT_DEFAULTS, coerce_limit_settings
+from .packet_pipeline import (
+    PACKET_CACHE_LIMIT_DEFAULT,
+    PACKET_CACHE_LIMIT_MAX,
+    PACKET_CACHE_LIMIT_MIN,
+    PACKET_JOBS_DEFAULT,
+    PACKET_JOBS_MAX,
+    PACKET_JOBS_MIN,
+    PERSIST_MODE_DEFAULT,
+    PERSIST_MODES,
+    coerce_pipeline_settings,
+)
 from .runtime_paths import ensure_data_dir, resolve_data_file
 from .honeypot_ports import listener_port_allowed, listener_port_policy_error
 from .monitors import builtin_monitor_seed_fields, describe_match, normalize_monitor
@@ -85,6 +99,63 @@ PATH_TABLE_LIMIT = 50000
 # trim_oversized_tables() never pruned the table at all - 43k rows / 5 MB
 # observed on a live instance after minutes of capture.
 SESSION_TABLE_LIMIT = 20000
+
+# Job results larger than this are persisted as a marker, not as the payload.
+JOB_RESULT_PERSIST_MAX_BYTES = 256 * 1024
+
+RETENTION_TABLE_KEYS = ("packets", "payloads", "flows", "tags", "domains", "paths", "sessions")
+RETENTION_TABLE_LIMIT_MIN = 100
+RETENTION_TABLE_LIMIT_MAX = 5000000
+RETENTION_MAX_PACKETS_MIN = 1000
+RETENTION_DAYS_MAX = 3650
+RETENTION_INTERVAL_MIN = 5
+RETENTION_INTERVAL_MAX = 86400
+
+
+def _bounded_retention_int(value, name: str, low: int, high: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be an integer") from None
+    if number < low or number > high:
+        raise ValueError(f"{name} must be between {low} and {high}")
+    return number
+
+
+def coerce_retention_settings(values: dict) -> dict:
+    """Validates a partial retention update. null means "back to the default".
+
+    Returns {runtime_config_key: str value or ""} where "" clears the override.
+    Raises ValueError before anything is written, so a bad field rejects the
+    whole update.
+    """
+    if not isinstance(values, dict):
+        raise ValueError("retention config must be an object")
+    bounds = {
+        "retention_days": ("retention_days", 0, RETENTION_DAYS_MAX),
+        "retention_alert_days": ("retention_alert_days", 0, RETENTION_DAYS_MAX),
+        "retention_interval_seconds": ("retention_interval_seconds", RETENTION_INTERVAL_MIN, RETENTION_INTERVAL_MAX),
+        "retention_max_packets": ("retention_max_packets", RETENTION_MAX_PACKETS_MIN, RETENTION_TABLE_LIMIT_MAX),
+    }
+    updates = {}
+    for field, (key, low, high) in bounds.items():
+        if field not in values:
+            continue
+        raw = values[field]
+        updates[f"retention_override_{key}"] = "" if raw is None else str(
+            _bounded_retention_int(raw, field, low, high))
+    tables = values.get("table_limits")
+    if tables is not None:
+        if not isinstance(tables, dict):
+            raise ValueError("table_limits must be an object")
+        for table, raw in tables.items():
+            if table not in RETENTION_TABLE_KEYS:
+                raise ValueError(f"unknown table: {table}")
+            updates[f"retention_override_limit_{table}"] = "" if raw is None else str(
+                _bounded_retention_int(raw, f"table_limits.{table}", RETENTION_TABLE_LIMIT_MIN, RETENTION_TABLE_LIMIT_MAX))
+    return updates
 
 # Handing free pages back only works in auto_vacuum=INCREMENTAL mode, and a
 # database created before _open_connection() set that pragma is stuck at
@@ -641,19 +712,13 @@ class SniffStore:
             self.path = Path.cwd() / self.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        # Depth of an open write_batch(). While it is >0, packet writes share
+        # the batch's transaction instead of committing one by one.
+        self._batch_depth = 0
         self._last_retention_at = 0.0
-        # Architecture tournament (see start_ai_tournament()): a *separate*,
-        # lightweight lock from self._lock on purpose - candidate training
-        # threads touch this every epoch to publish live progress, and it
-        # must never contend with self._lock (packet ingestion, every SQL
-        # write) or a running tournament would stall capture. Deliberately
-        # in-memory only, not persisted - see get_ai_tournament_state().
-        self._ai_tournament_lock = threading.RLock()
-        self._ai_tournament = {
-            "active": False, "round": 0, "champion": None,
-            "rounds_history": [], "stop_reason": None, "stop_requested": False,
-        }
-        self._ai_tournament_candidates = {}
+        # Refreshed from the effective policy on every sweep; read by the
+        # throttle so the capture thread never queries runtime_config per packet.
+        self._retention_interval = RETENTION_INTERVAL_SECONDS
         self._device_profile_cache = {}
         self._conn = self._open_connection()
         self._geoip_resolver = _GeoCountryResolver()
@@ -687,7 +752,7 @@ class SniffStore:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=15000")
         return conn
 
     def _recover_connection(self):
@@ -1406,6 +1471,32 @@ class SniffStore:
 
         self._seed_file_catalogs()
         self._seed_builtin_honeypot_listeners()
+        self._disable_policy_refused_builtin_listeners()
+
+    def _disable_policy_refused_builtin_listeners(self) -> int:
+        """Turns off enabled builtin listeners that the port policy refuses.
+
+        A builtin on a privileged port outside the curated set can never bind;
+        left enabled it showed up as a permanent listener error. Disabling it
+        is the honest state. Idempotent, so it is safe on every start.
+        """
+        from .honeypot_ports import listener_port_allowed
+
+        rows = self._conn.execute(
+            "SELECT id, proto, port, source FROM honeypot_listeners WHERE enabled = 1 AND source = 'builtin'"
+        ).fetchall()
+        refused = [str(row["id"]) for row in rows
+                   if not listener_port_allowed(row["proto"], int(row["port"]), source="builtin")]
+        if refused:
+            now = utc_now()
+            self._conn.executemany(
+                "UPDATE honeypot_listeners SET enabled = 0, updated_at = ? WHERE id = ?",
+                [(now, listener_id) for listener_id in refused],
+            )
+            self._conn.commit()
+            LOGGER.info("disabled builtin honeypot listeners refused by the port policy",
+                        extra={"extra_fields": {"count": len(refused)}})
+        return len(refused)
 
     def _seed_builtin_honeypot_listeners(self):
         """Additive migration, same shape as `_seed_new_builtin_monitors`:
@@ -1758,33 +1849,51 @@ class SniffStore:
     )
 
     def _execute(self, sql, params=(), *, commit=False):
+        # Timed here so a slow statement shows up in the log with its text,
+        # whether it waited on the lock or ran long itself.
+        started = time.perf_counter()
+        try:
+            return self._execute_timed(sql, params, commit=commit)
+        finally:
+            note_statement(sql, (time.perf_counter() - started) * 1000)
+
+    def _execute_timed(self, sql, params=(), *, commit=False):
         with self._lock:
             try:
                 cursor = self._conn.execute(sql, params)
                 if commit:
-                    self._conn.commit()
+                    self._maybe_commit()
                 return cursor
             except sqlite3.Error as exc:
                 message = str(exc).lower()
                 if not any(token in message for token in self._RECOVERABLE_ERRORS):
+                    raise
+                if self._batch_depth:
+                    # A reconnect would drop every write the batch has made so
+                    # far. Let the batch fail as a whole instead.
                     raise
                 # One retry on a fresh or rolled-back connection. Anything
                 # still failing after that is a real problem and propagates.
                 self._recover_connection()
                 cursor = self._conn.execute(sql, params)
                 if commit:
-                    self._conn.commit()
+                    self._maybe_commit()
                 return cursor
 
+    # Execute and fetch under one lock hold. The connection is shared across
+    # threads; a cursor read after the lock is released can be interrupted by
+    # another thread's statement ("another row available").
     def _fetchall(self, sql, params=()):
-        cursor = self._execute(sql, params)
-        columns = [column[0] for column in (cursor.description or ())]
-        return [_row_to_dict(row, columns=columns) for row in cursor.fetchall()]
+        with self._lock:
+            cursor = self._execute(sql, params)
+            columns = [column[0] for column in (cursor.description or ())]
+            return [_row_to_dict(row, columns=columns) for row in cursor.fetchall()]
 
     def _fetchone(self, sql, params=()):
-        cursor = self._execute(sql, params)
-        columns = [column[0] for column in (cursor.description or ())]
-        return _row_to_dict(cursor.fetchone(), columns=columns)
+        with self._lock:
+            cursor = self._execute(sql, params)
+            columns = [column[0] for column in (cursor.description or ())]
+            return _row_to_dict(cursor.fetchone(), columns=columns)
 
     def _ensure_session(self, session_id: int):
         if session_id and self._fetchone("SELECT id FROM sessions WHERE id = ?", (session_id,)):
@@ -1949,7 +2058,7 @@ class SniffStore:
                 """,
                 (int(packet_length), int(rule_count), now, session_id),
             )
-            self._conn.commit()
+            self._maybe_commit()
 
     def get_session(self, session_id: int):
         return self._fetchone("SELECT * FROM sessions WHERE id = ?", (session_id,))
@@ -2286,53 +2395,6 @@ class SniffStore:
                 self._conn.commit()
         return {"packet_id": packet_id, "review_label": "" if label == "unreviewed" else label}
 
-    _AI_PACKET_COLUMNS = (
-        "id, proto, transport, src_ip, dst_ip, src_port, dst_port, ip_version, created_at, "
-        "length, payload_hex, details_json, tags_json, rule_hits_json, "
-        "hex(substr(raw_packet, 1, 4096)) AS frame_hex, length(raw_packet) AS frame_length"
-    )
-
-    def list_ai_packets(self, packet_id=None, *, since=""):
-        # Convert the bounded BLOB in SQL: the normal row serializer limits
-        # binary fields to a 256-byte preview and would lose image data.
-        raw_retention_enabled = self.get_raw_retention_enabled()
-        if packet_id is not None:
-            rows = self._fetchall(
-                f"SELECT {self._AI_PACKET_COLUMNS} FROM packets WHERE id = ?", (packet_id,)
-            )
-            return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
-        filters = self.get_exclusion_filters()
-        has_filters = any(filters.values())
-        # Muted/whitelisted/excluded traffic is never evaluated (see
-        # Sniffer._store_packet) - it persists for capture visibility, not
-        # because anything was learned from it, so it never has bytes to
-        # score. Always over-fetch a wider window so filtering it (and any
-        # exclusion filters) out doesn't just shrink the reviewable set down
-        # to whatever muted traffic happened to be most recent - scope/CIDR
-        # classification isn't expressible in SQLite either way (same reason
-        # `_grouped_ip_catalog` filters after the fetch).
-        fetch_limit = 1000 if has_filters else 400
-        # The dashboard's selected time window has to apply here in SQL,
-        # before the LIMIT/200-row sample below, or a 15-minute window would
-        # still surface AI rows scored from hours-old packets (finding 1.17).
-        since_clause = "WHERE created_at >= ?" if since else ""
-        since_params = (str(since),) if since else ()
-        rows = self._fetchall(
-            f"SELECT {self._AI_PACKET_COLUMNS} FROM packets {since_clause} ORDER BY id DESC LIMIT ?",
-            (*since_params, fetch_limit),
-        )
-
-        def _is_muted(row):
-            details = json_loads(row.get("details_json") or "{}", default={}) or {}
-            return isinstance(details, dict) and details.get("ai_detection_status") == "muted"
-
-        rows = [row for row in rows if not _is_muted(row)]
-        if has_filters:
-            networks = compile_exclusion_networks(filters)
-            rows = [row for row in rows if not packet_matches_exclusion_filter(row, filters, networks)]
-        rows = rows[:200]
-        return [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
-
     def get_exclusion_filters(self):
         # Runtime-config key kept as "ai_exclusion_filters" (its original,
         # AI-only-scoped name) even though this filter now also silences
@@ -2404,442 +2466,22 @@ class SniffStore:
         self.set_runtime_config("ai_exclusion_filters", json_dumps(normalized))
         return normalized
 
-    def ai_learning_state(self):
-        return json.loads(self.get_runtime_config("ai_learning_state", "{}"))
 
-    def get_ai_learning_config(self):
-        """The real, literal tuning knobs the AI features have - the
-        feedback-trained classifier's hidden-layer shape (a list of widths,
-        one entry per layer - ai_learning.py) and a minimum-cohort size for
-        the LOF outlier detector (packet_ai.py). Both are clamped to a sane
-        range regardless of what's stored, so a hand-edited or stale value
-        can't produce a degenerate model or a scan that never has enough
-        packets to score."""
-        from .ai_learning import normalize_hidden_sizes
-        from .packet_ai import MIN_COHORT, MIN_COHORT_CEILING, MIN_COHORT_FLOOR
 
-        data = json_loads(self.get_runtime_config("ai_learning_config", ""), default={})
-        if not isinstance(data, dict):
-            data = {}
-        hidden_sizes = normalize_hidden_sizes(data.get("hidden_sizes"))
-        min_cohort = safe_int(data.get("min_cohort"), MIN_COHORT)
-        min_cohort = min(MIN_COHORT_CEILING, max(MIN_COHORT_FLOOR, min_cohort))
-        return {"hidden_sizes": hidden_sizes, "min_cohort": min_cohort}
 
-    def set_ai_learning_config(self, config):
-        from .ai_learning import (
-            MIN_HIDDEN_LAYERS,
-            MIN_HIDDEN_NEURONS,
-            rebuild_for_hidden_sizes,
-        )
-        from .packet_ai import MIN_COHORT_CEILING, MIN_COHORT_FLOOR
 
-        data = config if isinstance(config, dict) else {}
-        current = self.get_ai_learning_config()
-        hidden_sizes = current["hidden_sizes"]
-        if "hidden_sizes" in data:
-            raw = data.get("hidden_sizes")
-            if not isinstance(raw, (list, tuple)) or not raw:
-                raise ValueError("hidden_sizes debe ser una lista con al menos una capa.")
-            if len(raw) < MIN_HIDDEN_LAYERS:
-                raise ValueError("Se necesita al menos una capa oculta.")
-            hidden_sizes = []
-            for item in raw:
-                size = safe_int(item, -1)
-                if size < MIN_HIDDEN_NEURONS:
-                    raise ValueError(f"Cada capa debe tener al menos {MIN_HIDDEN_NEURONS} neurona(s).")
-                hidden_sizes.append(size)
-        min_cohort = current["min_cohort"]
-        if "min_cohort" in data:
-            min_cohort = safe_int(data.get("min_cohort"), -1)
-            if not (MIN_COHORT_FLOOR <= min_cohort <= MIN_COHORT_CEILING):
-                raise ValueError(f"min_cohort debe estar entre {MIN_COHORT_FLOOR} y {MIN_COHORT_CEILING}.")
-        normalized = {"hidden_sizes": hidden_sizes, "min_cohort": min_cohort}
-        with self._lock:
-            if hidden_sizes != current["hidden_sizes"]:
-                # Persisted weights are shape-bound to the old layer shape -
-                # rebuild right away rather than waiting for the next
-                # feedback event to notice the mismatch, so the
-                # effectiveness score reflects the new architecture
-                # immediately instead of silently serving stale predictions.
-                state = rebuild_for_hidden_sizes(self.ai_learning_state(), hidden_sizes)
-                self.set_runtime_config("ai_learning_state", json_dumps(state))
-            self.set_runtime_config("ai_learning_config", json_dumps(normalized))
-            # A manual change is the operator's own call, and takes priority
-            # over whatever the background architecture/cohort search was
-            # suggesting - clear that axis's pending suggestion (and its
-            # dismissal memory) rather than let a stale recommendation from
-            # before this edit resurface later.
-            suggestion = self._ai_learning_suggestion_raw()
-            changed = False
-            if hidden_sizes != current["hidden_sizes"] and (suggestion.get("architecture") or suggestion.get("dismissed_architectures")):
-                suggestion["architecture"] = None
-                suggestion["dismissed_architectures"] = []
-                changed = True
-            if min_cohort != current["min_cohort"] and (suggestion.get("cohort") or suggestion.get("dismissed_cohorts")):
-                suggestion["cohort"] = None
-                suggestion["dismissed_cohorts"] = []
-                changed = True
-            if changed:
-                self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
-        return normalized
 
-    def _ai_learning_suggestion_raw(self):
-        data = json_loads(self.get_runtime_config("ai_learning_suggestion", ""), default={})
-        if not isinstance(data, dict):
-            data = {}
-        data.setdefault("architecture", None)
-        data.setdefault("cohort", None)
-        data.setdefault("dismissed_architectures", [])
-        data.setdefault("dismissed_cohorts", [])
-        data.setdefault("checked_at_examples", 0)
-        return data
 
-    def get_ai_learning_suggestion(self):
-        """Pending auto-tuning recommendations, if any - see
-        ai_learning.suggest_architecture() and packet_ai.suggest_min_cohort().
-        Generated opportunistically from save_ai_feedback(), never applied on
-        its own; an operator accepts or dismisses each axis independently
-        from the "Ajustes del motor" panel."""
-        data = self._ai_learning_suggestion_raw()
-        from .ai_learning import SUGGESTION_CHECK_INTERVAL
-        revision = int(self.ai_learning_state().get("revision", 0))
-        progress = min(SUGGESTION_CHECK_INTERVAL, max(0, revision - int(data.get("checked_at_revision", 0))))
-        return {"architecture": data["architecture"], "cohort": data["cohort"],
-                "search": data.get("search"),
-                "next_check": {"completed": progress, "required": SUGGESTION_CHECK_INTERVAL}}
 
-    def _refresh_ai_learning_suggestion(self, state):
-        """Re-runs the architecture/cohort search after enough feedback
-        updates, including when the retained example set is full (see
-        SUGGESTION_CHECK_INTERVAL) and persists whatever it finds. Called
-        from inside save_ai_feedback()'s lock, right after a review is
-        recorded, so it always sees the state that was just written."""
-        from .ai_learning import SUGGESTION_CHECK_INTERVAL, suggest_architecture
-        from .packet_ai import suggest_min_cohort
 
-        examples = state.get("examples", [])
-        suggestion = self._ai_learning_suggestion_raw()
-        revision = int(state.get("revision", 0))
-        if revision - int(suggestion.get("checked_at_revision", 0)) < SUGGESTION_CHECK_INTERVAL:
-            return
-        suggestion["checked_at_examples"] = len(examples)
-        suggestion["checked_at_revision"] = revision
-        config = self.get_ai_learning_config()
-        if suggestion["architecture"] is None:
-            report = {}
-            suggestion["architecture"] = suggest_architecture(
-                state, config["hidden_sizes"], dismissed=suggestion["dismissed_architectures"], report=report
-            )
-            suggestion["search"] = report
-        if suggestion["cohort"] is None:
-            labels_by_id = {e["packet_id"]: e["label"] for e in examples}
-            packets = self.list_ai_packets()
-            suggestion["cohort"] = suggest_min_cohort(
-                packets, labels_by_id, config["min_cohort"], dismissed=suggestion["dismissed_cohorts"]
-            )
-        self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
 
-    def apply_ai_learning_suggestion(self, kind):
-        if kind not in ("architecture", "cohort"):
-            raise ValueError("kind debe ser 'architecture' o 'cohort'.")
-        with self._lock:
-            suggestion = self._ai_learning_suggestion_raw()
-            pending = suggestion.get(kind)
-            if not pending:
-                raise ValueError("No hay ninguna sugerencia pendiente para aplicar.")
-            patch = {"hidden_sizes": pending["hidden_sizes"]} if kind == "architecture" else {"min_cohort": pending["min_cohort"]}
-        # set_ai_learning_config takes its own lock and already clears this
-        # axis's suggestion/dismissal memory as a side effect of the change.
-        return self.set_ai_learning_config(patch)
 
-    def dismiss_ai_learning_suggestion(self, kind):
-        if kind not in ("architecture", "cohort"):
-            raise ValueError("kind debe ser 'architecture' o 'cohort'.")
-        with self._lock:
-            suggestion = self._ai_learning_suggestion_raw()
-            pending = suggestion.get(kind)
-            if not pending:
-                raise ValueError("No hay ninguna sugerencia pendiente para descartar.")
-            if kind == "architecture":
-                dismissed = suggestion["dismissed_architectures"] + [pending["hidden_sizes"]]
-                suggestion["dismissed_architectures"] = dismissed[-10:]
-            else:
-                dismissed = suggestion["dismissed_cohorts"] + [pending["min_cohort"]]
-                suggestion["dismissed_cohorts"] = dismissed[-10:]
-            suggestion[kind] = None
-            self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
-        return self.get_ai_learning_suggestion()
 
-    def get_ai_tournament_state(self):
-        """Live snapshot of an in-progress (or just-finished) architecture
-        tournament - see start_ai_tournament(). Deliberately in-memory only
-        (self._ai_tournament / self._ai_tournament_candidates), not persisted
-        to the database while running: this is per-epoch progress for a live
-        UI, not state that needs to survive a restart mid-tournament. Only
-        the final champion is persisted, through the normal
-        learning_suggestion path (see _run_ai_tournament())."""
-        with self._ai_tournament_lock:
-            state = copy.deepcopy(self._ai_tournament)
-            state["candidates"] = [
-                copy.deepcopy(self._ai_tournament_candidates[index])
-                for index in sorted(self._ai_tournament_candidates)
-            ]
-        state.pop("stop_requested", None)
-        return state
 
-    def get_training_enabled(self) -> bool:
-        """`training_enabled` replaces the old `ai_sampling_enabled` flag; an
-        installation upgrading from before that rename keeps its previous
-        choice honoured until it's next changed explicitly. The one place
-        this is read from - app.py's ai_config()/_get_training_enabled()
-        delegates here so the tournament loop below and the API agree on the
-        same flag without duplicating the fallback logic."""
-        stored = self.get_runtime_config("training_enabled", "")
-        if stored == "":
-            stored = self.get_runtime_config("ai_sampling_enabled", "0")
-        return stored == "1"
 
-    def start_ai_tournament(self):
-        """Kick off a background architecture tournament: TOURNAMENT_
-        CANDIDATES_PER_ROUND shapes train side by side each round (see
-        ai_learning.run_tournament_round()), the winner carries into the
-        next round with fresh random challengers. Runs continuously, round
-        after round, for as long as training_enabled stays on - it does not
-        stop on its own once it's found something good; see
-        _run_ai_tournament()'s training_enabled check for the only automatic
-        stop condition. stop_ai_tournament() is a separate, explicit
-        override for stopping it early.
 
-        Training itself runs off self._lock entirely - only this call and
-        each round's brief persist take it, to snapshot the labelled
-        examples and to record progress - so packet ingestion
-        (register_packet, which shares self._lock) is never blocked by a
-        running tournament, however long it runs."""
-        from .ai_learning import normalize_hidden_sizes
 
-        with self._ai_tournament_lock:
-            if self._ai_tournament.get("active"):
-                return self.get_ai_tournament_state()
-        with self._lock:
-            state = self.ai_learning_state()
-            examples = list(state.get("examples", []))
-            counts = Counter(e["label"] for e in examples)
-            if counts.get("benign", 0) < 3 or counts.get("malicious", 0) < 3:
-                raise ValueError("Hacen falta al menos 3 ejemplos benignos y 3 malignos para entrenar.")
-            current_hidden_sizes = normalize_hidden_sizes(self.get_ai_learning_config()["hidden_sizes"])
-        with self._ai_tournament_lock:
-            self._ai_tournament = {
-                "active": True, "round": 0, "champion": None,
-                "rounds_history": [], "stop_reason": None, "stop_requested": False,
-            }
-            self._ai_tournament_candidates = {}
-        threading.Thread(
-            target=self._run_ai_tournament, args=(examples, current_hidden_sizes), daemon=True
-        ).start()
-        print(f"[i] Architecture tournament started (seed shape {current_hidden_sizes}).", file=sys.stderr)
-        return self.get_ai_tournament_state()
 
-    def maybe_start_ai_tournament(self):
-        """Best-effort auto-start: the tournament is meant to run for as
-        long as training is on, not wait for an explicit "start" click - so
-        this is called whenever training_enabled might have just turned on
-        (see app.py's ai_config()) or new feedback might have just crossed
-        the "3 of each class" floor (see save_ai_feedback() below). Swallows
-        the "not enough labels yet" error rather than propagating it, since
-        this is opportunistic, not an explicit operator action - it'll just
-        try again next time."""
-        if not self.get_training_enabled():
-            return
-        with self._ai_tournament_lock:
-            if self._ai_tournament.get("active"):
-                return
-        try:
-            self.start_ai_tournament()
-        except ValueError as exc:
-            # Printed (not silently swallowed) specifically so "training is
-            # on but the tournament never shows up" is diagnosable from the
-            # desktop app's captured backend output / the CLI's own stderr,
-            # instead of looking like nothing happened at all - this is the
-            # one real reason maybe_start_ai_tournament() ever declines:
-            # fewer than 3 retained examples of one of the two classes.
-            print(f"[i] Architecture tournament not started yet: {exc}", file=sys.stderr)
-
-    def stop_ai_tournament(self):
-        """Request a stop. Takes effect at the next round boundary (not
-        mid-round). Also happens automatically once training_enabled turns
-        off (see _run_ai_tournament()) - this is for an explicit operator
-        override while training stays on."""
-        with self._ai_tournament_lock:
-            if self._ai_tournament.get("active"):
-                self._ai_tournament["stop_requested"] = True
-        return self.get_ai_tournament_state()
-
-    def _run_ai_tournament(self, examples, current_hidden_sizes):
-        from .ai_learning import (
-            SUGGESTION_MIN_IMPROVEMENT,
-            normalize_hidden_sizes,
-            run_tournament_round,
-            tournament_round_shapes,
-        )
-
-        rng = random.Random()
-        starting_shape = normalize_hidden_sizes(current_hidden_sizes)
-        champion_shape = starting_shape
-        champion_accuracy = None
-        round_num = 0
-        stop_reason = "training_disabled"
-        round_evaluation_mode = "resubstitution"
-
-        # The default 5ms GIL switch interval lets these CPU-bound pure-
-        # Python training threads starve everything else in the process of
-        # CPU time - measured register_packet() taking ~500ms instead of its
-        # normal sub-ms cost while 3 candidates trained concurrently. A
-        # shorter interval fixes that (measured down to ~20-50ms under the
-        # same load), but it's a process-wide interpreter setting that adds
-        # overhead to every thread everywhere, not just this one - scoped to
-        # just the training loop (restored in `finally`) rather than left on
-        # for the process's whole lifetime, which measurably slowed down
-        # everything else, tournament or not.
-        previous_switch_interval = sys.getswitchinterval()
-        sys.setswitchinterval(0.001)
-        try:
-            while True:
-                with self._ai_tournament_lock:
-                    if self._ai_tournament.get("stop_requested"):
-                        stop_reason = "manual"
-                        break
-                if not self.get_training_enabled():
-                    stop_reason = "training_disabled"
-                    break
-                round_num += 1
-                shapes = tournament_round_shapes(
-                    champion_shape, rng, include_champion=champion_accuracy is not None
-                )
-                with self._ai_tournament_lock:
-                    self._ai_tournament["round"] = round_num
-                    self._ai_tournament_candidates = {
-                        index: {
-                            "hidden_sizes": shape, "epoch": 0, "total_epochs": 80,
-                            "loss": None, "status": "queued",
-                        }
-                        for index, shape in enumerate(shapes)
-                    }
-                    progress = self._ai_tournament_candidates
-
-                results = run_tournament_round(
-                    examples, shapes, progress=progress, progress_lock=self._ai_tournament_lock
-                )
-                round_best = max(results, key=lambda r: r["accuracy"] if r["accuracy"] is not None else -1.0)
-                improved = champion_accuracy is None or (
-                    round_best["accuracy"] is not None
-                    and round_best["accuracy"] >= champion_accuracy + SUGGESTION_MIN_IMPROVEMENT
-                )
-                if improved:
-                    champion_shape = round_best["hidden_sizes"]
-                    champion_accuracy = round_best["accuracy"]
-                    # Surface every improvement live, as it's found, through
-                    # the existing suggestion accept/dismiss flow (POST
-                    # /api/ai/suggestion) - same UX as a single
-                    # suggest_architecture() result - rather than only once
-                    # the tournament stops, since it now runs indefinitely
-                    # and the operator shouldn't have to wait for that to
-                    # apply a better architecture. Re-running
-                    # set_ai_learning_config on accept retrains from the
-                    # retained examples deterministically (same examples,
-                    # same shape, no randomness in the training procedure
-                    # itself), so the trained weights don't need to be
-                    # persisted here to reproduce them.
-                    if champion_shape != starting_shape:
-                        with self._lock:
-                            suggestion = self._ai_learning_suggestion_raw()
-                            suggestion["architecture"] = {
-                                "hidden_sizes": champion_shape,
-                                "current_hidden_sizes": starting_shape,
-                                "current_accuracy": None,
-                                "suggested_accuracy": champion_accuracy,
-                            }
-                            self.set_runtime_config("ai_learning_suggestion", json_dumps(suggestion))
-
-                # Uniform across every result in this round (see
-                # run_tournament_round) - read once instead of per-candidate.
-                round_evaluation_mode = results[0].get("evaluation_mode", "resubstitution") if results else "resubstitution"
-                with self._ai_tournament_lock:
-                    for index, result in enumerate(results):
-                        won = result["hidden_sizes"] == round_best["hidden_sizes"]
-                        self._ai_tournament_candidates[index]["status"] = "champion" if won else "disqualified"
-                        self._ai_tournament_candidates[index]["accuracy"] = result["accuracy"]
-                        self._ai_tournament_candidates[index]["evaluation_mode"] = result.get("evaluation_mode")
-                    self._ai_tournament["rounds_history"] = (self._ai_tournament["rounds_history"] + [{
-                        "round": round_num,
-                        "candidates": [
-                            {
-                                "hidden_sizes": r["hidden_sizes"], "accuracy": r["accuracy"],
-                                "evaluation_mode": r.get("evaluation_mode"),
-                            }
-                            for r in results
-                        ],
-                        "champion_hidden_sizes": champion_shape,
-                        "champion_accuracy": champion_accuracy,
-                        "evaluation_mode": round_evaluation_mode,
-                    }])[-20:]
-        finally:
-            sys.setswitchinterval(previous_switch_interval)
-
-        champion = {
-            "hidden_sizes": champion_shape, "accuracy": champion_accuracy,
-            # Which evaluation the reported accuracy actually is - the
-            # tournament UI previously implied every result was validated on
-            # unseen data; below VALIDATION_MIN_PER_CLASS it never was
-            # (finding 1.25).
-            "evaluation_mode": round_evaluation_mode,
-        }
-        with self._ai_tournament_lock:
-            self._ai_tournament["active"] = False
-            self._ai_tournament["champion"] = champion
-            self._ai_tournament["stop_reason"] = stop_reason
-            self._ai_tournament["stop_requested"] = False
-
-    def export_ai_model(self):
-        from .ai_learning import export_model
-
-        return export_model(self.ai_learning_state())
-
-    def import_ai_model(self, payload):
-        from .ai_learning import import_model
-
-        with self._lock:
-            state, hidden_sizes = import_model(self.ai_learning_state(), payload)
-            self.set_runtime_config("ai_learning_state", json_dumps(state))
-            config = self.get_ai_learning_config()
-            config["hidden_sizes"] = hidden_sizes
-            self.set_runtime_config("ai_learning_config", json_dumps(config))
-            return {"revision": state.get("revision", 0), "hidden_sizes": hidden_sizes}
-
-    def save_ai_feedback(self, packet_id, label, confidence, note):
-        from .ai_learning import update_feedback
-
-        # Serialize feedback from concurrent operators; parameters, labels and
-        # revision are committed together as one bounded state document.
-        with self._lock:
-            packets = self.list_ai_packets(packet_id)
-            if not packets:
-                raise ValueError("El paquete ya no está disponible.")
-            hidden_sizes = self.get_ai_learning_config()["hidden_sizes"]
-            state = update_feedback(
-                self.ai_learning_state(), packets[0], label, confidence, note, hidden_sizes=hidden_sizes
-            )
-            self.set_runtime_config("ai_learning_state", json.dumps(state))
-            self._refresh_ai_learning_suggestion(state)
-            revision = state.get("revision", 0)
-        # Outside the lock: this new example may have just crossed the "3 of
-        # each class" floor the tournament needs, so give it a chance to
-        # start if training is on and nothing's running yet (see
-        # maybe_start_ai_tournament()). Not inside self._lock - it briefly
-        # takes it itself, and there's no need to hold packet ingestion's
-        # lock any longer than the state write above needs.
-        self.maybe_start_ai_tournament()
-        return {"revision": revision}
 
     def count_packets(self, *, proto="", session_id=0, search="", interface="", mode="", since=""):
         where, params = self._packet_filter(
@@ -3567,6 +3209,16 @@ class SniffStore:
         self._execute("DELETE FROM rulesets WHERE id = ?", (str(rule_id),), commit=True)
         return True
 
+    def monitor_catalog_stamp(self) -> tuple:
+        """Cheap fingerprint of the monitor catalog: changes whenever a monitor
+        is added, edited, deleted or toggled. Lets the sniffer skip reloading
+        and re-indexing tens of thousands of rows when nothing changed."""
+        row = self._fetchone(
+            "SELECT COUNT(*) AS n, COALESCE(MAX(updated_at), '') AS u, "
+            "COALESCE(SUM(CASE WHEN enabled != 0 THEN 1 ELSE 0 END), 0) AS e FROM monitors"
+        ) or {}
+        return (int(row.get("n") or 0), str(row.get("u") or ""), int(row.get("e") or 0))
+
     def list_monitors(self):
         rows = self._fetchall("SELECT * FROM monitors ORDER BY priority ASC, name ASC")
         for row in rows:
@@ -4037,21 +3689,42 @@ class SniffStore:
         self.set_runtime_config("raw_retention_enabled", "1" if value else "0")
         return self.get_raw_retention_enabled()
 
-    def get_training_capture_enabled(self) -> bool:
-        """Whether clean (non-alert) packets are also persisted right now.
+    def get_packet_pipeline_config(self) -> dict:
+        """Packet cache limit, processing job count and persist mode.
 
-        Off by default: normally only alerts/muted traffic reach the
-        packets table (see Sniffer._store_packet). Turning this on widens
-        that to every evaluated packet, tagged 'training_capture', so
-        there's benign data alongside the alerts to train the AI classifier
-        on; turning it back off purges exactly those benign rows (see
-        purge_training_capture_packets) while leaving real alerts in place.
+        Stored as runtime_config so the web process (which edits it) and the
+        capture child (which applies it) read the same values from the file.
         """
-        return self.get_runtime_config("training_capture_enabled", "0") == "1"
+        return {
+            "cache_limit": self._int_config("packet_cache_limit", PACKET_CACHE_LIMIT_DEFAULT,
+                                            PACKET_CACHE_LIMIT_MIN, PACKET_CACHE_LIMIT_MAX),
+            "jobs": self._int_config("packet_jobs", PACKET_JOBS_DEFAULT, PACKET_JOBS_MIN, PACKET_JOBS_MAX),
+            "persist_mode": self._persist_mode_config(),
+        }
 
-    def set_training_capture_enabled(self, value: bool) -> bool:
-        self.set_runtime_config("training_capture_enabled", "1" if value else "0")
-        return self.get_training_capture_enabled()
+    def set_packet_pipeline_config(self, values: dict) -> dict:
+        clean = coerce_pipeline_settings(values)
+        if "cache_limit" in clean:
+            self.set_runtime_config("packet_cache_limit", str(clean["cache_limit"]))
+        if "jobs" in clean:
+            self.set_runtime_config("packet_jobs", str(clean["jobs"]))
+        if "persist_mode" in clean:
+            self.set_runtime_config("packet_persist_mode", clean["persist_mode"])
+        return self.get_packet_pipeline_config()
+
+    def _int_config(self, key: str, default: int, low: int, high: int) -> int:
+        stored = self.get_runtime_config(key, "")
+        try:
+            value = int(stored)
+        except (TypeError, ValueError):
+            return default
+        return min(high, max(low, value)) if stored != "" else default
+
+    def _persist_mode_config(self) -> str:
+        stored = self.get_runtime_config("packet_persist_mode", "")
+        return stored if stored in PERSIST_MODES else PERSIST_MODE_DEFAULT
+
+
 
     def get_monitor_min_severity(self) -> str:
         value = str(self.get_runtime_config("monitor_min_severity", MONITOR_MIN_SEVERITY_DEFAULT) or "").strip().lower()
@@ -5975,6 +5648,18 @@ class SniffStore:
             now,
         )
         with self._lock:
+            if self._batch_depth:
+                # Inside a batch every packet gets its own savepoint: a failure
+                # undoes that packet alone, the rest of the batch still commits.
+                self._conn.execute("SAVEPOINT packet_write")
+                try:
+                    result = self._write_packet_rows(packet, packet_row, flow_key, tags, rule_hits, banner_text, payload_text, length, payload_len, now)
+                except BaseException:
+                    self._conn.execute("ROLLBACK TO packet_write")
+                    self._conn.execute("RELEASE packet_write")
+                    raise
+                self._conn.execute("RELEASE packet_write")
+                return result
             try:
                 return self._write_packet_rows(packet, packet_row, flow_key, tags, rule_hits, banner_text, payload_text, length, payload_len, now)
             except sqlite3.Error as exc:
@@ -6010,9 +5695,48 @@ class SniffStore:
         self._insert_tag_rows(packet_id, flow_key, packet, tags, now)
         self._insert_payload_row(packet_id, flow_key, packet, banner_text, payload_text, now)
         self.bump_session_counters(session_id, length or payload_len, len(rule_hits))
-        self._conn.commit()
+        self._maybe_commit()
 
         return self.get_packet(packet_id)
+
+    def _maybe_commit(self):
+        """Commits unless a write_batch() owns the transaction."""
+        if not self._batch_depth:
+            self._conn.commit()
+
+    @contextmanager
+    def write_batch(self):
+        """Runs the writes inside the block as one transaction (one commit).
+
+        Takes the write lock up front, so the batch either lands whole or is
+        rolled back. It holds self._lock for the whole block, which also blocks
+        every API read on this shared connection. Only wrap pure writes in it,
+        never packet evaluation: the sniffer deliberately does not batch for
+        that reason. Nested calls join the outer batch.
+        """
+        with self._lock:
+            if self._batch_depth:
+                yield
+                return
+            began = time.perf_counter()
+            self._conn.execute("BEGIN IMMEDIATE")
+            # Timed on their own: a batch waits for the write lock here, and
+            # that wait is invisible to the per-statement timing in _execute.
+            note_statement("BEGIN IMMEDIATE (batch)", (time.perf_counter() - began) * 1000)
+            self._batch_depth = 1
+            try:
+                yield
+                committed = time.perf_counter()
+                self._conn.commit()
+                note_statement("COMMIT (batch)", (time.perf_counter() - committed) * 1000)
+            except BaseException:
+                try:
+                    self._conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
+            finally:
+                self._batch_depth = 0
 
     def _upsert_flow(self, packet_id: int, session_id: int, flow_key: str, packet: dict, tags: list, banner_text: str, now: str):
         values = (
@@ -6114,6 +5838,22 @@ class SniffStore:
             ),
         )
 
+    def register_packets(self, items: list) -> list:
+        """Persists several packets in one transaction (one commit, one lock).
+
+        `items` is a list of (packet, allow_raw_retention). Returns, per item,
+        the saved row or the sqlite3.Error that failed just that packet - the
+        savepoint inside register_packet undoes only the failed one.
+        """
+        outcomes = []
+        with self.write_batch():
+            for packet, allow_raw in items:
+                try:
+                    outcomes.append(self.register_packet(packet, allow_raw_retention=allow_raw))
+                except sqlite3.Error as exc:
+                    outcomes.append(exc)
+        return outcomes
+
     def get_packet(self, packet_id: int):
         return _sanitize_packet_forensic_fields(
             self._fetchone("SELECT * FROM packets WHERE id = ?", (packet_id,)),
@@ -6143,6 +5883,121 @@ class SniffStore:
         )
         return packet
 
+    def _retention_override(self, key: str, default: int, low: int, high: int) -> int:
+        stored = self.get_runtime_config(f"retention_override_{key}", "")
+        if stored == "":
+            return int(default)
+        try:
+            return min(high, max(low, int(stored)))
+        except (TypeError, ValueError):
+            return int(default)
+
+    def get_limit_config(self) -> dict:
+        config = {}
+        for field, default in LIMIT_DEFAULTS.items():
+            low, high = LIMIT_BOUNDS[field]
+            stored = self.get_runtime_config(f"limit_{field}", "")
+            try:
+                value = int(stored) if stored != "" else default
+            except ValueError:
+                value = default
+            config[field] = min(high, max(low, value))
+        return config
+
+    def set_limit_config(self, values: dict) -> dict:
+        clean = coerce_limit_settings(values)
+        with self._lock:
+            for field, value in clean.items():
+                self.set_runtime_config(f"limit_{field}", str(value))
+        return self.get_limit_config()
+
+    def get_limit_state(self) -> dict:
+        raw = self.get_runtime_config("limit_state", "")
+        try:
+            data = json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    def set_limit_state(self, state: dict) -> None:
+        self.set_runtime_config("limit_state", json.dumps(state, ensure_ascii=False, separators=(",", ":")))
+
+    def get_log_config(self) -> dict:
+        config = dict(LOG_DEFAULTS)
+        config["level"] = self.get_runtime_config("log_level", LOG_DEFAULTS["level"]).strip().upper() or LOG_DEFAULTS["level"]
+        for field in ("max_mb", "backups", "retention_days", "slow_ms"):
+            stored = self.get_runtime_config(f"log_{field}", "")
+            try:
+                config[field] = int(stored) if stored != "" else LOG_DEFAULTS[field]
+            except ValueError:
+                config[field] = LOG_DEFAULTS[field]
+        return config
+
+    def set_log_config(self, values: dict) -> dict:
+        clean = coerce_log_settings(values)
+        with self._lock:
+            for field, value in clean.items():
+                key = "log_level" if field == "level" else f"log_{field}"
+                self.set_runtime_config(key, str(value))
+        return self.get_log_config()
+
+    def get_retention_config(self) -> dict:
+        """Effective retention policy: runtime overrides first, env defaults after.
+
+        Table limits without an override follow the packet base (packets,
+        payloads and flows = base, tags = 2x base), as they always did.
+        """
+        days = self._retention_override("retention_days", RETENTION_DAYS, 0, RETENTION_DAYS_MAX)
+        alert_days = self._retention_override("retention_alert_days", RETENTION_ALERT_DAYS, 0, RETENTION_DAYS_MAX)
+        interval = self._retention_override("retention_interval_seconds", RETENTION_INTERVAL_SECONDS,
+                                            RETENTION_INTERVAL_MIN, RETENTION_INTERVAL_MAX)
+        max_packets = self._retention_override("retention_max_packets", RETENTION_MAX_PACKETS,
+                                               RETENTION_MAX_PACKETS_MIN, RETENTION_TABLE_LIMIT_MAX)
+        derived = {
+            "packets": max_packets,
+            "payloads": max_packets,
+            "flows": max_packets,
+            "tags": max_packets * 2,
+            "domains": DOMAIN_TABLE_LIMIT,
+            "paths": PATH_TABLE_LIMIT,
+            "sessions": SESSION_TABLE_LIMIT,
+        }
+        limits = {
+            table: self._retention_override(f"limit_{table}", derived[table],
+                                            RETENTION_TABLE_LIMIT_MIN, RETENTION_TABLE_LIMIT_MAX)
+            for table in RETENTION_TABLE_KEYS
+        }
+        overridden = sorted(
+            key for key in (
+                "retention_days", "retention_alert_days", "retention_interval_seconds", "retention_max_packets",
+            ) if self.get_runtime_config(f"retention_override_{key}", "") != ""
+        ) + sorted(
+            f"limit_{table}" for table in RETENTION_TABLE_KEYS
+            if self.get_runtime_config(f"retention_override_limit_{table}", "") != ""
+        )
+        self._retention_interval = interval
+        return {
+            "retention_days": days,
+            "retention_alert_days": alert_days,
+            "retention_max_packets": max_packets,
+            "retention_interval_seconds": interval,
+            "table_limits": limits,
+            "defaults": {
+                "retention_days": RETENTION_DAYS,
+                "retention_alert_days": RETENTION_ALERT_DAYS,
+                "retention_max_packets": RETENTION_MAX_PACKETS,
+                "retention_interval_seconds": RETENTION_INTERVAL_SECONDS,
+            },
+            "overridden": overridden,
+        }
+
+    def set_retention_config(self, values: dict) -> dict:
+        updates = coerce_retention_settings(values)
+        with self._lock:
+            for key, value in updates.items():
+                self.set_runtime_config(key, value)
+        return self.get_retention_config()
+
     def trim_oversized_tables(self, *, force: bool = False):
         """Called opportunistically from the capture thread. Self-throttles
         to settings.RETENTION_INTERVAL_SECONDS so the DELETEs don't run
@@ -6151,7 +6006,7 @@ class SniffStore:
         now = time.monotonic()
         if not force:
             with self._lock:
-                if now - self._last_retention_at < RETENTION_INTERVAL_SECONDS:
+                if now - self._last_retention_at < self._retention_interval:
                     return {"skipped": True}
                 self._last_retention_at = now
         else:
@@ -6173,9 +6028,13 @@ class SniffStore:
            rows first.
         """
         result = {"packets": 0, "tags": 0, "payloads": 0, "flows": 0, "sessions": 0}
-        if RETENTION_DAYS > 0:
-            cutoff = utc_since(RETENTION_DAYS * 86400)
-            alert_cutoff = utc_since(max(RETENTION_DAYS, RETENTION_ALERT_DAYS) * 86400)
+        policy = self.get_retention_config()
+        retention_days = policy["retention_days"]
+        alert_days = policy["retention_alert_days"]
+        limits = policy["table_limits"]
+        if retention_days > 0:
+            cutoff = utc_since(retention_days * 86400)
+            alert_cutoff = utc_since(max(retention_days, alert_days) * 86400)
             with self._lock:
                 deleted = self._conn.execute(
                     """
@@ -6204,13 +6063,13 @@ class SniffStore:
             )
             self._conn.commit()
 
-        result["packets"] += self._trim_table("packets", PACKET_TABLE_LIMIT)
-        result["payloads"] += self._trim_table("payloads", PAYLOAD_TABLE_LIMIT)
-        result["flows"] += self._trim_table("flows", FLOW_TABLE_LIMIT)
-        result["tags"] += self._trim_table("tags", TAG_TABLE_LIMIT)
-        result["sessions"] += self._trim_table("sessions", SESSION_TABLE_LIMIT)
-        self._trim_table("domains", DOMAIN_TABLE_LIMIT)
-        self._trim_table("paths", PATH_TABLE_LIMIT)
+        result["packets"] += self._trim_table("packets", limits["packets"])
+        result["payloads"] += self._trim_table("payloads", limits["payloads"])
+        result["flows"] += self._trim_table("flows", limits["flows"])
+        result["tags"] += self._trim_table("tags", limits["tags"])
+        result["sessions"] += self._trim_table("sessions", limits["sessions"])
+        self._trim_table("domains", limits["domains"])
+        self._trim_table("paths", limits["paths"])
 
         # Reclaim the freed pages instead of letting the file grow
         # monotonically (a live instance went 49.8 MB -> 91.9 MB in four
@@ -6219,6 +6078,7 @@ class SniffStore:
         # and retention sweeps come around often enough that a steady
         # trickle keeps up without ever holding the write lock long.
         result["pages_reclaimed"] = self.reclaim_free_pages(256)
+        LOGGER.debug("retention sweep", extra={"extra_fields": {k: v for k, v in result.items()}})
         return result
 
     def _trim_table(self, table: str, limit: int) -> int:
@@ -6495,40 +6355,6 @@ class SniffStore:
             "paths": max(0, paths_deleted),
         }
 
-    def purge_training_capture_packets(self) -> dict:
-        """Delete packets kept only because training-capture mode was
-        persisting every clean packet, not just alerts.
-
-        A row qualifies only if it carries the 'training_capture' tag
-        *and* never earned a real 'monitor' alert tag - a packet that
-        happened to both train-capture and alert (rare, but possible if a
-        detector fires on it slightly out of order) stays, same as any
-        other alert. Deletes packets first, then sweeps the now-orphaned
-        tags/payloads, mirroring enforce_retention's order (deleting tags
-        first would blind the packets query to which rows still qualify).
-        """
-        with self._lock:
-            packets_deleted = self._conn.execute(
-                """
-                DELETE FROM packets
-                WHERE id IN (SELECT packet_id FROM tags WHERE key = 'training_capture')
-                  AND id NOT IN (
-                    SELECT packet_id FROM tags WHERE key = 'monitor' AND severity != ''
-                  )
-                """
-            ).rowcount
-            tags_deleted = self._conn.execute(
-                "DELETE FROM tags WHERE packet_id NOT IN (SELECT id FROM packets)"
-            ).rowcount
-            payloads_deleted = self._conn.execute(
-                "DELETE FROM payloads WHERE packet_id NOT IN (SELECT id FROM packets)"
-            ).rowcount
-            self._conn.commit()
-        return {
-            "packets": max(0, packets_deleted),
-            "tags": max(0, tags_deleted),
-            "payloads": max(0, payloads_deleted),
-        }
 
     def read_catalog_file(self, filename: str) -> list[dict]:
         path = resolve_data_file(filename)
@@ -6578,6 +6404,13 @@ class SniffStore:
         write count on this table proportional to slow requests only.
         """
         result = job.get("result")
+        result_json = "" if result is None else json_dumps(result)
+        if len(result_json) > JOB_RESULT_PERSIST_MAX_BYTES:
+            # A large result (the full monitor catalog is ~37 MB) would sit in
+            # this table for the whole TTL, and every such job grew the file by
+            # that much. The in-memory copy still answers polls while the
+            # process runs; after a restart only the fact that it finished is kept.
+            result_json = json_dumps({"omitted": True, "bytes": len(result_json)})
         self._execute(
             """
             INSERT INTO jobs (id, kind, status, result_json, error, error_type, created_at, finished_at)
@@ -6593,7 +6426,7 @@ class SniffStore:
                 str(job.get("id") or ""),
                 str(job.get("kind") or ""),
                 str(job.get("status") or "queued"),
-                "" if result is None else json_dumps(result),
+                result_json,
                 str(job.get("error") or ""),
                 str(job.get("error_type") or ""),
                 str(job.get("created_at") or utc_now()),

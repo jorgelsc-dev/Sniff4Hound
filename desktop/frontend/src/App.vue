@@ -25,7 +25,7 @@
                Skipped on canvasOnly routes (Settings/Chat), which are a
                full-bleed canvas already and would end up stacking two. -->
           <FlowShell v-if="!$route.meta.canvasOnly" />
-          <div :class="{ 'mt-3': !$route.meta.canvasOnly }">
+          <div class="app-view">
             <router-view v-slot="{ Component }">
               <transition name="view-fade" mode="out-in">
                 <component :is="Component" />
@@ -268,12 +268,12 @@ export default {
 .app-container {
   max-width: 1560px;
   width: 100%;
+  padding: var(--app-gutter);
+  min-width: 0;
 }
 
 .app-container--full {
   max-width: none;
-  padding-left: 16px;
-  padding-right: 16px;
 }
 
 .app-main {
@@ -282,6 +282,7 @@ export default {
 
 .app-main--canvas {
   padding-bottom: 0;
+  --app-canvas-height: calc(100dvh - var(--v-layout-top, 48px) - var(--v-layout-bottom, 0px));
 }
 
 .app-main--canvas .app-container {
@@ -299,40 +300,35 @@ export default {
   width: min(100%, 680px);
   padding: 34px;
   border: 1px solid rgba(102, 212, 255, 0.22);
-  background:
-    radial-gradient(circle at top right, rgba(52, 230, 255, 0.12), transparent 40%),
-    radial-gradient(circle at bottom left, rgba(149, 115, 255, 0.12), transparent 44%),
-    linear-gradient(160deg, rgba(9, 14, 22, 0.96), rgba(12, 19, 31, 0.98));
-  box-shadow: 0 28px 56px rgba(2, 7, 14, 0.44), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  background: var(--surface-1);
 }
 
 .auth-stage-kicker {
   color: rgba(52, 230, 255, 0.96);
   font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.18em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
 .auth-stage-title {
   margin: 12px 0 10px;
-  font-size: clamp(1.8rem, 4vw, 2.6rem);
-  line-height: 1.05;
+  font-size: 2rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .auth-stage-copy,
 .auth-dialog-copy {
   color: rgba(210, 223, 238, 0.88);
   line-height: 1.65;
+  margin-bottom: 20px;
 }
 
 .auth-dialog-card {
   overflow: hidden;
   border: 1px solid rgba(102, 212, 255, 0.22);
-  background:
-    radial-gradient(circle at top right, rgba(52, 230, 255, 0.12), transparent 40%),
-    radial-gradient(circle at bottom left, rgba(149, 115, 255, 0.12), transparent 44%),
-    linear-gradient(160deg, rgba(9, 14, 22, 0.96), rgba(12, 19, 31, 0.98));
+  background: var(--surface-1);
 }
 
 .auth-dialog-topline {
@@ -356,8 +352,17 @@ export default {
     padding-bottom: 24px;
   }
 
+  .app-main--canvas {
+    padding-bottom: 0;
+  }
+
   .auth-stage-card {
     padding: 24px;
   }
+}
+
+@media (max-width: 600px) {
+  .auth-stage-card { padding: 20px; }
+  .auth-stage-title { font-size: 1.5rem; }
 }
 </style>

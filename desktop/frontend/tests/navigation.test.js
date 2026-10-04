@@ -6,11 +6,11 @@ test("every nav destination is reachable from the flattened list", () => {
   const flattened = navDestinations();
   const expected = NAV_LINKS.flatMap(link => [link.to, ...(link.children || []).map(child => child.to)]);
   assert.deepEqual(flattened.map(item => item.to).sort(), expected.sort());
-  // A child has to say where it lives, otherwise two "Resumen" entries
-  // (Dashboard's and IA's) are indistinguishable in the palette.
+  // A child has to say where it lives, so a "Resumen" entry in the palette
+  // always names its group.
   const summaries = flattened.filter(item => item.label === "Resumen");
-  assert.equal(summaries.length, 2);
-  assert.deepEqual(summaries.map(item => item.parent).sort(), ["Dashboard", "IA"]);
+  assert.equal(summaries.length, 1);
+  assert.deepEqual(summaries.map(item => item.parent), ["Dashboard"]);
 });
 
 test("search ignores accents in both the query and the label", () => {

@@ -154,7 +154,7 @@ export default {
 <style scoped>
 .rule-field-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
   gap: 10px 16px;
 }
 

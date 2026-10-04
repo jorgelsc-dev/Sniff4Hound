@@ -1401,7 +1401,7 @@ export default {
 
 .map-intro__title {
   color: rgba(240, 247, 255, 0.98);
-  font-size: clamp(1.2rem, 2vw, 1.55rem);
+  font-size: 1.5rem;
   font-weight: 600;
   letter-spacing: 0.01em;
 }
@@ -1647,7 +1647,7 @@ export default {
 
 .map-country-rail {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr));
   gap: 8px;
   margin-top: 14px;
 }
@@ -1655,6 +1655,8 @@ export default {
 .map-country-rail__item {
   display: flex;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
   gap: 8px;
   padding: 7px 10px;
   border-radius: 8px;
@@ -1746,7 +1748,7 @@ export default {
 
 .map-canvas {
   position: relative;
-  height: calc(100dvh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
+  height: var(--app-canvas-height);
   overflow: hidden;
   background: #040a12;
 }

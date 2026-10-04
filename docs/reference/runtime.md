@@ -30,60 +30,49 @@ existe ninguna variable de entorno para saltarse esto: si no corre como root,
 intenta relanzarse con `sudo` y, si no puede, termina sin arrancar el
 servidor e imprime el motivo por stderr.
 
-## Modos de activacion (Sniffer / Honeypot / Monitors / IA)
+## Modos de activacion (Sniffer / Honeypot / Monitors)
 
-El Dashboard expone 4 interruptores independientes. "Monitors" es la fase de
-etiquetado: mientras esta activo, Monitors decide las alertas y esas
-etiquetas alimentan el entrenamiento de la IA; al apagarlo, Monitors se
-retira por completo y la IA (si esta activa) decide sola - la idea es
-arrancar con Monitors activo, dejar que la IA aprenda de sus veredictos, y
-apagarlo cuando la IA ya puede operar sin el catalogo de reglas.
+- **Sniffer** y **Honeypot** son procesos de captura que se encienden y apagan
+  desde el menu lateral o desde Configuracion.
+- **Monitors** es el catalogo de reglas: solo el trafico que coincide con un
+  monitor habilitado se guarda en la base de datos. Los monitores se activan
+  o desactivan uno a uno en la pestaña Monitores.
+- La retencion de bytes crudos la fija `SNIFF4HOUND_STORE_RAW_PACKET` al
+  crear la base; no hay interruptor en la interfaz.
 
-- **Sniffer** / **Honeypot**: los motores de captura de siempre (`POST
-  /api/runtime/` con `{"engine": "sniffer"|"honeypot", "action": "start"|"stop"}`).
-- **Persistencia**: todo paquete no muteado/whitelisteado se evalua siempre
-  por completo (catalogo de reglas, detectores de anomalia y, en "solo IA",
-  el clasificador), pero solo **persiste si esa evaluacion levanto algo**
-  (`Sniffer._store_packet`) - trafico limpio se procesa para obtener su
-  veredicto y se descarta, no se guarda una fila por cada paquete que pasa
-  por el sensor. Esto aplica igual con Monitors activo o apagado: no existe
-  un modo que guarde trafico "benigno" sin alerta.
-- **Monitors** (`POST /api/ai/config` con `{"training_enabled": true|false}`
-  - el campo de la API sigue llamandose `training_enabled` internamente,
-  antes `sampling_enabled`): con Monitors activo, todo paquete que alerte
-  (via el catalogo de reglas) se encola en segundo plano para reentrenar la
-  IA (`ai_learning.py`) etiquetado `malicious`. Requiere retencion de bytes
-  crudos activa (`raw_retention_enabled`, ver abajo) para esa mitad de
-  "entrenar la red"; sin eso, el paquete que alerta igual persiste, pero no
-  se encola para reentrenamiento.
-- **IA** (`POST /api/ai/config` con `{"ai_alert_mode_enabled": true|false}`):
-  cuando esta activo **y Monitors esta apagado** ("solo IA"), el catalogo de
-  reglas/regex de Monitors se salta por completo y el clasificador
-  entrenado por feedback decide si hay alerta. Los detectores de anomalia
-  (SYN flood, port scan, ARP spoof, ...) siguen funcionando siempre, sean
-  cuales sean estos dos flags. Si IA y Monitors estan **ambos** activos,
-  Monitors se queda a cargo de decidir la alerta (para no ensuciar las
-  etiquetas de entrenamiento) y solo sigue alimentando el reentrenamiento.
-  Requiere retencion de bytes crudos activa: el backend rechaza con `400`
-  activar `ai_alert_mode_enabled` sin ella, porque el clasificador puntua
-  sobre `payload_hex`/`raw_packet`.
-- **Retencion de bytes crudos** (`POST /api/ai/config` con
-  `{"raw_retention_enabled": true|false}`): controla si `payload_hex`/
-  `raw_packet` se guardan tal cual o se limpian en cada lectura/escritura
-  (ver `store.py:_migrate_sensitive_capture_storage`,
-  `_sanitize_packet_forensic_fields`). Antes solo se podia fijar al arrancar
-  con `SNIFF4HOUND_STORE_RAW_PACKET`; ahora es un flag de `runtime_config`
-  que el Dashboard puede alternar sin reiniciar - la variable de entorno
-  solo decide el valor inicial de una base de datos que nunca uso este
-  interruptor. Apagarlo no purga retroactivamente lo ya guardado (eso pasa
-  al reiniciar el proceso); solo deja de retener bytes nuevos de inmediato.
-  Como ambos procesos (web y captura privilegiada) leen este flag de la
-  misma base SQLite compartida, alternarlo desde el Dashboard llega al
-  proceso de captura sin reiniciar nada.
+## Pipeline de paquetes (caché y jobs)
 
-`GET /api/ai/config` devuelve `training_enabled`, `ai_alert_mode_enabled` y
-`raw_retention_enabled` para que el frontend sepa si puede ofrecer el
-interruptor de IA y el propio interruptor de retencion de bytes crudos.
+La captura ya no evalúa cada paquete dentro del hilo que lo lee. Cada hilo de
+captura deposita el paquete en una caché acotada en memoria, y N jobs lo toman,
+lo evalúan (monitores y anomalías) y persisten los que corresponden en
+SniffStore.
+
+- **Límite de retención** (`cache_limit`, 1.000-1.000.000, por defecto 20.000):
+  paquetes que pueden esperar entre captura y procesamiento. Si la caché se
+  llena se descartan los más antiguos y el contador `cache_dropped` lo registra.
+- **Jobs** (`jobs`, 1-16, por defecto 2): workers que consumen la caché. Se
+  aplica al iniciar la captura.
+- **Persistencia** (`persist_mode`): `alerts` (por defecto) guarda solo lo que
+  genera alerta, como antes; `all` guarda todo paquete procesado.
+
+`GET`/`POST /api/pipeline/config` lee y guarda estos valores. `cache_limit` y
+`persist_mode` se aplican a la captura en marcha; `jobs` al siguiente inicio.
+El estado en vivo (`packet_pipeline` dentro del estado del sniffer) muestra:
+
+- Caché: `cache_depth` (en espera), `cache_limit`, `cache_accepted`,
+  `cache_dropped` (descartados por límite) y `cache_peak` (pico de ocupación).
+- Jobs: `processed`, `persisted`, `skipped` (procesados sin alerta) y `errors`.
+- `persist_mode` y `since` (desde cuándo se cuentan).
+
+`POST /api/pipeline/reset` pone a cero los contadores (aceptados, descartados,
+pico, procesados, persistidos, omitidos y errores) desde el inspector de cada
+tarjeta. No cambia la configuración ni los paquetes en espera.
+
+```bash
+curl -X POST -H "X-Security-Code: $CODE" -H "Content-Type: application/json" \
+  -d '{"cache_limit":40000,"jobs":4,"persist_mode":"alerts"}' \
+  http://127.0.0.1:45678/api/pipeline/config
+```
 
 ## Ubicacion del sensor y mapa
 
