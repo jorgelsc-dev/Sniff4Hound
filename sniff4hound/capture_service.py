@@ -23,6 +23,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from . import log_setup
+from .resource_guard import ResourceGuard
 from .ipc import IpcEventSink, IpcServer, generate_ipc_token
 from .process_control import process_shutdown_requested, request_process_shutdown, reset_process_shutdown_request
 from .runtime_controller import RuntimeController
@@ -166,6 +168,11 @@ def main() -> int:
     owner_uid = resolve_ipc_owner_uid()
 
     store = SniffStore(DB_PATH)
+    # Logs first: everything below should be recorded from the start. The
+    # files go back to the operator so the web process can keep appending.
+    owner = (owner_uid, owner_uid) if owner_uid is not None and os.geteuid() == 0 else None
+    log_setup.configure("capture", log_setup.default_log_dir(), store.get_log_config(), owner=owner)
+    log_setup.start_reload_loop(store.get_log_config)
     server = IpcServer(socket_path, token)
     event_sink = IpcEventSink(server)
     sniffer = Sniffer(store, event_sink, interfaces=CAPTURE_INTERFACES)
@@ -177,6 +184,11 @@ def main() -> int:
         hub=event_sink,
         capture_auto_start=CAPTURE_AUTO_START,
     )
+
+    # Resource guard: stops capture and the pipeline jobs when a CPU/RAM/storage
+    # limit is exceeded, and resumes them once back under the threshold.
+    resource_guard = ResourceGuard(store, sniffer, log_dir=log_setup.default_log_dir())
+    resource_guard.start()
 
     server.methods.update(
         {
@@ -192,6 +204,7 @@ def main() -> int:
             "create_honeypot_listener": runtime.create_honeypot_listener,
             "set_honeypot_listener_enabled": runtime.set_honeypot_listener_enabled,
             "snapshot": runtime.snapshot,
+            "reset_packet_pipeline": runtime.reset_packet_pipeline,
             "shutdown": request_process_shutdown,
         }
     )

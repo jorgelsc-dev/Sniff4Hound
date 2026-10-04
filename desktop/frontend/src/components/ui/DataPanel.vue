@@ -277,6 +277,7 @@ export default {
 .data-panel {
   border-radius: 8px;
   overflow: hidden;
+  min-width: 0;
 }
 
 .panel-head {
@@ -295,8 +296,7 @@ export default {
 
 .panel-head__copy .text-subtitle-1,
 .panel-head__copy .text-body-2 {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .panel-head__actions {
@@ -360,7 +360,7 @@ export default {
   font-family: var(--font-heading);
   font-size: 0.76rem;
   font-weight: 680;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: rgba(236, 245, 255, 0.95);
 }
@@ -379,6 +379,7 @@ export default {
 
 .panel-content {
   transition: opacity 0.18s ease;
+  min-width: 0;
 }
 
 .panel-content--loading {

@@ -9,6 +9,9 @@
   --font-ui: "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", "Noto Sans", sans-serif;
   --font-heading: var(--font-ui);
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --v-font-body: var(--font-ui);
+  --v-font-heading: var(--font-heading);
+  --app-gutter: 20px;
   --bg-0: #080a0d;
   --bg-1: #0d1014;
   --bg-2: #12161b;
@@ -41,6 +44,14 @@
   --skel-c: rgba(142, 99, 255, 0.18);
 }
 
+html {
+  scrollbar-gutter: stable;
+}
+
+html:has(.app-main--canvas) {
+  scrollbar-gutter: auto;
+}
+
 body {
   font-family: var(--font-ui);
   /* No font-stretch/letter-spacing/470-weight tuning any more: all of it was
@@ -52,9 +63,27 @@ body {
   font-feature-settings: "cv05" 1, "cv08" 1;
   background: var(--bg-0);
   margin: 0;
-  min-height: 100vh;
+  min-height: 100dvh;
   color: rgba(233, 243, 255, 0.96);
 }
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: 0;
+}
+
+.v-col,
+.v-window-item,
+.v-alert__content {
+  min-width: 0;
+}
+
+.metric-card { height: 100%; }
+.metric-card .text-h5 { margin-top: 4px; }
+.v-table { scroll-margin-top: 64px; }
 
 /* Tabular figures everywhere numbers are compared down a column: counters,
    ports, byte sizes, packet rates. Proportional digits make those jitter as
@@ -81,6 +110,20 @@ samp {
   font-family: var(--font-ui);
 }
 
+/* The views use Vuetify 3 typography names. Vuetify 4 removed those
+   utilities, leaving headings, captions and body copy at the same size. */
+.text-h1 { font-size: 3rem; }
+.text-h2 { font-size: 2.5rem; }
+.text-h3 { font-size: 2rem; }
+.text-h4 { font-size: 1.75rem; }
+.text-h5 { font-size: 1.5rem; }
+.text-h6 { font-size: 1.125rem; }
+.text-subtitle-1 { font-size: 1rem; }
+.text-subtitle-2 { font-size: 0.875rem; }
+.text-body-1 { font-size: 1rem; line-height: 1.5; }
+.text-body-2 { font-size: 0.875rem; line-height: 1.5; }
+.text-caption { font-size: 0.75rem; line-height: 1.5; }
+
 .v-application .text-h1,
 .v-application .text-h2,
 .v-application .text-h3,
@@ -97,7 +140,7 @@ samp {
 
 .v-application .text-overline {
   font-family: var(--font-heading);
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   font-weight: 600;
   font-size: 0.6875rem;
   color: var(--text-dim);
@@ -122,6 +165,10 @@ samp {
 .v-card--variant-tonal {
   border: 1px solid var(--stroke);
   background: var(--surface-2);
+}
+
+.v-card--variant-tonal > .v-card__underlay {
+  opacity: 0;
 }
 
 .v-card--variant-outlined {
@@ -152,32 +199,38 @@ samp {
   border: 1px solid var(--stroke);
   border-radius: 8px;
   overflow: hidden;
-  background: rgba(7, 12, 19, 0.78);
+  background: var(--surface-0);
+  max-width: 100%;
+}
+
+.v-table > .v-table__wrapper {
+  overflow: auto;
+  overscroll-behavior-x: contain;
 }
 
 .v-table thead th {
   font-family: var(--font-heading);
-  letter-spacing: 0.045em;
-  font-size: 0.72rem;
-  font-weight: 620;
-  text-transform: uppercase;
-  color: rgba(204, 228, 255, 0.92);
-  background: rgba(8, 14, 23, 0.92);
+  letter-spacing: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  white-space: nowrap;
 }
 
 .v-table tbody td {
   color: var(--text-soft);
-  letter-spacing: 0.002em;
-  line-height: 1.28;
+  letter-spacing: 0;
+  line-height: 1.45;
   font-size: 0.86rem;
 }
 
 .v-table tbody tr:nth-child(even) {
-  background: rgba(18, 30, 45, 0.34);
+  background: rgba(255, 255, 255, 0.018);
 }
 
 .v-table tbody tr:hover {
-  background: rgba(var(--brand-violet-rgb), 0.18);
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .v-btn {
@@ -188,18 +241,9 @@ samp {
   transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.18s ease;
 }
 
-.v-btn--variant-flat,
-.v-btn--variant-elevated {
-  color: rgba(4, 11, 18, 0.96) !important;
-}
-
-.v-btn--variant-flat .v-icon,
-.v-btn--variant-elevated .v-icon {
-  color: inherit !important;
-}
-
-.v-btn:hover {
-  box-shadow: 0 8px 26px rgba(var(--brand-cyan-rgb), 0.1);
+.v-btn--variant-flat:hover,
+.v-btn--variant-elevated:hover {
+  filter: brightness(1.08);
 }
 
 .v-btn--icon:hover {
@@ -216,9 +260,51 @@ a:focus-visible {
 }
 
 .v-chip {
-  letter-spacing: 0.016em;
-  font-weight: 610;
+  letter-spacing: 0;
+  font-weight: 500;
   font-family: var(--font-ui);
+  max-width: 100%;
+}
+
+.v-chip__content {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.v-card-title,
+.v-card-subtitle,
+.v-list-item-title {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.v-card-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.v-dialog > .v-overlay__content {
+  max-height: calc(100dvh - 48px);
+}
+
+.v-data-table-footer {
+  gap: 8px 16px;
+  padding: 12px;
+}
+
+.v-data-table-footer__items-per-page {
+  margin-inline-end: 0;
+}
+
+.v-switch .v-label,
+.v-checkbox .v-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.v-slider .v-label {
+  flex-shrink: 0;
 }
 
 .v-field {
@@ -229,7 +315,7 @@ a:focus-visible {
 .v-field input,
 .v-field textarea,
 .v-field .v-field__input {
-  letter-spacing: 0.002em;
+  letter-spacing: 0;
   font-size: 0.88rem;
   color: rgba(233, 243, 255, 0.96) !important;
   caret-color: rgba(var(--brand-cyan-rgb), 0.94);
@@ -253,7 +339,13 @@ a:focus-visible {
 .v-field input::placeholder,
 .v-field textarea::placeholder {
   color: rgba(188, 206, 229, 0.62) !important;
-  opacity: 1 !important;
+}
+
+.v-field--no-label input::placeholder,
+.v-field--no-label textarea::placeholder,
+.v-field--active input::placeholder,
+.v-field--active textarea::placeholder {
+  opacity: 1;
 }
 
 .v-field .v-chip,
@@ -305,9 +397,18 @@ a {
 }
 
 @media (max-width: 959px) {
-  .v-card {
-    box-shadow: 0 10px 22px rgba(3, 8, 15, 0.28);
+  :root { --app-gutter: 16px; }
+}
+
+@media (max-width: 600px) {
+  :root { --app-gutter: 12px; }
+  .v-dialog > .v-overlay__content {
+    margin: 12px;
+    max-width: calc(100% - 24px);
+    max-height: calc(100dvh - 24px);
   }
+  .v-dialog .v-card-text { padding: 16px; }
+  .v-data-table-footer { justify-content: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {

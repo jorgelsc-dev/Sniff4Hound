@@ -213,7 +213,7 @@ export default {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid rgba(var(--brand-cyan-rgb), 0.22);
   background:
     radial-gradient(circle at 24% 22%, rgba(var(--brand-cyan-rgb), 0.14), transparent 44%),
@@ -260,6 +260,7 @@ export default {
   font-size: 12.5px;
   cursor: pointer;
   transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+  flex-shrink: 1;
 }
 
 .command-trigger:hover {
@@ -326,20 +327,16 @@ export default {
 .desktop-window-controls {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--stroke);
-  border-radius: 8px;
-  background: rgba(4, 10, 18, 0.46);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+  gap: 0;
+  margin-right: -12px;
   -webkit-app-region: no-drag;
 }
 
 .window-control {
-  width: 30px;
-  height: 28px;
-  min-width: 30px;
-  border-radius: 6px;
+  width: 46px;
+  height: 48px;
+  min-width: 46px;
+  border-radius: 0;
   color: rgba(216, 229, 244, 0.82);
 }
 
@@ -357,5 +354,10 @@ export default {
 .window-control--close:focus-visible {
   background: rgba(255, 90, 118, 0.16);
   color: white;
+}
+
+@media (max-width: 520px) {
+  .desktop-window-controls { margin-right: -8px; padding: 0; }
+  .window-control { width: 38px; min-width: 38px; }
 }
 </style>
