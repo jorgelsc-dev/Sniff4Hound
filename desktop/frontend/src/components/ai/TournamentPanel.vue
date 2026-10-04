@@ -2,7 +2,7 @@
   <div class="tournament-panel">
     <div class="tournament-panel__head">
       <v-icon icon="mdi-trophy-variant" size="18" />
-      <span>Torneo de arquitecturas · Ronda {{ tournament.round || 1 }}</span>
+      <span class="tournament-panel__title">Torneo de arquitecturas · Ronda {{ tournament.round || 1 }}</span>
       <v-chip size="x-small" :color="tournament.active ? 'info' : 'success'">
         {{ tournament.active ? "Entrenando" : stopReasonLabel }}
       </v-chip>
@@ -53,23 +53,25 @@ function evaluationModeLabel(mode) {
 <style scoped>
 .tournament-panel {
   height: 100%;
+  min-height: 0;
   overflow-y: auto;
-  /* The learning charts float bottom-right over this stage. The candidates now
-     sit in one row across the top, so they clear it on their own and no longer
-     need the tall bottom gutter this used to reserve. */
-  padding: 16px 20px 24px;
+  padding: 16px var(--app-gutter) 24px;
   box-sizing: border-box;
 }
 .tournament-panel__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-size: 0.8rem;
+  font-size: 0.875rem;
   font-weight: 700;
 }
+.tournament-panel__title { flex: 1 1 240px; min-width: 0; }
+.tournament-panel__head > .v-chip { flex: 0 0 auto; }
+.tournament-panel__head > .v-icon { flex: 0 0 auto; }
 .tournament-panel__hint {
   margin: 6px 0 14px;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   color: var(--text-dim);
   max-width: 640px;
 }
@@ -79,14 +81,15 @@ function evaluationModeLabel(mode) {
    letterboxes on an ultrawide. */
 .tournament-panel__graphs {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   gap: 14px;
   align-items: start;
   max-width: 1500px;
 }
 .tournament-panel__champion {
   margin-top: 14px;
-  font-size: 0.72rem;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
   color: #5ddbc7;
 }
 </style>

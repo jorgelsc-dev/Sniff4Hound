@@ -1401,7 +1401,7 @@ export default {
 
 .map-intro__title {
   color: rgba(240, 247, 255, 0.98);
-  font-size: clamp(1.2rem, 2vw, 1.55rem);
+  font-size: 1.5rem;
   font-weight: 600;
   letter-spacing: 0.01em;
 }
@@ -1746,7 +1746,7 @@ export default {
 
 .map-canvas {
   position: relative;
-  height: calc(100dvh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
+  height: var(--app-canvas-height);
   overflow: hidden;
   background: #040a12;
 }

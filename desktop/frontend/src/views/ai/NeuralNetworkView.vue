@@ -1,5 +1,5 @@
 <template>
-  <div class="rnn-stage">
+  <div class="rnn-stage" :class="{ 'rnn-stage--tournament': showTournament }">
     <TournamentPanel
       v-if="showTournament"
       :tournament="tournament"
@@ -17,7 +17,7 @@
       @reload-requested="load"
     >
       <template #hud-extra>
-        <div class="d-flex align-center ga-2 mt-2">
+        <div class="d-flex flex-wrap align-center ga-2 mt-2">
           <v-chip size="x-small" :color="streamStatus === 'En vivo' ? 'success' : 'warning'">{{ streamStatus }}</v-chip>
           <span class="text-caption text-medium-emphasis">{{ trainingModeLabel }} · {{ learning.training?.samples_seen || 0 }} muestras</span>
         </div>
@@ -121,7 +121,7 @@ onBeforeUnmount(() => {
 .rnn-stage {
   position: relative;
 
-  height: calc(100dvh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
+  height: var(--app-canvas-height);
   width: 100%;
   overflow: hidden;
   background: var(--bg-0);
@@ -136,23 +136,44 @@ onBeforeUnmount(() => {
   justify-content: center;
   color: var(--text-dim);
 }
-/* Charts float in the bottom-right corner, transparent, on top of the
-   full-screen graph instead of sharing a reserved-space bottom bar with it. */
+/* The production graph reserves HUD space; the scrollable tournament uses
+   its own chart row so the cards and final result cannot be covered. */
 .rnn-charts {
   position: absolute;
   right: 16px;
   bottom: 16px;
   z-index: 6;
   width: min(340px, calc(50% - 24px));
-  max-height: 300px;
+  max-height: 232px;
   overflow-y: auto;
   scrollbar-width: thin;
   background: transparent;
   backdrop-filter: blur(4px);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 8px 10px;
 }
+.rnn-stage--tournament {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+.rnn-stage--tournament .rnn-charts {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  max-height: min(30dvh, 180px);
+  padding: 12px var(--app-gutter);
+  border-top: 1px solid var(--stroke);
+  border-radius: 0;
+  background: var(--surface-0);
+  backdrop-filter: none;
+}
 @media (max-width: 800px) {
-  .rnn-charts { left: 8px; right: 8px; width: auto; bottom: 236px; max-height: 96px; }
+  .rnn-charts { left: 8px; right: 8px; width: auto; bottom: 216px; max-height: 108px; }
+}
+@media (max-height: 720px) {
+  .rnn-charts { max-height: 180px; }
+}
+@media (max-width: 800px) and (max-height: 720px) {
+  .rnn-charts { bottom: 136px; max-height: 76px; }
 }
 </style>

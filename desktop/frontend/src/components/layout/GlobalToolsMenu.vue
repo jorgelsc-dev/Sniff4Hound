@@ -510,7 +510,7 @@ export default {
   top: 48px;
   left: 0;
   bottom: 0;
-  z-index: 2800;
+  z-index: 1100;
   width: 56px;
   display: flex;
   flex-direction: column;
@@ -594,15 +594,18 @@ export default {
 
 .desktop-activity-flyout {
   position: fixed;
-  z-index: 2850;
+  z-index: 1110;
   min-width: 190px;
   padding: 6px;
   background: rgba(8, 14, 23, 0.96);
   border: 1px solid rgba(var(--brand-sky-rgb), 0.2);
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: 0 10px 28px rgba(3, 8, 14, 0.55);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+  max-width: calc(100vw - 72px);
+  max-height: calc(100dvh - 64px);
+  overflow-y: auto;
 }
 
 .desktop-activity-flyout__title {
@@ -635,13 +638,8 @@ export default {
 .desktop-activity-backdrop {
   position: fixed;
   inset: 0;
-  /* Below .desktop-activity-bar's own z-index (2800): that bar establishes
-     its own stacking context, so the flyout nested inside it (z-index 2850)
-     only outranks this backdrop *within* that context - against a sibling
-     stacking context, only the bar's own 2800 counts. Sitting above the
-     bar here would let this backdrop intercept every click meant for the
-     flyout, closing it without ever reaching the link underneath. */
-  z-index: 2790;
+  /* Keep navigation below Vuetify menus and modal dialogs. */
+  z-index: 1090;
   background: transparent;
 }
 
@@ -825,7 +823,7 @@ export default {
   align-items: flex-end;
   gap: 8px;
   max-width: calc(100vw - 40px);
-  max-height: calc(100vh - 96px);
+  max-height: calc(100dvh - 96px);
   overflow-y: auto;
   padding: 2px;
 }

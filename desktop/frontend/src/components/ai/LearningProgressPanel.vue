@@ -94,32 +94,33 @@ async function stopTournament() {
 </script>
 
 <style scoped>
-.learning-progress { padding: 6px 2px; color: var(--text-soft); font-size: .65rem; }
-.progress-heading, .selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: .63rem; letter-spacing: .08em; }
+.learning-progress { padding: 6px 2px; color: var(--text-soft); font-size: .75rem; }
+.progress-heading, .selection-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: .6875rem; letter-spacing: 0; }
 .progress-heading > span:first-child, .selection-heading > span:first-child { display: flex; align-items: center; gap: 6px; }
 .status-pill { color: #4ddbc4; background: #32d3b511; border: 1px solid #32d3b522; border-radius: 6px; padding: 3px 8px; letter-spacing: 0; }
 .readiness { display: flex; gap: 14px; align-items: center; margin: 12px 0; }
-.ring-value { font-size: .65rem; font-weight: 700; }
+.ring-value { font-size: .75rem; font-weight: 700; }
 .class-progress { flex: 1; min-width: 0; }
-.class-row { display: grid; grid-template-columns: 50px 1fr 78px; align-items: center; gap: 8px; margin: 5px 0; }
+.class-row { display: grid; grid-template-columns: 56px minmax(16px, 1fr) auto; align-items: center; gap: 6px; margin: 5px 0; }
 .class-row strong { text-align: right; }
 small, p { color: var(--text-dim); font-weight: 400; }
-p { font-size: .57rem; margin-top: 6px; line-height: 1.5; }
-.learning-stats { display: flex; align-items: center; gap: 12px; color: var(--text-dim); font-size: .58rem; }
+p { font-size: .75rem; margin-top: 6px; line-height: 1.5; }
+.learning-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; color: var(--text-dim); font-size: .75rem; }
 .learning-stats strong { color: var(--text-soft); }
 .learning-stats svg { width: 65px; height: 20px; margin-left: auto; }
 .selection-heading { margin-top: 12px; border-top: 1px solid #82c1d51c; padding-top: 10px; }
-.selection-heading > span:last-child { letter-spacing: 0; color: #bca0ff; font-size: .6rem; }
+.selection-heading > span:last-child { letter-spacing: 0; color: #bca0ff; font-size: .6875rem; }
 .model-race { margin-top: 7px; }
-.model-row { display: grid; grid-template-columns: 12px 90px 1fr 43px; gap: 8px; align-items: center; margin: 5px 0; font-size: .6rem; }
+.model-row { display: grid; grid-template-columns: 12px minmax(48px, 1fr) minmax(16px, 1fr) 48px; gap: 6px; align-items: center; margin: 5px 0; font-size: .75rem; }
+.model-shape { overflow-wrap: anywhere; }
 .model-rank { color: #c3a4ff; }
 .model-row strong { text-align: right; }
-.next-search { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: .56rem; color: var(--text-dim); }
-.next-search > span { flex-shrink: 0; }
-.recommendation { color: #5ddbc7; background: #2ec9b30b; padding: 6px; border-radius: 5px; margin-top: 6px; font-size: .6rem; }
-.search-date { opacity: .65; font-size: .53rem; }
+.next-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; margin-top: 8px; font-size: .6875rem; color: var(--text-dim); }
+.next-search :deep(.v-progress-linear) { grid-row: 2; grid-column: 1 / -1; }
+.recommendation { color: #5ddbc7; background: #2ec9b30b; padding: 6px; border-radius: 5px; margin-top: 6px; font-size: .75rem; }
+.search-date { font-size: .6875rem; }
 .tournament-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-.tournament-controls__hint { font-size: .56rem; color: var(--text-dim); }
-.tournament-controls__status { display: flex; align-items: center; gap: 4px; font-size: .58rem; color: var(--text-dim); }
+.tournament-controls__hint { font-size: .75rem; color: var(--text-dim); }
+.tournament-controls__status { display: flex; align-items: center; gap: 4px; font-size: .75rem; color: var(--text-dim); }
 .tournament-controls__status--active { color: #5ddbc7; }
 </style>

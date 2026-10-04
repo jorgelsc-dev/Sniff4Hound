@@ -125,7 +125,7 @@ export default {
 .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(174px, 1fr)); gap: 10px; margin-bottom: 16px; }
 .stat-card { padding: 14px; border-radius: 8px; background: var(--surface-1); }
 .stat-heading { font-size: .78rem; color: var(--text-dim); }
-.stat-value { font-size: clamp(1.45rem, 2.4vw, 1.9rem); font-weight: 700; font-family: var(--font-mono); margin: 8px 0 3px; overflow-wrap: anywhere; letter-spacing: 0; }
+.stat-value { font-size: 1.75rem; font-weight: 700; font-family: var(--font-mono); margin: 8px 0 3px; overflow-wrap: anywhere; letter-spacing: 0; }
 .charts-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .activity-card { grid-column: span 2; }
 .activity-card { padding: 18px; border-radius: 8px; }
@@ -137,6 +137,7 @@ h2 { font-size: 1rem; font-weight: 600; }
 .activity-track { height: 148px; width: 100%; display: flex; align-items: flex-end; border-bottom: 1px solid rgba(120, 190, 220, .2); margin: 8px 0; background: repeating-linear-gradient(to top, transparent 0, transparent 36px, rgba(120, 190, 220, .07) 37px); }
 .activity-bar { width: 68%; margin: 0 auto; background: linear-gradient(0deg, #17618f, #32d4e5); border-radius: 4px 4px 0 0; min-height: 2px; }
 .empty-chart { min-height: 198px; display: grid; place-content: center; justify-items: center; gap: 12px; opacity: .65; font-size: .85rem; color: var(--text-dim); }
+.metrics-grid > *, .charts-grid > * { min-width: 0; }
 @media (max-width: 1280px) { .charts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .charts-grid { grid-template-columns: minmax(0, 1fr); } .activity-card { grid-column: auto; } }
 </style>

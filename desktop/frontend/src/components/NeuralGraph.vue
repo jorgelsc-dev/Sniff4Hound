@@ -12,12 +12,17 @@
     <div class="network-zoom-toolbar">
       <v-btn icon size="x-small" variant="tonal" aria-label="Alejar" :disabled="zoom <= MIN_ZOOM" @click="zoomBy(-ZOOM_STEP)">
         <v-icon icon="mdi-magnify-minus-outline" size="16" />
+        <v-tooltip activator="parent">Alejar</v-tooltip>
       </v-btn>
       <span class="network-zoom-level">{{ Math.round(zoom * 100) }}%</span>
       <v-btn icon size="x-small" variant="tonal" aria-label="Acercar" :disabled="zoom >= MAX_ZOOM" @click="zoomBy(ZOOM_STEP)">
         <v-icon icon="mdi-magnify-plus-outline" size="16" />
+        <v-tooltip activator="parent">Acercar</v-tooltip>
       </v-btn>
-      <v-btn size="x-small" variant="text" class="ml-1" :disabled="isDefaultView" @click="resetZoom">Ajustar vista</v-btn>
+      <v-btn icon size="x-small" variant="text" aria-label="Ajustar vista" :disabled="isDefaultView" @click="resetZoom">
+        <v-icon icon="mdi-fit-to-screen-outline" size="16" />
+        <v-tooltip activator="parent">Ajustar vista</v-tooltip>
+      </v-btn>
     </div>
     <div class="network-scroll">
       <svg ref="svgRoot" :viewBox="`0 0 ${viewBoxWidth} ${viewBoxHeight}`" preserveAspectRatio="xMidYMid meet" :class="{ 'neural-svg--immersive': immersive }" role="img" aria-label="Red neuronal con pesos y activaciones reales, animada en tiempo real">
@@ -119,9 +124,11 @@
         <v-btn variant="text" size="x-small" :disabled="savingLearningConfig" @click="resetLearningConfigDraft">Descartar</v-btn>
         <v-btn variant="outlined" color="secondary" size="x-small" icon :loading="exportingModel" aria-label="Exportar modelo" @click="exportModel">
           <v-icon icon="mdi-tray-arrow-down" size="14" />
+          <v-tooltip activator="parent">Exportar modelo</v-tooltip>
         </v-btn>
         <v-btn variant="outlined" color="secondary" size="x-small" icon :loading="importingModel" aria-label="Importar modelo" @click="triggerImport">
           <v-icon icon="mdi-tray-arrow-up" size="14" />
+          <v-tooltip activator="parent">Importar modelo</v-tooltip>
         </v-btn>
         <input ref="importInput" type="file" accept="application/json" class="d-none" @change="importModel" />
       </div>
@@ -843,7 +850,7 @@ onBeforeUnmount(() => {
 svg {
   width: 100%;
   max-width: 560px;
-  min-width: 300px;
+  min-width: 0;
   display: block;
   margin: 0 auto;
   touch-action: none;
@@ -884,21 +891,14 @@ svg:active { cursor: grabbing; }
   border-radius: 0;
   background: transparent;
   overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) 256px;
 }
-/* Immersive mode fills the whole viewport - the inspector/editor panels
-   below float as transparent overlays on top of it, they no longer reserve
-   their own layout space, so the graph itself reads as truly full-screen. */
-/* Bottom clearance matches the corner overlay panels' own footprint (see
-   network-editor-panel/rnn-charts below) so the graph's
-   own outer columns - which naturally reach the full height of whichever
-   column is tallest - never render underneath a panel and become
-   unreadable/unclickable there. A fixed px reserve (not vh) keeps the
-   graph's own fixed-width viewBox close to the container's aspect ratio;
-   a too-short container turns "meet" scaling width-limited instead of
-   height-limited and leaves large empty margins on both sides. */
+/* The header sizes naturally; footer clearance keeps graph nodes clear of
+   the editor and learning panels at every viewport size. */
 .neural-stage .network-scroll {
-  position: absolute;
-  inset: 96px 20px 320px;
+  grid-row: 2;
+  margin: 8px 20px;
   max-height: none;
   min-height: 0;
   overflow: auto;
@@ -912,19 +912,17 @@ svg:active { cursor: grabbing; }
   transform-origin: top left;
 }
 .neural-stage .neural-graph-header {
-  position: absolute;
-  top: 14px;
-  left: 20px;
-  right: 220px;
+  grid-row: 1;
+  padding: 14px 200px 0 20px;
   z-index: 2;
   background: transparent;
   pointer-events: none;
 }
 .neural-stage .neural-graph-header :deep(.v-btn) { pointer-events: auto; }
-.neural-stage .neural-graph-header h2 { font-size: .8rem !important; }
-.neural-stage .neural-graph-header p { font-size: .65rem !important; margin-top: 5px !important; color: var(--text-dim); }
-.neural-stage .neural-graph-header :deep(.v-chip) { height: 21px; font-size: .6rem; }
-.neural-stage .neural-graph-header :deep(.text-caption) { font-size: .65rem !important; }
+.neural-stage .neural-graph-header h2 { font-size: .875rem !important; }
+.neural-stage .neural-graph-header p { font-size: .75rem !important; margin: 5px 0 0 !important; color: var(--text-dim); }
+.neural-stage .neural-graph-header :deep(.v-chip) { height: 24px; font-size: .6875rem; }
+.neural-stage .neural-graph-header :deep(.text-caption) { font-size: .75rem !important; }
 .neural-stage .network-zoom-toolbar {
   position: absolute;
   right: 16px;
@@ -944,30 +942,40 @@ svg:active { cursor: grabbing; }
   bottom: 16px;
   z-index: 4;
   width: min(320px, calc(50% - 24px));
-  max-height: 260px;
+  max-height: 232px;
   overflow-y: auto;
   scrollbar-width: thin;
   background: transparent;
   backdrop-filter: blur(4px);
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: 8px;
 }
 .neural-stage .network-editor-panel__head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.neural-stage .network-editor-panel__title { font-size: .68rem; letter-spacing: .06em; font-weight: 700; color: var(--text-soft); }
-.neural-stage .network-editor-panel__hint { font-size: .58rem; color: var(--text-dim); margin: 6px 0 0; line-height: 1.4; }
+.neural-stage .network-editor-panel__title { font-size: .75rem; letter-spacing: 0; font-weight: 700; color: var(--text-soft); }
+.neural-stage .network-editor-panel__hint { font-size: .75rem; color: var(--text-dim); margin: 6px 0 0; line-height: 1.4; }
 .neural-stage .network-editor-panel__lof { margin-top: 8px; }
-.neural-stage .network-editor-panel__lof span { font-size: .62rem; color: var(--text-dim); }
-.neural-stage .network-editor-panel :deep(.v-chip) { height: 18px; font-size: .58rem; }
-.neural-stage .network-editor-panel :deep(.v-btn) { font-size: .58rem; letter-spacing: .02em; min-height: 22px; height: 24px; }
-.neural-stage .network-editor-panel :deep(.v-btn--icon) { width: 24px; }
-.neural-stage .network-editor-panel :deep(.v-alert) { background: rgba(10, 25, 40, .85); padding: 6px 8px; font-size: .6rem; }
+.neural-stage .network-editor-panel__lof span { font-size: .75rem; color: var(--text-dim); }
+.neural-stage .network-editor-panel :deep(.v-chip) { height: 22px; font-size: .6875rem; }
+.neural-stage .network-editor-panel :deep(.v-btn) { font-size: .6875rem; letter-spacing: 0; min-height: 28px; height: 28px; }
+.neural-stage .network-editor-panel :deep(.v-btn--icon) { width: 28px; }
+.neural-stage .network-editor-panel :deep(.v-alert) { background: var(--surface-2); padding: 6px 8px; font-size: .75rem; }
 .neural-stage .network-editor-panel :deep(.v-slider) { --v-slider-thumb-size: 12px; --v-slider-track-size: 2px; margin-inline: 4px; }
 
 @media (max-width: 800px) {
-  .neural-stage .neural-graph-header { right: 12px; left: 12px; top: 10px; }
+  .neural-stage { grid-template-rows: auto minmax(0, 1fr) 332px; }
+  .neural-stage .neural-graph-header { padding: 48px 12px 0; }
   .neural-stage .neural-graph-header p { max-width: 100%; }
-  .neural-stage .network-zoom-toolbar { top: auto; bottom: 380px; right: 10px; }
-  .neural-stage .network-scroll { inset: 125px 8px 340px; }
-  .neural-stage .network-editor-panel { left: 8px; right: 8px; width: auto; bottom: 8px; max-height: 220px; }
+  .neural-stage .network-zoom-toolbar { top: 8px; right: 10px; }
+  .neural-stage .network-scroll { margin: 8px; }
+  .neural-stage .network-editor-panel { left: 8px; right: 8px; width: auto; bottom: 8px; max-height: 200px; }
+}
+@media (max-height: 720px) {
+  .neural-stage { grid-template-rows: auto minmax(0, 1fr) 204px; }
+  .neural-stage .neural-graph-header { max-height: 160px; overflow-y: auto; pointer-events: auto; }
+  .neural-stage .network-editor-panel { max-height: 180px; }
+}
+@media (max-width: 800px) and (max-height: 720px) {
+  .neural-stage { grid-template-rows: auto minmax(0, 1fr) 220px; }
+  .neural-stage .network-editor-panel { max-height: 120px; }
 }
 </style>

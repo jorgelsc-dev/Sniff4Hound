@@ -78,7 +78,7 @@ export default {
   position: fixed;
   right: 18px;
   bottom: 18px;
-  z-index: 2400;
+  z-index: 1200;
   width: min(320px, calc(100vw - 36px));
   padding: 10px 12px;
   border-radius: 8px;
@@ -88,6 +88,7 @@ export default {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
   color: var(--text-soft);
   font-size: 12.5px;
+  pointer-events: none;
 }
 .pending__head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .pending__spinner {
@@ -104,7 +105,7 @@ export default {
 .pending__more { margin-top: 4px; color: var(--text-dim); }
 .pending-enter-active, .pending-leave-active { transition: opacity 180ms ease, transform 180ms ease; }
 .pending-enter-from, .pending-leave-to { opacity: 0; transform: translateY(6px); }
-:global(body.sniff4hound-desktop-shell) .pending { right: 22px; }
+:global(body.sniff4hound-desktop-shell .pending) { right: 22px; width: min(320px, calc(100vw - 92px)); }
 @media (max-width: 640px) { .pending { right: 12px; bottom: 76px; } }
 @media (prefers-reduced-motion: reduce) {
   .pending__spinner { animation-duration: 2s; }
