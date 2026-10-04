@@ -228,7 +228,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .flow {
   border: 1px solid var(--stroke);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface-1);
   overflow: hidden;
   transition: border-color 400ms ease;
@@ -246,7 +246,7 @@ onBeforeUnmount(() => {
 .flow__identity { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .flow__identity h2 { font-size: 14px; font-weight: 650; color: #e6edf5; white-space: nowrap; }
 .flow__sub {
-  font-size: 12px; color: #7c8ca0; border-left: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 12px; color: var(--text-dim); border-left: 1px solid var(--stroke);
   padding-left: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .flow__pulse { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: #46576b; }
@@ -257,7 +257,7 @@ onBeforeUnmount(() => {
   font-size: 20px; font-weight: 680; color: #0fe8ff;
   font-variant-numeric: tabular-nums; letter-spacing: 0;
 }
-.flow__rate span { font-size: 11px; color: #74889c; }
+.flow__rate span { font-size: 11px; color: var(--text-dim); }
 
 .flow__canvas {
   position: relative;
@@ -302,8 +302,8 @@ onBeforeUnmount(() => {
   font-size: 23px; font-weight: 660; color: #f2f7fb;
   font-variant-numeric: tabular-nums; letter-spacing: 0;
 }
-.flow__metric i { font-style: normal; font-size: 11px; color: #7f91a6; }
-.flow__status { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: #8698ac; }
+.flow__metric i { font-style: normal; font-size: 11px; color: var(--text-dim); }
+.flow__status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); }
 .flow__dot { width: 5px; height: 5px; border-radius: 50%; background: #46576b; flex: 0 0 5px; }
 .is-live .flow__dot { background: var(--stage); box-shadow: 0 0 7px var(--stage); }
 

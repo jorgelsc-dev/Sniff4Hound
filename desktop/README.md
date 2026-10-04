@@ -25,6 +25,15 @@ The connection screen uses responsive local and remote sensor cards, keyboard-vi
 focus states, and a live connection status indicator. On narrow windows, the cards
 stack vertically and the screen scrolls to keep all controls accessible.
 
+The console uses shared surface, spacing, corner and focus styles for tables,
+charts, menus and forms. The capture pipeline starts as a compact status strip
+so telemetry is immediately visible. Expanding or collapsing it saves the
+preference for subsequent views and sessions. An amber dot means connected with
+capture stopped; green means a capture engine is running, and red means disconnected.
+Dashboard metrics use six, three, two or one column as the window narrows. Chart
+bars move beneath their labels when the card itself is narrow. Keyboard focus and
+field validation remain visible, and motion follows the system's reduced-motion preference.
+
 ## Development
 
 From the repository root:
@@ -38,11 +47,25 @@ cd desktop && npm install && npm run dev
 
 ## AI/Automation Access
 
-Every launch opens a Chrome DevTools Protocol port on **9223** an agent or script can attach to
-and drive the window programmatically - on by default, no flag needed. Set
-`SNIFF4HOUND_DESKTOP_DEBUG_PORT` to use a different port, or to `0` to close it for a given launch.
+Chrome DevTools Protocol access is **off by default**. Set
+`SNIFF4HOUND_DESKTOP_DEBUG_PORT=9223` deliberately for a dedicated test launch;
+leaving it unset or setting it to `0` keeps the port closed.
 See `AGENTS.md`'s "Desktop App: AI/Automation Access" for how to attach and a couple of gotchas
 (notably `ELECTRON_RUN_AS_NODE`).
+
+After building the frontend, audit the production bundle in an isolated Electron
+session with synthetic data:
+
+```bash
+SNIFF4HOUND_DESKTOP_DEBUG_PORT=9223 node scripts/qa_desktop_styles.js
+NODE_PATH=/path/to/playwright/node_modules QA_STYLE_FIXTURE_STATES=1 \
+  SNIFF4HOUND_DESKTOP_DEBUG_PORT=9223 node scripts/qa_desktop_states.js
+```
+
+Run these commands from the repository root. The state audit needs Playwright and
+must only target a fixture session. Both scripts accept `QA_STYLE_VIEWPORTS` as a
+JSON array of `[width, height]` pairs and `QA_STYLE_OUTPUT` for their report and
+screenshots. The layout audit accepts `QA_STYLE_ROUTES` as a comma-separated list.
 
 ## Release Build
 

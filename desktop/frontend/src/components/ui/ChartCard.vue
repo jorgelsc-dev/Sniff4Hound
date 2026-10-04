@@ -1,8 +1,8 @@
 <template>
-  <v-card variant="tonal" class="pa-5 chart-card">
+  <v-card variant="tonal" class="chart-card">
     <div class="d-flex align-start justify-space-between ga-3">
-      <div>
-        <div class="text-subtitle-1">{{ title }}</div>
+      <div class="chart-card__copy">
+        <h2 class="text-subtitle-1">{{ title }}</h2>
         <div v-if="subtitle" class="text-caption text-medium-emphasis">
           {{ subtitle }}
         </div>
@@ -13,7 +13,7 @@
     </div>
 
     <div v-if="series.length" class="chart-stack mt-4" role="list">
-      <div v-for="item in series" :key="item.label" class="chart-row" role="listitem">
+      <div v-for="item in series" :key="item.label" class="chart-row" :class="{ 'chart-row--large': item.value.toLocaleString().length > 10 }" role="listitem">
         <div class="chart-row__label" :title="item.label">
           {{ item.label }}
         </div>
@@ -67,9 +67,14 @@ export default {
 
 <style scoped>
 .chart-card {
-  border-radius: 8px;
+  padding: 20px;
+  border-radius: var(--radius-md);
   height: 100%;
+  container-type: inline-size;
 }
+
+.chart-card__copy { min-width: 0; }
+.chart-card__copy h2 { overflow-wrap: anywhere; }
 
 .chart-stack {
   display: grid;
@@ -78,7 +83,7 @@ export default {
 
 .chart-row {
   display: grid;
-  grid-template-columns: minmax(92px, 1.15fr) minmax(96px, 2.7fr) minmax(5ch, auto);
+  grid-template-columns: minmax(0, 1.15fr) minmax(40px, 2.7fr) minmax(5ch, max-content);
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -108,6 +113,8 @@ export default {
 
 .chart-row__value {
   min-width: 3ch;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   text-align: right;
   color: rgba(229, 241, 252, 0.92);
   font-family: var(--font-mono);
@@ -126,7 +133,7 @@ export default {
   text-align: center;
 }
 
-@media (max-width: 520px) {
+@container (max-width: 340px) {
   .chart-row {
     grid-template-columns: minmax(0, 1fr) minmax(5ch, auto);
   }
@@ -135,5 +142,17 @@ export default {
     grid-column: 1 / -1;
     order: 3;
   }
+
+  .chart-row--large {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chart-row--large .chart-row__value {
+    text-align: left;
+  }
+}
+
+@media (max-width: 600px) {
+  .chart-card { padding: 16px; }
 }
 </style>

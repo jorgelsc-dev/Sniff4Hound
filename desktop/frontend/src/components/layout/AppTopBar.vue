@@ -208,7 +208,7 @@ export default {
 
 .brand-avatar {
   width: 32px;
-  height: 32px;
+  height: 36px;
   flex: 0 0 32px;
   display: inline-flex;
   align-items: center;
@@ -254,9 +254,9 @@ export default {
   height: 32px;
   width: clamp(190px, 24vw, 340px);
   border: 1px solid var(--stroke);
-  border-radius: 8px;
-  background: rgba(4, 10, 18, 0.62);
-  color: rgba(197, 210, 227, 0.72);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text-dim);
   font-size: 12.5px;
   cursor: pointer;
   transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
@@ -280,17 +280,17 @@ export default {
 }
 
 .command-trigger kbd {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0;
   padding: 1px 6px;
   border-radius: 4px;
-  border: 1px solid rgba(var(--brand-sky-rgb), 0.2);
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(197, 210, 227, 0.72);
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  color: var(--text-dim);
 }
 
 @media (max-width: 820px) {
-  .command-trigger { width: 34px; margin-left: 4px; padding: 0; justify-content: center; flex: 0 0 34px; }
+  .command-trigger { width: 36px; margin-left: 4px; padding: 0; justify-content: center; flex: 0 0 36px; }
   .command-trigger span, .command-trigger kbd { display: none; }
 }
 
@@ -306,16 +306,6 @@ export default {
 
   .brand-avatar {
     margin-right: 0 !important;
-  }
-
-  .desktop-window-controls {
-    gap: 0;
-    padding: 2px;
-  }
-
-  .window-control {
-    width: 28px;
-    min-width: 28px;
   }
 }
 

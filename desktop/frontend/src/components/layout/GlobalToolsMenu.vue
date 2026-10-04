@@ -406,9 +406,7 @@ export default {
   gap: 8px;
   padding: 10px 0 12px;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
-  background:
-    linear-gradient(180deg, rgba(9, 17, 29, 0.98), rgba(5, 11, 20, 0.98)),
-    #07101b;
+  background: var(--surface-0);
   box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.02);
 }
 
@@ -479,14 +477,21 @@ export default {
   background: rgba(var(--brand-cyan-rgb), 0.95);
 }
 
+.desktop-activity-item:focus-visible,
+.desktop-runtime-button:focus-visible,
+.desktop-power-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -3px;
+}
+
 .desktop-activity-flyout {
   position: fixed;
   z-index: 1110;
   min-width: 190px;
   padding: 6px;
-  background: rgba(8, 14, 23, 0.96);
-  border: 1px solid rgba(var(--brand-sky-rgb), 0.2);
-  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-md);
   box-shadow: 0 10px 28px rgba(3, 8, 14, 0.55);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
@@ -509,7 +514,7 @@ export default {
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text-soft);
   text-decoration: none;
   font-size: 0.82rem;
@@ -520,6 +525,11 @@ export default {
 .desktop-activity-flyout-item:focus-visible {
   background: rgba(var(--brand-cyan-rgb), 0.12);
   outline: none;
+}
+
+.desktop-activity-flyout-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .desktop-activity-backdrop {
@@ -704,6 +714,11 @@ export default {
   transform: scale(0.94);
 }
 
+.tools-fab-trigger:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
 .tools-fab-menu {
   display: flex;
   flex-direction: column;
@@ -737,6 +752,11 @@ export default {
   border-color: rgba(var(--brand-cyan-rgb), 0.5);
   background: rgba(var(--brand-cyan-rgb), 0.1);
   outline: none;
+}
+
+.tools-fab-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .tools-fab-item-icon {

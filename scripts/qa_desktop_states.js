@@ -8,6 +8,7 @@ const path = require('node:path');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const output = path.resolve(process.env.QA_STYLE_OUTPUT || 'QA/styles/states');
 const port = Number(process.env.SNIFF4HOUND_DESKTOP_DEBUG_PORT);
+const viewports = JSON.parse(process.env.QA_STYLE_VIEWPORTS || '[[1360,860],[980,640],[390,844],[320,740],[844,390]]');
 
 async function main() {
   if (process.env.QA_STYLE_FIXTURE_STATES !== '1' || !Number.isInteger(port) || port < 1 || port > 65535) {
@@ -73,7 +74,7 @@ async function main() {
     console.log(page.viewportSize().width + ' ' + name + ': ' + (!report.visible || report.outside.length || report.clippedText.length || report.obscuredTournament ? 'ISSUES' : 'OK'));
   }
   try {
-    for (const [width, height] of [[1360,860],[980,640],[390,844],[320,740],[844,390]]) {
+    for (const [width, height] of viewports) {
       await page.setViewportSize({ width, height });
       await route('/ips');
       await page.locator('.entity-data-table').scrollIntoViewIfNeeded();
