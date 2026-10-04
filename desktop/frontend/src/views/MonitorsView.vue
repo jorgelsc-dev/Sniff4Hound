@@ -9,7 +9,7 @@
     />
 
     <v-row dense>
-      <v-col v-for="metric in metricCards" :key="metric.key" cols="12" sm="6" md="3">
+      <v-col v-for="metric in metricCards" :key="metric.key" cols="6" sm="6" md="3">
         <v-card variant="tonal" class="pa-5 metric-card">
           <div class="d-flex align-center justify-space-between ga-3">
             <div>
@@ -99,8 +99,8 @@
         :key="monitor.id"
         :value="monitor.id"
       >
-        <v-expansion-panel-title>
-          <div class="d-flex align-center flex-wrap ga-2">
+        <v-expansion-panel-title class="monitor-row-title">
+          <div class="d-flex align-center flex-wrap ga-2 monitor-row-title__content">
             <v-chip
               size="x-small"
               color="info"
@@ -395,7 +395,7 @@ export default {
 <style scoped>
 .monitor-name {
   display: inline-block;
-  max-width: 520px;
+  max-width: min(520px, 100%);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -406,9 +406,23 @@ export default {
   font-weight: 700;
 }
 
+.monitor-row-title,
+.monitor-row-title__content {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .monitor-name-link {
   color: rgba(229, 241, 252, 0.94);
   text-decoration: none;
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 600px) {
+  .monitor-name-link {
+    flex: 1 1 100%;
+  }
 }
 
 .monitor-name-link:hover {

@@ -6,7 +6,7 @@
     <div class="dashboard-toolbar">
       <span class="text-caption text-medium-emphasis" role="status">{{ loading ? 'Actualizando métricas…' : lastUpdated ? `Actualizado ${lastUpdated}` : 'Esperando datos' }}</span>
       <div class="dashboard-links">
-        <v-btn to="/dashboard/overview" size="small" variant="text" prepend-icon="mdi-shield-alert-outline">Alertas IA</v-btn>
+        <v-btn to="/dashboard/overview" size="small" variant="text" prepend-icon="mdi-shield-alert-outline">Alertas</v-btn>
         <v-btn to="/dashboard/node-map" size="small" variant="text" prepend-icon="mdi-graph-outline">Nodos</v-btn>
         <v-btn to="/dashboard/live-map" size="small" variant="text" prepend-icon="mdi-earth">Mapa en vivo</v-btn>
       </div>

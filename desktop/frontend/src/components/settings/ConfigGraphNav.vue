@@ -103,7 +103,7 @@
         <div class="config-canvas-tools">
           <span class="config-component-count">{{ nodes.length }} componentes</span>
           <div class="config-zoom">
-            <v-btn icon="mdi-minus" size="x-small" variant="text" :disabled="transform.k <= 0.15" aria-label="Alejar" @click="zoomBy(0.8)">
+            <v-btn icon="mdi-minus" size="x-small" variant="text" :disabled="transform.k <= READABLE_MIN_SCALE" aria-label="Alejar" @click="zoomBy(0.8)">
               <v-icon icon="mdi-minus" /><v-tooltip activator="parent">Alejar</v-tooltip>
             </v-btn>
             <output aria-label="Zoom">{{ Math.round(transform.k * 100) }}%</output>
@@ -171,6 +171,7 @@ const world = ref(null);
 const inspectorBody = ref(null);
 const positions = ref({});
 const hoveredId = ref("");
+const READABLE_MIN_SCALE = 0.6;
 const transform = ref(zoomIdentity);
 const nodeEls = new Map();
 let selection;
@@ -216,7 +217,7 @@ function closeInspector() {
   nextTick(() => nodeEls.get(id)?.focus({ preventScroll: true }));
 }
 const zoomBehavior = zoom()
-  .scaleExtent([0.15, 1.8])
+  .scaleExtent([READABLE_MIN_SCALE, 1.8])
   .extent(() => [[0, 0], [viewport.value.clientWidth, viewport.value.clientHeight]])
   .filter(event => !event.target.closest(".config-node") && !event.button)
   .on("zoom", event => { transform.value = event.transform; });
@@ -226,8 +227,9 @@ function fitGraph() {
   const bounds = graphBounds(nodes.value);
   const width = viewport.value.clientWidth;
   const height = viewport.value.clientHeight;
-  // Fit the entire graph; zoom and the section selector retain access to details.
-  const scale = Math.max(0.15, Math.min(1, (width - 32) / bounds.width, (height - 30) / bounds.height));
+  // Fit the whole graph when it stays readable; below READABLE_MIN_SCALE the
+  // cards become unreadable, so fit at that scale and let the canvas be panned.
+  const scale = Math.max(READABLE_MIN_SCALE, Math.min(1, (width - 32) / bounds.width, (height - 30) / bounds.height));
   const x = width < bounds.width * scale ? 16 - bounds.x * scale : (width - bounds.width * scale) / 2 - bounds.x * scale;
   const y = Math.max(12, (height - bounds.height * scale) / 2) - bounds.y * scale;
   selection.call(zoomBehavior.transform, zoomIdentity.translate(x, y).scale(scale));
