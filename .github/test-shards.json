@@ -27,14 +27,12 @@
       "tests.test_detection_scopes",
       "tests.test_protocol_facets",
       "tests.test_soc_qa",
-      "tests.test_ai_learning",
       "tests.test_packet_review",
       "tests.test_ip_registry",
       "tests.test_new_protocols",
       "tests.test_auth_hardening",
       "tests.test_ahocorasick",
-      "tests.test_terminal",
-      "tests.test_learning_search_progress"
+      "tests.test_terminal"
     ],
     [
       "tests.test_comprehensive",
@@ -55,7 +53,6 @@
       "tests.test_intel",
       "tests.test_ics_and_infra_protocols",
       "tests.test_api_hardening",
-      "tests.test_packet_ai",
       "tests.test_llc_frames",
       "tests.test_ip_scope_filter",
       "tests.test_anomaly",

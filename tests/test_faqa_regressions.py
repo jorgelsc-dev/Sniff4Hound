@@ -170,28 +170,6 @@ class Finding129DomainStructuredMatchTests(StoreRegressionTestCase):
             self.store.domain_intel("")
 
 
-class Finding117AiPacketsSinceFilterTests(StoreRegressionTestCase):
-    """1.17 - the AI packet feed must filter by time in SQL so a short
-    dashboard window cannot surface rows scored outside it."""
-
-    def test_since_in_the_future_excludes_rows_just_inserted(self):
-        self.store.register_packet(_packet())
-        future_cutoff = utc_since(-3600)  # one hour from now
-        rows = self.store.list_ai_packets(since=future_cutoff)
-        self.assertEqual(rows, [])
-
-    def test_since_in_the_past_still_includes_rows(self):
-        self.store.register_packet(_packet())
-        past_cutoff = utc_since(3600)  # one hour ago
-        rows = self.store.list_ai_packets(since=past_cutoff)
-        self.assertEqual(len(rows), 1)
-
-    def test_no_since_behaves_as_before(self):
-        self.store.register_packet(_packet())
-        rows = self.store.list_ai_packets()
-        self.assertEqual(len(rows), 1)
-
-
 class Finding121ExportAlertsScopeTests(StoreRegressionTestCase):
     """1.21 - exporting alerts for one target must not include alerts for a
     different, unrelated host."""
@@ -285,58 +263,6 @@ class Finding115ListEntryDuplicatesTests(StoreRegressionTestCase):
             for row in self.store._conn.execute("PRAGMA index_list(whitelist_entries)")
         }
         self.assertIn("idx_whitelist_unique_entry", indexes)
-
-
-class Finding124AiTrainingWorkerLifecycleTests(StoreRegressionTestCase):
-    """1.24 - the AI training worker must be a thread `stop()` actually
-    signals and joins, not an un-tracked `while True` daemon that outlives
-    every stop()/restart() cycle (and, per 1.5, the most likely source of
-    writes racing a test's TemporaryDirectory cleanup)."""
-
-    def setUp(self):
-        super().setUp()
-        self.sniffer = Sniffer(self.store, MagicMock(), interfaces=())
-
-    def _wait_until(self, predicate, *, timeout=2.0):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            time.sleep(0.02)
-        return predicate()
-
-    def test_worker_processes_queued_feedback_and_stop_joins_it(self):
-        saved = self.store.register_packet(_packet(raw_packet=b"\x01\x02\x03\x04" * 16))
-        self.sniffer._enqueue_ai_training(saved["id"], "malicious", 0.9, "test")
-        self.assertTrue(
-            self._wait_until(lambda: self.sniffer.ai_training_stats()["processed"] == 1),
-            "training worker never processed the queued example",
-        )
-        worker = self.sniffer._ai_training_thread
-        self.assertIsNotNone(worker)
-        self.sniffer.stop()
-        self.assertFalse(worker.is_alive(), "stop() must join the AI training worker thread")
-
-    def test_repeated_start_stop_leaves_no_training_worker_threads_alive(self):
-        for _ in range(5):
-            saved = self.store.register_packet(_packet(raw_packet=b"\x01\x02\x03\x04" * 16))
-            self.sniffer._enqueue_ai_training(saved["id"], "benign", 0.4, "test")
-            self._wait_until(lambda: self.sniffer.ai_training_stats()["processed"] >= 1)
-            self.sniffer.stop()
-        self.assertFalse(
-            any(thread.name == "sniff4hound-ai-training" and thread.is_alive() for thread in threading.enumerate()),
-            "an AI training worker thread survived stop()",
-        )
-
-    def test_full_queue_is_counted_as_dropped_not_silently_lost(self):
-        # Pretend a worker is already running so _enqueue_ai_training only
-        # exercises the put_nowait()/queue.Full path, not thread startup -
-        # keeps this deterministic instead of racing a real consumer thread.
-        self.sniffer._ai_training_thread_started = True
-        while not self.sniffer._ai_training_queue.full():
-            self.sniffer._ai_training_queue.put_nowait((0, "benign", 0.1, "probe"))
-        self.sniffer._enqueue_ai_training(0, "benign", 0.1, "probe-over-capacity")
-        self.assertEqual(self.sniffer.ai_training_stats()["dropped"], 1)
 
 
 if __name__ == "__main__":

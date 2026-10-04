@@ -26,7 +26,6 @@ export const SETTINGS_NODES = [
   { id: "cache", section: "packetcache", label: "Caché de paquetes", icon: "mdi-cached", lane: 0, column: 2, row: 1, detail: "Retención de paquetes" },
   { id: "jobs", section: "packetjobs", label: "Jobs de procesamiento", icon: "mdi-cog-sync-outline", lane: 0, column: 3, row: 1, detail: "Procesan y persisten" },
   { id: "monitors", section: "detection", label: "Monitores", icon: "mdi-radar", lane: 0, column: 4, row: 2, detail: "Reglas y severidad" },
-  { id: "ai", section: "ai", label: "Inteligencia artificial", icon: "mdi-brain", lane: 0, column: 4, row: 1, detail: "Clasificador y detector LOF" },
   { id: "store", section: "storage", label: "SniffStore", icon: "mdi-database-outline", lane: 0, column: 5, row: 1, detail: "Historial y retención" },
 
   // Group 1 - what the operator sets and what reaches them.
@@ -49,10 +48,8 @@ export const SETTINGS_EDGES = [
   { from: "sniffer", to: "cache", label: "paquetes" },
   { from: "cache", to: "jobs", label: "lotes" },
   { from: "jobs", to: "monitors", label: "alertas" },
-  { from: "jobs", to: "ai", label: "muestras" },
   { from: "jobs", to: "store", label: "persiste" },
-  // Monitor and AI hits are stored as alerts (sniffer: is_alert), not only
-  // through the job queue.
+  // Monitor hits are stored as alerts (sniffer: is_alert), not only through the job queue.
   { from: "monitors", to: "store", label: "guarda alertas" },
   { from: "honeypot", to: "monitors", label: "señuelos" },
   { from: "scope", to: "exclusions", label: "filtra" },

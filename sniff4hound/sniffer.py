@@ -12,12 +12,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .ai_learning import features as ai_features, forward as ai_forward, is_current_model_shape
 from .anomaly import AnomalyEngine
 from .logger import get_capture_logger
 from .packet_pipeline import PACKET_JOBS_DEFAULT, PACKET_CACHE_LIMIT_DEFAULT, PIPELINE_BATCH_MAX, PacketCache
 from .monitors import RuleAlertThrottle, ensure_monitor_index, evaluate_packet, indexed_monitors_by_id
-from .packet_ai import packet_bytes
 from .regex_safety import compiled_regex, regex_search
 from .rulesets import build_packet_text, classify_packet, literal_packet_text_pattern
 from .store import compile_exclusion_networks, packet_matches_exclusion_filter
@@ -653,29 +651,6 @@ class Sniffer:
         self._last_stats_broadcast_at = 0.0
         self._anomaly = AnomalyEngine()
         self._rule_throttle = RuleAlertThrottle()
-        self._training_enabled = False
-        self._training_capture_enabled = False
-        self._ai_alert_mode_enabled = False
-        self._ai_model = None
-        # Bounded so a training-mode burst at wire speed can never make the
-        # capture thread block on `put()` - see _run_ai_training_worker.
-        # Overflow is dropped, but counted (see _ai_training_stats) instead
-        # of vanishing silently; losing an occasional training example is
-        # harmless, blocking capture is not. The worker thread itself is
-        # started lazily (see _enqueue_ai_training) rather than for every
-        # Sniffer instance - most never turn training on at all (including
-        # the many short-lived Sniffer()s the test suite creates), so there
-        # is no reason to leave an idle thread on every one of them.
-        self._ai_training_queue: queue.Queue = queue.Queue(maxsize=500)
-        self._ai_training_thread_lock = threading.Lock()
-        self._ai_training_thread_started = False
-        # Handle kept explicitly (not just daemon=True) so stop() can signal
-        # and join it like every capture thread, instead of leaving it
-        # running - blocked on the queue - against a store that stop()'s
-        # caller may close right after (finding 1.24).
-        self._ai_training_thread: threading.Thread | None = None
-        self._ai_training_stats_lock = threading.Lock()
-        self._ai_training_stats = {"queued": 0, "processed": 0, "dropped": 0, "failed": 0}
         # Per-flow "this TCP flow is carrying TLS" memory. A single TLS
         # record (especially Application Data, the bulk of any HTTPS
         # session after the handshake) is routinely larger than one Ethernet
@@ -812,7 +787,6 @@ class Sniffer:
                 "started_at": self.state.started_at,
                 "last_packet_at": self.state.last_packet_at,
                 "active_threads": active_threads,
-                "ai_training": self.ai_training_stats(),
                 "packet_pipeline": self._pipeline_snapshot(),
             }
 
@@ -882,19 +856,6 @@ class Sniffer:
         self._pipeline_threads = []
         # The cache object is kept (closed) so its counters stay readable until
         # the next start(); _enqueue_packet evaluates inline once it is closed.
-        # Same signal already covers the AI training worker (it polls
-        # _stop_event - see _run_ai_training_worker), it just also needs
-        # joining so a caller that closes the store right after stop()
-        # can't race a write still in flight on that thread. Reset the
-        # "started" latch afterwards so a later start() + training enqueue
-        # spawns a fresh worker instead of assuming the (now-dead) old one
-        # is still draining the queue.
-        with self._ai_training_thread_lock:
-            training_thread = self._ai_training_thread
-            if training_thread is not None and training_thread.is_alive():
-                training_thread.join(timeout=0.8)
-            self._ai_training_thread = None
-            self._ai_training_thread_started = False
         return self.snapshot()
 
     def restart(self):
@@ -1138,24 +1099,6 @@ class Sniffer:
             get_raw_retention = getattr(self.store, "get_raw_retention_enabled", None)
             raw_retention_enabled = get_raw_retention() if callable(get_raw_retention) else bool(STORE_RAW_PACKET_BYTES)
             get_config = getattr(self.store, "get_runtime_config", None)
-            # `training_enabled` replaces the old `ai_sampling_enabled` flag;
-            # an install upgrading from before this change still has its
-            # previous choice honoured until it is next changed explicitly.
-            stored_training = callable(get_config) and get_config("training_enabled", "")
-            if stored_training == "":
-                stored_training = callable(get_config) and get_config("ai_sampling_enabled", "0")
-            self._training_enabled = stored_training == "1"
-            self._training_capture_enabled = callable(get_config) and get_config("training_capture_enabled", "0") == "1"
-            self._ai_alert_mode_enabled = callable(get_config) and get_config("ai_alert_mode_enabled", "0") == "1"
-            ai_model = None
-            if self._ai_alert_mode_enabled:
-                try:
-                    candidate = self.store.ai_learning_state().get("model")
-                    if is_current_model_shape(candidate):
-                        ai_model = candidate
-                except Exception:
-                    LOGGER.exception("Failed to load AI model for alert mode")
-            self._ai_model = ai_model
             get_min_severity = getattr(self.store, "get_monitor_min_severity", None)
             get_suppress_generated_info = getattr(self.store, "get_monitor_suppress_generated_info", None)
             min_severity = get_min_severity() if callable(get_min_severity) else MONITOR_MIN_SEVERITY_DEFAULT
@@ -1410,109 +1353,6 @@ class Sniffer:
             return False
         return safe_int(packet.get("src_port"), 0) == PORT or safe_int(packet.get("dst_port"), 0) == PORT
 
-    def _classify_with_ai(self, packet: dict) -> dict | None:
-        """Score one live packet with the persisted feedback-trained model
-        ("solo IA" mode). Cheap and synchronous - forward() is a handful of
-        tiny matrix ops - but needs the packet's own raw bytes, which are
-        only present when SNIFF4HOUND_STORE_RAW_PACKET keeps them around
-        (enforced at the /api/ai/config layer before this flag can be set)."""
-        model = self._ai_model
-        if not model:
-            return None
-        try:
-            data, _source, _partial = packet_bytes(packet)
-            if not data:
-                return None
-            _hidden, score = ai_forward(model, ai_features(data))
-        except Exception:
-            LOGGER.exception("AI classification failed")
-            return None
-        return {"score": score, "is_alert": score >= 0.5}
-
-    def _ai_hit_from_verdict(self, verdict: dict) -> dict:
-        score = float(verdict.get("score") or 0.0)
-        if score >= 0.85:
-            severity = "critical"
-        elif score >= 0.7:
-            severity = "high"
-        elif score >= 0.55:
-            severity = "medium"
-        else:
-            severity = "low"
-        return {
-            "monitor_id": "ai-classifier",
-            "monitor_name": "Clasificador IA",
-            "tag": "ai_alert",
-            "label": "Alerta IA",
-            "severity": severity,
-            "detail": f"score={score:.2f}",
-        }
-
-    def _training_confidence(self, monitor_hits: list[dict]) -> float:
-        """Confidence fed into ai_learning.update_feedback for an
-        auto-labelled example - higher for hits the operator's own monitor
-        catalog/anomaly engine flagged at higher severity, moderate for
-        traffic nothing flagged (an absence of signal, not a verified
-        negative)."""
-        if not monitor_hits:
-            return 0.6
-        rank = max(
-            MONITOR_SEVERITY_RANK.get(str(hit.get("severity") or "info").strip().lower(), 0)
-            for hit in monitor_hits
-        )
-        return {0: 0.6, 1: 0.65, 2: 0.75, 3: 0.85, 4: 0.95}.get(rank, 0.6)
-
-    def _run_ai_training_worker(self):
-        """Drains _ai_training_queue and feeds each auto-labelled packet
-        into the same online-learning path as manual operator feedback
-        (store.save_ai_feedback) - on its own thread so a training write
-        (fingerprint, mini-batch backprop, persist) never blocks the
-        capture loop that enqueued it.
-
-        Polls `_stop_event` between gets (instead of blocking forever on a
-        bare `queue.get()`) so `stop()` can actually signal and join this
-        thread like every capture thread - previously it was a `while True`
-        daemon nobody ever joined, so it kept running against a store that
-        could already be closed underneath it (finding 1.24, and the most
-        likely cause of the intermittent teardown failure in finding 1.5)."""
-        while not self._stop_event.is_set():
-            try:
-                packet_id, label, confidence, note = self._ai_training_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            try:
-                self.store.save_ai_feedback(packet_id, label, confidence, note)
-                with self._ai_training_stats_lock:
-                    self._ai_training_stats["processed"] += 1
-            except Exception:
-                with self._ai_training_stats_lock:
-                    self._ai_training_stats["failed"] += 1
-                LOGGER.debug("Auto AI training feedback failed", exc_info=True)
-
-    def _enqueue_ai_training(self, packet_id, label: str, confidence: float, note: str) -> None:
-        if not self._ai_training_thread_started:
-            with self._ai_training_thread_lock:
-                if not self._ai_training_thread_started:
-                    thread = threading.Thread(
-                        target=self._run_ai_training_worker,
-                        daemon=True,
-                        name="sniff4hound-ai-training",
-                    )
-                    thread.start()
-                    self._ai_training_thread = thread
-                    self._ai_training_thread_started = True
-        try:
-            self._ai_training_queue.put_nowait((packet_id, label, confidence, note))
-            with self._ai_training_stats_lock:
-                self._ai_training_stats["queued"] += 1
-        except queue.Full:
-            with self._ai_training_stats_lock:
-                self._ai_training_stats["dropped"] += 1
-
-    def ai_training_stats(self) -> dict:
-        with self._ai_training_stats_lock:
-            return dict(self._ai_training_stats)
-
     def _read_pipeline_config(self) -> dict:
         get_config = getattr(self.store, "get_packet_pipeline_config", None)
         if callable(get_config):
@@ -1694,13 +1534,7 @@ class Sniffer:
             return
         monitors, filter_enabled = self._get_monitor_context()
         detection_muted = self._detection_muted(packet) or self._exclusion_filtered(packet)
-        # "Solo IA": IA activa y Training apagado. El catalogo de reglas se
-        # salta y el veredicto de la IA ocupa su lugar; los detectores de
-        # anomalia (SYN flood, port scan, ...) siguen corriendo siempre, ya
-        # que son contadores de tasa independientes del catalogo declarativo.
-        ai_only_mode = self._ai_alert_mode_enabled and not self._training_enabled
         monitor_matched = False
-        training_hits = []
         suppressed_hits: list[dict] = []
         if detection_muted:
             matches = []
@@ -1708,16 +1542,9 @@ class Sniffer:
         else:
             rulesets = self._get_rulesets()
             matches = classify_packet(packet, rulesets)
-            catalog_hits = [] if (ai_only_mode or not filter_enabled) else evaluate_packet(packet, monitors)
-            ai_hits = []
-            if ai_only_mode:
-                verdict = self._classify_with_ai(packet)
-                if verdict and verdict.get("is_alert"):
-                    ai_hits = [self._ai_hit_from_verdict(verdict)]
-            training_hits = list(catalog_hits)
-            combined_hits = catalog_hits + ai_hits
-            monitor_matched = bool(combined_hits)
-            monitor_hits = self._filter_monitor_hits(combined_hits)
+            catalog_hits = [] if not filter_enabled else evaluate_packet(packet, monitors)
+            monitor_matched = bool(catalog_hits)
+            monitor_hits = self._filter_monitor_hits(catalog_hits)
             if monitor_hits:
                 # partition(), not filter(): what the throttle silenced still
                 # gets tagged below, so "matched but rate-limited" stays
@@ -1735,56 +1562,31 @@ class Sniffer:
             except Exception:
                 LOGGER.exception("Anomaly detection failed")
                 anomaly_hits = []
-            training_hits.extend(anomaly_hits)
             if anomaly_hits:
                 monitor_hits = list(monitor_hits) + list(anomaly_hits)
         is_alert = bool(monitor_hits)
         self._trace_packet(packet, "evaluated", muted=detection_muted, filter_enabled=filter_enabled,
                            catalog_monitors=len(monitors), hits=len(monitor_hits),
                            suppressed=len(suppressed_hits))
-        # Training mode wants benign examples alongside alerts, so a clean
-        # (non-muted, non-alerting) packet gets persisted too while it's on,
-        # marked so purge_training_capture_packets() can find and drop
-        # exactly these rows again once training mode goes back off -
-        # without touching the alerts also captured during that window.
-        training_sample = self._training_capture_enabled and not detection_muted and not is_alert
         tags = self._build_packet_tags(packet, matches, monitor_hits, suppressed_hits)
-        if training_sample:
-            tags.append({"key": "training_capture", "value": "1"})
         packet["rule_hits"] = matches
         packet["monitor_hits"] = monitor_hits
         packet["suppressed_monitor_hits"] = suppressed_hits
         packet["tags"] = tags
-        if detection_muted:
-            packet["ai_detection_status"] = "muted"
-        elif ai_only_mode:
-            packet["ai_detection_status"] = "ai_decided"
-        elif filter_enabled:
-            packet["ai_detection_status"] = "evaluated"
-        else:
-            packet["ai_detection_status"] = "disabled"
-        if monitor_matched and not monitor_hits:
-            packet["ai_detection_status"] = "suppressed"
         packet["banner_text"] = packet.get("banner_text") or packet.get("payload_text") or ""
 
-        # Every non-muted packet is fully evaluated - rule catalog, anomaly
-        # detectors and (in "solo IA" mode) the AI classifier - but only
-        # persists if that evaluation actually raised something. Clean
-        # traffic is processed for its verdict and then dropped, so the
-        # packets table only ever holds what an operator would want to look
-        # at, and disk/DB growth tracks alert volume instead of link speed.
-        # Muted/excluded traffic is the one exception: it is deliberately
-        # never evaluated (nothing to raise, by design), but still persists
-        # untagged - "mute detection without hiding capture" is its own,
-        # separately relied-on contract (see ExcludedTrafficPipelineTests),
+        # Every non-muted packet is fully evaluated - rule catalog and anomaly
+        # detectors - but only persists if that evaluation actually raised
+        # something. Clean traffic is processed for its verdict and then
+        # dropped, so the packets table only ever holds what an operator would
+        # want to look at, and disk/DB growth tracks alert volume instead of
+        # link speed. Muted/excluded traffic is the one exception: it is
+        # deliberately never evaluated (nothing to raise, by design), but still
+        # persists untagged - "mute detection without hiding capture" is its
+        # own, separately relied-on contract (see ExcludedTrafficPipelineTests),
         # not a case of "checked and clean". Whitelisted traffic already
-        # returned above and never reaches this point at all. Training
-        # mode (training_sample, computed above) is the one deliberate
-        # exception to "clean traffic is dropped": it persists otherwise-
-        # clean packets on purpose, tagged 'training_capture', to give the
-        # AI classifier benign examples to learn from.
-        should_persist = detection_muted or is_alert or training_sample or self._pipeline_persist_all
-        packet["ai_sample"] = False
+        # returned above and never reaches this point at all.
+        should_persist = detection_muted or is_alert or self._pipeline_persist_all
         if should_persist:
             # Muted/excluded traffic (detection_muted, no is_alert) is
             # never evaluated, so it never earns the raw-bytes
@@ -1801,27 +1603,8 @@ class Sniffer:
                 self._touch_packet(saved or packet, stored=True)
                 self._broadcast_packet(saved or packet, persisted=True)
                 self._record_intel(packet)
-                if (
-                    self._training_enabled
-                    and not detection_muted
-                    and filter_enabled
-                    and self._store_raw_packet_bytes
-                    and saved
-                    and saved.get("id")
-                ):
-                    # Labels use the actual monitor verdict before notification
-                    # suppression/throttling. Only red (high/critical) hits are
-                    # positive training examples; informational/lesser hits and
-                    # evaluated clean capture samples are benign by policy.
-                    malicious = any(
-                        str(hit.get("severity") or "info").strip().lower() in {"high", "critical"}
-                        for hit in training_hits
-                    )
-                    label = "malicious" if malicious else "benign"
-                    confidence = self._training_confidence(training_hits) if malicious else 0.6
-                    self._enqueue_ai_training(saved["id"], label, confidence, "auto:training")
 
-            allow_raw = is_alert or training_sample
+            allow_raw = is_alert
             deferred = getattr(self._pipeline_tls, "deferred", None)
             if deferred is not None:
                 # Inside a job batch the write waits until the whole batch has

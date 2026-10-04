@@ -2,7 +2,7 @@
   <div>
     <v-alert type="info" variant="tonal" density="comfortable" class="mb-4">
       El tráfico que coincida con estos criterios se silencia en detección del Sniffer, Monitores
-      y muestreo de IA. No afecta la captura cruda ni lo que se guarda. Úsalo para tráfico loopback
+      . No afecta la captura cruda ni lo que se guarda. Úsalo para tráfico loopback
       del panel, redes internas conocidas o protocolos/puertos ruidosos que no deben disparar detecciones.
     </v-alert>
 

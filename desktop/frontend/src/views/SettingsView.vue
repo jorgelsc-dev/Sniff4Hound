@@ -190,8 +190,6 @@
 
       </v-window-item>
       <v-window-item value="storage">
-        <AiModeControls :config="aiSnapshot" storage-only class="mb-5" @updated="aiSnapshot = $event" />
-
         <!-- Database file stats -->
         <DataPanel
           title="Base de datos"
@@ -1408,22 +1406,6 @@
           </div>
           <div class="d-flex align-start justify-space-between flex-wrap ga-3 mt-4">
             <div>
-              <div class="text-subtitle-2 font-weight-medium">Notificar alertas de la IA</div>
-              <div class="text-caption text-medium-emphasis mt-1">
-                Una notificación por cada alerta del clasificador. Se guarda localmente en el navegador.
-              </div>
-            </div>
-            <v-switch
-              :model-value="store.state.notifyAiEnabled"
-              aria-label="Notificar alertas de la IA"
-              color="primary"
-              hide-details
-              inset
-              @update:model-value="(value) => store.setNotifyAiEnabled(value)"
-            />
-          </div>
-          <div class="d-flex align-start justify-space-between flex-wrap ga-3 mt-4">
-            <div>
               <div class="text-subtitle-2 font-weight-medium">Severidad mínima para notificar</div>
               <div class="text-caption text-medium-emphasis mt-1">
                 Por debajo de esta severidad las detecciones siguen en la lista pero no avisan.
@@ -1531,7 +1513,7 @@
         <v-card variant="tonal" class="pa-4 pipeline-card">
           <div class="text-subtitle-2 font-weight-medium">Jobs de procesamiento</div>
           <div class="text-caption text-medium-emphasis mt-1 mb-3">
-            Workers que toman paquetes de la caché, los evalúan con monitores e IA, y persisten los que corresponden en SniffStore.
+            Workers que toman paquetes de la caché, los evalúan con monitores y anomalías, y persisten los que corresponden en SniffStore.
           </div>
           <v-text-field
             v-model.number="pipelineDraft.jobs"
@@ -1708,10 +1690,6 @@
         </v-card>
       </v-window-item>
 
-      <v-window-item value="ai">
-        <AiSettingsPanel @updated="refreshGraph" />
-      </v-window-item>
-
     </v-window>
     </ConfigGraphNav>
   </div>
@@ -1727,8 +1705,6 @@ import RegexHelperButton from "../components/ui/RegexHelperButton.vue";
 import BlacklistPanel from "../components/settings/BlacklistPanel.vue";
 import ExclusionsPanel from "../components/settings/ExclusionsPanel.vue";
 import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
-import AiSettingsPanel from "../components/settings/AiSettingsPanel.vue";
-import AiModeControls from "../components/settings/AiModeControls.vue";
 import ConfigGraphNav from "../components/settings/ConfigGraphNav.vue";
 import { SETTINGS_NODES } from "../components/settings/settingsGraph";
 import { formatTimestamp, matchesSearch, uniqueSorted } from "../utils/traffic";
@@ -1832,8 +1808,6 @@ export default {
     ExclusionsPanel,
     LocationPicker,
     RuleDetailDialog,
-    AiSettingsPanel,
-    AiModeControls,
     ConfigGraphNav,
   },
   data() {
@@ -1844,7 +1818,6 @@ export default {
       statusRefreshing: false,
       graphStatusTimer: null,
       mobilePairingTimer: null,
-      aiSnapshot: null,
       pipelineConfig: null,
       pipelineDraft: { cache_limit: 20000, jobs: 2, persist_mode: "alerts" },
       pipelineSaving: false,
@@ -1980,8 +1953,6 @@ export default {
       const pipeline = this.pipelineLive || {};
       const cfg = this.pipelineConfig || {};
       const extras = this.graphExtras || {};
-      const ai = this.aiSnapshot || {};
-      const learning = ai.learning_config || {};
       const exclusions = extras.exclusions || {};
       const storage = this.storageStats || null;
       const show = (value) => (online ? value : "—");
@@ -2002,7 +1973,6 @@ export default {
       const enabledMonitors = this.monitorStats ? this.monitorStats.enabled : this.monitors.filter(item => item.enabled).length;
       const totalMonitors = this.monitorStats ? this.monitorStats.total : this.monitors.length;
       const ipCount = (exclusions.ip_types || []).length;
-      const hiddenLayers = (learning.hidden_sizes || []).length;
       return {
         runtime: state(online ? (live ? "Captura activa" : "Motores detenidos") : "Sin conexión", live, [
           metric("Motores", `${(runtime.running_engines || []).length}/2`, live ? "ok" : ""),
@@ -2044,12 +2014,6 @@ export default {
         scope: state(this.detectionScopes.length ? `${this.detectionScopes.length} ámbitos silenciados` : "Todo el tráfico", true, [
           metric("Silenciados", num(this.detectionScopes.length), this.detectionScopes.length ? "warn" : "ok"),
           metric("Disponibles", num(this.detectionScopeOptions.length)),
-        ]),
-        ai: state(!this.aiSnapshot || !online ? "Sin datos" : ai.training_enabled ? "Entrenamiento activo" : ai.ai_alert_mode_enabled ? "Alertas de IA activas" : "Entrenamiento detenido", live && Boolean(ai.training_enabled || ai.ai_alert_mode_enabled), [
-          metric("Modo", !this.aiSnapshot ? "—" : ai.training_enabled ? "Entrenando" : ai.ai_alert_mode_enabled ? "Alertas IA" : "Detenida", ai.training_enabled || ai.ai_alert_mode_enabled ? "ok" : ""),
-          metric("Capas", num(hiddenLayers)),
-          metric("Cohorte mín.", num(learning.min_cohort)),
-          metric("Captura benigna", ai.training_capture_enabled ? "Sí" : "No"),
         ]),
         storage: state(online ? (storage ? this.formatDbBytes(liveBytes) + " datos vivos" : "SQLite local") : "Sin conexión", true, [
           metric("Datos", storage ? this.formatDbBytes(liveBytes) : "—"),
@@ -2324,7 +2288,6 @@ export default {
       this.statusRefreshing = true;
       const results = await Promise.allSettled([
         this.store.initRuntime(),
-        this.store.fetchJsonPromise("/api/ai/config"),
         this.store.fetchJsonPromise("/api/pipeline/config"),
         this.store.fetchJsonPromise("/api/blacklist/"),
         this.store.fetchJsonPromise("/api/whitelist/"),
@@ -2335,30 +2298,29 @@ export default {
         this.store.fetchJsonPromise("/api/limits"),
         this.store.fetchJsonPromise("/api/monitors/stats"),
       ]);
-      this.aiSnapshot = results[1].status === "fulfilled" ? results[1].value : null;
       const value = (index) => (results[index].status === "fulfilled" ? results[index].value : null);
       this.graphExtras = {
-        blacklist: value(3),
-        whitelist: value(4),
-        exclusions: value(5)?.exclusion_filters || null,
-        retentionDays: value(6)?.retention_days ?? null,
+        blacklist: value(2),
+        whitelist: value(3),
+        exclusions: value(4)?.exclusion_filters || null,
+        retentionDays: value(5)?.retention_days ?? null,
       };
-      // Indices follow the request list above: logs is 7, storage is 8.
-      if (value(8)) this.storageStats = value(8);
-      if (value(10)) this.monitorStats = value(10);
-      if (value(9)) {
-        this.limitsData = value(9);
-        if (!this.limitDraft) this.limitDraft = { ...value(9).config };
+      // Indices follow the request list above: logs is 6, storage is 7.
+      if (value(7)) this.storageStats = value(7);
+      if (value(9)) this.monitorStats = value(9);
+      if (value(8)) {
+        this.limitsData = value(8);
+        if (!this.limitDraft) this.limitDraft = { ...value(8).config };
       }
-      if (value(7)) {
-        this.logConfig = value(7);
-        if (!this.logDraft) this.logDraft = { ...value(7) };
+      if (value(6)) {
+        this.logConfig = value(6);
+        if (!this.logDraft) this.logDraft = { ...value(6) };
       }
       // Seed the form from the server only on first load: a periodic refresh
       // must not overwrite values the operator is still typing.
-      if (results[2].status === "fulfilled") {
-        if (!this.pipelineConfig) this.pipelineDraft = { ...results[2].value };
-        this.pipelineConfig = results[2].value;
+      if (results[1].status === "fulfilled") {
+        if (!this.pipelineConfig) this.pipelineDraft = { ...results[1].value };
+        this.pipelineConfig = results[1].value;
       }
       this.statusRefreshing = false;
     },
