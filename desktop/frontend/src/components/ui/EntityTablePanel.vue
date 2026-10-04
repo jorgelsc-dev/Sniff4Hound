@@ -65,14 +65,18 @@
     <div class="entity-table-toolbar mb-3">
       <v-row v-if="showTableControls" density="compact" class="entity-table-controls">
         <v-col v-if="searchEnabled" cols="12" md="6">
+          <!-- A placeholder drawn over a visible label collides with it, so the
+               hint moves to the tooltip whenever the field has a label. -->
           <v-text-field
             v-model.trim="tableSearchQuery"
             :label="searchLabel"
-            :placeholder="searchPlaceholder"
+            :placeholder="searchLabel ? undefined : searchPlaceholder"
+            :title="searchPlaceholder"
             prepend-inner-icon="mdi-magnify"
             clearable
             variant="outlined"
             density="compact"
+            hide-details
           />
         </v-col>
         <v-col
@@ -91,6 +95,7 @@
             clearable
             variant="outlined"
             density="compact"
+            hide-details
           />
         </v-col>
       </v-row>
@@ -162,7 +167,7 @@
         expand-strategy="single"
         density="compact"
         class="entity-data-table"
-        mobile-breakpoint="960"
+        :mobile-breakpoint="600"
       >
         <template v-if="expandableRows" v-slot:[expandHeaderSlotName]>
           <span class="entity-data-table__expand-header" aria-hidden="true"></span>
@@ -221,6 +226,7 @@
                 type="button"
                 class="cell-filter-btn cell-filter-btn--investigate"
                 :aria-label="`Investigar ${column.label || column.key}`"
+                :title="`Investigar ${column.label || column.key}`"
                 @click.stop="investigateCell(column, slotProps.item)"
               >
                 <v-icon icon="mdi-magnify-scan" size="12" />
@@ -230,6 +236,7 @@
                   type="button"
                   class="cell-filter-btn cell-filter-btn--include"
                   aria-label="Filtrar por este valor"
+                  title="Filtrar por este valor"
                   @click.stop="addValueFilter(column, slotProps.item, 'include')"
                 >
                   <v-icon icon="mdi-plus" size="12" />
@@ -238,6 +245,7 @@
                   type="button"
                   class="cell-filter-btn cell-filter-btn--exclude"
                   aria-label="Excluir este valor"
+                  title="Excluir este valor"
                   @click.stop="addValueFilter(column, slotProps.item, 'exclude')"
                 >
                   <v-icon icon="mdi-minus" size="12" />
@@ -248,6 +256,7 @@
                 type="button"
                 class="cell-filter-btn cell-filter-btn--copy"
                 :aria-label="`Copiar ${column.label || column.key}`"
+                :title="`Copiar ${column.label || column.key}`"
                 @click.stop="copyCell(column, slotProps.item)"
               >
                 <v-icon icon="mdi-content-copy" size="11" />
@@ -1041,6 +1050,7 @@ export default {
 <style scoped>
 .entity-table-wrap {
   border-radius: 8px;
+  scroll-margin-top: 64px;
 }
 
 .entity-table-toolbar {
@@ -1052,7 +1062,10 @@ export default {
 .entity-table-controls {
   flex: 1 1 auto;
   min-width: 0;
+  margin: -4px;
 }
+
+.entity-table-controls :deep(.v-col) { padding: 4px; }
 
 .entity-table-toolbar__columns {
   flex: 0 0 auto;
@@ -1061,12 +1074,16 @@ export default {
 
 .entity-data-table :deep(.v-table__wrapper) {
   overflow: auto;
+  max-height: min(640px, calc(100dvh - 180px));
 }
 
 .entity-data-table :deep(.v-data-table__td),
 .entity-data-table :deep(.v-data-table__th) {
   height: 40px;
   padding-inline: 12px;
+  /* Numbers, times and ports stay on one line; the table scrolls sideways
+     instead of breaking them character by character. */
+  white-space: nowrap;
 }
 
 .entity-data-table :deep(table) {
@@ -1087,7 +1104,8 @@ export default {
 
 .entity-data-table :deep(tbody td) {
   border-bottom: 1px solid rgba(99, 173, 219, 0.1);
-  vertical-align: top;
+  vertical-align: middle;
+  padding-block: 6px;
 }
 
 .entity-data-table :deep(tbody tr:last-child td) {
@@ -1109,6 +1127,9 @@ export default {
 
 .entity-data-table__expand-button {
   margin-inline-start: -4px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
 }
 
 .entity-data-table__expanded-row :deep(td) {
@@ -1169,6 +1190,9 @@ export default {
 
 .entity-data-table :deep(.v-data-table__tr--mobile .v-data-table__td) {
   padding-block: 10px;
+  height: auto;
+  white-space: normal;
+  grid-template-columns: minmax(76px, 0.8fr) minmax(0, 1.2fr);
 }
 
 .entity-data-table :deep(.v-data-table__tr--mobile .v-data-table__td-title) {
@@ -1182,6 +1206,9 @@ export default {
 .entity-data-table :deep(.v-data-table__tr--mobile .v-data-table__td-value) {
   color: rgba(232, 242, 252, 0.96);
   overflow-wrap: anywhere;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
 }
 
 .entity-data-table :deep(.target-actions),
@@ -1194,7 +1221,7 @@ export default {
 
 .cell-filter-wrap {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 6px;
   min-width: 0;
@@ -1303,6 +1330,35 @@ export default {
 
   .entity-table-toolbar__columns {
     margin-top: 0;
+  }
+}
+
+@media (max-width: 600px) {
+  .entity-data-table :deep(.v-data-table__tr--mobile .v-data-table__td--expanded-row) {
+    width: auto;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: end;
+  }
+  .entity-data-table__expand-button { margin-inline-start: 0; }
+  .cell-filter-wrap { flex-wrap: wrap; justify-content: flex-end; }
+  .cell-filter-wrap__content { flex-basis: 100%; text-align: end; }
+  .cell-filter-wrap__content :deep(.meta-cell),
+  .cell-filter-wrap__content :deep(.detail-cell),
+  .cell-filter-wrap__content :deep(.summary-cell),
+  .cell-filter-wrap__content :deep(.monitor-name) { width: auto; max-width: 100%; white-space: normal; }
+  .cell-filter-wrap__actions { opacity: 1; }
+  .value-filter-chip { max-width: 100%; }
+  .entity-data-table :deep(.v-table__wrapper) { max-height: none; }
+}
+
+@media (hover: none) {
+  .cell-filter-wrap__actions { opacity: 1; }
+}
+
+@media (max-width: 360px) {
+  .entity-data-table :deep(.v-data-table__tr--mobile .v-data-table__td) {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 6px;
   }
 }
 </style>

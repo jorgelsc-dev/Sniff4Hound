@@ -2,7 +2,7 @@
   <div class="view-header d-flex align-start justify-space-between flex-wrap mb-4 ga-3">
     <div class="view-header__copy">
       <div v-if="overline" class="text-overline text-primary">{{ overline }}</div>
-      <div class="text-h5 font-weight-bold view-header__title">{{ title }}</div>
+      <h1 class="text-h5 font-weight-bold view-header__title">{{ title }}</h1>
       <div v-if="description" class="text-body-2 text-medium-emphasis view-header__description">
         {{ description }}
       </div>
@@ -118,22 +118,8 @@ export default {
 <style scoped>
 .view-header {
   position: relative;
-  padding-bottom: 2px;
-}
-
-.view-header::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -7px;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.16),
-    rgba(255, 255, 255, 0.06),
-    transparent
-  );
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--stroke);
 }
 
 .view-header__copy {
@@ -150,6 +136,7 @@ export default {
 .view-header__description {
   max-width: 72ch;
   overflow-wrap: anywhere;
+  margin-top: 6px;
 }
 
 .header-actions {
@@ -169,7 +156,7 @@ export default {
   min-width: 44px;
   padding-inline: 8px;
   font-size: 0.74rem;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
 }
 
 @media (max-width: 600px) {
@@ -177,12 +164,15 @@ export default {
     display: block !important;
   }
 
+  .view-header__title { font-size: 1.25rem; }
+
   .header-actions {
     width: 100%;
     justify-content: flex-start;
     margin-left: 0;
     overflow-x: auto;
     padding-bottom: 2px;
+    margin-top: 12px;
   }
 
   .time-range-toggle :deep(.v-btn) {

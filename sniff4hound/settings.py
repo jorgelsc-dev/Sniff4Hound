@@ -335,6 +335,16 @@ CAPTURE_SOCKET_ERROR_LIMIT = max(
     1,
     _as_int(_env("SNIFF4HOUND_CAPTURE_SOCKET_ERROR_LIMIT", "5"), 5),
 )
+# After CAPTURE_SOCKET_ERROR_LIMIT consecutive receive failures the capture
+# socket is reopened (a dropped Wi-Fi link usually comes back), with a backoff
+# that grows up to CAPTURE_REOPEN_BACKOFF_MAX seconds. Capture only gives up
+# after CAPTURE_REOPEN_ATTEMPTS failed reopens in a row.
+CAPTURE_REOPEN_ATTEMPTS = max(
+    0,
+    _as_int(_env("SNIFF4HOUND_CAPTURE_REOPEN_ATTEMPTS", "24"), 24),
+)
+CAPTURE_REOPEN_BACKOFF_STEP = 0.5
+CAPTURE_REOPEN_BACKOFF_MAX = 5.0
 
 # Raw frame bytes and their hex dumps are useful for forensic/image analysis,
 # but they can also retain credentials exactly as they crossed the wire. Keep

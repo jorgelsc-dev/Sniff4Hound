@@ -7,13 +7,13 @@
       :online="online"
       @open="open"
     />
-    <button type="button" class="flow-shell__toggle" @click="expanded = false">
+    <button type="button" class="flow-shell__toggle" aria-expanded="true" @click="expanded = false">
       <v-icon icon="mdi-chevron-up" size="16" />
       Ocultar tubería
     </button>
   </section>
 
-  <button v-else type="button" class="flow-shell__strip" @click="expanded = true">
+  <button v-else type="button" class="flow-shell__strip" aria-expanded="false" @click="expanded = true">
     <span class="flow-shell__pulse" :class="online ? 'is-live' : 'is-off'" />
     <strong>{{ online ? 'Tubería de captura' : 'Sensor desconectado' }}</strong>
     <span class="flow-shell__strip-meta">{{ stripMeta }}</span>
@@ -49,7 +49,7 @@ export default {
   data() {
     return {
       store,
-      expanded: true,
+      expanded: typeof window === "undefined" || window.matchMedia("(min-width: 960px)").matches,
       counts: {},
       protocolCount: 0,
       refreshTimer: null,
@@ -97,9 +97,10 @@ export default {
   },
   mounted() {
     try {
-      this.expanded = window.localStorage.getItem(STORAGE_KEY) !== "0";
+      const preference = window.localStorage.getItem(STORAGE_KEY);
+      if (preference !== null) this.expanded = preference !== "0";
     } catch {
-      this.expanded = true;
+      // Keep the viewport default when storage is unavailable.
     }
     this.load();
     // Same coalescing the dashboard uses: a busy capture pushes packet events
@@ -187,6 +188,7 @@ export default {
   justify-content: flex-start;
   margin-bottom: 14px;
   min-height: 38px;
+  text-align: left;
 }
 
 .flow-shell__strip strong {
@@ -205,6 +207,7 @@ export default {
   height: 7px;
   border-radius: 50%;
   background: var(--text-dim);
+  flex: 0 0 7px;
 }
 
 .flow-shell__pulse.is-live {
@@ -214,5 +217,11 @@ export default {
 
 .flow-shell__pulse.is-off {
   background: #ff647a;
+}
+
+@media (max-width: 600px) {
+  .flow-shell__strip { flex-wrap: wrap; gap: 6px; }
+  .flow-shell__strip strong { flex: 1; font-size: 0.75rem; }
+  .flow-shell__strip-meta { font-size: 0.7rem; }
 }
 </style>

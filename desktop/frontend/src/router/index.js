@@ -2,14 +2,6 @@ import { createRouter, createWebHashHistory, createMemoryHistory } from "vue-rou
 import { appBaseUrl } from "../utils/runtimeEnv.js";
 
 const routes = [
-  { path: "/ai", name: "ai", component: () => import("../views/AiHubView.vue") },
-  { path: "/ai/overview", name: "ai-overview", component: () => import("../views/AiView.vue") },
-  {
-    path: "/ai/neural-network",
-    name: "ai-neural-network",
-    component: () => import("../views/ai/NeuralNetworkView.vue"),
-    meta: { fullWidth: true, canvasOnly: true },
-  },
   { path: "/", name: "dashboard", component: () => import("../views/DashboardHubView.vue") },
   {
     path: "/dashboard/overview",

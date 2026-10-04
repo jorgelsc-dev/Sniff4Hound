@@ -6,6 +6,7 @@ import os
 import shlex
 import socket
 import shutil
+import tempfile
 import sqlite3
 import subprocess
 import sys
@@ -447,35 +448,50 @@ def _self_elevate_env_assignments(invoking_uid: int) -> list[str]:
     return assignments
 
 
+def _graphical_askpass() -> str | None:
+    """A GUI password prompt for `sudo -A`, for the desktop app.
+
+    The desktop app starts this process with no terminal, so sudo cannot read
+    a password from one. sudo calls SUDO_ASKPASS with the prompt as its only
+    argument; zenity ignores positional text, so it is wrapped in a tiny script.
+    """
+    zenity = shutil.which("zenity")
+    if zenity:
+        wrapper = os.path.join(tempfile.gettempdir(), f"sniff4hound-askpass-{os.getuid()}.sh")
+        with open(wrapper, "w", encoding="utf-8") as handle:
+            handle.write(f'#!/bin/sh\nexec "{zenity}" --password --title="Sniff4Hound: privilegios necesarios"\n')
+        os.chmod(wrapper, 0o700)
+        return wrapper
+    ssh_askpass = shutil.which("ssh-askpass")
+    if ssh_askpass:
+        return ssh_askpass
+    return None
+
+
 def _build_self_elevate_command(invoking_uid: int) -> list[str] | None:
     """`None` means "cannot self-elevate" and the caller refuses to start -
-    it never silently degrades to a mechanism that can't work in the
-    caller's context. In desktop mode this means pkexec or nothing: `sudo`
-    needs a controlling terminal to prompt on (its own PAM stack included,
-    e.g. a fingerprint reader), which an Electron-spawned process never has
-    - falling back to it here doesn't fail fast, it fails *slow and
-    confusing* (sudo blocks on a prompt nothing can ever answer, then times
-    out with "a terminal is required to read the password" written straight
-    to a log file instead of shown to the operator)."""
+    it never silently degrades to a mechanism that cannot work in the
+    caller's context.
+
+    Desktop mode asks for privileges once, at launch, through a graphical
+    sudo prompt (`sudo -A` with a GUI askpass). The whole process - web server
+    and capture child alike - then runs as root. sudo is the direct child of
+    the Electron process, so stopping the app also stops the backend: it
+    forwards the signal instead of leaving an orphaned root process behind.
+    """
     assignments = _self_elevate_env_assignments(invoking_uid)
-    if _desktop_mode_enabled():
-        pkexec = shutil.which("pkexec")
-        if not pkexec:
-            return None
-        env_bin = shutil.which("env") or "/usr/bin/env"
-        # Without --keep-cwd, pkexec runs PROGRAM in root's home directory
-        # instead of the caller's cwd. That breaks a dev checkout: `python -m
-        # sniff4hound.manage` only resolves the package via the implicit ''
-        # sys.path entry `-m` adds for the current directory (there is no
-        # system/site-packages install to fall back on), so losing cwd here
-        # surfaces as "No module named 'sniff4hound'" on the elevated re-exec.
-        command = [pkexec, "--keep-cwd", env_bin]
-        command.extend(assignments)
-        command.extend([sys.executable, "-m", "sniff4hound.manage", *sys.argv[1:]])
-        return command
     sudo = shutil.which("sudo")
     if sudo is None:
         return None
+    if _desktop_mode_enabled():
+        askpass = _graphical_askpass()
+        if askpass is None:
+            return None
+        command = [sudo, "-A", "env"]
+        command.extend(assignments)
+        command.extend([sys.executable, "-m", "sniff4hound.manage", *sys.argv[1:]])
+        os.environ["SUDO_ASKPASS"] = askpass
+        return command
     command = [sudo, "env"]
     command.extend(assignments)
     command.extend([sys.executable, "-m", "sniff4hound.manage", *sys.argv[1:]])
@@ -486,8 +502,7 @@ def _print_root_required_message() -> None:
     print("[!] Sniff4Hound requires root/administrator privileges and will not start without them.", file=sys.stderr)
     print("    Raw-socket packet capture and low-port honeypot listeners are not possible as a regular user.", file=sys.stderr)
     if _desktop_mode_enabled():
-        print("    The desktop app needs pkexec (package policykit-1) to prompt for elevation graphically -", file=sys.stderr)
-        print("    it will not fall back to sudo, which cannot prompt without a terminal. Install pkexec and retry.", file=sys.stderr)
+        print("    The desktop app asks for privileges with a graphical sudo prompt: install zenity (or ssh-askpass) and retry.", file=sys.stderr)
     else:
         print("    Install pkexec/sudo, or re-run this yourself as root.", file=sys.stderr)
 
@@ -503,7 +518,7 @@ def _ensure_running_as_root() -> bool:
     desktop = _desktop_mode_enabled()
     print(
         f"[i] Elevating to root (desktop mode: {'on' if desktop else 'off'}, "
-        f"pkexec: {shutil.which('pkexec') or 'not found'}, sudo: {shutil.which('sudo') or 'not found'})...",
+        f"sudo: {shutil.which('sudo') or 'not found'}, askpass: {_graphical_askpass() or 'none'})...",
         file=sys.stderr,
     )
     command = _build_self_elevate_command(os.getuid())
