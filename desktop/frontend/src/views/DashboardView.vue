@@ -30,6 +30,40 @@
         </v-card>
       </v-col>
     </v-row>
+    <EntityTablePanel
+      title="Paquetes recientes"
+      subtitle="Últimos paquetes guardados, de más reciente a más antiguo."
+      class="mb-4"
+      :rows="packets"
+      :columns="packetColumns"
+      :search-enabled="true"
+      search-label="Buscar"
+      search-placeholder="IP, puerto, protocolo, resumen..."
+      :search-fields="packetSearchFields"
+      :filter-definitions="packetFilterDefinitions"
+      :loading="loading"
+      :error="''"
+      :last-updated="lastUpdated"
+      empty-text="Todavía no hay paquetes en este período."
+      :page-size="packetLimit"
+      @refresh="load"
+    >
+      <template #cell-updated_at="{ value }">
+        {{ formatTimestamp(value) }}
+      </template>
+      <template #cell-proto="{ value }">
+        <v-chip size="x-small" color="primary" variant="tonal">{{ String(value || "unknown").toUpperCase() }}</v-chip>
+      </template>
+      <template #cell-src_ip="{ value }">
+        <span v-if="value" class="mono">{{ value }}</span>
+        <span v-else>-</span>
+      </template>
+      <template #cell-dst_ip="{ value }">
+        <span v-if="value" class="mono">{{ value }}</span>
+        <span v-else>-</span>
+      </template>
+    </EntityTablePanel>
+
     <v-alert v-if="error" type="error" variant="tonal" class="my-3">
       {{ error }}
     </v-alert>
@@ -42,6 +76,7 @@
 import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import ClearDataButton from "../components/ui/ClearDataButton.vue";
+import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import {
   buildPacketSizeSummary,
   buildPacketSummary,
@@ -56,6 +91,7 @@ export default {
   components: {
     ViewHeader,
     ClearDataButton,
+    EntityTablePanel,
   },
   data() {
     return {
