@@ -12,7 +12,7 @@ from . import settings
 from .ahocorasick import AhoCorasick
 from .regex_safety import compiled_regex, regex_has_backtracking_risk, regex_search, validate_regex_pattern
 from .runtime_paths import resolve_data_file
-from .rulesets import build_packet_text, normalize_action, normalize_match, rule_matches_packet
+from .rulesets import _is_http_response_packet, build_packet_text, normalize_action, normalize_match, rule_matches_packet
 from .utils import coerce_bool, json_dumps, normalize_protocol_name, safe_int
 
 NOISY_GENERATED_SIGNAL_LITERALS = frozenset(
@@ -39,10 +39,37 @@ NOISY_GENERATED_SIGNAL_LITERALS = frozenset(
         "gzip, deflate, br",
         "content-encoding: gzip",
         "charset=utf-8",
+        # Ordinary HTTP headers and content types. Generated signals on these
+        # fired on every normal page load (found in the live alert review).
+        "referer:",
+        "no-cache",
+        "accept-encoding",
+        "accept-language",
+        "cache-control",
+        "transfer-encoding: chunked",
+        "content-length: 0",
+        "upgrade-insecure-requests",
+        "text/css",
+        "text/plain",
+        "text/javascript",
+        "application/javascript",
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/svg+xml",
+        "xmlhttprequest",
+        # JavaScript that every page loader and jQuery plugin uses.
+        "document.createelement(",
+        "document.body.appendchild(",
     }
 )
 
 BUILTIN_MONITOR_QUALITY_OVERRIDES = {
+    # A hostname inside a DNS *answer* (a CNAME target such as www3.l.google.com)
+    # is not something the client chose to visit. These two rules are about
+    # browsing, so answers are out of scope; DNS queries stay in scope.
+    "builtin-signal-trojan-activity-3b796520171e": {"match": {"exclude_protocols": ["dns"]}},
+    "builtin-signal-trojan-activity-c384dd1cc253": {"match": {"exclude_protocols": ["dns"]}},
     # These are parser-coverage breadcrumbs, not attack findings. Keeping
     # them enabled at low severity lets an operator investigate weird traffic
     # without allowing a noisy segment to dominate monitor results.
@@ -54,6 +81,10 @@ BUILTIN_MONITOR_QUALITY_OVERRIDES = {
     "builtin-nbns": {"severity": "low"},
     "builtin-ssdp": {"severity": "low"},
     "builtin-wsd": {"severity": "low"},
+    # False positives found in the live capture (see the alert review). Each
+    # override narrows the condition; the true positives it was checked against
+    # (DNS lookup, L2 discovery) are not touched.
+    #
 }
 
 
@@ -155,7 +186,10 @@ DEFAULT_MONITORS = [
         "priority": 50,
         "source": "builtin",
         "mode": "rule",
-        "match": {"protocols": ["icmp", "icmpv6"], "min_length": 128},
+        # Only echo traffic (ping request/reply, ICMPv6 echo) can carry a tunnel.
+        # Error replies such as port-unreachable (type 3) quote the original
+        # datagram and grow past any size floor, so they are not tunnelling.
+        "match": {"protocols": ["icmp", "icmpv6"], "min_length": 512, "icmp_types": [0, 8, 128, 129]},
         "action": {"tag": "icmp-oversized", "label": "Oversized ICMP", "severity": "medium"},
     },
     {
@@ -248,10 +282,12 @@ DEFAULT_MONITORS = [
         "mode": "rule",
         "match": {
             "min_payload_text_length": 32,
+            # "dns" is excluded because the parser's DNS summary text is not an
+            # application payload; it was firing as plaintext on every lookup.
             "exclude_protocols": [
                 "arp", "rarp", "stp", "llc", "llc-snap", "cdp", "lldp", "eapol",
                 "igmp", "icmp", "icmpv6", "mdns", "llmnr", "nbns", "ssdp", "dhcp",
-                "ntp", "snmp", "gre", "esp", "ah", "tls", "quic",
+                "ntp", "snmp", "gre", "esp", "ah", "tls", "quic", "dns",
             ],
         },
         "action": {"tag": "plaintext", "label": "Readable plaintext", "severity": "low"},
@@ -2410,22 +2446,63 @@ def _default_monitor_path() -> Path:
     return resolve_data_file("default_monitors.json")
 
 
+# Families of literal text that ordinary web traffic carries constantly: HTTP
+# header names and values, MIME types, request lines and WordPress asset paths.
+# A generated signal built on any of them fires on every normal page load
+# (found in the live alert review), so these are dropped from the catalog.
+# Matched by family, not by exact string, because the generated literals carry
+# suffixes such as "user-agent: mozilla/5.0" or "Keep-Alive: 300".
+COMMON_WEB_LITERAL_MARKERS = (
+    "cache-control", "no-cache", "keep-alive", "user-agent", "content-type", "content-length",
+    "transfer-encoding", "accept-encoding", "accept-language", "upgrade-insecure", "referer",
+    "set-cookie", "connection:", "xmlhttprequest",
+    "text/css", "text/html", "text/javascript", "text/plain", "text/xml",
+    "application/javascript", "application/json", "application/xml", "application/x-www-form",
+    "application/xhtml", "multipart/form-data", "image/jpeg", "image/png", "image/gif",
+    "image/webp", "image/svg", "charset=", "gzip", "http/1.", "get /", "post /",
+    "wp-content", "wp-includes", "document.createelement", "document.body.appendchild",
+    "www-form-urlencoded", "requestid", "version=", "start=", "&output=", "x-request",
+)
+
+
+def _is_common_web_literal(value: str) -> bool:
+    return any(marker in value for marker in COMMON_WEB_LITERAL_MARKERS)
+
+
 def _is_noisy_generated_signal_monitor(monitor: dict) -> bool:
     monitor_id = str(monitor.get("id") or "")
     if not monitor_id.startswith("builtin-signal-"):
         return False
     match = monitor.get("match") if isinstance(monitor.get("match"), dict) else {}
     contains = [str(item).strip().lower() for item in match.get("payload_contains", []) if str(item).strip()]
-    if not contains:
-        return False
-    if match.get("payload_regex") or match.get("payload_prefix_hex") or match.get("ips") or match.get("ip_regex"):
-        return False
-    return any(value in NOISY_GENERATED_SIGNAL_LITERALS for value in contains)
+    # A common header or MIME literal is noise even when a regex is attached:
+    # "Keep-Alive" AND "MSIE" is every Internet Explorer request.
+    if any(value in NOISY_GENERATED_SIGNAL_LITERALS or _is_common_web_literal(value) for value in contains):
+        return True
+    regexes = [str(item).strip().lower() for item in match.get("payload_regex", []) if str(item).strip()]
+    # A path-only regex on WordPress asset folders is normal site traffic.
+    if regexes and not contains and any(_is_common_web_literal(value) or "wp-" in value for value in regexes):
+        return True
+    return False
+
+
+# Generated signal monitors look for cleartext strings and regexes. Inside TLS
+# and QUIC the payload is ciphertext, so a match there is noise: a regex hit on
+# random handshake bytes, or a hostname in an SNI field that is ordinary browsing.
+ENCRYPTED_TRANSPORT_PROTOCOLS = ("tls", "quic")
 
 
 def _apply_builtin_monitor_quality_overrides(monitor: dict) -> dict:
     monitor_id = str(monitor.get("id") or "").strip()
-    overrides = BUILTIN_MONITOR_QUALITY_OVERRIDES.get(monitor_id)
+    overrides = dict(BUILTIN_MONITOR_QUALITY_OVERRIDES.get(monitor_id) or {})
+    if monitor_id.startswith("builtin-signal-"):
+        match_overrides = dict(overrides.get("match") or {})
+        excluded = list(match_overrides.get("exclude_protocols") or [])
+        for protocol in ENCRYPTED_TRANSPORT_PROTOCOLS:
+            if protocol not in excluded:
+                excluded.append(protocol)
+        match_overrides["exclude_protocols"] = excluded
+        overrides["match"] = match_overrides
     if not overrides:
         return monitor
     action = monitor.get("action") if isinstance(monitor.get("action"), dict) else {}
@@ -2434,6 +2511,10 @@ def _apply_builtin_monitor_quality_overrides(monitor: dict) -> dict:
         action["severity"] = str(overrides["severity"]).strip().lower()
     monitor = dict(monitor)
     monitor["action"] = action
+    if "match" in overrides:
+        match = dict(monitor.get("match") if isinstance(monitor.get("match"), dict) else {})
+        match.update(overrides["match"])
+        monitor["match"] = match
     return monitor
 
 
@@ -2731,6 +2812,33 @@ _always_check: list[dict] = []
 _content_automaton = None
 _content_to_ids: dict[str, list[str]] = {}
 _monitor_positions: dict[str, int] = {}
+# Port index for monitors that have no payload_contains key: they are looked up
+# by the packet's ports instead of being checked on every packet.
+_port_to_ids: dict[int, list[str]] = {}
+_port_indexed_ids: list[str] = []
+
+
+def _port_indexable(monitor: dict) -> bool:
+    """True when the monitor's port constraint is exact enough to index by port.
+
+    Regex port conditions and composite all/any/none logic can match ports
+    the lists do not name, so those monitors stay on the always-check path.
+    """
+    match = monitor.get("match") or {}
+    if match.get("port_regex") or any(match.get(key) for key in ("all", "any", "none")):
+        return False
+    return any(match.get(key) for key in ("ports", "src_ports", "dst_ports"))
+
+
+def _monitor_port_numbers(monitor: dict) -> set[int]:
+    match = monitor.get("match") or {}
+    numbers = set()
+    for key in ("ports", "src_ports", "dst_ports"):
+        for item in match.get(key) or []:
+            value = safe_int(item, 0)
+            if value:
+                numbers.add(value)
+    return numbers
 
 
 def _monitor_index_signature(monitors: list[dict]) -> tuple:
@@ -2755,7 +2863,7 @@ def ensure_monitor_index(monitors: list[dict]) -> None:
     MONITOR_CACHE_TTL_SECONDS), not from the per-packet path - the
     signature computation alone is O(len(monitors))."""
     global _indexed_monitors_ref, _index_signature, _building_signature
-    global _monitors_by_id, _always_check, _monitor_positions
+    global _monitors_by_id, _always_check, _monitor_positions, _port_to_ids, _port_indexed_ids
 
     signature = _monitor_index_signature(monitors)
     with _index_lock:
@@ -2768,19 +2876,28 @@ def ensure_monitor_index(monitors: list[dict]) -> None:
         always_check: list[dict] = []
         content_to_ids: dict[str, list[str]] = {}
         monitor_positions: dict[str, int] = {}
+        port_to_ids: dict[int, list[str]] = {}
+        port_indexed_ids: list[str] = []
         for position, monitor in enumerate(monitors):
             monitor_id = str(monitor.get("id") or "")
             monitor_positions[monitor_id] = position
             monitors_by_id[monitor_id] = monitor
             contains = (monitor.get("match") or {}).get("payload_contains") or []
             if not contains:
-                always_check.append(monitor)
+                if _port_indexable(monitor):
+                    port_indexed_ids.append(monitor_id)
+                    for port in _monitor_port_numbers(monitor):
+                        port_to_ids.setdefault(port, []).append(monitor_id)
+                else:
+                    always_check.append(monitor)
                 continue
             for content in contains:
                 content_to_ids.setdefault(str(content).lower(), []).append(monitor_id)
         _monitors_by_id = monitors_by_id
         _always_check = always_check
         _monitor_positions = monitor_positions
+        _port_to_ids = port_to_ids
+        _port_indexed_ids = port_indexed_ids
         _indexed_monitors_ref = monitors
 
         already_building = _building_signature == signature
@@ -2817,7 +2934,7 @@ def indexed_monitors_by_id(monitors: list[dict]) -> dict[str, dict] | None:
     return None
 
 
-def _indexed_candidates(monitors: list[dict], packet_text: str) -> list[dict] | None:
+def _indexed_candidates(monitors: list[dict], packet_text: str, ports: tuple | None = None) -> list[dict] | None:
     with _index_lock:
         if monitors is not _indexed_monitors_ref or _content_automaton is None:
             return None
@@ -2826,10 +2943,20 @@ def _indexed_candidates(monitors: list[dict], packet_text: str) -> list[dict] | 
         monitors_by_id = _monitors_by_id
         always_check = _always_check
         monitor_positions = _monitor_positions
+        port_to_ids = _port_to_ids
+        port_indexed_ids = _port_indexed_ids
 
     hit_ids: set[str] = set()
     for content in automaton.search(packet_text):
         hit_ids.update(content_to_ids.get(content, ()))
+    # A packet without ports (ICMP, ARP) cannot be narrowed by port, so every
+    # port-indexed monitor stays a candidate and the evaluator decides as before.
+    src_port, dst_port = ports if ports else (0, 0)
+    if src_port or dst_port:
+        for port in (src_port, dst_port):
+            hit_ids.update(port_to_ids.get(port, ()))
+    else:
+        hit_ids.update(port_indexed_ids)
 
     candidates = list(always_check)
     for monitor_id in hit_ids:
@@ -2916,10 +3043,18 @@ def evaluate_packet(packet: dict, monitors: list[dict]) -> list[dict]:
     # monitor - see rule_matches_packet.
     matches = []
     packet_text = build_packet_text(packet)
-    candidates = _indexed_candidates(monitors, packet_text)
+    ports = (safe_int(packet.get("src_port", 0), 0), safe_int(packet.get("dst_port", 0), 0))
+    candidates = _indexed_candidates(monitors, packet_text, ports)
     if candidates is None:
         candidates = monitors
+    # Generated signal monitors are literal strings with no context. Inside an
+    # HTTP response they match server JavaScript and image bytes on normal
+    # pages (found in the live alert review); attack strings arrive in the
+    # request, so responses are out of scope for them.
+    response_packet = _is_http_response_packet(packet)
     for monitor in candidates:
+        if response_packet and str(monitor.get("id") or "").startswith("builtin-signal-"):
+            continue
         if str(monitor.get("mode") or "").strip().lower() == "stateful":
             # Stateful monitors have no declarative match logic to evaluate here —
             # they're driven by anomaly.AnomalyEngine, which runs separately and

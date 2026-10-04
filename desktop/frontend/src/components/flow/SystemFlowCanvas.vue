@@ -152,14 +152,6 @@ const layout = computed(() => [
     live: props.online && count("monitors") > 0, route: "/monitors",
   },
   {
-    // The classifier reads retained payloads, so that count is what tells you
-    // whether it has anything to work with.
-    id: "ai", label: "IA", icon: "mdi-brain", column: 3, row: 2,
-    color: STAGES.analysis, metric: compact(count("payloads")), unit: "payloads",
-    status: count("payloads") ? "Analizando" : "Sin muestras",
-    live: props.online && count("payloads") > 0, route: "/ai",
-  },
-  {
     id: "alerts", label: "Detecciones", icon: "mdi-bell-ring-outline", column: 4, row: 1,
     color: STAGES.output, metric: compact(count("detections")), unit: "etiquetas",
     status: count("detections") ? "Requiere revisión" : "Todo limpio",
@@ -179,9 +171,7 @@ const LINKS = [
   ["sniffer", "store", "sniffer"],
   ["honeypot", "store", "honeypot"],
   ["store", "monitors", "total"],
-  ["store", "ai", "total"],
   ["monitors", "alerts", "total"],
-  ["ai", "alerts", "total"],
 ];
 
 const wires = computed(() => {
@@ -214,7 +204,7 @@ function fit() {
   if (!el || !el.clientWidth) return;
   const bounds = graphBounds(nodes.value, CARD, { x: 24, top: 24, bottom: 24 });
   const next = Math.min(1.08, (el.clientWidth - 8) / bounds.width, (el.clientHeight - 8) / bounds.height);
-  scale.value = Math.max(0.42, next);
+  scale.value = Math.max(0.1, next);
   offset.value = {
     x: (el.clientWidth - bounds.width * scale.value) / 2 - bounds.x * scale.value,
     y: (el.clientHeight - bounds.height * scale.value) / 2 - bounds.y * scale.value,
@@ -326,6 +316,18 @@ onBeforeUnmount(() => {
   .flow__bar { align-items: flex-start; flex-direction: column; gap: 6px; }
   .flow__canvas { height: 248px; }
   .flow__sub { display: none; }
+}
+@media (max-width: 600px) {
+  .flow__bar { flex-direction: row; align-items: center; padding: 12px; }
+  .flow__identity h2 { font-size: 12px; white-space: normal; }
+  .flow__canvas { height: auto; padding: 12px 12px 50px; }
+  .flow__world { position: static; transform: none !important; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .flow__wires { display: none; }
+  .flow__node { position: relative; left: auto !important; top: auto !important; width: 100%; height: 104px; padding: 10px; min-width: 0; }
+  .flow__node-top { gap: 5px; }
+  .flow__node-top strong { font-size: 11px; }
+  .flow__metric { flex-wrap: wrap; }
+  .flow__status { font-size: 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .flow__wire-signal, .flow__pulse.is-live { animation: none; }

@@ -3,7 +3,7 @@
     <ViewHeader
       overline="Operations"
       title="Resumen"
-      description="Live telemetry metrics and AI alerts."
+      description="Live telemetry metrics."
       :refresh-loading="loading"
       :show-time-range="true"
       @refresh="load"
@@ -30,75 +30,37 @@
         </v-card>
       </v-col>
     </v-row>
-
     <EntityTablePanel
-      title="Alertas y detecciones IA"
-      subtitle="Paquetes puntuados por el motor de IA local (LOF + red neuronal), mayor puntuación primero."
+      title="Paquetes recientes"
+      subtitle="Últimos paquetes guardados, de más reciente a más antiguo."
       class="mb-4"
-      :rows="aiRows"
-      :columns="aiColumns"
+      :rows="packets"
+      :columns="packetColumns"
       :search-enabled="true"
       search-label="Buscar"
-      search-placeholder="IP, puerto, protocolo, estado..."
-      :search-fields="aiSearchFields"
-      :filter-definitions="aiFilterDefinitions"
+      search-placeholder="IP, puerto, protocolo, resumen..."
+      :search-fields="packetSearchFields"
+      :filter-definitions="packetFilterDefinitions"
       :loading="loading"
       :error="''"
       :last-updated="lastUpdated"
-      empty-text="Todavía no hay paquetes puntuados por la IA."
-      :page-size="8"
+      empty-text="Todavía no hay paquetes en este período."
+      :page-size="packetLimit"
       @refresh="load"
     >
-      <template #header-actions>
-        <v-chip size="small" color="primary">{{ aiSummary.analyzed }} analizados</v-chip>
-        <v-chip size="small" color="warning">{{ aiSummary.candidates }} posibles falsos negativos</v-chip>
-        <v-chip size="small" :color="aiSamplingEnabled ? 'success' : 'secondary'" variant="tonal">
-          {{ aiSamplingEnabled ? "Monitors activo" : "Monitors detenido" }}
-        </v-chip>
-        <v-chip size="small" :color="aiAlertModeEnabled ? 'success' : 'secondary'" variant="tonal">
-          {{ aiAlertModeEnabled ? "IA decide alertas" : "IA en modo consulta" }}
-        </v-chip>
-      </template>
-      <template #cell-created_at="{ value }">
+      <template #cell-updated_at="{ value }">
         {{ formatTimestamp(value) }}
       </template>
       <template #cell-proto="{ value }">
         <v-chip size="x-small" color="primary" variant="tonal">{{ String(value || "unknown").toUpperCase() }}</v-chip>
       </template>
       <template #cell-src_ip="{ value }">
-        <template v-if="value">
-          <span class="mono">{{ value }}</span>
-          <ListActionIcons inline :value="value" category="ip" />
-        </template>
+        <span v-if="value" class="mono">{{ value }}</span>
         <span v-else>-</span>
       </template>
       <template #cell-dst_ip="{ value }">
-        <template v-if="value">
-          <span class="mono">{{ value }}</span>
-          <ListActionIcons inline :value="value" category="ip" />
-        </template>
+        <span v-if="value" class="mono">{{ value }}</span>
         <span v-else>-</span>
-      </template>
-      <template #cell-score="{ value }">
-        <span v-if="value === null || value === undefined" class="text-medium-emphasis">—</span>
-        <v-chip v-else size="x-small" :color="aiScoreColor(value)" variant="tonal">{{ value }}</v-chip>
-      </template>
-      <template #cell-candidate="{ value }">
-        <v-chip v-if="value" size="x-small" color="warning" variant="tonal">Posible falso negativo</v-chip>
-        <span v-else class="text-medium-emphasis">—</span>
-      </template>
-      <template #cell-detection_status="{ value }">
-        <v-chip size="x-small" variant="tonal">{{ value || "unknown" }}</v-chip>
-      </template>
-      <template #cell-actions="{ item }">
-        <v-btn
-          size="x-small"
-          variant="text"
-          :to="item.src_ip ? { path: '/investigate', query: { ip: item.src_ip } } : { path: '/ai' }"
-          @click.stop
-        >
-          Investigar
-        </v-btn>
       </template>
     </EntityTablePanel>
 
@@ -113,9 +75,8 @@
 <script>
 import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
-import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
-import ListActionIcons from "../components/ui/ListActionIcons.vue";
 import ClearDataButton from "../components/ui/ClearDataButton.vue";
+import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import {
   buildPacketSizeSummary,
   buildPacketSummary,
@@ -128,10 +89,9 @@ const REFRESH_EVENT_TYPES = new Set(["packet", "stats_update", "runtime_mode"]);
 export default {
   name: "DashboardView",
   components: {
-    ListActionIcons,
     ViewHeader,
-    EntityTablePanel,
     ClearDataButton,
+    EntityTablePanel,
   },
   data() {
     return {
@@ -145,40 +105,6 @@ export default {
       engineError: "",
       dashboard: {},
       analytics: {},
-      aiRows: [],
-      aiSummary: { analyzed: 0, candidates: 0 },
-      aiSamplingEnabled: false,
-      aiSamplingBusy: false,
-      aiAlertModeEnabled: false,
-      aiAlertModeBusy: false,
-      rawRetentionEnabled: false,
-      rawRetentionBusy: false,
-      aiColumns: [
-        { key: "created_at", label: "Seen" },
-        { key: "proto", label: "Proto" },
-        { key: "src_ip", label: "Src IP" },
-        { key: "src_port", label: "Src Port" },
-        { key: "dst_ip", label: "Dst IP" },
-        { key: "dst_port", label: "Dst Port" },
-        { key: "score", label: "Score" },
-        { key: "candidate", label: "Flag" },
-        { key: "detection_status", label: "Status" },
-        { key: "actions", label: "", sortable: false },
-      ],
-      aiSearchFields: ["proto", "src_ip", "src_port", "dst_ip", "dst_port", "detection_status"],
-      aiFilterDefinitions: [
-        {
-          key: "proto",
-          label: "Proto",
-          field: "proto",
-          optionLabel: (value) => String(value || "").toUpperCase(),
-        },
-        {
-          key: "detection_status",
-          label: "Status",
-          field: "detection_status",
-        },
-      ],
       packets: [],
       packetLimit: 12,
       packetsMeta: { totalAvailable: null, returned: null, truncated: null },
@@ -445,23 +371,6 @@ export default {
       if (this.honeypotRuntime.running) return "Honeypot is accepting inbound traffic.";
       return "Stopped until you start the honeypot.";
     },
-    aiSamplingSummary() {
-      if (this.aiSamplingEnabled) {
-        return "Reentrenando la IA con el veredicto de los Monitors en todo tráfico que genera alerta.";
-      }
-      return "Detenido. Solo se persiste el tráfico que ya generó una alerta.";
-    },
-    aiAlertModeSummary() {
-      if (!this.rawRetentionEnabled) {
-        return "Deshabilitado: activa la retención de bytes crudos para usarlo.";
-      }
-      if (this.aiAlertModeEnabled) {
-        return this.aiSamplingEnabled
-          ? "IA activa junto a Monitors: los Monitors siguen decidiendo la alerta y etiquetando para la IA."
-          : "Solo IA: Monitors está en pausa, la IA decide las alertas sola.";
-      }
-      return "Detenido. Los Monitors deciden las alertas normalmente.";
-    },
   },
   watch: {
     apiBase() {
@@ -507,91 +416,6 @@ export default {
           this.engineBusy[engine] = false;
           this.load({ silent: true }).catch(() => null);
         });
-    },
-    // "Monitors" (API field still training_enabled - it is the labeling
-    // phase the AI trains from, not a display name for that field). Unlike
-    // sniffer/honeypot it has no separate running process to start/stop -
-    // it is a persistent flag on the capture pipeline: every packet that
-    // passes exclusions/whitelist gets evaluated by Monitors (rules +
-    // anomalies) as usual, and whatever raises an alert is auto-fed to the
-    // IA trainer: high/critical hits are malicious, other evaluated samples
-    // are benign. Turning Monitors
-    // off hands alerting over to the IA classifier alone (see "solo IA"
-    // below), which is the point once it has learned enough to run solo.
-    toggleAiSampling(enabled) {
-      if (this.aiSamplingBusy) return;
-      this.aiSamplingBusy = true;
-      this.engineError = "";
-      this.store
-        .fetchJsonPromise("/api/ai/config", {
-          method: "POST",
-          body: JSON.stringify({ training_enabled: Boolean(enabled) }),
-        })
-        .then((config) => {
-          this.aiSamplingEnabled = Boolean(config.training_enabled);
-        })
-        .catch((err) => {
-          this.engineError = (err && err.message) || "Failed to update Monitors";
-        })
-        .finally(() => {
-          this.aiSamplingBusy = false;
-        });
-    },
-    // Raw packet retention (SNIFF4HOUND_STORE_RAW_PACKET) used to be
-    // startup-only; it now lives in runtime_config so it can be flipped
-    // here without restarting sniff4hound. Turning it off does not purge
-    // already-stored bytes immediately - that happens on the next process
-    // start (see store._migrate_sensitive_capture_storage) - but it stops
-    // new packets from keeping theirs right away.
-    toggleRawRetention(enabled) {
-      if (this.rawRetentionBusy) return;
-      this.rawRetentionBusy = true;
-      this.engineError = "";
-      this.store
-        .fetchJsonPromise("/api/ai/config", {
-          method: "POST",
-          body: JSON.stringify({ raw_retention_enabled: Boolean(enabled) }),
-        })
-        .then((config) => {
-          this.rawRetentionEnabled = Boolean(config.raw_retention_enabled);
-        })
-        .catch((err) => {
-          this.engineError = (err && err.message) || "Failed to update raw packet retention";
-        })
-        .finally(() => {
-          this.rawRetentionBusy = false;
-        });
-    },
-    // "Solo IA": the AI classifier decides alerts instead of the rule
-    // catalog (only takes effect while Monitors is off - see backend
-    // Sniffer._store_packet). Requires raw packet retention
-    // (SNIFF4HOUND_STORE_RAW_PACKET=1) so the classifier has bytes to
-    // score; the backend rejects enabling it otherwise.
-    toggleAiAlertMode(enabled) {
-      if (this.aiAlertModeBusy) return;
-      this.aiAlertModeBusy = true;
-      this.engineError = "";
-      this.store
-        .fetchJsonPromise("/api/ai/config", {
-          method: "POST",
-          body: JSON.stringify({ ai_alert_mode_enabled: Boolean(enabled) }),
-        })
-        .then((config) => {
-          this.aiAlertModeEnabled = Boolean(config.ai_alert_mode_enabled);
-        })
-        .catch((err) => {
-          this.engineError = (err && err.message) || "Failed to update the AI engine";
-        })
-        .finally(() => {
-          this.aiAlertModeBusy = false;
-        });
-    },
-    aiScoreColor(value) {
-      const score = Number(value);
-      if (!Number.isFinite(score)) return "secondary";
-      if (score >= 75) return "error";
-      if (score >= 50) return "warning";
-      return "secondary";
     },
     buildPacketSizeSummary,
     buildPacketSummary,
@@ -642,21 +466,12 @@ export default {
       if (!options.silent) this.loading = true;
       this.error = "";
       const dashboardQuery = this.dashboardQuery();
-      // The AI alerts panel used to always request the unbounded feed here,
-      // so switching the dashboard to a short window (e.g. 15M) left stale
-      // rows from outside that window sitting next to data that had already
-      // been filtered (finding 1.17). `since` mirrors dashboardQuery()'s own
-      // cutoff instead of a separate `compact=1` query string, since
-      // /api/ai/packets/ doesn't take that param.
-      const since = String(this.store.state.timeRange || "").trim();
-      const aiQuery = since ? `?threshold=50&since=${encodeURIComponent(since)}` : "?threshold=50";
       return Promise.allSettled([
         this.store.fetchJsonPromise(`/api/dashboard/${dashboardQuery}`),
         this.store.fetchJsonPromise(`/api/charts/analytics${dashboardQuery}`),
         this.store.fetchListPromise("/ports/", { limit: this.packetLimit }),
-        this.store.fetchJsonPromise(`/api/ai/packets/${aiQuery}`),
       ])
-        .then(([dashboardRes, analyticsRes, packetsRes, aiRes]) => {
+        .then(([dashboardRes, analyticsRes, packetsRes]) => {
           const errors = [];
           if (dashboardRes.status === "fulfilled") {
             this.dashboard = dashboardRes.value || {};
@@ -677,18 +492,6 @@ export default {
             this.packets = [];
             this.packetsMeta = { totalAvailable: null, returned: null, truncated: null };
             errors.push((packetsRes.reason && packetsRes.reason.message) || "Failed to load packets");
-          }
-          if (aiRes.status === "fulfilled") {
-            const data = aiRes.value || {};
-            this.aiRows = Array.isArray(data.rows) ? data.rows : [];
-            this.aiSummary = { analyzed: Number(data.analyzed || 0), candidates: Number(data.candidates || 0) };
-            this.aiSamplingEnabled = Boolean(data.training_enabled);
-            this.aiAlertModeEnabled = Boolean(data.ai_alert_mode_enabled);
-            this.rawRetentionEnabled = Boolean(data.raw_retention_enabled);
-          } else {
-            this.aiRows = [];
-            this.aiSummary = { analyzed: 0, candidates: 0 };
-            errors.push((aiRes.reason && aiRes.reason.message) || "Failed to load AI detections");
           }
           this.lastUpdated = new Date().toLocaleTimeString();
           this.error = errors.join(" | ");
