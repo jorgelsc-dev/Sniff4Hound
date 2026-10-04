@@ -9,8 +9,7 @@ const outputDir = path.resolve(process.env.QA_STYLE_OUTPUT || 'QA/styles');
 const routes = (process.env.QA_STYLE_ROUTES || [
   '/', '/dashboard/overview', '/dashboard/node-map', '/dashboard/live-map',
   '/sniffer', '/honeypot', '/monitors', '/protocols', '/protocols/http',
-  '/domains', '/paths', '/ips', '/investigate', '/soc', '/ai',
-  '/ai/overview', '/ai/neural-network', '/settings', '/chat',
+  '/domains', '/paths', '/ips', '/investigate', '/soc', '/settings', '/chat',
 ].join(',')).split(',');
 const viewports = JSON.parse(process.env.QA_STYLE_VIEWPORTS || '[ [1360,860], [980,640], [768,1024], [390,844] ]');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));

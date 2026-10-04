@@ -14,7 +14,7 @@
   </section>
 
   <button v-else type="button" class="flow-shell__strip" aria-expanded="false" @click="expanded = true">
-    <span class="flow-shell__pulse" :class="online ? 'is-live' : 'is-off'" />
+    <span class="flow-shell__pulse" :class="online ? (capturing ? 'is-live' : 'is-ready') : 'is-off'" />
     <strong>{{ online ? 'Tubería de captura' : 'Sensor desconectado' }}</strong>
     <span class="flow-shell__strip-meta">{{ stripMeta }}</span>
     <v-icon icon="mdi-chevron-down" size="16" />
@@ -49,7 +49,7 @@ export default {
   data() {
     return {
       store,
-      expanded: typeof window === "undefined" || window.matchMedia("(min-width: 960px)").matches,
+      expanded: false,
       counts: {},
       protocolCount: 0,
       refreshTimer: null,
@@ -66,6 +66,9 @@ export default {
     },
     online() {
       return store.state.wsStatus === "online";
+    },
+    capturing() {
+      return Boolean(this.runtime.sniffer?.running || this.runtime.honeypot?.running);
     },
     // Field names mirror dashboard_snapshot()/analytics_snapshot() exactly -
     // see the equivalent block that used to live in DashboardHubView.
@@ -100,7 +103,7 @@ export default {
       const preference = window.localStorage.getItem(STORAGE_KEY);
       if (preference !== null) this.expanded = preference !== "0";
     } catch {
-      // Keep the viewport default when storage is unavailable.
+      // Keep the compact default when storage is unavailable.
     }
     this.load();
     // Same coalescing the dashboard uses: a busy capture pushes packet events
@@ -159,7 +162,7 @@ export default {
   align-items: center;
   gap: 8px;
   border: 1px solid var(--stroke);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface-1);
   color: var(--text-dim);
   font: inherit;
@@ -186,8 +189,8 @@ export default {
 .flow-shell__strip {
   width: 100%;
   justify-content: flex-start;
-  margin-bottom: 14px;
-  min-height: 38px;
+  margin-bottom: 20px;
+  min-height: 44px;
   text-align: left;
 }
 
@@ -217,6 +220,10 @@ export default {
 
 .flow-shell__pulse.is-off {
   background: #ff647a;
+}
+
+.flow-shell__pulse.is-ready {
+  background: #f5bb62;
 }
 
 @media (max-width: 600px) {
