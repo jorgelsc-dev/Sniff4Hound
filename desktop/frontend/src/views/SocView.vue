@@ -9,7 +9,6 @@
       @refresh="load"
     >
       <template #actions>
-        <v-btn to="/ai" prepend-icon="mdi-brain" variant="tonal">IA · Feedback</v-btn>
         <IocExportMenu />
         <v-btn prepend-icon="mdi-file-download-outline" variant="tonal" :disabled="!lastUpdated || loading || !!error" @click="exportAnalysis">
           Export assessment

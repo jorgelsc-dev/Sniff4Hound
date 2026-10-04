@@ -11,7 +11,6 @@ const QUERY_AUTH_KEYS = ["code"];
 const QUERY_API_BASE_KEY = "api_base";
 const STORAGE_KEY_NOTIFY_SOUND = "sniff4hound.notifySoundEnabled";
 const STORAGE_KEY_NOTIFY_DETECTIONS = "sniff4hound.notifyDetectionsEnabled";
-const STORAGE_KEY_NOTIFY_AI = "sniff4hound.notifyAiEnabled";
 const STORAGE_KEY_NOTIFY_MIN_SEVERITY = "sniff4hound.notifyMinSeverity";
 export const NOTIFY_SEVERITIES = ["info", "low", "medium", "high", "critical"];
 const NOTIFY_MIN_SEVERITY_DEFAULT = "medium";
@@ -66,7 +65,6 @@ const state = reactive({
   // Every detection notifies unless the operator turns that kind off in
   // Configuración > Notificaciones. Nothing is filtered by severity here.
   notifyDetectionsEnabled: true,
-  notifyAiEnabled: true,
   // Alerts below this severity stay on screen but never notify. Info and low
   // are visibility feeds; medium and up are alerts.
   notifyMinSeverity: NOTIFY_MIN_SEVERITY_DEFAULT,
@@ -983,8 +981,8 @@ function wsGet(path) {
 let taskSeq = 0;
 const TASK_LABELS = [
   ["/api/dashboard", "Dashboard"], ["/api/charts/analytics", "Analítica"], ["/ports", "Paquetes"],
-  ["/api/ai/packets", "Detecciones IA"], ["/api/map", "Mapa"], ["/api/intel", "IPs observadas"],
-  ["/api/monitors", "Monitores"], ["/api/runtime", "Runtime"], ["/api/ai", "IA"],
+  ["/api/map", "Mapa"], ["/api/intel", "IPs observadas"],
+  ["/api/monitors", "Monitores"], ["/api/runtime", "Runtime"],
   ["/api/data", "Almacenamiento"], ["/api/logs", "Logs"], ["/api/limits", "Límites"],
   ["/api/pipeline", "Pipeline"], ["/api/honeypot", "Honeypot"], ["/api/blacklist", "Listas de acceso"],
   ["/api/whitelist", "Listas de acceso"], ["/api/detection", "Detección"], ["/api/soc", "SOC"],
@@ -1541,7 +1539,6 @@ function writeNotifyFlag(key, enabled) {
 
 function initNotifyKinds() {
   state.notifyDetectionsEnabled = readNotifyFlag(STORAGE_KEY_NOTIFY_DETECTIONS);
-  state.notifyAiEnabled = readNotifyFlag(STORAGE_KEY_NOTIFY_AI);
   let stored = null;
   try { stored = window.localStorage.getItem(STORAGE_KEY_NOTIFY_MIN_SEVERITY); } catch { /* storage unavailable */ }
   state.notifyMinSeverity = NOTIFY_SEVERITIES.includes(stored) ? stored : NOTIFY_MIN_SEVERITY_DEFAULT;
@@ -1556,11 +1553,6 @@ function setNotifyMinSeverity(severity) {
 function setNotifyDetectionsEnabled(enabled) {
   state.notifyDetectionsEnabled = Boolean(enabled);
   writeNotifyFlag(STORAGE_KEY_NOTIFY_DETECTIONS, state.notifyDetectionsEnabled);
-}
-
-function setNotifyAiEnabled(enabled) {
-  state.notifyAiEnabled = Boolean(enabled);
-  writeNotifyFlag(STORAGE_KEY_NOTIFY_AI, state.notifyAiEnabled);
 }
 
 function setNotifySoundEnabled(enabled) {
@@ -1734,20 +1726,18 @@ function notifyForPacketEvent(payload) {
   // now stays on screen on its own.
   const occurrence = packet && packet.id != null ? packet.id : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   hits.forEach((hit) => {
-    const isAiHit = hit.monitorId === "ai-classifier";
-    const enabled = isAiHit ? state.notifyAiEnabled : state.notifyDetectionsEnabled;
-    if (!enabled) return;
+    if (!state.notifyDetectionsEnabled) return;
     // Honeypot hits have no real entry in the monitors catalog - this traffic
     // never runs through evaluate_packet/AnomalyEngine, so send it to the
     // dedicated honeypot table instead.
     const isHoneypotHit = hit.monitorId === "builtin-honeypot-hit";
     pushNotification({
-      kind: isAiHit ? "ai" : "monitor",
+      kind: "monitor",
       severity: hit.severity,
       title: hit.label,
       message: route,
-      groupKey: `${isAiHit ? "ai" : "monitor"}:${hit.monitorId || hit.label}:${occurrence}`,
-      href: isHoneypotHit ? "/honeypot" : isAiHit ? "/ai" : `/monitors?monitor=${encodeURIComponent(hit.monitorId || hit.label)}`,
+      groupKey: `monitor:${hit.monitorId || hit.label}:${occurrence}`,
+      href: isHoneypotHit ? "/honeypot" : `/monitors?monitor=${encodeURIComponent(hit.monitorId || hit.label)}`,
     });
   });
 }
@@ -2480,7 +2470,6 @@ export default {
   initNotifyKinds,
   setNotifySoundEnabled,
   setNotifyDetectionsEnabled,
-  setNotifyAiEnabled,
   setNotifyMinSeverity,
   pushNotification,
 };

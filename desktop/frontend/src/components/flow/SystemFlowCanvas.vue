@@ -152,14 +152,6 @@ const layout = computed(() => [
     live: props.online && count("monitors") > 0, route: "/monitors",
   },
   {
-    // The classifier reads retained payloads, so that count is what tells you
-    // whether it has anything to work with.
-    id: "ai", label: "IA", icon: "mdi-brain", column: 3, row: 2,
-    color: STAGES.analysis, metric: compact(count("payloads")), unit: "payloads",
-    status: count("payloads") ? "Analizando" : "Sin muestras",
-    live: props.online && count("payloads") > 0, route: "/ai",
-  },
-  {
     id: "alerts", label: "Detecciones", icon: "mdi-bell-ring-outline", column: 4, row: 1,
     color: STAGES.output, metric: compact(count("detections")), unit: "etiquetas",
     status: count("detections") ? "Requiere revisión" : "Todo limpio",
@@ -179,9 +171,7 @@ const LINKS = [
   ["sniffer", "store", "sniffer"],
   ["honeypot", "store", "honeypot"],
   ["store", "monitors", "total"],
-  ["store", "ai", "total"],
   ["monitors", "alerts", "total"],
-  ["ai", "alerts", "total"],
 ];
 
 const wires = computed(() => {

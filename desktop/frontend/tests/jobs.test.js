@@ -54,7 +54,7 @@ test("a job keeps being polled while it is still running", () => withFetch(
     return json({ id: "j2", status: "done", result: "listo" });
   },
   async (calls) => {
-    const data = await appStore.fetchJsonPromise("/api/ai/packets/");
+    const data = await appStore.fetchJsonPromise("/api/dashboard/");
     assert.equal(data, "listo");
     assert.ok(calls.length >= 4);
   },

@@ -129,36 +129,6 @@ async function main() {
       await capture('regex-dialog-bottom', '.regex-helper-card');
       await page.getByRole('button', { name: 'Cancelar', exact: true }).click();
 
-      await route('/ai/overview');
-      await page.getByRole('button', { name: 'Revisar / enseñar', exact: true }).first().click();
-      await capture('ai-review', '.v-dialog .v-card');
-      await page.getByRole('button', { name: 'Cancelar', exact: true }).click();
-      await page.evaluate(() => {
-        const store = document.querySelector('#app').__vue_app__._container._vnode.component.proxy.store;
-        window.qaOriginalFetch = store.fetchJsonPromise;
-        store.fetchJsonPromise = async (...args) => {
-          const snapshot = await window.qaOriginalFetch(...args);
-          if (!String(args[0]).includes('/api/ai/packets/')) return snapshot;
-          // Reject the real fixture feed until this route is unmounted.
-          return { ...snapshot, learning: { ...snapshot.learning, revision: 999999 }, ai_tournament: {
-            active: false, round: 145, stop_reason: 'training_disabled',
-            champion: { hidden_sizes: [16,32,64,32,16,8,4], accuracy: .995, evaluation_mode: 'holdout' },
-            candidates: [
-              { hidden_sizes: [16,32,64,32,16,8,4], status: 'champion', epoch: 1200, total_epochs: 1200, loss: .000123, accuracy: .995 },
-              { hidden_sizes: [128,128,128,64,32], status: 'disqualified', epoch: 9999, total_epochs: 10000, loss: 12.3456, accuracy: .4 },
-              { hidden_sizes: [8,4], status: 'done', epoch: 400, total_epochs: 400, loss: .123456, accuracy: .8 },
-            ],
-          }};
-        };
-      });
-      await route('/ai/neural-network');
-      await capture('tournament', '.tournament-panel');
-      await page.locator('.tournament-panel').evaluate(el => { el.scrollTop = el.scrollHeight; });
-      await capture('tournament-bottom', '.tournament-panel');
-      await page.evaluate(() => {
-        document.querySelector('#app').__vue_app__._container._vnode.component.proxy.store.fetchJsonPromise = window.qaOriginalFetch;
-        delete window.qaOriginalFetch;
-      });
       await route('/');
     }
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({ reports, errors }, null, 2));
