@@ -820,7 +820,6 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.sniffer._store_packet(packet)
         self.assertEqual(self.store.list_count("packets"), 1)
         self.assertEqual(packet.get("monitor_hits") or [], [])
-        self.assertEqual(packet.get("ai_detection_status"), "muted")
 
     def test_muted_traffic_never_retains_raw_bytes_even_with_global_retention_on(self):
         # FAQA 1.1: muted/whitelisted/excluded traffic is never evaluated,
@@ -838,42 +837,11 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.assertEqual(row["payload_hex"], "")
         self.assertIsNone(row["raw_packet"])
 
-    def test_muted_traffic_is_excluded_from_the_ai_review_queue(self):
-        # Muted/whitelisted/excluded traffic is never evaluated and (per the
-        # test above) never retains raw bytes, so it can never contribute a
-        # score - listing it in the AI review queue ("Revisar / Ensenar")
-        # is pure "Sin bytes disponibles" noise for the operator. It still
-        # persists (list_packets), it just should not show up here.
-        self.store.set_exclusion_filters({"ports": [3389]})
-        muted_packet = self._base_packet(dst_port=3389)
-        self.sniffer._store_packet(muted_packet)
-        alerting_packet = self._base_packet(dst_port=3390, dst_ip="10.0.0.60")
-        self.sniffer._monitor_cache = [
-            normalize_monitor(
-                {
-                    "id": "test-port-3390",
-                    "name": "Test port 3390",
-                    "match": {"dst_ports": [3390]},
-                    "action": {"tag": "test-hit", "label": "Test hit", "severity": "medium"},
-                }
-            )
-        ]
-        self.sniffer._monitor_cache_at = 999999999.0
-        self.sniffer._store_packet(alerting_packet)
-
-        self.assertEqual(self.store.list_count("packets"), 2)
-        ai_packet_ids = {row["id"] for row in self.store.list_ai_packets()}
-        muted_id = self.store.list_packets(limit=2)[1]["id"]
-        alerting_id = self.store.list_packets(limit=2)[0]["id"]
-        self.assertNotIn(muted_id, ai_packet_ids)
-        self.assertIn(alerting_id, ai_packet_ids)
-
     def test_exclusion_filter_mutes_detection_by_cidr(self):
         self.store.set_exclusion_filters({"cidrs": ["10.0.0.0/24"]})
         packet = self._base_packet(dst_port=3389, src_ip="10.0.0.5", dst_ip="10.0.0.9")
         self.sniffer._store_packet(packet)
         self.assertEqual(packet.get("monitor_hits") or [], [])
-        self.assertEqual(packet.get("ai_detection_status"), "muted")
 
     def test_exclusion_filter_only_mutes_matching_traffic(self):
         self.store.set_exclusion_filters({"ports": [3389]})
@@ -881,7 +849,6 @@ class TestSnifferGatedPersistence(unittest.TestCase):
                                     payload_text="POST /login HTTP/1.1\r\nusername=admin&password=hunter2")
         self.sniffer._store_packet(packet)
         self.assertEqual(self.store.list_count("packets"), 1)
-        self.assertNotEqual(packet.get("ai_detection_status"), "muted")
 
     def test_minimum_monitor_severity_filters_stored_hits(self):
         self.store.set_monitor_min_severity("high")
@@ -930,7 +897,9 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.sniffer._monitor_cache_at = 999999999.0
         self.sniffer._ruleset_cache = []
         self.sniffer._ruleset_cache_at = 999999999.0
-        self.sniffer._store_packet(self._base_packet(payload_text="HTTP/1.1 200 OK\r\nContent-Type: application/json"))
+        # A client request: generated signals are request-side only, so this
+        # checks the persistence gate with a packet they are allowed to see.
+        self.sniffer._store_packet(self._base_packet(payload_text="POST /api HTTP/1.1\r\nContent-Type: application/json"))
         self.assertEqual(self.store.list_count("packets"), 1)
 
     def test_undetected_packets_are_time_throttled_on_the_websocket(self):
@@ -1019,195 +988,6 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         rows = self.store.list_packets_by_monitor("builtin-admin-ports", search="10.0.0.50")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["dst_ip"], "10.0.0.50")
-
-
-class TestTrainingAndAiAlertModes(unittest.TestCase):
-    """Sniffer._store_packet's "Training" and "IA" activation modes.
-
-    Every non-muted packet is fully evaluated, but only persists if that
-    evaluation raised something - Training does not keep a "benign" feed of
-    its own unless training capture is enabled. High/critical monitor hits
-    train as malicious; lesser hits and evaluated clean samples as benign. "solo IA"
-    (ai_alert_mode_enabled without training_enabled) skips the rule catalog
-    and lets the IA classifier decide instead."""
-
-    def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "test.db"
-        self.store = SniffStore(self.db_path)
-        self.sniffer = Sniffer(self.store, MagicMock(), interfaces=())
-        # The very first _get_monitor_context() call refreshes the monitor
-        # cache synchronously (cold start) and, as a side effect, (re)reads
-        # _training_enabled/_ai_alert_mode_enabled/_ai_model from the store
-        # defaults. Warm it up here, with the real builtin catalog loaded,
-        # before each test overrides those flags directly - otherwise that
-        # same cold-start refresh would fire inside _store_packet() and
-        # silently reset whatever the test just set.
-        self.sniffer._get_monitor_context()
-        self._refresh_patcher = patch.object(self.sniffer, "_refresh_monitor_cache")
-        self._refresh_patcher.start()
-        self.addCleanup(self._refresh_patcher.stop)
-
-    def tearDown(self):
-        # Several tests in this class enable training, which lazily starts
-        # the AI training worker thread (Sniffer._enqueue_ai_training) that
-        # writes to self.store on its own schedule. Without stopping it
-        # first, that write can still be in flight (or about to open the
-        # WAL/SHM files) when store.close() + temp_dir.cleanup() run right
-        # after, which is what made the intermittent
-        # `OSError: [Errno 39] Directory not empty` teardown failure
-        # (finding 1.5) possible - stop() now actually joins that thread
-        # (finding 1.24), so calling it here makes the ordering deterministic.
-        self.sniffer.stop()
-        self.store.close()
-        self.temp_dir.cleanup()
-
-    def _base_packet(self, **overrides) -> dict:
-        packet = {
-            "session_id": 0,
-            "interface": "test0",
-            "eth_src": "",
-            "eth_dst": "",
-            "eth_type": 0x0800,
-            "ip_version": 4,
-            "src_ip": "10.0.0.5",
-            "dst_ip": "10.0.0.9",
-            "proto": "tcp",
-            "src_port": 51234,
-            "dst_port": 8081,
-            "ttl": 64,
-            "hop_limit": 0,
-            "length": 60,
-            "payload_len": 10,
-            "state": "open",
-            "scan_state": "active",
-            "tcp_flags": "",
-            "icmp_type": 0,
-            "icmp_code": 0,
-            "arp_opcode": 0,
-            "summary": "",
-            "payload_text": "",
-            "payload_hex": "",
-            "banner_text": "",
-            "raw_packet": b"",
-        }
-        packet.update(overrides)
-        return packet
-
-    def test_ai_only_mode_skips_the_rule_catalog(self):
-        self.sniffer._ai_alert_mode_enabled = True
-        self.sniffer._training_enabled = False
-        self.sniffer._ai_model = None  # no trained model -> AI never alerts either
-        self.sniffer._store_packet(self._base_packet(dst_port=3389))
-        # builtin-admin-ports would normally fire for dst_port=3389 (see
-        # TestSnifferGatedPersistence.test_detected_packet_is_persisted);
-        # in "solo IA" mode the catalog is skipped entirely.
-        self.assertEqual(self.store.list_count("packets"), 0)
-
-    def test_ai_only_mode_lets_the_classifier_raise_its_own_alert(self):
-        self.sniffer._ai_alert_mode_enabled = True
-        self.sniffer._training_enabled = False
-        with patch.object(self.sniffer, "_classify_with_ai", return_value={"score": 0.9, "is_alert": True}):
-            packet = self._base_packet()
-            self.sniffer._store_packet(packet)
-        self.assertEqual(self.store.list_count("packets"), 1)
-        hits = packet.get("monitor_hits") or []
-        self.assertEqual([hit["tag"] for hit in hits], ["ai_alert"])
-        self.assertEqual(hits[0]["severity"], "critical")
-        self.assertEqual(packet.get("ai_detection_status"), "ai_decided")
-
-    def test_training_plus_ai_mode_leaves_the_catalog_in_charge(self):
-        # Both flags on ("IA + Training"): the rule catalog keeps deciding
-        # the alert so training labels stay grounded in Monitors, even
-        # though the AI classifier would also be available.
-        self.sniffer._ai_alert_mode_enabled = True
-        self.sniffer._training_enabled = True
-        with patch.object(self.sniffer, "_classify_with_ai") as classify:
-            self.sniffer._store_packet(self._base_packet(dst_port=3389))
-        classify.assert_not_called()
-        self.assertEqual(self.store.list_count("packets"), 1)
-
-    def test_training_mode_never_persists_undetected_traffic(self):
-        # Persistence now depends only on whether evaluation raised
-        # something; Training no longer keeps a "benign" feed of its own -
-        # clean traffic is processed for its verdict and dropped, same as
-        # with Training off.
-        with patch.object(self.sniffer, "_store_raw_packet_bytes", True):
-            self.sniffer._training_enabled = True
-            with patch.object(self.store, "save_ai_feedback") as save_feedback:
-                self.sniffer._store_packet(self._base_packet())
-                time.sleep(0.2)
-        self.assertEqual(self.store.list_count("packets"), 0)
-        save_feedback.assert_not_called()
-
-    def test_training_mode_labels_medium_admin_port_hit_benign(self):
-        with patch.object(self.sniffer, "_store_raw_packet_bytes", True):
-            self.sniffer._training_enabled = True
-            with patch.object(self.store, "save_ai_feedback") as save_feedback:
-                self.sniffer._store_packet(self._base_packet(dst_port=3389))
-                self._wait_for_call(save_feedback)
-        save_feedback.assert_called_once()
-        _packet_id, label, confidence, _note = save_feedback.call_args[0]
-        self.assertEqual(label, "benign")
-        self.assertEqual(confidence, 0.6)
-
-    def test_training_labels_follow_monitor_severity(self):
-        self.sniffer._training_enabled = True
-        self.sniffer._training_capture_enabled = True
-        self.sniffer._store_raw_packet_bytes = True
-        for severity in (None, "info", "low", "medium", "high", "critical"):
-            with self.subTest(severity=severity):
-                hits = [] if severity is None else [{"id": "test", "name": "Test", "severity": severity}]
-                with patch("sniff4hound.sniffer.evaluate_packet", return_value=hits), \
-                     patch.object(self.sniffer._anomaly, "evaluate", return_value=[]), \
-                     patch.object(self.sniffer, "_get_monitor_context", return_value=([], True)), \
-                     patch.object(self.sniffer, "_enqueue_ai_training") as enqueue:
-                    self.sniffer._store_packet(self._base_packet())
-                enqueue.assert_called_once()
-                expected = "malicious" if severity in {"high", "critical"} else "benign"
-                self.assertEqual(enqueue.call_args.args[1], expected)
-
-    def test_suppressed_red_monitor_hit_is_not_trained_as_benign(self):
-        self.sniffer._training_enabled = True
-        self.sniffer._training_capture_enabled = True
-        self.sniffer._store_raw_packet_bytes = True
-        with patch("sniff4hound.sniffer.evaluate_packet", return_value=[{"severity": "critical"}]), \
-             patch.object(self.sniffer._anomaly, "evaluate", return_value=[]), \
-             patch.object(self.sniffer, "_get_monitor_context", return_value=([], True)), \
-             patch.object(self.sniffer, "_filter_monitor_hits", return_value=[]), \
-             patch.object(self.sniffer, "_enqueue_ai_training") as enqueue:
-            self.sniffer._store_packet(self._base_packet())
-        self.assertEqual(enqueue.call_args.args[1], "malicious")
-
-    def test_disabled_monitors_do_not_produce_benign_training_labels(self):
-        self.sniffer._training_enabled = True
-        self.sniffer._training_capture_enabled = True
-        self.sniffer._store_raw_packet_bytes = True
-        with patch.object(self.sniffer, "_get_monitor_context", return_value=([], False)), \
-             patch.object(self.sniffer, "_enqueue_ai_training") as enqueue:
-            self.sniffer._store_packet(self._base_packet())
-        enqueue.assert_not_called()
-
-    def test_training_mode_without_raw_retention_skips_auto_feedback(self):
-        # An alerting packet still persists without forensic bytes (that
-        # decision only depends on the Monitors verdict); only the
-        # "auto-train the network" half needs raw bytes, so it must not
-        # even try when they are unavailable.
-        with patch.object(self.sniffer, "_store_raw_packet_bytes", False):
-            self.sniffer._training_enabled = True
-            with patch.object(self.store, "save_ai_feedback") as save_feedback:
-                self.sniffer._store_packet(self._base_packet(dst_port=3389))
-                time.sleep(0.2)
-        self.assertEqual(self.store.list_count("packets"), 1)
-        save_feedback.assert_not_called()
-
-    @staticmethod
-    def _wait_for_call(mock_obj, timeout=2.0):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if mock_obj.called:
-                return
-            time.sleep(0.01)
 
 
 class RuleAlertThrottleVisibilityTests(unittest.TestCase):

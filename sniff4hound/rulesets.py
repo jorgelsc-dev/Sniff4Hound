@@ -350,16 +350,29 @@ def build_packet_text(packet: dict) -> str:
     ).lower())
 
 
-def _is_http_response_packet(packet: dict) -> bool:
-    """True for a packet carrying an HTTP response's start-line/body.
+HTTP_SERVER_PORTS = frozenset({80, 8000, 8008, 8080, 8081, 8888})
 
-    Mirrors the same "HTTP/1." status-line prefix Sniffer._classify_tcp_banner
-    already uses to label response segments - a request packet always starts
-    with a method token (GET/POST/...) instead, so this is a cheap, reliable
-    request/response split without needing a dedicated capture-side field.
+
+def _is_http_response_packet(packet: dict) -> bool:
+    """True for a packet carrying an HTTP response's start-line or body.
+
+    Two signals, either is enough:
+    - the "HTTP/1." status line, the same prefix Sniffer._classify_tcp_banner
+      uses to label response segments;
+    - the server side of an HTTP exchange sending from its well-known port
+      (src 80 towards an ephemeral client port). Body segments carry no status
+      line, so the prefix alone let every page's JavaScript through as a
+      "request" (found in the live alert review).
     """
     text = str(packet.get("payload_text") or "").lstrip()
-    return text[:5].upper() == "HTTP/"
+    if text[:5].upper() == "HTTP/":
+        return True
+    try:
+        src_port = int(packet.get("src_port") or 0)
+        dst_port = int(packet.get("dst_port") or 0)
+    except (TypeError, ValueError):
+        return False
+    return src_port in HTTP_SERVER_PORTS and dst_port not in HTTP_SERVER_PORTS
 
 
 def _regex_matches_any(patterns, *values) -> bool:

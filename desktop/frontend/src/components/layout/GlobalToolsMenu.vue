@@ -163,9 +163,6 @@ const QUICK_STATUS_REFRESH_MS = 15000;
 const CONTROL_COLORS = {
   sniffer: "rgba(93, 204, 255, 0.96)",
   honeypot: "rgba(255, 187, 98, 0.96)",
-  monitors: "rgba(117, 236, 177, 0.96)",
-  ai: "rgba(178, 149, 255, 0.96)",
-  trainingCapture: "rgba(94, 220, 200, 0.96)",
 };
 
 // Global, present on every view (not just the dashboard) - this is now the
@@ -204,17 +201,6 @@ export default {
       engineDesired: {
         sniffer: null,
         honeypot: null,
-      },
-      aiConfig: {
-        training_enabled: false,
-        training_capture_enabled: false,
-        ai_alert_mode_enabled: false,
-        raw_retention_enabled: true,
-      },
-      aiBusy: {
-        monitors: false,
-        ai: false,
-        trainingCapture: false,
       },
       links: NAV_LINKS,
     };
@@ -260,15 +246,6 @@ export default {
         ? Boolean(this.honeypotRuntime.running)
         : Boolean(this.engineDesired.honeypot);
     },
-    monitorsRunning() {
-      return Boolean(this.aiConfig.training_enabled);
-    },
-    aiRunning() {
-      return Boolean(this.aiConfig.ai_alert_mode_enabled);
-    },
-    trainingCaptureRunning() {
-      return Boolean(this.aiConfig.training_capture_enabled);
-    },
     quickControls() {
       return [
         this.quickEngineControl({
@@ -286,32 +263,6 @@ export default {
           icon: "mdi-spider-web",
           active: this.honeypotRunning,
           busy: this.engineBusy.honeypot,
-        }),
-        this.quickAiControl({
-          key: "monitors",
-          label: "Monitores",
-          icon: "mdi-shield-search",
-          active: this.monitorsRunning,
-          busy: this.aiBusy.monitors,
-          field: "training_enabled",
-        }),
-        this.quickAiControl({
-          key: "ai",
-          label: "IA",
-          icon: "mdi-brain",
-          active: this.aiRunning,
-          busy: this.aiBusy.ai,
-          field: "ai_alert_mode_enabled",
-          disabled: !this.aiConfig.raw_retention_enabled,
-          disabledReason: "requiere retencion raw",
-        }),
-        this.quickAiControl({
-          key: "trainingCapture",
-          label: "Training",
-          icon: "mdi-school",
-          active: this.trainingCaptureRunning,
-          busy: this.aiBusy.trainingCapture,
-          field: "training_capture_enabled",
         }),
       ];
     },
@@ -363,47 +314,14 @@ export default {
         styleVars: { "--control-color": CONTROL_COLORS[key] },
       };
     },
-    quickAiControl({ key, label, icon, active, busy, field, disabled = false, disabledReason = "" }) {
-      const action = active ? "apagar" : "encender";
-      return {
-        key,
-        kind: "ai",
-        field,
-        label,
-        icon,
-        active,
-        busy,
-        disabled,
-        disabledReason,
-        ariaLabel: `${label}: ${active ? "encendida" : "apagada"}`,
-        tooltip: disabled
-          ? `${label}: ${disabledReason}`
-          : `${label}: ${active ? "encendida" : "apagada"} - click para ${action}`,
-        styleVars: { "--control-color": CONTROL_COLORS[key] },
-      };
-    },
     loadQuickStatus() {
       if (!this.desktopMode || !this.canUseApi) return Promise.resolve();
-      return Promise.allSettled([
-        this.store.initRuntime(),
-        this.store.fetchJsonPromise("/api/ai/config"),
-      ]).then(([, aiConfigRes]) => {
-        if (aiConfigRes.status !== "fulfilled") return;
-        const config = aiConfigRes.value || {};
-        this.aiConfig = {
-          training_enabled: Boolean(config.training_enabled),
-          training_capture_enabled: Boolean(config.training_capture_enabled),
-          ai_alert_mode_enabled: Boolean(config.ai_alert_mode_enabled),
-          raw_retention_enabled: Boolean(config.raw_retention_enabled),
-        };
-      });
+      return this.store.initRuntime();
     },
     toggleQuickControl(control) {
       if (!control || control.busy || control.disabled) return;
       if (control.kind === "engine") {
         this.toggleEngine(control.key, !control.active);
-      } else if (control.kind === "ai") {
-        this.toggleAiFlag(control);
       }
     },
     toggleEngine(engine, shouldRun) {
@@ -424,37 +342,6 @@ export default {
         .finally(() => {
           this.engineDesired[engine] = null;
           this.engineBusy[engine] = false;
-          this.loadQuickStatus({ silent: true });
-        });
-    },
-    toggleAiFlag(control) {
-      const busyKey = control.key;
-      if (this.aiBusy[busyKey]) return;
-      this.aiBusy[busyKey] = true;
-      this.store
-        .fetchJsonPromise("/api/ai/config", {
-          method: "POST",
-          body: JSON.stringify({ [control.field]: !control.active }),
-        })
-        .then((config) => {
-          this.aiConfig = {
-            training_enabled: Boolean(config.training_enabled),
-            training_capture_enabled: Boolean(config.training_capture_enabled),
-            ai_alert_mode_enabled: Boolean(config.ai_alert_mode_enabled),
-            raw_retention_enabled: Boolean(config.raw_retention_enabled),
-          };
-        })
-        .catch((err) => {
-          this.store.pushNotification({
-            kind: "runtime",
-            severity: "high",
-            title: `No se pudo actualizar ${control.label}`,
-            message: (err && err.message) || "Error de configuracion",
-            groupKey: `runtime:${control.key}:quick-toggle-error`,
-          });
-        })
-        .finally(() => {
-          this.aiBusy[busyKey] = false;
           this.loadQuickStatus({ silent: true });
         });
     },
@@ -485,6 +372,10 @@ export default {
       return this.isActive(tool.to) || (tool.children || []).some((child) => this.isActive(child.to));
     },
     toggleGroup(tool, event) {
+      // A group is also a destination: its icon goes to the group's own page
+      // and opens the sub-page menu. Before, the icon only opened the menu, so
+      // clicking "Dashboard" appeared to do nothing until a sub-item was picked.
+      if (tool.to && this.$route.path !== tool.to) this.$router.push(tool.to);
       if (this.openGroup === tool.to) {
         this.closeGroup();
         return;
@@ -506,7 +397,7 @@ export default {
   top: 48px;
   left: 0;
   bottom: 0;
-  z-index: 2800;
+  z-index: 1100;
   width: 56px;
   display: flex;
   flex-direction: column;
@@ -590,15 +481,18 @@ export default {
 
 .desktop-activity-flyout {
   position: fixed;
-  z-index: 2850;
+  z-index: 1110;
   min-width: 190px;
   padding: 6px;
   background: rgba(8, 14, 23, 0.96);
   border: 1px solid rgba(var(--brand-sky-rgb), 0.2);
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: 0 10px 28px rgba(3, 8, 14, 0.55);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+  max-width: calc(100vw - 72px);
+  max-height: calc(100dvh - 64px);
+  overflow-y: auto;
 }
 
 .desktop-activity-flyout__title {
@@ -631,13 +525,8 @@ export default {
 .desktop-activity-backdrop {
   position: fixed;
   inset: 0;
-  /* Below .desktop-activity-bar's own z-index (2800): that bar establishes
-     its own stacking context, so the flyout nested inside it (z-index 2850)
-     only outranks this backdrop *within* that context - against a sibling
-     stacking context, only the bar's own 2800 counts. Sitting above the
-     bar here would let this backdrop intercept every click meant for the
-     flyout, closing it without ever reaching the link underneath. */
-  z-index: 2790;
+  /* Keep navigation below Vuetify menus and modal dialogs. */
+  z-index: 1090;
   background: transparent;
 }
 
@@ -821,7 +710,7 @@ export default {
   align-items: flex-end;
   gap: 8px;
   max-width: calc(100vw - 40px);
-  max-height: calc(100vh - 96px);
+  max-height: calc(100dvh - 96px);
   overflow-y: auto;
   padding: 2px;
 }

@@ -35,13 +35,13 @@
             hide-details
           />
         </v-col>
-        <v-col cols="12" sm="2" class="d-flex align-center ga-1">
+        <v-col cols="12" sm="2" class="d-flex align-center ga-1 blacklist-create-actions">
           <RegexHelperButton
             v-if="draft.matchType === 'regex'"
             :initial-value="draft.value"
             @apply="(pattern) => (draft.value = pattern)"
           />
-          <v-btn color="primary" variant="tonal" type="submit" :loading="submitting" block>
+          <v-btn color="primary" variant="tonal" type="submit" :loading="submitting" class="blacklist-create-button">
             Agregar
           </v-btn>
         </v-col>
@@ -79,11 +79,14 @@
               density="compact"
               hide-details
               color="success"
+              :aria-label="`Habilitar ${entry.value}`"
               @update:model-value="(value) => $emit('toggle', entry, value)"
             />
           </td>
           <td>
-            <v-btn icon="mdi-delete-outline" size="small" variant="text" color="error" @click="$emit('delete', entry)" />
+            <v-btn icon="mdi-delete-outline" size="small" variant="text" color="error" :aria-label="`Eliminar ${entry.value}`" @click="$emit('delete', entry)">
+              <v-tooltip activator="parent" location="top">Eliminar entrada</v-tooltip>
+            </v-btn>
           </td>
         </tr>
       </tbody>
@@ -141,10 +144,19 @@ export default {
 </script>
 
 <style scoped>
+.blacklist-create-actions { flex-wrap: wrap; }
+.blacklist-create-button { flex: 1 1 80px; min-width: 0; }
+
 .blacklist-table :deep(th) {
   font-size: 0.72rem;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   color: rgba(255, 255, 255, 0.5);
+}
+
+.blacklist-table :deep(td:first-child) {
+  min-width: 180px;
+  max-width: 320px;
+  overflow-wrap: anywhere;
 }
 </style>

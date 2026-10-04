@@ -2,7 +2,7 @@
   <div>
     <v-alert type="info" variant="tonal" density="comfortable" class="mb-4">
       El tráfico que coincida con estos criterios se silencia en detección del Sniffer, Monitores
-      y muestreo de IA. No afecta la captura cruda ni lo que se guarda. Úsalo para tráfico loopback
+      . No afecta la captura cruda ni lo que se guarda. Úsalo para tráfico loopback
       del panel, redes internas conocidas o protocolos/puertos ruidosos que no deben disparar detecciones.
     </v-alert>
 
@@ -59,7 +59,7 @@
           />
         </v-col>
       </v-row>
-      <div class="d-flex ga-2 mt-2">
+      <div class="d-flex flex-wrap ga-2 mt-2">
         <v-btn color="primary" variant="flat" :loading="saving" @click="save">Guardar filtro</v-btn>
         <v-btn variant="text" :disabled="saving" @click="resetDraft">Descartar cambios</v-btn>
         <v-chip v-if="activeFilterCount" size="small" color="warning" class="align-self-center">

@@ -17,16 +17,6 @@ export const NAV_LINKS = [
   },
   { label: "Chat", to: "/chat", icon: "mdi-message-processing-outline", color: "info" },
   { label: "Configuración", to: "/settings", icon: "mdi-cog-outline", color: "secondary" },
-  {
-    label: "IA",
-    to: "/ai",
-    icon: "mdi-brain",
-    color: "secondary",
-    children: [
-      { label: "Resumen", to: "/ai/overview", icon: "mdi-clipboard-pulse-outline" },
-      { label: "RNN Red Neuronal", to: "/ai/neural-network", icon: "mdi-hub-outline" },
-    ],
-  },
   { label: "SOC", to: "/soc", icon: "mdi-shield-search", color: "error" },
   { label: "Investigar", to: "/investigate", icon: "mdi-magnify-scan", color: "info" },
   { label: "Monitores", to: "/monitors", icon: "mdi-target-account", color: "success" },

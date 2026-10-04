@@ -80,6 +80,7 @@
           clearable
           variant="outlined"
           density="comfortable"
+          hide-details
           @keyup.enter="load"
         />
       </v-col>
@@ -120,7 +121,7 @@
     </v-alert>
 
     <v-row dense>
-      <v-col v-for="metric in metricCards" :key="metric.key" cols="12" sm="6" xl="3">
+      <v-col v-for="metric in metricCards" :key="metric.key" cols="12" sm="6" md="3">
         <v-card variant="tonal" class="pa-5 metric-card">
           <div class="d-flex align-center justify-space-between ga-3">
             <div>
