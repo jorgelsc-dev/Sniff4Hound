@@ -216,12 +216,12 @@ export default {
 }
 .palette__card {
   width: min(680px, 100%);
-  max-height: min(680px, 72vh);
+  max-height: min(680px, calc(100dvh - min(12vh, 96px) - 20px));
   display: flex;
   flex-direction: column;
   background: var(--surface-1);
   border: 1px solid var(--stroke-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.62);
   overflow: hidden;
 }
@@ -244,7 +244,8 @@ export default {
   color: var(--text-soft);
   font-size: 15px;
 }
-.palette__input::placeholder { color: rgba(157, 169, 184, 0.68); }
+.palette__input::placeholder { color: var(--text-dim); }
+.palette__search:focus-within { box-shadow: inset 0 -2px var(--focus-ring); }
 .palette__hint {
   font-size: 10px;
   color: var(--text-dim);
@@ -280,7 +281,7 @@ export default {
 .palette__icon { color: var(--text-dim); flex: 0 0 auto; }
 .palette__item.is-active .palette__icon { color: #54cbd8; }
 .palette__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.palette__label i { font-style: normal; color: #6f7b8c; }
+.palette__label i { font-style: normal; color: var(--text-dim); }
 .palette__badge {
   font-size: 10px;
   color: var(--text-dim);
@@ -330,7 +331,7 @@ export default {
   }
 
   .palette__card {
-    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
   }
 
   .palette__search {
@@ -347,7 +348,7 @@ export default {
 
   .palette__foot {
     gap: 10px;
-    overflow-x: auto;
+    flex-wrap: wrap;
   }
 }
 </style>

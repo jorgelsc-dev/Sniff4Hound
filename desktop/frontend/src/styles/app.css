@@ -12,6 +12,10 @@
   --v-font-body: var(--font-ui);
   --v-font-heading: var(--font-heading);
   --app-gutter: 20px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --focus-ring: #67ddeb;
   --bg-0: #080a0d;
   --bg-1: #0d1014;
   --bg-2: #12161b;
@@ -24,7 +28,7 @@
   --surface-2: #171c22;
   --surface-3: #1e242b;
   --text-soft: rgba(237, 241, 246, 0.88);
-  --text-dim: rgba(157, 169, 184, 0.82);
+  --text-dim: #a6b2c2;
   --brand-cyan: #0fe8ff;
   --brand-sky: #20c9ff;
   --brand-blue: #4b8fff;
@@ -37,7 +41,7 @@
   /* Neutral hairlines. Tinting every border with brand cyan/violet meant
      colour carried no information: a warning card and an idle card were the
      same glow. Colour is now reserved for state, borders just separate. */
-  --stroke: rgba(255, 255, 255, 0.09);
+  --stroke: rgba(255, 255, 255, 0.11);
   --stroke-strong: rgba(255, 255, 255, 0.16);
   --skel-a: rgba(21, 56, 91, 0.36);
   --skel-b: rgba(54, 143, 228, 0.34);
@@ -151,14 +155,14 @@ samp {
    shadow, so a page of them read as a pile of floating slabs competing for
    attention instead of a calm grid of content. */
 .v-card {
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--stroke);
   background: var(--surface-1);
   box-shadow: none;
   transition: border-color 0.16s ease, background-color 0.16s ease;
 }
 
-.v-card:hover {
+.v-card--link:hover {
   border-color: var(--stroke-strong);
 }
 
@@ -197,7 +201,7 @@ samp {
 
 .v-table {
   border: 1px solid var(--stroke);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--surface-0);
   max-width: 100%;
@@ -238,6 +242,7 @@ samp {
   text-transform: none;
   font-weight: 600;
   font-family: var(--font-heading);
+  border-radius: var(--radius-sm);
   transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.18s ease;
 }
 
@@ -250,12 +255,26 @@ samp {
   box-shadow: none;
 }
 
+/* Keep segmented controls joined when regular buttons gain rounded corners. */
+.v-btn-group > .v-btn {
+  border-radius: 0;
+}
+
+.v-btn-group > .v-btn:first-child {
+  border-start-start-radius: var(--radius-sm);
+  border-end-start-radius: var(--radius-sm);
+}
+
+.v-btn-group > .v-btn:last-child {
+  border-start-end-radius: var(--radius-sm);
+  border-end-end-radius: var(--radius-sm);
+}
+
 .v-btn:focus-visible,
 .v-chip:focus-visible,
-.v-field:focus-within,
 button:focus-visible,
 a:focus-visible {
-  outline: 2px solid rgba(var(--brand-cyan-rgb), 0.62);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -284,6 +303,21 @@ a:focus-visible {
   gap: 8px;
 }
 
+.v-alert__content {
+  overflow-wrap: anywhere;
+}
+
+.v-dialog .v-card {
+  border-radius: var(--radius-lg);
+}
+
+.v-menu .v-list {
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.36);
+}
+
 .v-dialog > .v-overlay__content {
   max-height: calc(100dvh - 48px);
 }
@@ -308,8 +342,17 @@ a:focus-visible {
 }
 
 .v-field {
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   color: rgba(233, 243, 255, 0.96);
+  transition: box-shadow 0.16s ease;
+}
+
+.v-field--focused {
+  box-shadow: 0 0 0 3px rgba(var(--brand-cyan-rgb), 0.12);
+}
+
+.v-field--error.v-field--focused {
+  box-shadow: 0 0 0 3px rgba(var(--v-theme-error), 0.16);
 }
 
 .v-field input,
@@ -328,12 +371,17 @@ a:focus-visible {
   color: rgba(233, 243, 255, 0.96) !important;
 }
 
-.v-field .v-label,
-.v-field .v-field-label,
-.v-field .v-field__prepend-inner .v-icon,
-.v-field .v-field__append-inner .v-icon,
-.v-field .v-field__clearable .v-icon {
-  color: rgba(188, 206, 229, 0.9) !important;
+.v-field:not(.v-field--error):not(.v-field--focused) .v-field-label {
+  color: var(--text-dim);
+}
+
+/* Keep validation and focus colours supplied by Vuetify visible. */
+.v-field--error .v-field-label {
+  color: rgb(var(--v-theme-error));
+}
+
+.v-input--disabled .v-field {
+  box-shadow: none;
 }
 
 .v-field input::placeholder,
@@ -388,7 +436,8 @@ a {
 }
 
 * {
-  scrollbar-color: rgba(var(--brand-sky-rgb), 0.52) rgba(5, 10, 16, 0.6);
+  scrollbar-color: #566476 var(--surface-0);
+  scrollbar-width: thin;
 }
 
 ::selection {

@@ -122,22 +122,28 @@ export default {
 .dashboard-toolbar, .dashboard-links, .stat-heading, .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dashboard-toolbar { margin-bottom: 16px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--stroke); }
 .dashboard-links { flex-wrap: wrap; gap: 4px; }
-.metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(174px, 1fr)); gap: 10px; margin-bottom: 16px; }
-.stat-card { padding: 14px; border-radius: 8px; background: var(--surface-1); }
-.stat-heading { font-size: .78rem; color: var(--text-dim); }
+.metrics-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.stat-card { padding: 16px; border-radius: var(--radius-md); background: var(--surface-1); }
+.stat-heading { min-height: 2.8em; align-items: flex-start; font-size: .8125rem; color: var(--text-dim); }
+.stat-heading .v-icon { flex: 0 0 auto; margin-top: 2px; }
 .stat-value { font-size: 1.75rem; font-weight: 700; font-family: var(--font-mono); margin: 8px 0 3px; overflow-wrap: anywhere; letter-spacing: 0; }
 .charts-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .activity-card { grid-column: span 2; }
-.activity-card { padding: 18px; border-radius: 8px; }
+.activity-card { padding: 20px; border-radius: var(--radius-md); }
 h2 { font-size: 1rem; font-weight: 600; }
-.panel-heading p { font-size: .75rem; opacity: .65; margin-top: 4px; }
+.panel-heading p { font-size: .75rem; color: var(--text-dim); margin-top: 4px; }
 .activity-chart { display: flex; gap: 7px; height: 198px; margin-top: 18px; overflow-x: auto; }
 .activity-column { flex: 1; min-width: 30px; display: flex; flex-direction: column; align-items: center; }
-.activity-count, .activity-date { font-size: .65rem; opacity: .7; white-space: nowrap; }
+.activity-count, .activity-date { font-size: .6875rem; color: var(--text-dim); white-space: nowrap; }
 .activity-track { height: 148px; width: 100%; display: flex; align-items: flex-end; border-bottom: 1px solid rgba(120, 190, 220, .2); margin: 8px 0; background: repeating-linear-gradient(to top, transparent 0, transparent 36px, rgba(120, 190, 220, .07) 37px); }
 .activity-bar { width: 68%; margin: 0 auto; background: linear-gradient(0deg, #17618f, #32d4e5); border-radius: 4px 4px 0 0; min-height: 2px; }
-.empty-chart { min-height: 198px; display: grid; place-content: center; justify-items: center; gap: 12px; opacity: .65; font-size: .85rem; color: var(--text-dim); }
+.empty-chart { min-height: 198px; display: grid; place-content: center; justify-items: center; gap: 12px; font-size: .85rem; color: var(--text-dim); text-align: center; }
 .metrics-grid > *, .charts-grid > * { min-width: 0; }
-@media (max-width: 1280px) { .charts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1280px) {
+  .metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .charts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 700px) { .charts-grid { grid-template-columns: minmax(0, 1fr); } .activity-card { grid-column: auto; } }
+@media (max-width: 720px) { .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .metrics-grid { grid-template-columns: minmax(0, 1fr); } .stat-heading { min-height: 0; } }
 </style>

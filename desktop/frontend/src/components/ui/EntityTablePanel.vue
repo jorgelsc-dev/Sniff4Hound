@@ -1049,7 +1049,7 @@ export default {
 
 <style scoped>
 .entity-table-wrap {
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   scroll-margin-top: 64px;
 }
 
@@ -1094,8 +1094,7 @@ export default {
   position: sticky;
   top: 0;
   z-index: 2;
-  backdrop-filter: blur(12px);
-  background: rgba(8, 14, 22, 0.94);
+  background: var(--surface-2);
 }
 
 .entity-data-table :deep(tbody tr) {
@@ -1103,7 +1102,7 @@ export default {
 }
 
 .entity-data-table :deep(tbody td) {
-  border-bottom: 1px solid rgba(99, 173, 219, 0.1);
+  border-bottom: 1px solid var(--stroke);
   vertical-align: middle;
   padding-block: 6px;
 }
@@ -1113,7 +1112,7 @@ export default {
 }
 
 .entity-data-table :deep(tbody tr:hover > td) {
-  background: rgba(14, 23, 36, 0.88);
+  background: var(--surface-2);
 }
 
 .entity-data-table :deep(.v-data-table__td--expanded-row) {
@@ -1137,22 +1136,21 @@ export default {
 }
 
 .entity-data-table__expanded-cell {
-  background: rgba(6, 12, 22, 0.52);
+  background: var(--surface-0);
 }
 
 .entity-json-panel {
   padding: 14px 16px;
-  border-top: 1px solid rgba(99, 173, 219, 0.14);
-  background: linear-gradient(180deg, rgba(11, 19, 31, 0.94), rgba(7, 13, 21, 0.88));
+  border-top: 1px solid var(--stroke);
+  background: var(--surface-0);
 }
 
 .entity-json-panel__label {
   margin-bottom: 10px;
-  color: rgba(158, 196, 225, 0.8);
+  color: var(--text-dim);
   font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0;
 }
 
 .entity-json {
@@ -1185,7 +1183,7 @@ export default {
 }
 
 .entity-data-table :deep(.v-data-table__tr--mobile) {
-  background: linear-gradient(180deg, rgba(10, 17, 28, 0.9), rgba(7, 12, 20, 0.84));
+  background: var(--surface-0);
 }
 
 .entity-data-table :deep(.v-data-table__tr--mobile .v-data-table__td) {
@@ -1196,11 +1194,10 @@ export default {
 }
 
 .entity-data-table :deep(.v-data-table__tr--mobile .v-data-table__td-title) {
-  color: rgba(158, 196, 225, 0.78);
+  color: var(--text-dim);
   font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0;
 }
 
 .entity-data-table :deep(.v-data-table__tr--mobile .v-data-table__td-value) {
@@ -1253,8 +1250,8 @@ export default {
   /* WCAG 2.2 target-size-minimum (24x24 CSS px) - these were 16x16 with a
      2px gap, well under it (finding 1.28). The icon itself stays small
      (size="12" in the template); only the hit area grows. */
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: none;
   border-radius: 4px;
@@ -1310,8 +1307,8 @@ export default {
 .column-picker-menu {
   max-height: 320px;
   overflow-y: auto;
-  border: 1px solid rgba(104, 178, 221, 0.2);
-  background: linear-gradient(180deg, rgba(7, 14, 24, 0.98), rgba(4, 10, 18, 0.98));
+  border: 1px solid var(--stroke-strong);
+  background: var(--surface-2);
   box-shadow: 0 18px 38px rgba(2, 8, 14, 0.34);
 }
 

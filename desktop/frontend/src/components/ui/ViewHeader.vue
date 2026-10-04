@@ -131,6 +131,7 @@ export default {
 .view-header__title {
   letter-spacing: 0;
   overflow-wrap: anywhere;
+  text-wrap: balance;
 }
 
 .view-header__description {
@@ -148,8 +149,15 @@ export default {
 }
 
 .time-range-toggle {
-  height: 32px;
-  border-radius: 8px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+}
+
+.time-range {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 3px;
+  margin: -3px;
 }
 
 .time-range-toggle :deep(.v-btn) {
@@ -170,7 +178,6 @@ export default {
     width: 100%;
     justify-content: flex-start;
     margin-left: 0;
-    overflow-x: auto;
     padding-bottom: 2px;
     margin-top: 12px;
   }
