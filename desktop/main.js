@@ -1,9 +1,9 @@
-const { app, BrowserWindow, Menu, ipcMain, shell, dialog, protocol, session } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, net, shell, dialog, protocol, session } = require("electron");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
-const fs = require("node:fs");
-const http = require("node:http");
+const { StringDecoder } = require("node:string_decoder");
 const https = require("node:https");
+const fs = require("node:fs");
 const path = require("node:path");
 const { URL, URLSearchParams } = require("./lib/simple-url");
 
@@ -64,6 +64,15 @@ if (!desktopDebugDisabled) {
   app.commandLine.appendSwitch("remote-debugging-port", desktopDebugPortRaw);
   app.commandLine.appendSwitch("remote-allow-origins", "*");
 }
+
+// The runtime's certificate is issued by a private CA. Chromium's QUIC stack
+// does not consult the session's verify proc, so HTTP/3 to a loopback runtime
+// could never validate it. This switch lets Chromium accept loopback TLS
+// without that validation, which makes HTTP/3 work for the local runtime.
+// Trade-off, accepted deliberately: loopback TLS is not pinned to the CA in
+// this process, and remote sensors over the LAN still use the pinned path
+// (TCP; HTTP/3 needs a trusted certificate there).
+app.commandLine.appendSwitch("allow-insecure-localhost");
 
 // Every path that hands a URL to shell.openExternal() (new-window clicks,
 // blocked in-window navigations, the menu's GitHub link, and the
@@ -213,9 +222,16 @@ function runtimeCertificateIsPinnedForHost(hostname, certificate) {
   return false;
 }
 
-function installRuntimeCertificateTrust() {
-  if (certificateTrustInstalled) return;
-  certificateTrustInstalled = true;
+// The session verify proc pins a remote runtime's CA for TCP requests (including
+// the main process's own net requests). It is installed only when a non-loopback
+// runtime is connected: installing it at all makes Chromium's QUIC stack ignore
+// the loopback switch (see allow-insecure-localhost above), and loopback is the
+// one case HTTP/3 needs to reach.
+let remoteVerifyProcInstalled = false;
+
+function installRemoteVerifyProc() {
+  if (remoteVerifyProcInstalled) return;
+  remoteVerifyProcInstalled = true;
   session.defaultSession.setCertificateVerifyProc((request, callback) => {
     if (request.verificationResult === "net::OK") {
       callback(0);
@@ -231,6 +247,11 @@ function installRuntimeCertificateTrust() {
     }
     callback(-2);
   });
+}
+
+function installRuntimeCertificateTrust() {
+  if (certificateTrustInstalled) return;
+  certificateTrustInstalled = true;
   app.on("certificate-error", (event, _webContents, url, _error, certificate, callback) => {
     const origin = normalizeOrigin(url);
     let hostname = "";
@@ -574,47 +595,170 @@ function parseRemoteTarget(payload) {
   };
 }
 
-function requestText(url, headers = {}, optionsOverride = {}) {
-  return new Promise((resolve, reject) => {
-    const client = url.protocol === "https:" ? https : http;
-    // Built as a plain options object (hostname/port/path) rather than
-    // handing `url` straight to client.request(): that overload only
-    // special-cases Node's own `URL` instances, and our SimpleURL isn't one
-    // - passed directly it would silently be treated as the options
-    // argument and shift the real options (method/headers/timeout) into the
-    // callback slot instead.
-    const options = {
-      hostname: url.hostname,
-      port: url.port || (url.protocol === "https:" ? 443 : 80),
-      path: `${url.pathname}${url.search}`,
-      method: "GET",
-      headers,
-      timeout: 7000,
-      ...optionsOverride,
-    };
-    const request = client.request(
-      options,
-      (response) => {
-        let body = "";
-        response.setEncoding("utf8");
+// Runs on Electron's net module, i.e. Chromium's network stack, because that is
+// the one that speaks HTTP/3: Node's https cannot. Trust for the runtime CA is
+// applied by the session's certificate verify proc (installRuntimeCertificateTrust),
+// which net requests go through too, so no per-request `ca` option is needed.
+function performRequest({ method = "GET", url, headers = {}, body = null, limit = 1024 * 1024, timeoutMs = 7000 }) {
+  const target = new URL(String(url));
+  if (target.protocol === "https:" && isLoopbackHost(target.hostname)) {
+    // The main process's own checks against a loopback runtime. net's TCP path
+    // does not honour the loopback switch, so it is pinned here with node:https,
+    // which takes the CA explicitly. The UI's data traffic does not come this way.
+    const trusted = trustedCaForOrigin(target.origin);
+    if (!trusted) return Promise.reject(new Error("Runtime certificate is not pinned."));
+    return new Promise((resolve, reject) => {
+      const req = https.request({
+        method,
+        hostname: target.hostname,
+        port: target.port || 443,
+        path: `${target.pathname}${target.search}`,
+        headers,
+        ca: trusted.caPem,
+        timeout: timeoutMs,
+      }, (response) => {
+        const chunks = [];
+        let size = 0;
         response.on("data", (chunk) => {
-          body += chunk;
-          if (body.length > 1024 * 1024) request.destroy(new Error("Response is too large."));
-        });
-        response.on("end", () => {
-          if (response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new Error(`Remote backend returned HTTP ${response.statusCode}.`));
+          size += chunk.length;
+          if (size > limit) {
+            req.destroy(new Error("Response is too large."));
             return;
           }
-          resolve(body);
+          chunks.push(chunk);
         });
-      },
-    );
-    request.on("timeout", () => request.destroy(new Error("Remote backend timed out.")));
-    request.on("error", reject);
+        response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+        response.on("error", reject);
+      });
+      req.on("timeout", () => req.destroy(new Error("Remote backend timed out.")));
+      req.on("error", reject);
+      if (body !== null && body !== undefined) req.write(body);
+      req.end();
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const request = net.request({ method, url: String(url), redirect: "error" });
+    for (const [name, value] of Object.entries(headers || {})) {
+      request.setHeader(name, value);
+    }
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const timer = setTimeout(() => {
+      request.abort();
+      finish(new Error("Remote backend timed out."));
+    }, timeoutMs);
+    request.on("response", (response) => {
+      const chunks = [];
+      let size = 0;
+      response.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > limit) {
+          request.abort();
+          finish(new Error("Response is too large."));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on("end", () => {
+        finish(null, {
+          status: response.statusCode,
+          body: Buffer.concat(chunks).toString("utf8"),
+        });
+      });
+      response.on("error", (error) => finish(error));
+    });
+    request.on("error", (error) => finish(error));
+    if (body !== null && body !== undefined) request.write(body);
     request.end();
   });
 }
+
+function requestText(url, headers = {}) {
+  return performRequest({ url, headers }).then((result) => {
+    if (result.status < 200 || result.status >= 300) {
+      throw new Error(`Remote backend returned HTTP ${result.status}.`);
+    }
+    return result.body;
+  });
+}
+
+// --- Renderer HTTP bridge --------------------------------------------------
+//
+// The renderer's own QUIC attempts are not dependable under Chromium's
+// renderer network stack, so the UI's requests and its realtime stream go
+// through here instead: the main process speaks HTTP/3 to the runtime and hands
+// the answers back. Only origins whose CA the user has pinned (trustedRuntimeCas,
+// set when a runtime is connected) are reachable, so this cannot be used as an
+// open proxy from the renderer.
+
+const HTTP_BRIDGE_BODY_LIMIT = 32 * 1024 * 1024;
+const httpStreams = new Map();
+
+function bridgeTargetAllowed(rawUrl) {
+  const origin = normalizeOrigin(rawUrl);
+  return Boolean(origin) && origin.startsWith("https://") && Boolean(trustedCaForOrigin(origin));
+}
+
+function bridgeRequestOptions(payload) {
+  if (!payload || typeof payload !== "object") throw new Error("Invalid request.");
+  if (!bridgeTargetAllowed(payload.url)) throw new Error("Request target is not a pinned runtime.");
+  return {
+    method: String(payload.method || "GET").toUpperCase(),
+    url: String(payload.url),
+    headers: payload.headers && typeof payload.headers === "object" ? payload.headers : {},
+    body: typeof payload.body === "string" ? payload.body : null,
+    limit: HTTP_BRIDGE_BODY_LIMIT,
+    timeoutMs: 30000,
+  };
+}
+
+ipcMain.handle("desktop-http:request", (_event, payload) => performRequest(bridgeRequestOptions(payload)));
+
+ipcMain.handle("desktop-http:stream-open", (event, payload) => {
+  const options = bridgeRequestOptions({ ...payload, method: "GET" });
+  const id = String(payload.id || "");
+  if (!id || httpStreams.has(id)) throw new Error("Invalid stream id.");
+  const decoder = new StringDecoder("utf8");
+  const send = (message) => {
+    if (!event.sender.isDestroyed()) event.sender.send("desktop-http:stream", { id, ...message });
+  };
+  const request = net.request({ method: "GET", url: options.url, redirect: "error" });
+  for (const [name, value] of Object.entries(options.headers)) request.setHeader(name, value);
+  httpStreams.set(id, request);
+  request.on("response", (response) => {
+    response.on("data", (chunk) => send({ type: "data", chunk: decoder.write(chunk) }));
+    response.on("end", () => {
+      httpStreams.delete(id);
+      send({ type: "end", status: response.statusCode });
+    });
+    response.on("error", (error) => {
+      httpStreams.delete(id);
+      send({ type: "error", message: error.message });
+    });
+  });
+  request.on("error", (error) => {
+    httpStreams.delete(id);
+    send({ type: "error", message: error.message });
+  });
+  request.end();
+  return { id };
+});
+
+ipcMain.handle("desktop-http:stream-close", (_event, payload) => {
+  const id = String((payload && payload.id) || "");
+  const request = httpStreams.get(id);
+  if (request) {
+    httpStreams.delete(id);
+    request.abort();
+  }
+  return { closed: Boolean(request) };
+});
 
 async function requestJson(url, headers = {}, optionsOverride = {}) {
   const body = await requestText(url, headers, optionsOverride);
@@ -886,6 +1030,7 @@ function stopBackend(options = {}) {
 
 async function connectRemote(payload) {
   const parsed = parseRemoteTarget(payload || {});
+  if (!isLoopbackHost(parsed.host)) installRemoteVerifyProc();
   sendLauncherStatus("Checking remote backend...");
   const verified = await verifyRemoteConnection(parsed);
   if (backendProcess) {

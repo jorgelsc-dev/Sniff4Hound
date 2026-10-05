@@ -14,7 +14,7 @@ dependencies = [
   "regex>=2025.7.34",
   # HTTP/3 needs wsbuilder's QUIC stack, which is on main and not yet on PyPI
   # (the last release is 0.25.8). Pinned to a commit until it is released.
-  "wsbuilder[tls] @ git+https://github.com/jorgelsc-dev/wsbuilder@c6fab7f32c1ba91b02abc67d6d89d565459d4b3e",
+  "wsbuilder[tls] @ git+https://github.com/jorgelsc-dev/wsbuilder@4f258e7ca30e0eda9de8e7840c85ce0f719ccf97",
 ]
 keywords = ["network", "sniffer", "packet-capture", "sqlite", "websocket", "monitoring"]
 classifiers = [

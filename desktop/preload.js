@@ -15,4 +15,14 @@ contextBridge.exposeInMainWorld("sniff4houndDesktop", {
   maximize: () => ipcRenderer.invoke("desktop-window:maximize"),
   close: () => ipcRenderer.invoke("desktop-window:close"),
   openExternal: (url) => ipcRenderer.invoke("desktop-shell:open-external", String(url || "")),
+  // HTTP through the main process, which speaks HTTP/3 to the pinned runtime.
+  httpRequest: (payload) => ipcRenderer.invoke("desktop-http:request", payload || {}),
+  httpStreamOpen: (payload) => ipcRenderer.invoke("desktop-http:stream-open", payload || {}),
+  httpStreamClose: (id) => ipcRenderer.invoke("desktop-http:stream-close", { id: String(id || "") }),
+  onHttpStream: (handler) => {
+    if (typeof handler !== "function") return () => {};
+    const listener = (_event, message) => handler(message);
+    ipcRenderer.on("desktop-http:stream", listener);
+    return () => ipcRenderer.removeListener("desktop-http:stream", listener);
+  },
 });
