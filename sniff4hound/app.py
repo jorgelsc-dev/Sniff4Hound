@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import queue
 import secrets
 from urllib.parse import urlencode, urlparse
 import sys
@@ -3799,6 +3800,70 @@ for _feed_name in WS_FEEDS:
     )(_make_feed_handler(_feed_name))
 
 
+def _realtime_dispatch(ws, request, data: dict) -> None:
+    """One client action, answered on `ws`. Shared by the websocket and the
+    SSE realtime channel, so both speak exactly the same protocol."""
+    action = str(data.get("action") or "").strip().lower()
+    if action == "scan_map_snapshot":
+        ws.send_text(_json_text({"type": "scan_map_snapshot", "data": store.map_snapshot(limit=safe_int(data.get("limit"), 100)), "generated_at": utc_now()}))
+    elif action == "runtime_snapshot":
+        ws.send_text(_json_text({"type": "runtime_mode", "runtime": runtime.snapshot(), "generated_at": utc_now()}))
+    elif action == "runtime_mode":
+        ws.send_text(_json_text({"type": "runtime_mode", "runtime": runtime.snapshot(), "generated_at": utc_now()}))
+    elif action == "subscribe_protocol_snapshot":
+        proto = normalize_protocol_name(data.get("proto") or "")
+        interval = safe_float(data.get("interval"), WS_SNAPSHOT_DEFAULT_INTERVAL_SECONDS)
+        # Clamped, not rejected: a client asking for 0 gets the floor
+        # rather than an error it would have to handle, and cannot
+        # spin the query loop either way.
+        interval = max(
+            WS_SNAPSHOT_MIN_INTERVAL_SECONDS,
+            min(WS_SNAPSHOT_MAX_INTERVAL_SECONDS, interval),
+        )
+        params = {
+            "proto": "" if proto == "all" else proto,
+            "mode": str(data.get("mode") or "").strip().lower(),
+            "interface": str(data.get("interface") or "").strip(),
+            "search": str(data.get("search") or "").strip(),
+            "since": str(data.get("since") or "").strip(),
+            "limit": _normalize_limit(data.get("limit"), default=250),
+        }
+        # Marked so the pusher keeps emitting the protocol_snapshot
+        # message this channel has always sent, rather than the
+        # feed_data envelope the /ws/<feed> routes use.
+        params["_legacy_channel"] = True
+        hub.subscribe_snapshot(ws, params, interval, feed="protocols")
+        _ensure_snapshot_pusher()
+        ws.send_text(_json_text({
+            "type": "protocol_snapshot_subscribed",
+            "protocol": params["proto"] or "all",
+            "interval": interval,
+            "limit": params["limit"],
+            "generated_at": utc_now(),
+        }))
+    elif action == "unsubscribe_protocol_snapshot":
+        hub.unsubscribe_snapshot(ws)
+        ws.send_text(_json_text({
+            "type": "protocol_snapshot_unsubscribed",
+            "generated_at": utc_now(),
+        }))
+    elif action == "get":
+        # One-shot read over the socket. `id` is echoed back so a
+        # client can have several in flight and still match answers to
+        # questions; without it the only safe pattern is one at a time.
+        result = _ws_get_result(request, data.get("path"), data.get("params") or {})
+        ws.send_text(_json_text({
+            "type": "get_result",
+            "id": str(data.get("id") or ""),
+            "path": str(data.get("path") or ""),
+            **result,
+            "generated_at": utc_now(),
+        }))
+    elif action == "ping":
+        ws.send_text(_json_text({"type": "pong", "generated_at": utc_now()}))
+    hub.touch(ws)
+
+
 @app.ws(
     "/ws/",
     keepalive_interval=WS_KEEPALIVE_INTERVAL_SECONDS,
@@ -3887,70 +3952,183 @@ def websocket_handler(ws, request=None):
                 continue
             if not isinstance(data, dict):
                 continue
-            action = str(data.get("action") or "").strip().lower()
-            if action == "scan_map_snapshot":
-                ws.send_text(_json_text({"type": "scan_map_snapshot", "data": store.map_snapshot(limit=safe_int(data.get("limit"), 100)), "generated_at": utc_now()}))
-            elif action == "runtime_snapshot":
-                ws.send_text(_json_text({"type": "runtime_mode", "runtime": runtime.snapshot(), "generated_at": utc_now()}))
-            elif action == "runtime_mode":
-                ws.send_text(_json_text({"type": "runtime_mode", "runtime": runtime.snapshot(), "generated_at": utc_now()}))
-            elif action == "subscribe_protocol_snapshot":
-                proto = normalize_protocol_name(data.get("proto") or "")
-                interval = safe_float(data.get("interval"), WS_SNAPSHOT_DEFAULT_INTERVAL_SECONDS)
-                # Clamped, not rejected: a client asking for 0 gets the floor
-                # rather than an error it would have to handle, and cannot
-                # spin the query loop either way.
-                interval = max(
-                    WS_SNAPSHOT_MIN_INTERVAL_SECONDS,
-                    min(WS_SNAPSHOT_MAX_INTERVAL_SECONDS, interval),
-                )
-                params = {
-                    "proto": "" if proto == "all" else proto,
-                    "mode": str(data.get("mode") or "").strip().lower(),
-                    "interface": str(data.get("interface") or "").strip(),
-                    "search": str(data.get("search") or "").strip(),
-                    "since": str(data.get("since") or "").strip(),
-                    "limit": _normalize_limit(data.get("limit"), default=250),
-                }
-                # Marked so the pusher keeps emitting the protocol_snapshot
-                # message this channel has always sent, rather than the
-                # feed_data envelope the /ws/<feed> routes use.
-                params["_legacy_channel"] = True
-                hub.subscribe_snapshot(ws, params, interval, feed="protocols")
-                _ensure_snapshot_pusher()
-                ws.send_text(_json_text({
-                    "type": "protocol_snapshot_subscribed",
-                    "protocol": params["proto"] or "all",
-                    "interval": interval,
-                    "limit": params["limit"],
-                    "generated_at": utc_now(),
-                }))
-            elif action == "unsubscribe_protocol_snapshot":
-                hub.unsubscribe_snapshot(ws)
-                ws.send_text(_json_text({
-                    "type": "protocol_snapshot_unsubscribed",
-                    "generated_at": utc_now(),
-                }))
-            elif action == "get":
-                # One-shot read over the socket. `id` is echoed back so a
-                # client can have several in flight and still match answers to
-                # questions; without it the only safe pattern is one at a time.
-                result = _ws_get_result(request, data.get("path"), data.get("params") or {})
-                ws.send_text(_json_text({
-                    "type": "get_result",
-                    "id": str(data.get("id") or ""),
-                    "path": str(data.get("path") or ""),
-                    **result,
-                    "generated_at": utc_now(),
-                }))
-            elif action == "ping":
-                ws.send_text(_json_text({"type": "pong", "generated_at": utc_now()}))
-            hub.touch(ws)
+            _realtime_dispatch(ws, request, data)
     except Exception:
         pass
     finally:
         hub.unregister(ws)
         access_log.log_websocket_close(request, ws_close_code, ws_started_at)
+
+
+# -- Realtime over server-sent events (HTTP/3-capable) --------------------
+#
+# Browsers cannot send a WebSocket over HTTP/3 yet, but they stream a response
+# and send requests over HTTP/3 just fine. The realtime channel therefore has
+# two halves: a streamed GET that carries everything the server pushes, and a
+# POST per client action. The POST's answers come back on the stream, so the
+# client sees the same message protocol as the websocket.
+
+REALTIME_QUEUE_LIMIT = 1000
+REALTIME_HEARTBEAT_SECONDS = 15.0
+_REALTIME_SESSIONS: dict[str, "RealtimeSession"] = {}
+_REALTIME_LOCK = threading.Lock()
+
+
+class RealtimeSession:
+    """One SSE client. It exposes the same surface the websocket hub and the
+    action dispatcher use, so both channels share one code path."""
+
+    def __init__(self, client_address):
+        self.id = secrets.token_urlsafe(24)
+        self.addr = ()
+        self.subprotocol = ""
+        self.client = client_address
+        self.closed = False
+        self.close_code = 1000
+        self._events = queue.Queue(maxsize=REALTIME_QUEUE_LIMIT)
+
+    def send_text(self, text: str) -> None:
+        if self.closed:
+            raise ConnectionError("realtime session is closed")
+        try:
+            self._events.put_nowait(("data", str(text)))
+        except queue.Full:
+            # A client that stops reading is dropped, the same as a websocket
+            # whose send buffer stops draining. The hub removes it on error.
+            raise ConnectionError("realtime client is too slow")
+
+    def send_ping(self, payload: bytes = b"") -> None:
+        try:
+            self._events.put_nowait(("ping", ""))
+        except queue.Full:
+            pass
+
+    def close(self, code: int = 1000, reason: str = "") -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.close_code = int(code or 1000)
+        try:
+            self._events.put_nowait(("close", {"code": self.close_code, "reason": str(reason or "")}))
+        except queue.Full:
+            pass
+
+    def next_event(self, timeout: float):
+        try:
+            return self._events.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+
+def _realtime_session_for(request) -> "RealtimeSession | None":
+    session_id = str(
+        (getattr(request, "query", None) or {}).get("session")
+        or _request_header(request, "X-Realtime-Session", "x-realtime-session")
+        or ""
+    ).strip()
+    with _REALTIME_LOCK:
+        session = _REALTIME_SESSIONS.get(session_id)
+    if session is None or session.closed:
+        return None
+    if session.client != _client_address(request):
+        return None
+    return session
+
+
+@app.view("/realtime/stream", methods=("GET",))
+def realtime_stream(request):
+    denied = _guard_websocket_auth(request)
+    if denied is not None:
+        # Answer the way the websocket did: an auth_required message, then a
+        # close with the auth code. EventSource cannot read a 401's status, so
+        # a plain error response would look like a network failure instead.
+        status = int(getattr(denied, "status", 401) or 401)
+        message = (
+            "Too many failed authentication attempts"
+            if status == 429
+            else "Invalid or missing security code"
+        )
+        denied_body = (
+            "data: " + _json_text({"type": "auth_required", "status": status, "message": message, "generated_at": utc_now()}) + "\n\n"
+            "event: close\ndata: " + _json_text({"code": WS_AUTH_CLOSE_CODE, "reason": "Unauthorized"}) + "\n\n"
+        )
+        return Response(
+            200,
+            body=denied_body,
+            headers={"content-type": "text/event-stream", "cache-control": "no-cache"},
+        )
+    feed_name = str((getattr(request, "query", None) or {}).get("feed") or "").strip()
+    if feed_name and feed_name not in WS_FEEDS:
+        return Response.json({"error": f"unknown feed {feed_name!r}"}, status=404)
+    session = RealtimeSession(_client_address(request))
+    with _REALTIME_LOCK:
+        _REALTIME_SESSIONS[session.id] = session
+    started_at = time.perf_counter()
+    access_log.log_websocket_open(request)
+    hub.register(session)
+
+    def events():
+        try:
+            # The session id goes out first and directly, so the client can
+            # send its first command as soon as the stream is open.
+            yield "data: " + _json_text({"type": "session", "session": session.id, "generated_at": utc_now()}) + "\n\n"
+            if feed_name:
+                # Same contract as /ws/<feed>: the subscription is what the URL
+                # asked for, and the reply says what the server accepted.
+                params = _normalize_feed_params(request)
+                interval = _normalize_refresh(request)
+                hub.subscribe_snapshot(session, params, interval, feed=feed_name)
+                _ensure_snapshot_pusher()
+                session.send_text(_json_text({
+                    "type": "feed_subscribed",
+                    "feed": feed_name,
+                    "params": params,
+                    "refresh_ms": int(interval * 1000),
+                    "generated_at": utc_now(),
+                }))
+            else:
+                session.send_text(_json_text({"type": "welcome", "message": "Sniff4Hound websocket connected", "generated_at": utc_now()}))
+            while True:
+                item = session.next_event(REALTIME_HEARTBEAT_SECONDS)
+                if item is None:
+                    # An SSE comment keeps proxies and the client's idle timer
+                    # from giving up on a quiet but healthy stream.
+                    yield ": keep-alive\n\n"
+                    continue
+                kind, value = item
+                if kind == "data":
+                    yield "data: " + value.replace("\n", "\ndata: ") + "\n\n"
+                elif kind == "ping":
+                    yield ": ping\n\n"
+                elif kind == "close":
+                    yield "event: close\ndata: " + _json_text(value) + "\n\n"
+                    break
+        finally:
+            hub.unregister(session)
+            with _REALTIME_LOCK:
+                _REALTIME_SESSIONS.pop(session.id, None)
+            access_log.log_websocket_close(request, session.close_code, started_at)
+
+    return Response(
+        200,
+        stream=events(),
+        headers={"content-type": "text/event-stream", "cache-control": "no-cache", "x-accel-buffering": "no"},
+    )
+
+
+@app.api("/api/realtime/command", methods=("POST",))
+def realtime_command(request):
+    session = _realtime_session_for(request)
+    if session is None:
+        return Response.json({"error": "unknown or closed realtime session"}, status=410)
+    try:
+        data = json.loads(bytes(request.body or b"").decode("utf-8", errors="ignore"))
+    except Exception:
+        return Response.json({"error": "body must be JSON"}, status=400)
+    if not isinstance(data, dict):
+        return Response.json({"error": "body must be a JSON object"}, status=400)
+    _realtime_dispatch(session, request, data)
+    return Response.json({"status": "accepted"}, status=202)
 
 
 # Routes that must answer on the calling request rather than through the
@@ -3971,6 +4149,7 @@ JOB_QUEUE_EXEMPT_PATHS = frozenset({
     PUBLIC_CA_PATH,
     "/api/app/shutdown",
     "/api/ws/ticket",
+    "/api/realtime/command",
 })
 JOB_QUEUE_EXEMPT_PREFIXES = ("/api/export", "/api/mobile-stream", "/favicons")
 
