@@ -435,7 +435,7 @@ class CaptureSupervisorWiringTests(unittest.TestCase):
 
         source = inspect.getsource(manage_module.main)
         stop_supervisor = source.index("capture_supervisor.stop()")
-        shutdown_index = source.index("shutdown_capture()\n        _stop_capture_child(")
+        shutdown_index = source.index("shutdown_capture()\n        if not embedded:\n            _stop_capture_child(")
         self.assertLess(stop_supervisor, shutdown_index)
 
     def test_main_signals_the_current_child_not_the_originally_spawned_one(self):

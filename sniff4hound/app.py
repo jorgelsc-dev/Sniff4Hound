@@ -48,6 +48,7 @@ from .settings import (
     PORT,
     TLS_ENABLED,
     TRUST_FORWARDED_HEADERS,
+    capture_embedded,
     resolve_ipc_call_timeout,
     resolve_ipc_connect_timeout,
     resolve_ipc_socket,
@@ -524,21 +525,35 @@ def _on_capture_event(payload: dict) -> None:
             runtime.mode = str(mode)
 
 
-ipc_client = IpcClient(
-    resolve_ipc_socket(PORT),
-    resolve_ipc_token(),
-    on_event=_on_capture_event,
-    connect_timeout=resolve_ipc_connect_timeout(),
-    call_timeout=resolve_ipc_call_timeout(),
-)
-runtime = RuntimeControllerClient(ipc_client)
+if capture_embedded():
+    # One process: the engines run here, not behind a socket. See
+    # embedded_capture.py. The controller keeps its own `mode`, so the
+    # runtime_mode events need no bookkeeping on this side.
+    from .embedded_capture import EmbeddedCapture
+
+    ipc_client = None
+    embedded_capture = EmbeddedCapture(hub.broadcast)
+    runtime = embedded_capture.runtime
+else:
+    embedded_capture = None
+    ipc_client = IpcClient(
+        resolve_ipc_socket(PORT),
+        resolve_ipc_token(),
+        on_event=_on_capture_event,
+        connect_timeout=resolve_ipc_connect_timeout(),
+        call_timeout=resolve_ipc_call_timeout(),
+    )
+    runtime = RuntimeControllerClient(ipc_client)
 
 
 def connect_capture_service() -> bool:
     """Connect to the privileged capture process. Must be called once
     before serving requests - `bootstrap_capture()`/the runtime endpoints
     would otherwise block/fail on the first real call instead of failing
-    fast with a clear error."""
+    fast with a clear error. With the engines embedded there is nothing to
+    connect to."""
+    if ipc_client is None:
+        return True
     try:
         ipc_client.connect()
     except Exception as exc:
@@ -4242,14 +4257,22 @@ def shutdown_capture():
         job_queue.shutdown()
     except (Exception, KeyboardInterrupt):
         pass
-    try:
-        ipc_client.call("shutdown")
-    except (Exception, KeyboardInterrupt):
-        pass
-    try:
-        ipc_client.close()
-    except (Exception, KeyboardInterrupt):
-        pass
+    if ipc_client is not None:
+        try:
+            ipc_client.call("shutdown")
+        except (Exception, KeyboardInterrupt):
+            pass
+        try:
+            ipc_client.close()
+        except (Exception, KeyboardInterrupt):
+            pass
+    if embedded_capture is not None:
+        # Engines, event delivery and their database connection, before the hub
+        # they deliver to is closed below.
+        try:
+            embedded_capture.close()
+        except (Exception, KeyboardInterrupt):
+            pass
     try:
         _snapshot_pusher_stop.set()
     except (Exception, KeyboardInterrupt):

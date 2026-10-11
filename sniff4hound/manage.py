@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import unicodedata
+import contextlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,7 @@ from .settings import (
     HOST,
     PORT,
     TLS_ENABLED,
+    capture_embedded,
     default_ipc_token_path,
     resolve_desktop_code_path,
     resolve_ipc_socket,
@@ -959,11 +961,18 @@ def _stop_interactive_console(
 
 def main():
     """Combined single-command entry point (`sniff4hound`). Self-elevates to
-    root if needed (see _ensure_running_as_root()) and then runs the web
-    server + database and a `sniff4hound-capture` child - talking to it over
-    local IPC for raw-socket access - as a single privileged process tree."""
+    root if needed (see _ensure_running_as_root()) and then runs everything -
+    web server, database, sniffer and honeypot - as one privileged process: the
+    capture engines run inside it, with no child and no IPC in between.
+
+    SNIFF4HOUND_CAPTURE_EMBEDDED=0 restores the older shape, a
+    `sniff4hound-capture` child driven over local IPC, for anyone who wants the
+    web server and the engines in separate processes."""
     if not _ensure_running_as_root():
         return 1
+    # Decided before sniff4hound.app is imported, which reads it.
+    os.environ.setdefault("SNIFF4HOUND_CAPTURE_EMBEDDED", "1")
+    embedded = capture_embedded()
     reset_process_shutdown_request()
     tty_attrs = _snapshot_tty_attrs()
     host = str(HOST)
@@ -979,26 +988,28 @@ def main():
         _print_address_in_use_error(host, requested_port)
         return 1
 
-    ipc_socket = resolve_ipc_socket(selected_port)
+    # Only the separate-capture-process shape has a socket and a token file.
+    ipc_socket = None if embedded else resolve_ipc_socket(selected_port)
     # The token reaches the privileged child through a 0600 file whose path
     # (never its contents) is what goes on the `sudo env ...` command line -
     # /proc/<pid>/cmdline is world-readable, so the old
     # `SNIFF4HOUND_IPC_TOKEN=<64 hex>` argument handed the capture channel's
     # shared secret to every local user for the life of the process. The file
     # is removed as soon as the child has connected, and again on shutdown.
-    ipc_token_file = default_ipc_token_path(ipc_socket)
+    ipc_token_file = None if embedded else default_ipc_token_path(ipc_socket)
     shutdown_capture = lambda: None
     try:
-        with _capture_start_lock(ipc_socket):
-            _clear_stale_capture_socket(ipc_socket)
-            ipc_token = resolve_ipc_token() or generate_ipc_token()
-            if not write_ipc_token_file(ipc_token_file, ipc_token):
-                print(f"[!] Could not write the capture IPC token file at {ipc_token_file}.", file=sys.stderr)
-                return 1
-            os.environ["SNIFF4HOUND_IPC_SOCKET"] = ipc_socket
-            os.environ["SNIFF4HOUND_IPC_TOKEN_FILE"] = ipc_token_file
-            os.environ["SNIFF4HOUND_IPC_OWNER_UID"] = str(_resolve_owner_uid())
-            os.environ.pop("SNIFF4HOUND_IPC_TOKEN", None)
+        with (contextlib.nullcontext() if embedded else _capture_start_lock(ipc_socket)):
+            if not embedded:
+                _clear_stale_capture_socket(ipc_socket)
+                ipc_token = resolve_ipc_token() or generate_ipc_token()
+                if not write_ipc_token_file(ipc_token_file, ipc_token):
+                    print(f"[!] Could not write the capture IPC token file at {ipc_token_file}.", file=sys.stderr)
+                    return 1
+                os.environ["SNIFF4HOUND_IPC_SOCKET"] = ipc_socket
+                os.environ["SNIFF4HOUND_IPC_TOKEN_FILE"] = ipc_token_file
+                os.environ["SNIFF4HOUND_IPC_OWNER_UID"] = str(_resolve_owner_uid())
+                os.environ.pop("SNIFF4HOUND_IPC_TOKEN", None)
             # DATA_DIR (and so the default DB_PATH, honeypot log/db/certs - see
             # settings.py and honeypot.py) defaults to this process's home
             # directory. _ensure_running_as_root() already pins this before
@@ -1029,20 +1040,21 @@ def main():
                 _print_db_permission_error(exc)
                 return 1
 
-            capture_process = _spawn_capture_child(ipc_socket, ipc_token_file)
-            if capture_process is None:
-                return 1
+            if not embedded:
+                capture_process = _spawn_capture_child(ipc_socket, ipc_token_file)
+                if capture_process is None:
+                    return 1
 
-            time.sleep(0.2)
-            if capture_process.poll() is not None:
-                print(f"[!] Capture process exited immediately (code {capture_process.returncode}).", file=sys.stderr)
-                return 1
-            if not connect_capture_service():
-                print("[!] Sniff4Hound cannot start without the capture process. See the error above.", file=sys.stderr)
-                return 1
-            # The child has authenticated by now, so nothing needs the file any
-            # more - shrink the window in which it exists at all.
-            _remove_ipc_token_file(ipc_token_file)
+                time.sleep(0.2)
+                if capture_process.poll() is not None:
+                    print(f"[!] Capture process exited immediately (code {capture_process.returncode}).", file=sys.stderr)
+                    return 1
+                if not connect_capture_service():
+                    print("[!] Sniff4Hound cannot start without the capture process. See the error above.", file=sys.stderr)
+                    return 1
+                # The child has authenticated by now, so nothing needs the file any
+                # more - shrink the window in which it exists at all.
+                _remove_ipc_token_file(ipc_token_file)
 
         # sudo's password/fingerprint prompt for the capture child we just
         # waited on can leave the shared controlling terminal in raw mode
@@ -1065,14 +1077,15 @@ def main():
             )
         # app.run() below blocks until shutdown, so nothing in this function
         # would ever look at the capture child again - this thread does.
-        capture_supervisor = CaptureSupervisor(
-            process=capture_process,
-            ipc_socket=ipc_socket,
-            ipc_token_file=ipc_token_file,
-            ipc_token=ipc_token,
-            reconnect=connect_capture_service,
-        )
-        capture_supervisor.start()
+        if not embedded:
+            capture_supervisor = CaptureSupervisor(
+                process=capture_process,
+                ipc_socket=ipc_socket,
+                ipc_token_file=ipc_token_file,
+                ipc_token=ipc_token,
+                reconnect=connect_capture_service,
+            )
+            capture_supervisor.start()
         bootstrap_capture()
         if tls_material:
             from .http3_listener import start_http3, stop_http3
@@ -1103,8 +1116,9 @@ def main():
             stop_http3(http3_server)
         _stop_interactive_console(console_thread)
         shutdown_capture()
-        _stop_capture_child(capture_process)
-        _remove_ipc_token_file(ipc_token_file)
+        if not embedded:
+            _stop_capture_child(capture_process)
+            _remove_ipc_token_file(ipc_token_file)
         reset_process_shutdown_request()
     return 0
 
@@ -1118,6 +1132,9 @@ def main_web():
     if _running_as_root():
         _print_root_invocation_error()
         return 1
+    # Always the split: this process has no privileges to run the engines with,
+    # whatever the environment says. Decided before sniff4hound.app is imported.
+    os.environ["SNIFF4HOUND_CAPTURE_EMBEDDED"] = "0"
     reset_process_shutdown_request()
     host = str(HOST)
     requested_port = int(PORT)
