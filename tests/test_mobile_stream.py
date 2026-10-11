@@ -1,19 +1,31 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
 
 import queue
 
 from sniff4hound.mobile_stream import (
+    LOG_BACKLOG,
+    LOG_MESSAGE_LIMIT,
     PAIRING_APPROVAL_TTL_SECONDS,
     PAIRING_TTL_SECONDS,
     MobileServerState,
     MobileSession,
     MobileStreamService,
     Pairing,
+    _log_rank,
     _now,
     _public_event,
+    _public_log,
+    _scrub_log_text,
+    _session_page,
+    normalize_log_level,
 )
 
 
@@ -284,6 +296,289 @@ class MobileStreamEventTests(unittest.TestCase):
         })
 
         self.assertNotIn("supersecret123", json.dumps(event).lower())
+
+
+class MobileStreamLogFormatTests(unittest.TestCase):
+    """The stream is specified never to carry captured payloads or secrets. A
+    log line interpolates request lines, headers and exception text, so what a
+    phone may see of one is cut down to a few fields and scrubbed."""
+
+    def test_a_log_line_carries_only_level_source_logger_and_message(self):
+        event = _public_log(
+            {
+                "timestamp": "2026-10-11T00:00:01.000000+00:00",
+                "level": "WARNING",
+                "logger": "sniff4hound.honeypot",
+                "message": "listener restarted",
+                "module": "honeypot",
+                "function": "_serve",
+                "line": 1100,
+                # What a record can carry besides its message: all of it stays home.
+                "sql": "SELECT payload_text FROM packets WHERE src_ip = '203.0.113.9'",
+                "job": "9c6a12346bd54cd8a6c478b91e2f77de",
+                "exception": 'Traceback (most recent call last):\n  File "/root/app.py", line 4',
+            },
+            "capture",
+        )
+
+        self.assertEqual(
+            set(event),
+            {"type", "generated_at", "level", "source", "logger", "message"},
+        )
+        self.assertEqual(event["type"], "log")
+        self.assertEqual(event["level"], "WARNING")
+        self.assertEqual(event["source"], "capture")
+        self.assertEqual(event["logger"], "honeypot", "the package prefix adds nothing on a phone")
+        self.assertEqual(event["message"], "listener restarted")
+        self.assertNotIn("SELECT", json.dumps(event))
+        self.assertNotIn("Traceback", json.dumps(event))
+
+    def test_secrets_in_a_message_are_redacted_and_the_rest_is_kept(self):
+        cases = {
+            "login failed code=Ab12Cd34 from 203.0.113.9": "Ab12Cd34",
+            "GET /api/feed?ticket=abc123def456&refresh=1 -> 200": "abc123def456",
+            "Authorization: Bearer abcdefghijklmnop12345": "abcdefghijklmnop12345",
+            "rejected X-Security-Code: Zz9Yy8Xx": "Zz9Yy8Xx",
+            "session token 0123456789abcdef0123456789abcdef0123": "0123456789abcdef0123456789abcdef0123",
+            "password='hunter2 hunter3' was refused": "hunter2",
+            'cookie: "sid=abc; theme=dark"': "sid=abc",
+        }
+        for message, secret in cases.items():
+            with self.subTest(message=message):
+                scrubbed = _scrub_log_text(message)
+                self.assertNotIn(secret, scrubbed)
+                self.assertIn("[redacted]", scrubbed)
+        # Redaction is not a blanket wipe: the parts around it still read.
+        self.assertEqual(
+            _scrub_log_text("login failed code=Ab12Cd34 from 203.0.113.9"),
+            "login failed code=[redacted] from 203.0.113.9",
+        )
+        self.assertIn("refresh=1", _scrub_log_text("GET /api/feed?ticket=abc123def456&refresh=1 -> 200"))
+        # A scheme and its token are one secret, not two.
+        self.assertEqual(
+            _scrub_log_text("Authorization: Bearer abcdefghijklmnop12345 refused on tcp/8080"),
+            "Authorization: [redacted] refused on tcp/8080",
+        )
+        # A bare bearer token with no key in front of it still goes.
+        self.assertNotIn("abcdefghijklmnop12345", _scrub_log_text("sent Bearer abcdefghijklmnop12345 upstream"))
+
+    def test_a_message_is_flattened_and_cut_to_length(self):
+        flat = _scrub_log_text("first line\nsecond\tline\r\n\x1b[31mred\x1b[0m")
+        self.assertNotRegex(flat, r"[\x00-\x1f\x7f]")
+        self.assertEqual(flat.split()[:2], ["first", "line"])
+
+        long_text = _scrub_log_text("word " * 200)
+        self.assertEqual(len(long_text), LOG_MESSAGE_LIMIT)
+        self.assertTrue(long_text.endswith("…"))
+
+    def test_an_empty_message_is_not_worth_sending(self):
+        self.assertIsNone(_public_log({"level": "INFO", "message": "  \n "}, "web"))
+        self.assertIsNone(_public_log("not a record", "web"))
+
+    def test_levels(self):
+        self.assertEqual(normalize_log_level("warning"), "WARNING")
+        self.assertEqual(normalize_log_level(" Debug "), "DEBUG")
+        for bad in ("TRACE", "", None, "CRITICAL", "off"):
+            with self.subTest(bad=bad):
+                self.assertIsNone(normalize_log_level(bad), "a phone can only ask for a level the settings offer")
+        self.assertGreater(_log_rank("CRITICAL"), _log_rank("ERROR"))
+        self.assertGreater(_log_rank("ERROR"), _log_rank("WARNING"))
+        self.assertGreater(_log_rank("INFO"), _log_rank("DEBUG"))
+        # An unknown level is shown as INFO rather than dropped or ranked below DEBUG.
+        self.assertEqual(_public_log({"level": "NOTICE", "message": "x"}, "web")["level"], "INFO")
+
+    def test_log_lines_do_not_come_through_the_event_hub(self):
+        # Logs are read from the log files, never accepted from the runtime's
+        # event hub, so nothing that reaches record_event can smuggle one in.
+        self.assertIsNone(_public_event({"type": "log", "level": "ERROR", "message": "forged"}))
+
+
+class MobileStreamLogFeedTests(unittest.TestCase):
+    """Log lines reach a phone only if it asked for them, only from the level it
+    chose upward, and without a gap or a repeat between its backlog and live lines."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.service = MobileStreamService()
+        self.service._log_dir = lambda: self.dir
+        # The follower thread polls on its own clock; these tests poll by hand.
+        patcher = patch("sniff4hound.mobile_stream.LOG_POLL_SECONDS", 3600)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(lambda: self.service._log_stop.set())
+        self._tick = 0
+
+    def _record(self, level, message, **extra):
+        self._tick += 1
+        moment = datetime(2026, 10, 11, tzinfo=timezone.utc) + timedelta(seconds=self._tick)
+        return {
+            "timestamp": moment.isoformat(),
+            "level": level,
+            "logger": "sniff4hound.jobs",
+            "message": message,
+            **extra,
+        }
+
+    def _write(self, source, *records, newline=True):
+        with (self.dir / f"{source}.ndjson").open("a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record) + ("\n" if newline else ""))
+
+    def _phone(self, name, level):
+        token = f"token-{name}"
+        self.service._sessions[token] = MobileSession(
+            token=token, interface="eth0", address="192.0.2.10", client="192.0.2.20",
+            user_agent=name, created_at=_now(), last_seen=_now(),
+        )
+        generator = self.service.event_stream(token, log_level=level)
+        self.addCleanup(generator.close)
+        return token, generator
+
+    def _queue_of(self, token):
+        return next(q for _id, (tok, q) in self.service._subscribers.items() if tok == token)
+
+    def _drain(self, token):
+        q = self._queue_of(token)
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
+        return events
+
+    def _poll(self):
+        with self.service._lock:
+            self.service._poll_logs_locked()
+
+    def test_only_a_phone_that_asked_gets_logs_and_only_from_its_level_up(self):
+        info, info_stream = self._phone("info", "INFO")
+        error, error_stream = self._phone("error", "ERROR")
+        quiet, quiet_stream = self._phone("quiet", None)
+        for stream in (info_stream, error_stream, quiet_stream):
+            self.assertIn(b"event: hello", next(stream))
+
+        self._write("web", self._record("DEBUG", "d"), self._record("INFO", "i"), self._record("WARNING", "w"),
+                    self._record("ERROR", "e"), self._record("CRITICAL", "c"))
+        self._poll()
+
+        self.assertEqual([e["message"] for e in self._drain(info)], ["i", "w", "e", "c"])
+        self.assertEqual([e["message"] for e in self._drain(error)], ["e", "c"])
+        self.assertEqual(self._drain(quiet), [], "a phone that did not ask received log lines")
+
+    def test_a_phone_that_asked_for_no_logs_costs_nothing(self):
+        token, stream = self._phone("quiet", None)
+        next(stream)
+        self.assertEqual(self.service._log_levels, {})
+        self.assertIsNone(self.service._log_follower, "nothing is following the log files for no one")
+
+    def test_other_events_still_reach_a_phone_whatever_its_log_level(self):
+        error, stream = self._phone("error", "ERROR")
+        next(stream)
+        self.service.record_event({"type": "runtime_mode", "runtime": {"mode": "capture", "running_engines": []}})
+        self.assertEqual([e["type"] for e in self._drain(error)], ["runtime_mode"])
+
+    def test_history_is_the_backlog_and_live_lines_do_not_repeat_it(self):
+        self._write("web", self._record("INFO", "old web"), self._record("DEBUG", "old debug"))
+        self._write("capture", self._record("WARNING", "old capture"))
+
+        token, stream = self._phone("a", "INFO")
+        self.assertIn(b"event: hello", next(stream))
+        backlog = [json.loads(next(stream).split(b"data: ", 1)[1]) for _ in range(2)]
+        self.assertEqual([e["message"] for e in backlog], ["old web", "old capture"])
+        self.assertEqual([e["source"] for e in backlog], ["web", "capture"])
+
+        self._poll()
+        self.assertEqual(self._drain(token), [], "history was delivered again as if it were new")
+
+        self._write("web", self._record("INFO", "new web"))
+        self._write("capture", self._record("ERROR", "new capture"))
+        self._poll()
+        self.assertEqual([e["message"] for e in self._drain(token)], ["new web", "new capture"])
+        self._poll()
+        self.assertEqual(self._drain(token), [], "a line was delivered twice")
+
+    def test_the_backlog_is_capped_and_filtered_by_level(self):
+        total = LOG_BACKLOG * 3  # every other line is an ERROR, so well over the cap
+        for index in range(total):
+            self._write("web", self._record("INFO" if index % 2 else "ERROR", f"line {index}"))
+        token, stream = self._phone("a", "ERROR")
+        next(stream)
+        frames = []
+        for _ in range(LOG_BACKLOG):
+            frames.append(json.loads(next(stream).split(b"data: ", 1)[1]))
+        self.assertTrue(all(frame["level"] == "ERROR" for frame in frames))
+        newest_error = max(index for index in range(total) if index % 2 == 0)
+        self.assertEqual(frames[-1]["message"], f"line {newest_error}", "the newest lines are the ones kept")
+        self.assertEqual(frames[0]["message"], f"line {newest_error - 2 * (LOG_BACKLOG - 1)}")
+        # ...and that was all of it: the next frame is the idle keepalive, not a 41st line.
+        with patch("sniff4hound.mobile_stream.STREAM_KEEPALIVE_SECONDS", 0.05):
+            self.assertEqual(next(stream), b": keepalive\n\n")
+
+    def test_a_line_still_being_written_is_read_whole_on_the_next_poll(self):
+        token, stream = self._phone("a", "INFO")
+        next(stream)
+        half = json.dumps(self._record("INFO", "split across two writes"))
+        with (self.dir / "web.ndjson").open("a", encoding="utf-8") as handle:
+            handle.write(half[:20])
+        self._poll()
+        self.assertEqual(self._drain(token), [])
+        with (self.dir / "web.ndjson").open("a", encoding="utf-8") as handle:
+            handle.write(half[20:] + "\n")
+        self._poll()
+        self.assertEqual([e["message"] for e in self._drain(token)], ["split across two writes"])
+
+    def test_a_rotated_file_is_read_from_its_start(self):
+        self._write("web", self._record("INFO", "before rotation"))
+        token, stream = self._phone("a", "INFO")
+        next(stream)
+        next(stream)  # the backlog line
+
+        rotated = self.dir / "web.ndjson.1"
+        os.replace(self.dir / "web.ndjson", rotated)
+        self._write("web", self._record("INFO", "after rotation"))
+        self._poll()
+
+        self.assertEqual([e["message"] for e in self._drain(token)], ["after rotation"])
+
+    def test_missing_log_files_are_not_an_error(self):
+        self.service._log_dir = lambda: None
+        token, stream = self._phone("a", "INFO")
+        next(stream)
+        self._poll()
+        self.assertEqual(self._drain(token), [])
+
+        self.service._log_dir = lambda: self.dir / "does-not-exist"
+        self._poll()
+        self.assertEqual(self._drain(token), [])
+
+    def test_the_follower_stops_when_the_last_phone_with_logs_leaves(self):
+        token, stream = self._phone("a", "INFO")
+        next(stream)
+        self.assertIsNotNone(self.service._log_follower)
+        self.assertFalse(self.service._log_stop.is_set())
+
+        stream.close()
+
+        self.assertEqual(self.service._log_levels, {})
+        self.assertTrue(self.service._log_stop.is_set(), "nothing was left to follow the log files for")
+
+    def test_the_follower_keeps_going_while_one_phone_with_logs_remains(self):
+        _a, stream_a = self._phone("a", "INFO")
+        _b, stream_b = self._phone("b", "WARNING")
+        next(stream_a)
+        next(stream_b)
+        stream_a.close()
+        self.assertFalse(self.service._log_stop.is_set())
+        stream_b.close()
+        self.assertTrue(self.service._log_stop.is_set())
+
+    def test_the_session_page_offers_the_level_filter(self):
+        page = _session_page("tok-123")
+        for level in ("DEBUG", "INFO", "WARNING", "ERROR"):
+            self.assertIn(f'data-level="{level}"', page)
+        self.assertIn('addEventListener("log"', page)
+        self.assertIn("&level=", page)
+        self.assertIn("Payloads and control actions are not exposed", page)
 
 
 if __name__ == "__main__":

@@ -3,18 +3,23 @@ from __future__ import annotations
 import fcntl
 import html
 import json
+import os
 import queue
+import re
 import secrets
 import socket
 import ssl
 import struct
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
+from . import log_setup
 from .tls import ensure_mobile_tls, public_mobile_ca_pem
 from .utils import safe_int, utc_now
 
@@ -32,6 +37,19 @@ STREAM_QUEUE_SIZE = 200
 STREAM_KEEPALIVE_SECONDS = 25
 MAX_STREAM_EVENT_SECONDS = 24 * 60 * 60
 _SIOCGIFADDR = 0x8915
+
+# Log lines reach the phone only if the device asks for them (`level=` on the
+# event stream) and only as the fields below. The levels are the ones the log
+# settings offer; a CRITICAL record is kept and ranks above ERROR.
+LOG_FEED_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+_LOG_RANK = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+LOG_SOURCES = ("web", "capture")
+LOG_BACKLOG = 40            # lines a phone gets when it connects
+LOG_RING_SIZE = 1500        # recent lines kept, across every level, to build that backlog
+LOG_MESSAGE_LIMIT = 240
+LOG_POLL_SECONDS = 1.0
+LOG_READ_LIMIT = 512 * 1024  # most bytes read from one file per poll
+_LOG_TAIL_BYTES = 300 * 8192
 
 
 @dataclass(frozen=True)
@@ -122,6 +140,85 @@ def _now() -> float:
     return time.monotonic()
 
 
+def normalize_log_level(value: Any) -> str | None:
+    """The level a phone asked for, or None when it asked for no logs (or for
+    something that is not a level)."""
+    name = str(value or "").strip().upper()
+    return name if name in LOG_FEED_LEVELS else None
+
+
+def _log_rank(level: Any) -> int:
+    return _LOG_RANK.get(str(level or "").upper(), 0)
+
+
+# What must not leave the desktop even inside a log line: a security code, a
+# session or pairing token, an Authorization header, a password. Log messages
+# interpolate request lines, headers and exception text, so the line is scrubbed
+# on top of only forwarding its message.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]+")
+_BEARER = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}")
+_SECRET_PAIR = re.compile(
+    r"(?i)\b(code|token|ticket|session|secret|password|passwd|pwd|api[_-]?key|authorization|cookie)"
+    # The value may be "Bearer <token>" / "Basic <credentials>", scheme and secret together.
+    r"\b(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic)\s+)?[^\s,;&\"')]+)"
+)
+_LONG_SECRET = re.compile(r"\b[A-Fa-f0-9]{32,}\b|\b[A-Za-z0-9_-]{40,}\b")
+
+
+def _scrub_log_text(value: Any) -> str:
+    text = _CONTROL_CHARS.sub(" ", str(value or ""))
+    text = " ".join(text.split())
+    text = _SECRET_PAIR.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", text)
+    text = _BEARER.sub(lambda m: f"{m.group(1)} [redacted]", text)
+    text = _LONG_SECRET.sub("[redacted]", text)
+    if len(text) > LOG_MESSAGE_LIMIT:
+        text = text[: LOG_MESSAGE_LIMIT - 1] + "…"
+    return text
+
+
+def _public_log(record: Any, source: str) -> dict[str, Any] | None:
+    """One log record as the phone sees it: level, where it came from, the
+    logger and the scrubbed message. Nothing else of the record is forwarded:
+    its extra fields carry SQL text, job arguments and packet previews, and
+    its traceback carries file paths."""
+    if not isinstance(record, dict):
+        return None
+    message = _scrub_log_text(record.get("message"))
+    if not message:
+        return None
+    level = str(record.get("level") or "INFO").strip().upper()
+    if level not in _LOG_RANK:
+        level = "INFO"
+    logger = str(record.get("logger") or "")
+    if logger.startswith("sniff4hound."):
+        logger = logger[len("sniff4hound."):]
+    return {
+        "type": "log",
+        "generated_at": str(record.get("timestamp") or utc_now())[:40],
+        "level": level,
+        "source": source,
+        "logger": _scrub_log_text(logger)[:60],
+        "message": message,
+    }
+
+
+def _default_log_dir() -> Path | None:
+    return log_setup.log_directory()
+
+
+def _parse_log_lines(data: bytes, source: str) -> list[dict[str, Any]]:
+    events = []
+    for raw in data.splitlines():
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            continue
+        event = _public_log(record, source)
+        if event is not None:
+            events.append(event)
+    return events
+
+
 def _public_event(payload: dict[str, Any]) -> dict[str, Any] | None:
     event_type = str(payload.get("type") or "").strip()
     generated_at = str(payload.get("generated_at") or utc_now())
@@ -203,6 +300,15 @@ class MobileStreamService:
         self._server: ThreadingHTTPServer | None = None
         self._server_thread: threading.Thread | None = None
         self._state = MobileServerState()
+        # Log feed. A subscriber appears in `_log_levels` only if its phone asked
+        # for logs, mapped to the lowest rank it wants. The follower thread and
+        # the ring exist only while at least one such subscriber is connected.
+        self._log_levels: dict[int, int] = {}
+        self._log_dir: Callable[[], Path | None] = _default_log_dir
+        self._log_ring: deque[dict[str, Any]] = deque(maxlen=LOG_RING_SIZE)
+        self._log_offsets: dict[str, tuple[int, int]] = {}
+        self._log_stop = threading.Event()
+        self._log_follower: threading.Thread | None = None
 
     def interfaces(self) -> list[dict[str, Any]]:
         return [item.__dict__ for item in discover_interfaces()]
@@ -268,6 +374,7 @@ class MobileStreamService:
             for session in self._sessions.values():
                 session.revoked_at = _now()
             self._notify_all({"type": "revoked", "generated_at": utc_now()})
+            self._log_stop.set()
         if server is not None:
             server.shutdown()
             server.server_close()
@@ -422,18 +529,31 @@ class MobileStreamService:
         with self._lock:
             self._notify_all(event)
 
-    def event_stream(self, token: str):
+    def event_stream(self, token: str, log_level: str | None = None):
+        """The SSE frames for one phone. `log_level` is the lowest level of log
+        line it wants (DEBUG, INFO, WARNING, ERROR); None, or anything else,
+        means it gets no log lines at all."""
+        level = normalize_log_level(log_level)
         q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=STREAM_QUEUE_SIZE)
         subscriber_id = id(q)
+        backlog: list[dict[str, Any]] = []
         with self._lock:
             session = self.session(token)
             if session is None:
                 yield _sse_frame("revoked", {"type": "revoked", "generated_at": utc_now()})
                 return
             self._subscribers[subscriber_id] = (token, q)
+            if level:
+                # Registered and backlogged under one lock hold, so a line is in
+                # the backlog or in the queue, never both and never neither.
+                self._log_levels[subscriber_id] = _log_rank(level)
+                self._start_log_follower_locked()
+                backlog = self._log_backlog_locked(_log_rank(level))
         started = _now()
         try:
             yield _sse_frame("hello", {"type": "hello", "generated_at": utc_now()})
+            for event in backlog:
+                yield _sse_frame("log", event)
             while _now() - started < MAX_STREAM_EVENT_SECONDS:
                 if self.session(token) is None:
                     yield _sse_frame("revoked", {"type": "revoked", "generated_at": utc_now()})
@@ -447,15 +567,129 @@ class MobileStreamService:
         finally:
             with self._lock:
                 self._subscribers.pop(subscriber_id, None)
+                self._log_levels.pop(subscriber_id, None)
+                if not self._log_levels:
+                    self._log_stop.set()
+
+    def _log_backlog_locked(self, floor: int) -> list[dict[str, Any]]:
+        matching = [event for event in self._log_ring if _log_rank(event["level"]) >= floor]
+        return matching[-LOG_BACKLOG:]
+
+    def _start_log_follower_locked(self) -> None:
+        """Start following the log files for the first phone that wants logs.
+        The files are read from where they end now, with their recent history
+        loaded into the ring, so a phone's backlog and its live lines meet
+        without a gap or a repeat."""
+        follower = self._log_follower
+        if follower is not None and follower.is_alive() and not self._log_stop.is_set():
+            return
+        self._log_stop = threading.Event()
+        self._log_ring.clear()
+        self._log_offsets.clear()
+        directory = self._log_dir()
+        if directory is not None:
+            history: list[dict[str, Any]] = []
+            for source in LOG_SOURCES:
+                history.extend(self._seed_log_source(Path(directory) / f"{source}.ndjson", source))
+            history.sort(key=lambda event: event["generated_at"])
+            self._log_ring.extend(history[-LOG_RING_SIZE:])
+        self._log_follower = threading.Thread(
+            target=self._follow_logs,
+            args=(self._log_stop,),
+            name="sniff4hound-mobile-logs",
+            daemon=True,
+        )
+        self._log_follower.start()
+
+    def _seed_log_source(self, path: Path, source: str) -> list[dict[str, Any]]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return []
+        size = stat.st_size
+        span = min(size, _LOG_TAIL_BYTES)
+        data = b""
+        if span:
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(size - span)
+                    data = handle.read(span)
+            except OSError:
+                return []
+        if span < size:
+            # The window starts mid-line; drop that partial first line.
+            data = data.split(b"\n", 1)[1] if b"\n" in data else b""
+        complete = data[: data.rfind(b"\n") + 1] if b"\n" in data else b""
+        # The offset is where the complete lines end, so a line still being
+        # written is read whole by the next poll instead of being split.
+        self._log_offsets[source] = (stat.st_ino, size - (len(data) - len(complete)))
+        return _parse_log_lines(complete, source)
+
+    def _read_new_log_lines(self, path: Path, source: str) -> list[dict[str, Any]]:
+        try:
+            stat = path.stat()
+        except OSError:
+            self._log_offsets.pop(source, None)
+            return []
+        inode, offset = self._log_offsets.get(source, (stat.st_ino, 0))
+        if inode != stat.st_ino or stat.st_size < offset:
+            offset = 0  # rotated or truncated: this is a new file, read it from its start
+        if stat.st_size <= offset:
+            self._log_offsets[source] = (stat.st_ino, offset)
+            return []
+        try:
+            with path.open("rb") as handle:
+                handle.seek(offset)
+                data = handle.read(min(stat.st_size - offset, LOG_READ_LIMIT))
+        except OSError:
+            return []
+        end = data.rfind(b"\n")
+        if end < 0:
+            # No complete line yet. One longer than the read limit would stall
+            # the feed for good, so skip it.
+            if len(data) >= LOG_READ_LIMIT:
+                self._log_offsets[source] = (stat.st_ino, offset + len(data))
+            return []
+        self._log_offsets[source] = (stat.st_ino, offset + end + 1)
+        return _parse_log_lines(data[: end + 1], source)
+
+    def _poll_logs_locked(self) -> None:
+        directory = self._log_dir()
+        if directory is None:
+            return
+        fresh: list[dict[str, Any]] = []
+        for source in LOG_SOURCES:
+            fresh.extend(self._read_new_log_lines(Path(directory) / f"{source}.ndjson", source))
+        fresh.sort(key=lambda event: event["generated_at"])
+        for event in fresh:
+            self._log_ring.append(event)
+            self._notify_all(event)
+
+    def _follow_logs(self, stop: threading.Event) -> None:
+        while not stop.wait(LOG_POLL_SECONDS):
+            with self._lock:
+                if stop is not self._log_stop or not self._log_levels:
+                    return
+                try:
+                    self._poll_logs_locked()
+                except Exception:  # noqa: BLE001 - a log feed must never take the stream down
+                    pass
 
     def _notify_all(self, event: dict[str, Any], *, token: str | None = None) -> None:
         """Fan an event out to subscribers, or to exactly one when `token` is
         given - the revoke case, where the target is the *only* device that
         should hear about it."""
         dead = []
+        is_log = event.get("type") == "log"
         for subscriber_id, (subscriber_token, q) in self._subscribers.items():
             if token is not None and subscriber_token != token:
                 continue
+            if is_log:
+                # Only a phone that asked for logs gets them, and only from the
+                # level it chose upward.
+                wanted = self._log_levels.get(subscriber_id)
+                if wanted is None or _log_rank(event.get("level")) < wanted:
+                    continue
             session = self._sessions.get(subscriber_token)
             # A revoked session still gets its own targeted event: that frame
             # is how its phone learns it was cut off. Without this exception
@@ -588,7 +822,10 @@ class _MobileStreamHandler(BaseHTTPRequestHandler):
             self._send(200, _session_page(token).encode("utf-8"))
             return
         if path == "/mobile/events":
-            token = (parse_qs(parsed.query).get("session") or [""])[0]
+            query = parse_qs(parsed.query)
+            token = (query.get("session") or [""])[0]
+            # No `level`, or one that is not a level, means this phone gets no logs.
+            log_level = normalize_log_level((query.get("level") or [""])[0])
             if self.server.service.session(token) is None:
                 self._send(403, b"forbidden", "text/plain; charset=utf-8")
                 return
@@ -598,7 +835,7 @@ class _MobileStreamHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "keep-alive")
             self.end_headers()
             try:
-                for chunk in self.server.service.event_stream(token):
+                for chunk in self.server.service.event_stream(token, log_level=log_level):
                     self.wfile.write(chunk)
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
@@ -652,6 +889,21 @@ button {{ width: 100%; margin-top: 14px; border: 0; border-radius: 12px; padding
 .event {{ border: 1px solid rgba(255,255,255,.12); border-radius: 14px; padding: 12px; background: rgba(255,255,255,.05); }}
 .meta {{ color: #8fb2ad; font-size: 12px; }}
 .tag {{ display: inline-block; margin: 8px 6px 0 0; padding: 3px 8px; border-radius: 999px; background: rgba(52,211,153,.14); color: #9ff0c9; font-size: 12px; }}
+.tabs, .levels {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }}
+.tab, .chip {{ width: auto; margin: 0; border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.06); color: #cfe3df; padding: 8px 14px; border-radius: 999px; font-size: 14px; font-weight: 700; cursor: pointer; }}
+.tab.on, .chip.on {{ background: #34d399; border-color: #34d399; color: #05100c; }}
+.chip.lv-DEBUG.on {{ background: #9fb3ae; border-color: #9fb3ae; }}
+.chip.lv-WARNING.on {{ background: #fbbf24; border-color: #fbbf24; }}
+.chip.lv-ERROR.on {{ background: #f87171; border-color: #f87171; }}
+.badge {{ display: inline-block; min-width: 18px; margin-left: 4px; padding: 1px 6px; border-radius: 999px; background: #fbbf24; color: #1a1304; font-size: 12px; text-align: center; }}
+.badge[hidden], [hidden] {{ display: none; }}
+.log {{ display: grid; gap: 4px; padding: 10px 12px; border-left: 4px solid #9fb3ae; border-radius: 10px; }}
+.log .head {{ display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }}
+.log .lvl {{ font-size: 11px; font-weight: 800; letter-spacing: .06em; color: #9fb3ae; }}
+.log .msg {{ overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.45; }}
+.log.lv-INFO {{ border-left-color: #60a5fa; }} .log.lv-INFO .lvl {{ color: #60a5fa; }}
+.log.lv-WARNING {{ border-left-color: #fbbf24; }} .log.lv-WARNING .lvl {{ color: #fbbf24; }}
+.log.lv-ERROR, .log.lv-CRITICAL {{ border-left-color: #f87171; }} .log.lv-ERROR .lvl, .log.lv-CRITICAL .lvl {{ color: #f87171; }}
 </style>
 </head>
 <body><main><section class="panel">{body}</section></main></body>
@@ -675,13 +927,30 @@ def _pairing_page(pairing: Pairing) -> str:
 
 def _session_page(token: str) -> str:
     token_json = json.dumps(token)
+    levels_json = json.dumps(list(LOG_FEED_LEVELS))
     return _shell(
         "Sniff4Hound Mobile Stream",
         f"""
 <h1>Live stream</h1>
-<p>Read-only alerts and traffic events. Payloads and control actions are not exposed to this device.</p>
+<p>Read-only alerts, traffic events and log lines. Payloads and control actions are not exposed to this device.</p>
 <div id="status" class="meta">Connecting...</div>
+<div class="tabs" role="tablist">
+  <button type="button" class="tab on" role="tab" aria-selected="true" data-tab="events">Events</button>
+  <button type="button" class="tab" role="tab" aria-selected="false" data-tab="logs">Logs <span id="log-badge" class="badge" hidden>0</span></button>
+</div>
 <div id="events" class="events"></div>
+<div id="logs-panel" hidden>
+  <div class="levels" role="group" aria-label="Minimum log level">
+    <span class="meta">Level</span>
+    <button type="button" class="chip lv-DEBUG" data-level="DEBUG" aria-pressed="false">Debug</button>
+    <button type="button" class="chip lv-INFO" data-level="INFO" aria-pressed="false">Info</button>
+    <button type="button" class="chip lv-WARNING" data-level="WARNING" aria-pressed="false">Warning</button>
+    <button type="button" class="chip lv-ERROR" data-level="ERROR" aria-pressed="false">Error</button>
+  </div>
+  <div id="level-note" class="meta"></div>
+  <div id="logs" class="events"></div>
+  <p id="logs-empty" class="meta">No log lines at this level yet.</p>
+</div>
 <script>
 const events = document.getElementById("events");
 const status = document.getElementById("status");
@@ -711,13 +980,94 @@ function addEvent(data) {{
   while (events.children.length > 80) events.removeChild(events.lastChild);
 }}
 const token = {token_json};
-const source = new EventSource(`/mobile/events?session=${{encodeURIComponent(token)}}`);
-source.addEventListener("hello", () => {{ status.textContent = "Connected"; }});
-source.addEventListener("packet", (event) => addEvent(JSON.parse(event.data)));
-source.addEventListener("stats_update", (event) => addEvent(JSON.parse(event.data)));
-source.addEventListener("runtime_mode", (event) => addEvent(JSON.parse(event.data)));
-source.addEventListener("revoked", () => {{ status.textContent = "Session revoked"; source.close(); }});
-source.onerror = () => {{ status.textContent = "Reconnecting..."; }};
+const LEVELS = {levels_json};
+const logs = document.getElementById("logs");
+const logsEmpty = document.getElementById("logs-empty");
+const badge = document.getElementById("log-badge");
+let level = "INFO";
+let unseen = 0;
+let counting = false;
+let source = null;
+try {{
+  const saved = localStorage.getItem("sniff4hound-log-level");
+  if (LEVELS.includes(saved)) level = saved;
+}} catch (error) {{}}
+function addLog(data) {{
+  const row = document.createElement("div");
+  row.className = `event log lv-${{data.level || "INFO"}}`;
+  const head = document.createElement("div");
+  head.className = "head";
+  const lvl = document.createElement("span");
+  lvl.className = "lvl";
+  lvl.textContent = data.level || "INFO";
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = [data.source, data.logger, data.generated_at].filter(Boolean).join(" \\u00b7 ");
+  head.appendChild(lvl);
+  head.appendChild(meta);
+  const msg = document.createElement("div");
+  msg.className = "msg";
+  msg.textContent = data.message || "";
+  row.appendChild(head);
+  row.appendChild(msg);
+  logs.prepend(row);
+  while (logs.children.length > 200) logs.removeChild(logs.lastChild);
+  logsEmpty.hidden = true;
+  if (counting && document.getElementById("logs-panel").hidden) {{
+    unseen += 1;
+    badge.textContent = String(unseen);
+    badge.hidden = false;
+  }}
+}}
+function paintLevels() {{
+  document.querySelectorAll(".chip").forEach((chip) => {{
+    const on = chip.dataset.level === level;
+    chip.classList.toggle("on", on);
+    chip.setAttribute("aria-pressed", String(on));
+  }});
+  document.getElementById("level-note").textContent = level === "ERROR"
+    ? "Showing errors only"
+    : `Showing ${{level.toLowerCase()}} and above`;
+}}
+function showTab(next) {{
+  document.getElementById("events").hidden = next !== "events";
+  document.getElementById("logs-panel").hidden = next !== "logs";
+  document.querySelectorAll(".tab").forEach((tab) => {{
+    const on = tab.dataset.tab === next;
+    tab.classList.toggle("on", on);
+    tab.setAttribute("aria-selected", String(on));
+  }});
+  if (next === "logs") {{ unseen = 0; badge.hidden = true; }}
+}}
+function setLevel(next) {{
+  if (!LEVELS.includes(next) || next === level) return;
+  level = next;
+  try {{ localStorage.setItem("sniff4hound-log-level", level); }} catch (error) {{}}
+  logs.textContent = "";
+  logsEmpty.hidden = false;
+  paintLevels();
+  connect();
+}}
+function connect() {{
+  if (source) source.close();
+  counting = false;
+  source = new EventSource(`/mobile/events?session=${{encodeURIComponent(token)}}&level=${{encodeURIComponent(level)}}`);
+  source.addEventListener("hello", () => {{
+    status.textContent = "Connected";
+    // The lines a phone gets on connecting are history, not news.
+    setTimeout(() => {{ counting = true; }}, 800);
+  }});
+  source.addEventListener("packet", (event) => addEvent(JSON.parse(event.data)));
+  source.addEventListener("stats_update", (event) => addEvent(JSON.parse(event.data)));
+  source.addEventListener("runtime_mode", (event) => addEvent(JSON.parse(event.data)));
+  source.addEventListener("log", (event) => addLog(JSON.parse(event.data)));
+  source.addEventListener("revoked", () => {{ status.textContent = "Session revoked"; source.close(); }});
+  source.onerror = () => {{ status.textContent = "Reconnecting..."; }};
+}}
+document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => showTab(tab.dataset.tab)));
+document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => setLevel(chip.dataset.level)));
+paintLevels();
+connect();
 </script>
 """,
     )
