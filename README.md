@@ -309,6 +309,7 @@ Variables practicas del runtime:
 - `SNIFF4HOUND_DB_PATH`
 - `SNIFF4HOUND_RUNTIME_MODE`
 - `SNIFF4HOUND_CAPTURE_AUTO_START`
+- `SNIFF4HOUND_CAPTURE_EMBEDDED`: `1` por defecto en `sniff4hound` (sniffer y honeypot corren dentro del mismo proceso); `0` los deja en un proceso `sniff4hound-capture` aparte. `sniff4hound-web` ignora esta variable.
 - `SNIFF4HOUND_CAPTURE_INTERFACES`
 - `SNIFF4HOUND_PROMISCUOUS`
 - `SNIFF4HOUND_CAPTURE_BUFFER_BYTES`
@@ -326,12 +327,15 @@ Variables practicas del runtime:
 `sniff4hound` requiere root **desde el arranque**, no solo para la captura: si
 no se invoca ya como root, se relanza automaticamente a si mismo con `sudo`
 (o `pkexec` cuando lo lanza la app de escritorio) antes de hacer nada mas, y
-luego el servidor web y el proceso hijo `sniff4hound-capture` corren como el
-mismo arbol de procesos privilegiado, comunicados por un socket Unix local
+luego todo corre en **un solo proceso privilegiado**: servidor web, base de
+datos, sniffer y honeypot, sin proceso hijo ni IPC de por medio. Con
+`SNIFF4HOUND_CAPTURE_EMBEDDED=0` vuelve la forma anterior, con el servidor web
+y un proceso hijo `sniff4hound-capture` comunicados por un socket Unix local
 `0600`. No hay variable de entorno para omitir la captura privilegiada: si
 ni `sudo` ni `pkexec` estan disponibles, o la elevacion falla, el proceso
 termina sin arrancar. `sniff4hound-web` (el entrypoint standalone para
-despliegues separados web/captura) es la excepcion: sigue sin elevarse nunca.
+despliegues separados web/captura) es la excepcion: sigue sin elevarse nunca,
+y siempre habla con un proceso de captura aparte.
 
 ## Componentes del repo
 

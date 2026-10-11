@@ -213,7 +213,7 @@
         <v-card-item>
           <template #prepend>
             <v-avatar :color="selectedNode.display.color" variant="tonal" size="34">
-              <v-icon :icon="selectedNode.display.icon" size="19" />
+              <v-icon :icon="selectedNode.display.icon" :color="selectedNode.display.iconColor" size="19" />
             </v-avatar>
           </template>
           <v-card-title class="mono">{{ selectedNode.ip }}</v-card-title>

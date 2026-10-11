@@ -48,6 +48,7 @@ from .settings import (
     PORT,
     TLS_ENABLED,
     TRUST_FORWARDED_HEADERS,
+    capture_embedded,
     resolve_ipc_call_timeout,
     resolve_ipc_connect_timeout,
     resolve_ipc_socket,
@@ -536,21 +537,35 @@ def _on_capture_event(payload: dict) -> None:
             runtime.mode = str(mode)
 
 
-ipc_client = IpcClient(
-    resolve_ipc_socket(PORT),
-    resolve_ipc_token(),
-    on_event=_on_capture_event,
-    connect_timeout=resolve_ipc_connect_timeout(),
-    call_timeout=resolve_ipc_call_timeout(),
-)
-runtime = RuntimeControllerClient(ipc_client)
+if capture_embedded():
+    # One process: the engines run here, not behind a socket. See
+    # embedded_capture.py. The controller keeps its own `mode`, so the
+    # runtime_mode events need no bookkeeping on this side.
+    from .embedded_capture import EmbeddedCapture
+
+    ipc_client = None
+    embedded_capture = EmbeddedCapture(hub.broadcast)
+    runtime = embedded_capture.runtime
+else:
+    embedded_capture = None
+    ipc_client = IpcClient(
+        resolve_ipc_socket(PORT),
+        resolve_ipc_token(),
+        on_event=_on_capture_event,
+        connect_timeout=resolve_ipc_connect_timeout(),
+        call_timeout=resolve_ipc_call_timeout(),
+    )
+    runtime = RuntimeControllerClient(ipc_client)
 
 
 def connect_capture_service() -> bool:
     """Connect to the privileged capture process. Must be called once
     before serving requests - `bootstrap_capture()`/the runtime endpoints
     would otherwise block/fail on the first real call instead of failing
-    fast with a clear error."""
+    fast with a clear error. With the engines embedded there is nothing to
+    connect to."""
+    if ipc_client is None:
+        return True
     try:
         ipc_client.connect()
     except Exception as exc:
@@ -693,7 +708,7 @@ ENDPOINTS = [
     {"method": "POST", "path": "/api/whitelist/ip", "desc": "Whitelist one IP and purge everything already captured about it (packets, tags, payloads, flows, domains, paths). Without {\"confirm\": true}, returns how many packets would be deleted instead of doing it."},
     {"method": "GET", "path": "/api/domains/", "desc": "Searchable catalog of domains seen in DNS/HTTP/TLS traffic. Optional ?ip= narrows to one address."},
     {"method": "GET", "path": "/api/paths/", "desc": "Searchable catalog of HTTP request paths. Optional ?ip= narrows to one address."},
-    {"method": "GET", "path": "/api/intel/ips/", "desc": "Searchable catalog of IPs seen in stored traffic. ?scope=public|private|local|multicast|reserved|unknown (comma separated) filters by address scope; the full vocabulary and per-scope counts come back in the X-Scope-Counts header."},
+    {"method": "GET", "path": "/api/intel/ips/", "desc": "Searchable catalog of IPs seen in stored traffic. ?scope=public|private|local|multicast|reserved|unknown (comma separated) filters by address scope; the full vocabulary and per-scope counts come back in the X-Scope-Counts header. Each row carries the passive device profile: device_type, device_confidence, device_evidence and, when a product was recognised, device_product (an id such as nginx), device_product_label and device_product_version (empty strings otherwise)."},
     {"method": "GET", "path": "/api/intel/ips/graph", "desc": "IP relationship graph: `nodes` (same shape as /api/intel/ips/, device type included) and `edges` (src_ip, dst_ip, weight = total packets, flow_count), one edge per host pair, both ends restricted to the returned node set."},
     {"method": "GET", "path": "/api/monitors/packets/", "desc": "Packets that matched a given monitor."},
     {"method": "GET", "path": "/api/alerts/recent", "desc": "Lean recent monitor-hit feed (src/dst IP + severity only, no packet bodies)."},
@@ -4254,14 +4269,22 @@ def shutdown_capture():
         job_queue.shutdown()
     except (Exception, KeyboardInterrupt):
         pass
-    try:
-        ipc_client.call("shutdown")
-    except (Exception, KeyboardInterrupt):
-        pass
-    try:
-        ipc_client.close()
-    except (Exception, KeyboardInterrupt):
-        pass
+    if ipc_client is not None:
+        try:
+            ipc_client.call("shutdown")
+        except (Exception, KeyboardInterrupt):
+            pass
+        try:
+            ipc_client.close()
+        except (Exception, KeyboardInterrupt):
+            pass
+    if embedded_capture is not None:
+        # Engines, event delivery and their database connection, before the hub
+        # they deliver to is closed below.
+        try:
+            embedded_capture.close()
+        except (Exception, KeyboardInterrupt):
+            pass
     try:
         _snapshot_pusher_stop.set()
     except (Exception, KeyboardInterrupt):
