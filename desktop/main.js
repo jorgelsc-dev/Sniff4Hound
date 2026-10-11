@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { URL, URLSearchParams } = require("./lib/simple-url");
+const elevation = require("./lib/elevation");
 const quicPin = require("./lib/quic-pin");
 
 const READY_PREFIX = "SNIFF4HOUND_DESKTOP_READY ";
@@ -1177,7 +1178,9 @@ let preparedRuntime = null;
 let forcedQuicOrigin = "";
 
 function prepareHttp3() {
-  if (process.platform !== "linux" || quicPin.http3Disabled(process.env)) return;
+  // The unprivileged launcher only hands over to the root copy; the root copy
+  // prepares its own Chromium.
+  if (launcherOnly || process.platform !== "linux" || quicPin.http3Disabled(process.env)) return;
   const pythonPath = resolvePython();
   preparedRuntime = quicPin.prepareRuntime({
     execFileSync,
