@@ -250,6 +250,13 @@ def current_sink() -> RotatingNDJSONSink | None:
     return _STATE["sink"]
 
 
+def log_directory() -> Path:
+    """The directory both processes write their `<process>.ndjson` files to:
+    the one this process configured, or the default one when it has not."""
+    configured = _STATE.get("log_dir")
+    return Path(configured) if configured else default_log_dir()
+
+
 def tail(process: str, lines: int = 200, min_level: str | None = None) -> list[dict]:
     sink = _STATE["sink"]
     if sink is None or _STATE["process"] != process:
