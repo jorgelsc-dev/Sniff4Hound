@@ -59,7 +59,8 @@
       "tests.test_device_profiles",
       "tests.test_blueteam_monitors",
       "tests.test_faqa_regressions",
-      "tests.test_http3_listener"
+      "tests.test_http3_listener",
+      "tests.test_realtime_sse"
     ]
   ]
 }
