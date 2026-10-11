@@ -14,7 +14,9 @@ dependencies = [
   "regex>=2025.7.34",
   # HTTP/3 needs wsbuilder's QUIC stack, which is on main and not yet on PyPI
   # (the last release is 0.25.8). Pinned to a commit until it is released.
-  "wsbuilder[tls] @ git+https://github.com/jorgelsc-dev/wsbuilder@4f258e7ca30e0eda9de8e7840c85ce0f719ccf97",
+  # This commit also carries wsbuilder.mdns (mDNS and DNS-SD); that needs the
+  # optional `mdns` extra (python-zeroconf), which is not installed yet.
+  "wsbuilder[tls] @ git+https://github.com/jorgelsc-dev/wsbuilder@e626249d80958464e6b114e60cbf700e22eec1f5",
 ]
 keywords = ["network", "sniffer", "packet-capture", "sqlite", "websocket", "monitoring"]
 classifiers = [
