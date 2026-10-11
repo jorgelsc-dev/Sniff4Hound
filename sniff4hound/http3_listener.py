@@ -55,14 +55,19 @@ def alt_svc_value() -> str | None:
     return _active_alt_svc
 
 
-def start_http3(app, tls_material, host: str, port: int) -> Http3Server | None:
+def alt_svc_for(server: Http3Server) -> str:
+    """The ``Alt-Svc`` value that points a client at ``server``."""
+    return alt_svc_header(server.server_address[1], max_age=ALT_SVC_MAX_AGE_SECONDS)
+
+
+def open_http3(app, tls_material, host: str, port: int) -> tuple[Http3Server | None, str]:
     """Serve ``app`` over HTTP/3 on a UDP socket at ``host:port``.
 
-    Returns the running server, or None when the UDP port cannot be bound. The
-    TCP API keeps working in that case; it just is not advertised as HTTP/3.
+    Returns ``(server, "")`` once it is listening, or ``(None, reason)`` when the
+    UDP port cannot be bound. Nothing is advertised here: the caller decides
+    which ``Alt-Svc`` value to hand its clients (see :func:`alt_svc_for`), so a
+    second listener, such as the mobile stream's, does not disturb the runtime's.
     """
-    global _active_alt_svc
-
     # wsbuilder binds inside its serving thread and does not close the socket
     # when the bind fails, so a busy port would print a thread traceback and
     # leak a descriptor. Probe the bind here so that failure stays a one-line
@@ -71,8 +76,7 @@ def start_http3(app, tls_material, host: str, port: int) -> Http3Server | None:
     try:
         probe.bind((host, port))
     except OSError as exc:
-        print(f"[!] HTTP/3 disabled: udp://{host}:{port}/ is unavailable ({exc.strerror}). The TCP API is unaffected.")
-        return None
+        return None, f"udp://{host}:{port}/ is unavailable ({exc.strerror})"
     finally:
         probe.close()
 
@@ -96,11 +100,23 @@ def start_http3(app, tls_material, host: str, port: int) -> Http3Server | None:
     while not server.wait_until_serving(0.05):
         if not thread.is_alive() or time.monotonic() > deadline:
             server.stop()
-            print(f"[!] HTTP/3 disabled: could not listen on udp://{host}:{port}/. The TCP API is unaffected.")
-            return None
+            return None, f"could not listen on udp://{host}:{port}/"
+    return server, ""
 
-    bound_port = server.server_address[1]
-    _active_alt_svc = alt_svc_header(bound_port, max_age=ALT_SVC_MAX_AGE_SECONDS)
+
+def start_http3(app, tls_material, host: str, port: int) -> Http3Server | None:
+    """Serve the runtime ``app`` over HTTP/3 and advertise it on every response.
+
+    Returns the running server, or None when the UDP port cannot be bound. The
+    TCP API keeps working in that case; it just is not advertised as HTTP/3.
+    """
+    global _active_alt_svc
+
+    server, reason = open_http3(app, tls_material, host, port)
+    if server is None:
+        print(f"[!] HTTP/3 disabled: {reason}. The TCP API is unaffected.")
+        return None
+    _active_alt_svc = alt_svc_for(server)
     return server
 
 

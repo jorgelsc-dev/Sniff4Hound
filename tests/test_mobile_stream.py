@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import socket
+import ssl
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import queue
+
+from wsbuilder import Request
 
 from sniff4hound.mobile_stream import (
     LOG_BACKLOG,
@@ -19,6 +26,7 @@ from sniff4hound.mobile_stream import (
     MobileSession,
     MobileStreamService,
     Pairing,
+    _build_mobile_app,
     _log_rank,
     _now,
     _public_event,
@@ -27,6 +35,7 @@ from sniff4hound.mobile_stream import (
     _session_page,
     normalize_log_level,
 )
+from tests.test_http3_listener import _write_self_signed_material
 
 
 class MobileStreamPairingTests(unittest.TestCase):
@@ -579,6 +588,267 @@ class MobileStreamLogFeedTests(unittest.TestCase):
         self.assertIn('addEventListener("log"', page)
         self.assertIn("&level=", page)
         self.assertIn("Payloads and control actions are not exposed", page)
+
+
+class MobileStreamAppTests(unittest.TestCase):
+    """The mobile stream's routes as a wsbuilder app: the same handlers answer
+    HTTP/1.1 and HTTP/3, because both transports call this app's dispatch."""
+
+    CLIENT = ("192.0.2.20", 50000)
+
+    def setUp(self):
+        self.service = MobileStreamService()
+        self.service._state = MobileServerState(
+            interface="eth0", address="192.0.2.10", port=45679, running=True,
+            url_base="https://192.0.2.10:45679",
+        )
+        self.advertised: dict[str, str] = {}
+        self.app = _build_mobile_app(self.service, self.advertised)
+
+    def _call(self, path, *, method="GET", query="", body=b"", client=None):
+        request = Request(method, path, query, {"user-agent": "phone"}, body, client or self.CLIENT)
+        return self.app.dispatch(request)
+
+    def _text(self, response):
+        return bytes(response.body).decode("utf-8")
+
+    def _headers(self, response):
+        return {str(key).lower(): str(value) for key, value in response.headers.items()}
+
+    def _approved_pairing(self, pairing_id="pair-1"):
+        pairing = Pairing(
+            id=pairing_id, interface="eth0", address="192.0.2.10", port=45679,
+            created_at=_now(), expires_at=_now() + PAIRING_APPROVAL_TTL_SECONDS,
+        )
+        self.service._pairings[pairing_id] = pairing
+        self._call(f"/mobile/pair/{pairing_id}")
+        self.service.approve_pairing(pairing_id)
+        return pairing
+
+    def _session(self, token="live-token"):
+        self.service._sessions[token] = MobileSession(
+            token=token, interface="eth0", address="192.0.2.10", client=self.CLIENT[0],
+            user_agent="phone", created_at=_now(), last_seen=_now(),
+        )
+        return token
+
+    def test_the_ca_is_served_never_cached_and_without_cors(self):
+        with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value="-----BEGIN CERTIFICATE-----\nx\n"):
+            response = self._call("/mobile/ca.pem")
+        self.assertEqual(response.status, 200)
+        headers = self._headers(response)
+        self.assertEqual(headers["content-type"], "application/x-pem-file")
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertEqual(headers["x-content-type-options"], "nosniff")
+        self.assertEqual(headers["referrer-policy"], "no-referrer")
+        self.assertNotIn("access-control-allow-origin", headers, "the pages are same-origin; nothing here is for another site")
+
+    def test_a_device_that_knocks_sees_a_holding_page_until_the_operator_approves(self):
+        pairing = Pairing(
+            id="pair-1", interface="eth0", address="192.0.2.10", port=45679,
+            created_at=_now(), expires_at=_now() + PAIRING_APPROVAL_TTL_SECONDS,
+        )
+        self.service._pairings["pair-1"] = pairing
+
+        waiting = self._call("/mobile/pair/pair-1")
+        self.assertEqual(waiting.status, 200)
+        self.assertIn("Waiting for approval", self._text(waiting))
+        self.assertNotIn(pairing.code or "no-code-yet", self._text(waiting))
+
+        self.service.approve_pairing("pair-1")
+        approved = self._call("/mobile/pair/pair-1")
+        self.assertEqual(approved.status, 200)
+        self.assertIn("Enter pairing code", self._text(approved))
+
+    def test_an_unknown_pairing_link_is_closed(self):
+        response = self._call("/mobile/pair/never-issued")
+        self.assertEqual(response.status, 410)
+        self.assertIn("closed", self._text(response))
+
+    def test_the_right_code_redirects_to_a_session(self):
+        pairing = self._approved_pairing()
+        response = self._call("/mobile/pair/pair-1/verify", method="POST", body=f"code={pairing.code}".encode())
+
+        self.assertEqual(response.status, 303)
+        location = self._headers(response)["location"]
+        self.assertTrue(location.startswith("/mobile/session/"), location)
+        token = location.rsplit("/", 1)[-1]
+        self.assertIsNotNone(self.service.session(token), "the redirect names a session that does not exist")
+
+    def test_a_wrong_code_closes_the_link_for_good(self):
+        pairing = self._approved_pairing()
+        wrong = self._call("/mobile/pair/pair-1/verify", method="POST", body=b"code=000000")
+        self.assertEqual(wrong.status, 403)
+        self.assertIn("Incorrect code", self._text(wrong))
+
+        retry = self._call("/mobile/pair/pair-1/verify", method="POST", body=f"code={pairing.code}".encode())
+        self.assertEqual(retry.status, 403, "the correct code worked after a wrong attempt")
+        self.assertEqual(self.service._sessions, {})
+
+    def test_the_code_works_only_from_the_device_that_was_approved(self):
+        pairing = self._approved_pairing()
+        elsewhere = self._call(
+            "/mobile/pair/pair-1/verify", method="POST", body=f"code={pairing.code}".encode(),
+            client=("192.0.2.99", 40000),
+        )
+        self.assertEqual(elsewhere.status, 403)
+
+    def test_the_session_page_and_the_stream_need_a_live_session(self):
+        self.assertEqual(self._call("/mobile/session/nope").status, 403)
+        events = self._call("/mobile/events", query="session=nope&level=INFO")
+        self.assertEqual(events.status, 403)
+        self.assertEqual(self._text(events), "forbidden")
+
+        token = self._session()
+        page = self._call(f"/mobile/session/{token}")
+        self.assertEqual(page.status, 200)
+        self.assertIn("Live stream", self._text(page))
+        self.assertIn(token, self._text(page))
+
+    def test_the_event_stream_is_sse_and_starts_with_hello(self):
+        token = self._session()
+        response = self._call("/mobile/events", query=f"session={token}")
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(self._headers(response)["content-type"].startswith("text/event-stream"))
+        self.assertEqual(self._headers(response)["cache-control"], "no-store")
+        stream = iter(response.stream)
+        self.assertIn(b"event: hello", next(stream))
+        response.stream.close()
+
+    def test_the_id_in_the_path_wins_over_one_in_the_query(self):
+        real = self._session("real-token")
+        # The path says which session; a query parameter of the same name cannot redirect it.
+        self.assertEqual(self._call(f"/mobile/session/{real}", query="token=other").status, 200)
+        self.assertEqual(self._call("/mobile/session/other", query=f"token={real}").status, 403)
+
+    def test_odd_paths_reach_no_handler(self):
+        for path in ("/mobile/pair/a/b/verify", "/mobile/session/a/b", "/mobile/pair/../session/x", "/nothing", "/"):
+            with self.subTest(path=path):
+                response = self._call(path)
+                self.assertEqual(response.status, 404)
+                self.assertIn("Not found.", self._text(response))
+
+    def test_alt_svc_is_advertised_only_once_http3_is_listening(self):
+        with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value="PEM"):
+            self.assertNotIn("alt-svc", self._headers(self._call("/mobile/ca.pem")))
+
+            self.advertised["alt_svc"] = 'h3=":45679"; ma=3600'
+            self.assertEqual(self._headers(self._call("/mobile/ca.pem"))["alt-svc"], 'h3=":45679"; ma=3600')
+        # ...on error pages too, so a client that first lands on a stale link still learns it.
+        self.assertEqual(self._headers(self._call("/nothing"))["alt-svc"], 'h3=":45679"; ma=3600')
+
+
+def _free_tcp_udp_port() -> int:
+    """A port number that is free for both TCP and UDP, which is what the
+    mobile stream needs: TLS over TCP and HTTP/3 over UDP on the same number."""
+    for _ in range(50):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+            tcp.bind(("127.0.0.1", 0))
+            port = tcp.getsockname()[1]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            try:
+                udp.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+        return port
+    raise RuntimeError("no port free for both TCP and UDP")
+
+
+class MobileStreamListenTests(unittest.TestCase):
+    """The service as it is started: TLS over TCP plus HTTP/3 on the same port."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        material = _write_self_signed_material(Path(self._tmp.name))
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(material.server_cert), str(material.server_key))
+        material.ssl_context = context
+        for target, value in (
+            ("sniff4hound.mobile_stream.ensure_mobile_tls", material),
+            ("sniff4hound.mobile_stream.public_mobile_ca_pem", "PEM"),
+        ):
+            patcher = patch(target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.service = MobileStreamService()
+        self.addCleanup(self.service.stop)
+
+    def _https_get(self, port, path):
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        connection = http.client.HTTPSConnection("127.0.0.1", port, timeout=5, context=context)
+        try:
+            connection.request("GET", path)
+            response = connection.getresponse()
+            return response.status, {key.lower(): value for key, value in response.getheaders()}, response.read()
+        finally:
+            connection.close()
+
+    def _port_is_free(self, port) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+            try:
+                tcp.bind(("127.0.0.1", port))
+            except OSError:
+                return False
+        return True
+
+    def test_it_serves_https_and_advertises_http3_on_the_same_port(self):
+        port = _free_tcp_udp_port()
+        state = self.service._listen("lo", "127.0.0.1", port)
+
+        self.assertTrue(state["running"])
+        self.assertTrue(state["http3"]["enabled"])
+        self.assertEqual(state["http3"]["transport"], "https+h3")
+        self.assertIn(f'h3=":{port}"', state["http3"]["alt_svc"])
+        status, headers, body = self._https_get(port, "/mobile/ca.pem")
+        self.assertEqual((status, body), (200, b"PEM"))
+        self.assertEqual(headers["alt-svc"], state["http3"]["alt_svc"])
+        status, _headers, body = self._https_get(port, "/mobile/nowhere")
+        self.assertEqual(status, 404)
+        self.assertIn(b"Not found.", body)
+
+    def test_stopping_releases_both_listeners(self):
+        port = _free_tcp_udp_port()
+        self.service._listen("lo", "127.0.0.1", port)
+        self.assertFalse(self._port_is_free(port))
+
+        state = self.service.stop()
+
+        self.assertFalse(state["running"])
+        deadline = time.monotonic() + 5
+        while not self._port_is_free(port) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self._port_is_free(port), "the TCP listener outlived stop()")
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            udp.bind(("127.0.0.1", port))  # raises if the HTTP/3 listener is still holding it
+
+    def test_a_busy_tcp_port_fails_with_a_message_instead_of_inside_a_thread(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+            holder.bind(("127.0.0.1", 0))
+            holder.listen(1)
+            port = holder.getsockname()[1]
+            with self.assertRaises(ValueError) as caught:
+                self.service._listen("lo", "127.0.0.1", port)
+        self.assertIn(str(port), str(caught.exception))
+        self.assertIn("unavailable", str(caught.exception))
+        self.assertFalse(self.service.status()["running"])
+
+    def test_without_udp_it_still_serves_https_and_says_why_http3_is_off(self):
+        port = _free_tcp_udp_port()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as holder:
+            holder.bind(("127.0.0.1", port))
+            state = self.service._listen("lo", "127.0.0.1", port)
+
+            self.assertTrue(state["running"])
+            self.assertFalse(state["http3"]["enabled"])
+            self.assertEqual(state["http3"]["transport"], "https")
+            self.assertIn("HTTP/3 is off", state["http3"]["reason"])
+            status, headers, _body = self._https_get(port, "/mobile/ca.pem")
+            self.assertEqual(status, 200)
+            self.assertNotIn("alt-svc", headers, "HTTP/3 was advertised while nothing listens for it")
 
 
 if __name__ == "__main__":
