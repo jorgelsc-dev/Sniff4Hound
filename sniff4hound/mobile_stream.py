@@ -3,23 +3,23 @@ from __future__ import annotations
 import fcntl
 import html
 import json
-import os
 import queue
 import re
 import secrets
 import socket
-import ssl
 import struct
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode
 
-from . import log_setup
+from wsbuilder import App, Request, Response
+from wsbuilder.server import HTTPServer
+
+from . import http3_listener, log_setup
 from .tls import ensure_mobile_tls, public_mobile_ca_pem
 from .utils import safe_int, utc_now
 
@@ -297,8 +297,10 @@ class MobileStreamService:
         self._pairings: dict[str, Pairing] = {}
         self._sessions: dict[str, MobileSession] = {}
         self._subscribers: dict[int, tuple[str, queue.Queue[dict[str, Any]]]] = {}
-        self._server: ThreadingHTTPServer | None = None
-        self._server_thread: threading.Thread | None = None
+        self._app: App | None = None
+        self._tcp_server: HTTPServer | None = None
+        self._tcp_thread: threading.Thread | None = None
+        self._h3_server = None
         self._state = MobileServerState()
         # Log feed. A subscriber appears in `_log_levels` only if its phone asked
         # for logs, mapped to the lowest rank it wants. The follower thread and
@@ -337,47 +339,87 @@ class MobileStreamService:
         if same_listener:
             return self.status()
         self.stop()
-        tls_material = ensure_mobile_tls(selected.address)
-        server = _MobileHTTPServer((selected.address, port), _MobileStreamHandler, self)
-        server.socket = tls_material.ssl_context.wrap_socket(server.socket, server_side=True)
-        thread = threading.Thread(
-            target=server.serve_forever,
-            name="sniff4hound-mobile-stream",
-            daemon=True,
-        )
+        return self._listen(selected.name, selected.address, port)
+
+    def _listen(self, interface: str, address: str, port: int) -> dict[str, Any]:
+        """Serve the mobile stream at ``address:port``: TLS over TCP and, on the
+        same port number over UDP, HTTP/3. Every TCP response carries ``Alt-Svc``,
+        so a client that trusts the certificate moves to HTTP/3 after its first
+        request - a browser cannot open that first connection over QUIC."""
+        # wsbuilder binds inside its serving thread, where a busy port would show
+        # up as a traceback nobody sees. Probe here so it fails with a message.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((address, port))
+        except OSError as exc:
+            raise ValueError(f"port {port} on {address} is unavailable ({exc.strerror})") from exc
+        finally:
+            probe.close()
+        tls_material = ensure_mobile_tls(address)
+        advertised: dict[str, str] = {}
+        app = _build_mobile_app(self, advertised)
+        h3_server, h3_reason = http3_listener.open_http3(app, tls_material, address, port)
+        if h3_server is not None:
+            advertised["alt_svc"] = http3_listener.alt_svc_for(h3_server)
+        tcp_server = HTTPServer(address, port, app, ssl_context=tls_material.ssl_context)
+        thread = threading.Thread(target=tcp_server.serve_forever, name="sniff4hound-mobile-stream", daemon=True)
+        thread.start()
+        deadline = time.monotonic() + _LISTEN_TIMEOUT_SECONDS
+        while not tcp_server.wait_until_serving(0.05):
+            if not thread.is_alive() or time.monotonic() > deadline:
+                tcp_server.stop()
+                if h3_server is not None:
+                    h3_server.stop()
+                app.close()
+                raise ValueError(f"the mobile stream could not listen on https://{address}:{port}")
         with self._lock:
-            self._server = server
-            self._server_thread = thread
+            self._app = app
+            self._tcp_server = tcp_server
+            self._tcp_thread = thread
+            self._h3_server = h3_server
             self._state = MobileServerState(
-                interface=selected.name,
-                address=selected.address,
+                interface=interface,
+                address=address,
                 port=port,
                 running=True,
-                url_base=f"https://{selected.address}:{port}",
+                url_base=f"https://{address}:{port}",
                 ca_pem=public_mobile_ca_pem(),
                 http3={
-                    "enabled": False,
-                    "transport": "https+sse",
-                    "reason": "The embedded Python listener serves the mobile stream over TLS and SSE; no QUIC transport is bundled.",
+                    "enabled": h3_server is not None,
+                    "transport": "https+h3" if h3_server is not None else "https",
+                    "port": port,
+                    "alt_svc": advertised.get("alt_svc", ""),
+                    "reason": "" if h3_server is not None else f"HTTP/3 is off: {h3_reason}. The stream is served over HTTPS (HTTP/1.1).",
                 },
             )
-        thread.start()
         return self.status()
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
-            server = self._server
-            self._server = None
-            self._server_thread = None
+            servers = (self._tcp_server, self._h3_server)
+            app = self._app
+            self._tcp_server = None
+            self._tcp_thread = None
+            self._h3_server = None
+            self._app = None
             self._state = MobileServerState()
             self._pairings.clear()
             for session in self._sessions.values():
                 session.revoked_at = _now()
             self._notify_all({"type": "revoked", "generated_at": utc_now()})
             self._log_stop.set()
-        if server is not None:
-            server.shutdown()
-            server.server_close()
+        for server in servers:
+            if server is not None:
+                try:
+                    server.stop()
+                except Exception:  # noqa: BLE001 - one listener failing to stop must not leave the other running
+                    pass
+        if app is not None:
+            try:
+                app.close()
+            except Exception:  # noqa: BLE001
+                pass
         return self.status()
 
     def create_pairing(self, interface: str, *, port: int = MOBILE_STREAM_DEFAULT_PORT) -> dict[str, Any]:
@@ -762,111 +804,137 @@ class MobileStreamService:
         }
 
 
-class _MobileHTTPServer(ThreadingHTTPServer):
-    daemon_threads = True
+# wsbuilder resolves routes by exact path, so the pairing and session links keep
+# their /mobile/pair/<id> and /mobile/session/<token> shape (QR codes, form
+# actions and redirects use them) and are rewritten to the fixed routes below,
+# with the id or token carried as a query parameter. The leading underscore keeps
+# those internal names out of reach of any real pairing id.
+_PAIR_PATH = re.compile(r"^/mobile/pair/([^/]+)(/verify)?$")
+_SESSION_PATH = re.compile(r"^/mobile/session/([^/]+)$")
+_LISTEN_TIMEOUT_SECONDS = 5.0
 
-    def __init__(self, server_address, RequestHandlerClass, service: MobileStreamService):
-        self.service = service
-        super().__init__(server_address, RequestHandlerClass)
+
+def _header(request: Request, name: str) -> str:
+    wanted = name.lower()
+    for key, value in (request.headers or {}).items():
+        if str(key).lower() == wanted:
+            return str(value)
+    return ""
 
 
-class _MobileStreamHandler(BaseHTTPRequestHandler):
-    server: _MobileHTTPServer
+def _client_ip(request: Request) -> str:
+    client = request.client
+    return str(client[0]) if client else ""
 
-    def log_message(self, _format, *args):  # pragma: no cover - keep terminal clean
-        return
 
-    def _client(self) -> str:
-        return str(self.client_address[0] if self.client_address else "")
+def _reply(status: int, body: bytes | str, content_type: str = "text/html; charset=utf-8", headers=None) -> Response:
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    merged = {
+        "Content-Type": content_type,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+    }
+    merged.update(headers or {})
+    return Response(status, body=body, headers=merged)
 
-    def _send(self, status: int, body: bytes, content_type: str = "text/html; charset=utf-8", headers=None) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        for key, value in (headers or {}).items():
-            self.send_header(str(key), str(value))
-        self.end_headers()
-        self.wfile.write(body)
 
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/") or "/"
-        if path == "/mobile/ca.pem":
-            self._send(200, public_mobile_ca_pem().encode("utf-8"), "application/x-pem-file")
-            return
-        if path.startswith("/mobile/pair/"):
-            pairing_id = path.rsplit("/", 1)[-1]
-            pairing = self.server.service.open_pairing(
-                pairing_id,
-                client=self._client(),
-                user_agent=self.headers.get("User-Agent", ""),
-            )
-            if not pairing:
-                self._send(410, _closed_page().encode("utf-8"))
-                return
-            if not pairing.approved_at:
-                # Nothing is served to an unapproved device but a holding
-                # page that refreshes itself until the operator accepts it.
-                self._send(200, _awaiting_approval_page().encode("utf-8"))
-                return
-            self._send(200, _pairing_page(pairing).encode("utf-8"))
-            return
-        if path.startswith("/mobile/session/"):
-            token = path.rsplit("/", 1)[-1]
-            if self.server.service.session(token) is None:
-                self._send(403, _closed_page("Session revoked or expired.").encode("utf-8"))
-                return
-            self._send(200, _session_page(token).encode("utf-8"))
-            return
-        if path == "/mobile/events":
-            query = parse_qs(parsed.query)
-            token = (query.get("session") or [""])[0]
-            # No `level`, or one that is not a level, means this phone gets no logs.
-            log_level = normalize_log_level((query.get("level") or [""])[0])
-            if self.server.service.session(token) is None:
-                self._send(403, b"forbidden", "text/plain; charset=utf-8")
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "keep-alive")
-            self.end_headers()
-            try:
-                for chunk in self.server.service.event_stream(token, log_level=log_level):
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
-                return
-            return
-        self._send(404, _closed_page("Not found.").encode("utf-8"))
+def _with_path_params(request: Request, path: str, **params: str) -> Request:
+    query = dict(request.query)
+    query.update(params)  # what the path said wins over a query parameter of the same name
+    return Request(
+        request.method,
+        path,
+        urlencode(query),
+        request.headers,
+        request.body,
+        request.client,
+        tls=request.tls,
+        version=request.version,
+        trailers=request.trailers,
+    )
 
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/")
-        if path.startswith("/mobile/pair/") and path.endswith("/verify"):
-            parts = path.split("/")
-            pairing_id = parts[-2] if len(parts) >= 4 else ""
-            length = min(4096, safe_int(self.headers.get("Content-Length"), 0))
-            body = self.rfile.read(length).decode("utf-8", errors="replace")
-            code = (parse_qs(body).get("code") or [""])[0]
-            token = self.server.service.verify_pairing(
-                pairing_id,
-                code,
-                client=self._client(),
-                user_agent=self.headers.get("User-Agent", ""),
-            )
-            if not token:
-                self._send(403, _closed_page("Incorrect code. This link is now closed.").encode("utf-8"))
-                return
-            self.send_response(303)
-            self.send_header("Location", f"/mobile/session/{token}")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            return
-        self._send(404, _closed_page("Not found.").encode("utf-8"))
+
+def _build_mobile_app(service: MobileStreamService, advertised: dict[str, str]) -> App:
+    """The mobile stream's routes as a wsbuilder app, so the same handlers are
+    served over HTTP/1.1 and HTTP/3. ``advertised["alt_svc"]`` is read per
+    response: it is filled in once the HTTP/3 listener is up."""
+    app = App()  # no CORS: the pages are same-origin, nothing here is for another site
+
+    @app.view("/mobile/ca.pem")
+    def ca_pem(_request):
+        return _reply(200, public_mobile_ca_pem(), "application/x-pem-file")
+
+    @app.view("/mobile/_pair")
+    def pair_page(request):
+        pairing = service.open_pairing(
+            request.query.get("id", ""),
+            client=_client_ip(request),
+            user_agent=_header(request, "user-agent"),
+        )
+        if not pairing:
+            return _reply(410, _closed_page())
+        if not pairing.approved_at:
+            # Nothing is served to an unapproved device but a holding
+            # page that refreshes itself until the operator accepts it.
+            return _reply(200, _awaiting_approval_page())
+        return _reply(200, _pairing_page(pairing))
+
+    @app.view("/mobile/_pair-verify", methods=("POST",))
+    def pair_verify(request):
+        body = bytes(request.body or b"")[:4096].decode("utf-8", errors="replace")
+        code = (parse_qs(body).get("code") or [""])[0]
+        token = service.verify_pairing(
+            request.query.get("id", ""),
+            code,
+            client=_client_ip(request),
+            user_agent=_header(request, "user-agent"),
+        )
+        if not token:
+            return _reply(403, _closed_page("Incorrect code. This link is now closed."))
+        return Response(303, body=b"", headers={"Location": f"/mobile/session/{token}", "Cache-Control": "no-store"})
+
+    @app.view("/mobile/_session")
+    def session_page(request):
+        token = request.query.get("token", "")
+        if service.session(token) is None:
+            return _reply(403, _closed_page("Session revoked or expired."))
+        return _reply(200, _session_page(token))
+
+    @app.view("/mobile/events")
+    def events(request):
+        token = request.query.get("session", "")
+        # No `level`, or one that is not a level, means this phone gets no logs.
+        log_level = normalize_log_level(request.query.get("level", ""))
+        if service.session(token) is None:
+            return _reply(403, b"forbidden", "text/plain; charset=utf-8")
+        return Response(
+            200,
+            stream=service.event_stream(token, log_level=log_level),
+            headers={"Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store"},
+        )
+
+    original_dispatch = app.dispatch
+
+    def dispatch(request):
+        path = request.path.rstrip("/") or "/"
+        pair = _PAIR_PATH.match(path)
+        session = None if pair else _SESSION_PATH.match(path)
+        if pair:
+            request = _with_path_params(request, "/mobile/_pair-verify" if pair.group(2) else "/mobile/_pair", id=pair.group(1))
+        elif session:
+            request = _with_path_params(request, "/mobile/_session", token=session.group(1))
+        response = original_dispatch(request)
+        if getattr(response, "status", 0) == 404 and not pair and not session:
+            response = _reply(404, _closed_page("Not found."))
+        alt_svc = advertised.get("alt_svc")
+        if alt_svc and hasattr(response, "headers"):
+            response.headers.setdefault("Alt-Svc", alt_svc)
+        return response
+
+    app.dispatch = dispatch
+    return app
 
 
 def _shell(title: str, body: str) -> str:
