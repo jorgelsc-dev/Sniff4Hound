@@ -81,6 +81,31 @@ class RealtimeSseTests(unittest.TestCase):
         self.assertIn("event: close", body)
         self.assertIn('"code": 4401', body)
 
+    def test_stream_grants_the_desktop_origin_whether_or_not_it_is_allowed_in(self):
+        # The desktop page (app://shell) is cross-origin to the runtime. Without
+        # this header an EventSource is blocked with a bare net::ERR_FAILED, the
+        # realtime channel never opens and the UI sits on "Sin conexión".
+        denied = self.app.app.dispatch(_request("/realtime/stream"))
+        self.assertEqual(denied.headers.get("access-control-allow-origin"), "*")
+
+        granted = self.app.app.dispatch(
+            _request(
+                "/realtime/stream",
+                headers={
+                    "x-security-code": "Ab12Cd34",
+                    "host": "127.0.0.1:45678",
+                    "origin": "app://shell",
+                },
+            )
+        )
+        self.assertEqual(granted.status, 200)
+        self.assertEqual(granted.headers.get("content-type"), "text/event-stream")
+        self.assertEqual(granted.headers.get("access-control-allow-origin"), "*")
+        # Entering the generator lets close() run its cleanup, which drops the
+        # session this request registered.
+        next(granted.stream)
+        granted.stream.close()
+
     def test_command_for_an_unknown_session_is_gone(self):
         response = self.app.app.dispatch(
             _request(
