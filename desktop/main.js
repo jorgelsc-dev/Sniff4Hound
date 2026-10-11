@@ -5,6 +5,7 @@ const { StringDecoder } = require("node:string_decoder");
 const https = require("node:https");
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 const { URL, URLSearchParams } = require("./lib/simple-url");
 const quicPin = require("./lib/quic-pin");
 
@@ -12,6 +13,46 @@ const READY_PREFIX = "SNIFF4HOUND_DESKTOP_READY ";
 const DEFAULT_PORT = "45678";
 const CONNECTION_STATE_FILE = "connection.json";
 const APP_SCHEME = "app";
+
+// The whole app runs as root: web server, database, sniffer and honeypot are
+// one privileged process, and so is this shell (see lib/elevation.js). An
+// unprivileged launch therefore only hands over to a root copy of itself
+// through sudo/pkexec and waits for it - it opens no window and no debug port.
+// SNIFF4HOUND_DESKTOP_ELEVATE=0 keeps the shell unprivileged; the backend then
+// asks for privileges on its own, as it did before.
+function effectiveUid() {
+  // Not defined off POSIX; the elevation code treats that as "nothing to do".
+  return typeof process.geteuid === "function" ? process.geteuid() : 0;
+}
+
+function startElevatedLauncher() {
+  return elevation.runElevatedLauncher({
+    spawn,
+    exit: (code) => app.exit(code),
+    log: (line) => console.error(line),
+    onSignal: (signal, handler) => process.on(signal, handler),
+    env: process.env,
+    argv: process.argv,
+    execPath: process.execPath,
+    platform: process.platform,
+    euid: effectiveUid(),
+    uid: typeof process.getuid === "function" ? process.getuid() : 0,
+    gid: typeof process.getgid === "function" ? process.getgid() : 0,
+    home: os.homedir(),
+    isTTY: process.stdin && process.stdin.isTTY,
+    which: elevation.findExecutable,
+  });
+}
+const launcherOnly = startElevatedLauncher();
+
+// The root copy leaves the configuration directory root-owned; give it back so
+// an unprivileged launch can still use it.
+function handBackUserData() {
+  const uid = Number(process.env.SNIFF4HOUND_INVOKING_UID);
+  const gid = Number(process.env.SNIFF4HOUND_INVOKING_GID);
+  if (effectiveUid() !== 0 || !Number.isInteger(uid) || uid <= 0) return;
+  elevation.chownTree(app.getPath("userData"), uid, Number.isInteger(gid) && gid >= 0 ? gid : uid);
+}
 
 // The bundled SPA (frontend/dist, a Vite build with <script type="module">
 // entry points - see loadShell()/registerAppProtocol() below) can't be
@@ -41,10 +82,12 @@ protocol.registerSchemesAsPrivileged([
 // installs everything under /usr/lib/sniff4hound/desktop as regular files, so
 // that helper never has the permissions it needs - disable the sandbox
 // instead of shipping a setuid-root binary for it. The security cost is
-// modest here: this window only ever renders our own bundled frontend, never
-// arbitrary remote content, and the actual privileged engine (dashboard
-// server + packet capture) is a separate process elevated on its own - see
-// sniff4hound/manage.py's _ensure_running_as_root().
+// modest here: this window only ever renders our own bundled frontend and the
+// backend this app started, never arbitrary remote content. It matters more
+// now that the whole shell runs as root (see startElevatedLauncher() below):
+// Chromium refuses to start as root at all without this switch, and the
+// relaunch passes it on the real command line, where Chromium reads it before
+// any JavaScript runs.
 if (process.platform === "linux") {
   app.commandLine.appendSwitch("no-sandbox");
 }
@@ -61,7 +104,7 @@ if (process.platform === "linux") {
 // than closed off deliberately.
 const desktopDebugPortRaw = String(process.env.SNIFF4HOUND_DESKTOP_DEBUG_PORT ?? "0").trim();
 const desktopDebugDisabled = ["0", "false", "off", "no", ""].includes(desktopDebugPortRaw.toLowerCase());
-if (!desktopDebugDisabled) {
+if (!desktopDebugDisabled && !launcherOnly) {
   app.commandLine.appendSwitch("remote-debugging-port", desktopDebugPortRaw);
   app.commandLine.appendSwitch("remote-allow-origins", "*");
 }
@@ -1150,6 +1193,8 @@ function prepareHttp3() {
 prepareHttp3();
 
 app.whenReady().then(() => {
+  if (launcherOnly) return;
+  handBackUserData();
   installRuntimeCertificateTrust();
   registerAppProtocol();
   createWindow();
@@ -1162,4 +1207,8 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   quitting = true;
   stopBackend();
+});
+
+process.on("exit", () => {
+  if (!launcherOnly) handBackUserData();
 });

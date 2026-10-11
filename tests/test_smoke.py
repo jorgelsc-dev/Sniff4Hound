@@ -134,6 +134,13 @@ def _install_fake_capture_runtime(app_module, *, capture_auto_start=False):
 
 
 class SmokeTests(unittest.TestCase):
+    def _pin_capture_mode(self, embedded: str) -> None:
+        # manage.main() decides, before importing the app, whether the engines
+        # run in this process (the default) or in a capture child; it also
+        # leaves that decision in the environment for the app module to read.
+        # Pin it per test so neither answer leaks into the tests that follow.
+        self.enterContext(patch.dict(os.environ, {"SNIFF4HOUND_CAPTURE_EMBEDDED": embedded}))
+
     def test_version(self):
         project_root = Path(__file__).resolve().parents[1]
         self.assertEqual(sniff4hound.__version__, versioning.read_project_version(project_root))
@@ -975,7 +982,7 @@ class SmokeTests(unittest.TestCase):
         import sniff4hound.manage as manage_module
 
         source = inspect.getsource(manage_module.main)
-        lock_index = source.index("with _capture_start_lock(")
+        lock_index = source.index("_capture_start_lock(ipc_socket)")
         clear_index = source.index("_clear_stale_capture_socket(")
         spawn_index = source.index("_spawn_capture_child(")
         connect_index = source.index("connect_capture_service()")
@@ -986,6 +993,7 @@ class SmokeTests(unittest.TestCase):
         self.assertLess(connect_index, restore_index)
 
     def test_manage_main_pins_data_dir_before_spawning_capture_child(self):
+        self._pin_capture_mode("0")
         # Regression test: the capture child is relaunched via `sudo`,
         # which resets HOME to root's home by default. DATA_DIR (and so
         # DB_PATH, honeypot log/db/certs - see settings.py/honeypot.py)
@@ -1288,6 +1296,7 @@ class SmokeTests(unittest.TestCase):
         self.assertNotEqual(selected, port)
 
     def test_manage_main_uses_fallback_port(self):
+        self._pin_capture_mode("0")
         import sniff4hound.app as app_module
         import sniff4hound.manage as manage_module
 
@@ -1329,6 +1338,7 @@ class SmokeTests(unittest.TestCase):
         self.assertIsNotNone(run_mock.call_args.kwargs.get("ssl_context"))
 
     def test_manage_exits_cleanly_when_no_fallback_port_is_available(self):
+        self._pin_capture_mode("1")
         import sniff4hound.manage as manage_module
 
         with patch.object(manage_module, "HOST", "127.0.0.1"), patch.object(

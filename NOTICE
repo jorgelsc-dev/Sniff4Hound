@@ -28,5 +28,14 @@ Important limits and protections:
    sponsorship, or origin from the maintainer unless the maintainer explicitly
    says so.
 
+5. Third-party material
+   desktop/frontend/src/utils/productLogos.js contains the vector paths and brand
+   colours of software and hardware logos (Nginx, Apache, Cisco, MikroTik, ...)
+   taken from Simple Icons 16.34.0 (https://simpleicons.org), which is released
+   under CC0 1.0 Universal. The logos themselves are trademarks of their
+   respective owners. They are shown only to name the software or vendor detected
+   on a host, and their presence does not imply that those owners sponsor, endorse
+   or are affiliated with this project.
+
 This notice strengthens repository hygiene and attribution clarity. It is not a
 substitute for jurisdiction-specific legal advice.

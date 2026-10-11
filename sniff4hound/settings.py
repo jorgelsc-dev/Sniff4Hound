@@ -120,6 +120,21 @@ CAPTURE_INTERFACES = tuple(
     for item in str(_env("SNIFF4HOUND_CAPTURE_INTERFACES", "")).split(",")
     if item.strip()
 )
+
+
+def capture_embedded() -> bool:
+    """Whether the capture engines (sniffer, honeypot) run inside this process
+    instead of in a separate capture process reached over IPC.
+
+    The combined entry point (`sniff4hound`, `python -m sniff4hound.manage`)
+    turns this on - one elevated process tree, no child to spawn, supervise or
+    lose - while `sniff4hound-web` keeps the split, with an unprivileged web
+    process talking to a capture process it did not start. It is read from the
+    environment when called, not at import, because the entry point decides it
+    after this module is already loaded."""
+    return _as_bool(_env("SNIFF4HOUND_CAPTURE_EMBEDDED", "0"), default=False)
+
+
 CAPTURE_PROMISCUOUS = _as_bool(_env("SNIFF4HOUND_PROMISCUOUS", "1"), default=True)
 CAPTURE_SNAPLEN = max(64, _as_int(_env("SNIFF4HOUND_SNAPLEN", "65535"), 65535))
 CAPTURE_POLL_TIMEOUT = max(0.05, _as_float(_env("SNIFF4HOUND_POLL_TIMEOUT", "0.5"), 0.5))

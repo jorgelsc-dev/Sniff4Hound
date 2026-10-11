@@ -1,11 +1,49 @@
 # Sniff4Hound Desktop
 
 Linux desktop shell for Sniff4Hound. It runs the Vue console inside Electron
-and starts the Python backend as a child process. The Electron window itself
-stays an unprivileged process, but the backend it starts requires root the
-same way the `sniff4hound` CLI command does - see `sniff4hound/manage.py`'s
-`_ensure_running_as_root()` - and self-elevates with `pkexec` (falling back to
-`sudo`) on first start.
+and starts the Python backend as a child process.
+
+The whole app runs as root, in one process tree: Sniff4Hound needs root for raw
+capture and low-port honeypot listeners, and the shell is part of that tree. An
+unprivileged launch (`npm run dev`, the desktop entry, the AppImage) therefore
+opens no window of its own: it relaunches itself through `sudo` and waits for
+that root copy, which starts the backend. The backend sees it is already root
+and does not ask a second time, and it runs the web server, the sniffer and the
+honeypot in a single process. `sudo` prompts in the terminal when there is one
+(so a fingerprint reader works) and otherwise through a graphical askpass
+(`zenity`, or `ssh-askpass`); with no usable `sudo` it falls back to `pkexec`.
+Cancelling the prompt closes the app. The command is built in `lib/elevation.js`.
+
+What carries over to the root copy: the display (`DISPLAY`, `XAUTHORITY`,
+`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`), the operator's own `HOME` (so the same
+configuration and database are used, not a fresh set under `/root`), `PATH`,
+`VIRTUAL_ENV`, `PYTHONPATH` and every `SNIFF4HOUND_*` variable except the IPC
+token and the JWT secret. Files the root copy writes into the configuration
+directory are handed back to the operator when it exits.
+
+Trade-off, chosen deliberately: the renderer now runs as root too, and Chromium
+runs without its sandbox (it refuses to start as root otherwise, and the shell
+already ran without it, since the `.deb` cannot ship a setuid helper). The window
+only loads the app bundled on disk and the backend it started, never arbitrary
+pages; the opt-in debug port (`SNIFF4HOUND_DESKTOP_DEBUG_PORT`) is a different
+matter - anything local that can reach it controls a root window - so leave it
+off outside a session where you want it. `SNIFF4HOUND_DESKTOP_ELEVATE=0` keeps
+the shell unprivileged, with the backend asking for privileges on its own as it
+did before.
+
+HTTP/3: the shell talks to its local runtime over HTTP/3 (QUIC on the same port
+number, over UDP), including the realtime stream. Chromium only does that for a
+server it trusts, and it never acts on an `Alt-Svc` header for an IP address, so
+before Chromium starts the shell runs `python -m sniff4hound.desktop_prepare`,
+which answers with the port the runtime will use (free on TCP and UDP) and the
+public-key hash of the runtime's server key. Chromium is then told to trust that
+one key and to use QUIC for that one origin (`lib/quic-pin.js`). The key and the
+CA that signs for it are kept between launches (`SNIFF4HOUND_DATA_DIR/tls`, mode
+0600) - that is what makes the pin stable; only the certificate is new each time.
+A forced QUIC origin has no TCP fallback, so if the runtime reports it has no
+UDP listener the shell says so instead of showing a dead window. A remote sensor
+is unaffected and stays on HTTPS over TCP. `SNIFF4HOUND_DESKTOP_HTTP3=0` turns it
+off.
 
 HTTP/3: the shell talks to its local runtime over HTTP/3 (QUIC on the same port
 number, over UDP), including the realtime stream. Chromium only does that for a
