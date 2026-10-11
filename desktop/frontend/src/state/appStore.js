@@ -2,6 +2,8 @@ import { reactive } from "vue";
 import { apiBaseEnv } from "../utils/runtimeEnv.js";
 import { buildExportFilename, downloadTextFile } from "../utils/exporters.js";
 import router from "../router/index.js";
+import { RealtimeChannel } from "../utils/realtimeChannel.js";
+import { bridgedFetch } from "../utils/httpBridge.js";
 
 const AUTH_SESSION_PATH = "/api/auth/session";
 const STORAGE_KEY_API = "sniff4hound.apiBase";
@@ -874,19 +876,19 @@ const WS_GET_CONNECT_GRACE_MS = 1500;
 function isWsGetEligible(path, options) {
   const method = String((options && options.method) || "GET").toUpperCase();
   if (method !== "GET") return false;
-  if (typeof window === "undefined" || typeof window.WebSocket === "undefined") return false;
+  if (typeof window === "undefined" || typeof EventSource === "undefined") return false;
   const clean = String(path || "").split("?")[0];
   return !WS_GET_DENIED_PREFIXES.some((prefix) => clean.startsWith(prefix));
 }
 
 function waitForWsOpen(timeoutMs = WS_GET_CONNECT_GRACE_MS) {
-  if (typeof window === "undefined" || typeof window.WebSocket === "undefined") {
+  if (typeof window === "undefined" || typeof EventSource === "undefined") {
     return Promise.resolve(false);
   }
-  if (wsClient && wsClient.readyState === window.WebSocket.OPEN) return Promise.resolve(true);
+  if (wsClient && wsClient.readyState === RealtimeChannel.OPEN) return Promise.resolve(true);
   // Only worth waiting for a socket that is actually on its way. A closed or
   // absent one would just delay the HTTP read by the whole grace period.
-  if (!wsClient || wsClient.readyState !== window.WebSocket.CONNECTING) {
+  if (!wsClient || wsClient.readyState !== RealtimeChannel.CONNECTING) {
     return Promise.resolve(false);
   }
   const socket = wsClient;
@@ -1060,7 +1062,7 @@ function fetchWithMetaUntracked(path, options = {}, config = {}) {
 }
 
 function httpFetchWithMeta(path, opts, config) {
-  return fetch(apiUrl(path), opts).then((res) =>
+  return bridgedFetch(apiUrl(path), opts).then((res) =>
     res.text().then((text) => {
       const data = parseJsonSafe(text);
       if (!res.ok) {
@@ -1201,7 +1203,7 @@ function downloadIocExport(dataset, format = "csv", params = {}) {
     if (value === null || value === undefined || value === "") return;
     query.set(key, String(value));
   });
-  return fetch(apiUrl(`/api/export/${name}?${query.toString()}`), {
+  return bridgedFetch(apiUrl(`/api/export/${name}?${query.toString()}`), {
     headers: applyAuthHeader({}),
   }).then((res) =>
     res.text().then((text) => {
@@ -1462,10 +1464,10 @@ function notifyProtocolSnapshotSubscribers(payload) {
 }
 
 function sendWsAction(message) {
-  if (typeof window === "undefined" || typeof window.WebSocket === "undefined") {
+  if (typeof window === "undefined" || typeof EventSource === "undefined") {
     return false;
   }
-  if (!wsClient || wsClient.readyState !== window.WebSocket.OPEN) {
+  if (!wsClient || wsClient.readyState !== RealtimeChannel.OPEN) {
     return false;
   }
   try {
@@ -1502,10 +1504,10 @@ function resumeProtocolSnapshotStream() {
 }
 
 function requestRealtimeMapSnapshot(limit = 300) {
-  if (typeof window === "undefined" || typeof window.WebSocket === "undefined") {
+  if (typeof window === "undefined" || typeof EventSource === "undefined") {
     return false;
   }
-  if (!wsClient || wsClient.readyState !== window.WebSocket.OPEN) {
+  if (!wsClient || wsClient.readyState !== RealtimeChannel.OPEN) {
     return false;
   }
   try {
@@ -1919,25 +1921,13 @@ function feedUrl(feed, params = {}, ticket = "") {
     base = window.location.origin;
   }
   const query = new URLSearchParams();
+  query.set("feed", String(feed || "").replace(/^\/+|\/+$/g, ""));
   if (ticket) query.set("ws_ticket", ticket);
   Object.entries(params).forEach(([key, value]) => {
     if (value === undefined || value === null || value === "") return;
     query.set(key, String(value));
   });
-  const path = `/ws/${String(feed || "").replace(/^\/+|\/+$/g, "")}`;
-  try {
-    const parsed = new URL(base);
-    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
-    parsed.pathname = path;
-    parsed.search = query.toString();
-    return parsed.toString();
-  } catch {
-    const host = typeof window !== "undefined" ? window.location.host : "127.0.0.1:45678";
-    const protocol =
-      typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : "ws";
-    const suffix = query.toString();
-    return `${protocol}://${host}${path}${suffix ? `?${suffix}` : ""}`;
-  }
+  return `${String(base).replace(/\/+$/, "")}/realtime/stream?${query.toString()}`;
 }
 
 // `onUnavailable` is what lets a view drop its HTTP polling entirely and still
@@ -1964,7 +1954,7 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
       }
     }
   };
-  if (typeof window === "undefined" || typeof window.WebSocket === "undefined") {
+  if (typeof window === "undefined" || typeof EventSource === "undefined") {
     giveUp();
     return { ok: false, update: () => false, close: () => {}, isOpen: () => false };
   }
@@ -2011,7 +2001,7 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
     const openWithTicket = (ticket = "") => {
       if (closedByCaller || attempt !== connectAttempt) return;
       try {
-        socket = new window.WebSocket(feedUrl(feed, currentParams, ticket));
+        socket = new RealtimeChannel(feedUrl(feed, currentParams, ticket), { headers: realtimeHeaders });
       } catch {
         socket = null;
         giveUp();
@@ -2097,7 +2087,7 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
         socket = null;
       }
     },
-    isOpen: () => Boolean(socket && socket.readyState === window.WebSocket.OPEN),
+    isOpen: () => Boolean(socket && socket.readyState === RealtimeChannel.OPEN),
   };
 }
 
@@ -2113,33 +2103,20 @@ function feedListResult(payload) {
   };
 }
 
-function wsUrl(ticket = "") {
+function realtimeUrl(ticket = "") {
   let base = state.apiBase;
   if (!base && typeof window !== "undefined") {
     base = window.location.origin;
   }
-  try {
-    const parsed = new URL(base);
-    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
-    parsed.pathname = "/ws/";
-    parsed.search = "";
-    if (ticket) {
-      parsed.searchParams.set("ws_ticket", ticket);
-    }
-    return parsed.toString();
-  } catch {
-    if (typeof window !== "undefined") {
-      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const suffix = ticket
-        ? `?ws_ticket=${encodeURIComponent(ticket)}`
-        : "";
-      return `${protocol}://${window.location.host}/ws/${suffix}`;
-    }
-  }
-  const suffix = ticket
-    ? `?ws_ticket=${encodeURIComponent(ticket)}`
-    : "";
-  return `ws://127.0.0.1:45678/ws/${suffix}`;
+  const query = new URLSearchParams();
+  if (ticket) query.set("ws_ticket", ticket);
+  return `${String(base).replace(/\/+$/, "")}/realtime/stream?${query.toString()}`;
+}
+
+// Headers for the realtime channel's POSTs. Authorization only, as for every
+// other request (see applyAuthHeader).
+function realtimeHeaders() {
+  return applyAuthHeader({});
 }
 
 function scheduleReconnect() {
@@ -2172,7 +2149,7 @@ function reconnectRealtime() {
 }
 
 function connectRealtime() {
-  if (typeof window === "undefined" || typeof window.WebSocket === "undefined") {
+  if (typeof window === "undefined" || typeof EventSource === "undefined") {
     state.wsStatus = "offline";
     return;
   }
@@ -2189,8 +2166,8 @@ function connectRealtime() {
   }
   if (
     wsClient &&
-    (wsClient.readyState === window.WebSocket.OPEN ||
-      wsClient.readyState === window.WebSocket.CONNECTING)
+    (wsClient.readyState === RealtimeChannel.OPEN ||
+      wsClient.readyState === RealtimeChannel.CONNECTING)
   ) {
     return;
   }
@@ -2202,7 +2179,7 @@ function connectRealtime() {
       if (attempt !== wsConnectAttempt || state.shutdownPending) return;
       let socket;
       try {
-        socket = new window.WebSocket(wsUrl(ticket));
+        socket = new RealtimeChannel(realtimeUrl(ticket), { headers: realtimeHeaders });
       } catch {
         state.wsStatus = "error";
         scheduleReconnect();

@@ -52,15 +52,21 @@ test("CSV neutralizes remote formulas, retains quoting and numeric values", () =
 
 test("replaced and closed streams cannot deliver stale frames or fallback", () => {
   const original = globalThis.window;
+  const originalEventSource = globalThis.EventSource;
   const sockets = [];
+  // The realtime channel streams over EventSource; this fake plays the server.
   class Socket {
-    static OPEN = 1;
-    constructor() { this.events = {}; this.readyState = 1; sockets.push(this); }
+    constructor(url) { this.url = url; this.events = {}; this.readyState = 1; sockets.push(this); }
     addEventListener(name, callback) { this.events[name] = callback; }
-    close() { this.readyState = 3; this.emit("close"); }
-    emit(name, payload = {}) { this.events[name]?.({ data: JSON.stringify(payload) }); }
+    close() { this.readyState = 2; }
+    emit(name, payload = {}) {
+      if (name === "message") this.onmessage?.({ data: JSON.stringify(payload) });
+      else if (name === "error") this.onerror?.({});
+      else this.events[name]?.({ data: JSON.stringify(payload) });
+    }
   }
-  globalThis.window = { WebSocket: Socket, location: { origin: "http://localhost" } };
+  globalThis.EventSource = Socket;
+  globalThis.window = { location: { origin: "http://localhost" } };
   let fallbacks = 0;
   const received = [];
   const handle = appStore.openDataFeed("soc", { since: "15m" }, value => received.push(value), () => { fallbacks += 1; });
@@ -80,6 +86,7 @@ test("replaced and closed streams cannot deliver stale frames or fallback", () =
   } finally {
     handle.close();
     globalThis.window = original;
+    globalThis.EventSource = originalEventSource;
   }
 });
 
