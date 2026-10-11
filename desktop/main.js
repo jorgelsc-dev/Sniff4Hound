@@ -1,5 +1,5 @@
 const { app, BrowserWindow, Menu, ipcMain, net, shell, dialog, protocol, session } = require("electron");
-const { spawn } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const { StringDecoder } = require("node:string_decoder");
 const https = require("node:https");
@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { URL, URLSearchParams } = require("./lib/simple-url");
-const elevation = require("./lib/elevation");
+const quicPin = require("./lib/quic-pin");
 
 const READY_PREFIX = "SNIFF4HOUND_DESKTOP_READY ";
 const DEFAULT_PORT = "45678";
@@ -109,16 +109,15 @@ if (!desktopDebugDisabled && !launcherOnly) {
   app.commandLine.appendSwitch("remote-allow-origins", "*");
 }
 
-// The runtime's certificate is issued by a private CA. Chromium's QUIC stack
-// does not consult the session's verify proc, so HTTP/3 to a loopback runtime
-// could never validate it. This switch lets Chromium accept loopback TLS
-// without that validation, which makes HTTP/3 work for the local runtime.
-// Trade-off, accepted deliberately: loopback TLS is not pinned to the CA in
-// this process, and remote sensors over the LAN still use the pinned path
-// (TCP; HTTP/3 needs a trusted certificate there).
+// The runtime's certificate is issued by a private CA. Over TCP this switch lets
+// Chromium accept loopback TLS without validating it, which covers a loopback
+// runtime that is not the local backend (a remote sensor behind a tunnel) and
+// the first requests before the session's verify proc below is installed.
+// It does nothing for QUIC: Chromium's QUIC stack only validates, and
+// HTTP/3 to the local backend is trusted by pinning the runtime's persistent
+// server key instead (prepareHttp3() below, lib/quic-pin.js).
 // Once the local backend is ready the verify proc below is installed too, so
-// its certificate is validated against the pinned CA over TCP and the switch
-// only matters for a loopback runtime connected as a remote sensor.
+// its certificate is validated against the pinned CA over TCP.
 app.commandLine.appendSwitch("allow-insecure-localhost");
 
 // Every path that hands a URL to shell.openExternal() (new-window clicks,
@@ -275,10 +274,8 @@ function runtimeCertificateIsPinnedForHost(hostname, certificate) {
 // Without it, Chromium fails every new TLS connection to the runtime's private-CA
 // certificate with net_error -202 (logged as "handshake failed") and only then
 // lets the loopback switch (see allow-insecure-localhost above) override the
-// error: requests worked, but the console filled with errors. Installing it makes
-// Chromium's QUIC stack ignore that switch; the renderer's loopback responses
-// are HTTP/1.1 with or without it (measured), so nothing is lost for the local
-// backend.
+// error: requests worked, but the console filled with errors. It only covers
+// TCP; the local backend's HTTP/3 does not go through it (see prepareHttp3()).
 let runtimeVerifyProcInstalled = false;
 
 function installRuntimeVerifyProc() {
@@ -465,7 +462,9 @@ function backendEnv(pythonPath) {
     PYTHONNOUSERSITE: "1",
     SNIFF4HOUND_DESKTOP: "1",
     SNIFF4HOUND_HOST: process.env.SNIFF4HOUND_HOST || "127.0.0.1",
-    SNIFF4HOUND_PORT: process.env.SNIFF4HOUND_PORT || DEFAULT_PORT,
+    // The port Chromium was told to speak HTTP/3 to, when it could be chosen
+    // in advance (see prepareHttp3()).
+    SNIFF4HOUND_PORT: String((preparedRuntime && preparedRuntime.port) || process.env.SNIFF4HOUND_PORT || DEFAULT_PORT),
     SNIFF4HOUND_CAPTURE_AUTO_START: "0",
     SNIFF4HOUND_TLS: process.env.SNIFF4HOUND_TLS || "1",
     // Where the backend should leave the security code. It has to be a
@@ -542,6 +541,16 @@ function startBackend() {
           backendReady.connection = "local";
           backendReady.protocol = backendReady.protocol || "http";
           backendReady.origin = new URL(backendReady.url).origin;
+          if (quicPin.forcedOriginIsUnserved(forcedQuicOrigin, backendReady)) {
+            // Chromium has no TCP fallback for an origin it was told to reach
+            // over QUIC, so a runtime without its UDP side would just look dead.
+            rememberBackendLine(`HTTP/3 is not listening on udp://${forcedQuicOrigin}.`);
+            showBackendFailure(
+              "The runtime could not open its HTTP/3 (UDP) listener. " +
+                "Set SNIFF4HOUND_DESKTOP_HTTP3=0 to use HTTPS over TCP only.",
+            );
+            return;
+          }
           backendReady.security_code = readDesktopCodeFile(backendReady.security_code_file);
           delete backendReady.security_code_file;
           if (backendReady.ca_pem) {
@@ -1157,6 +1166,31 @@ ipcMain.handle("desktop-runtime:show-connection-chooser", () => {
   showConnectionChooser();
   return { ok: true };
 });
+
+// HTTP/3 to the local runtime. Chromium reads these switches once, before the
+// app is ready, so they are decided here: ask the runtime which port it will use
+// and for the public-key hash of its persistent server key, then tell Chromium
+// to trust that key and to use QUIC for that origin (see lib/quic-pin.js).
+// Anything missing leaves the app on HTTPS over TCP, as before.
+let preparedRuntime = null;
+// "host:port" Chromium was told to speak HTTP/3 to, with no TCP fallback.
+let forcedQuicOrigin = "";
+
+function prepareHttp3() {
+  if (process.platform !== "linux" || quicPin.http3Disabled(process.env)) return;
+  const pythonPath = resolvePython();
+  preparedRuntime = quicPin.prepareRuntime({
+    execFileSync,
+    python: pythonPath,
+    env: backendEnv(pythonPath),
+    cwd: app.isPackaged ? process.resourcesPath : repoRoot(),
+  });
+  for (const [name, value] of quicPin.quicSwitches({ prepared: preparedRuntime, env: process.env })) {
+    app.commandLine.appendSwitch(name, value);
+    if (name === "origin-to-force-quic-on") forcedQuicOrigin = value;
+  }
+}
+prepareHttp3();
 
 app.whenReady().then(() => {
   if (launcherOnly) return;

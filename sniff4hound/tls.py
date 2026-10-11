@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import ipaddress
 import secrets
 import shutil
@@ -11,7 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .settings import DATA_DIR, TLS_CERT_DAYS
+from .settings import DATA_DIR, TLS_CA_DAYS, TLS_CERT_DAYS
 
 
 TLS_DIR = DATA_DIR / "tls"
@@ -30,6 +32,11 @@ MOBILE_SERVER_CERT_FILE = TLS_DIR / "sniff4hound-mobile-server.pem"
 MOBILE_SERVER_EXT_FILE = TLS_DIR / "sniff4hound-mobile-server.ext"
 MOBILE_CA_SERIAL_FILE = TLS_DIR / "sniff4hound-mobile-ca.srl"
 _MOBILE_CA_CERT_ACTIVE: Path | None = None
+
+
+#: A CA that expires sooner than this is replaced at the next launch, so a
+#: client is never left trusting one that is about to lapse.
+CA_RENEW_BEFORE_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -85,22 +92,6 @@ def _write_server_ext(host: str, path: Path = SERVER_EXT_FILE) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _remove_previous_material() -> None:
-    for path in (
-        CA_KEY_FILE,
-        CA_CERT_FILE,
-        SERVER_KEY_FILE,
-        SERVER_CSR_FILE,
-        SERVER_CERT_FILE,
-        SERVER_EXT_FILE,
-        CA_SERIAL_FILE,
-    ):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-
-
 def _remove_previous_mobile_material() -> None:
     for path in (
         MOBILE_CA_KEY_FILE,
@@ -136,17 +127,57 @@ def public_mobile_ca_pem() -> str:
         return ""
 
 
-def ensure_runtime_tls(host: str) -> RuntimeTlsMaterial:
-    """Create a short-lived CA and server cert for this process.
+# Keys are EC P-256, not RSA: the server's whole TLS flight (certificate and
+# signature) goes out in a single QUIC packet, and an RSA-2048 certificate plus
+# its signature already fills most of the 1350 bytes a client will read. EC keeps
+# it near a kilobyte-and-a-half smaller, so it fits with room to spare.
+EC_CURVE = "prime256v1"
 
-    The material is deliberately regenerated on each TLS-enabled launch. A
-    desktop client trusts the returned CA for the configured backend origin
-    only, so persisting it longer than the process buys little and widens the
-    window after a local file disclosure.
-    """
-    TLS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _remove_previous_material()
-    _run_openssl(["genrsa", "-out", str(CA_KEY_FILE), "2048"])
+
+def _run_openssl_text(args: list[str]) -> subprocess.CompletedProcess:
+    openssl = shutil.which("openssl")
+    if not openssl:
+        raise RuntimeError("OpenSSL is required to manage Sniff4Hound TLS certificates.")
+    return subprocess.run([openssl, *args], capture_output=True, text=True)
+
+
+def _is_ec_p256_key(key: Path) -> bool:
+    result = _run_openssl_text(["pkey", "-in", str(key), "-noout", "-text"])
+    return result.returncode == 0 and EC_CURVE in result.stdout
+
+
+def _generate_ec_key(path: Path) -> None:
+    _run_openssl(["ecparam", "-name", EC_CURVE, "-genkey", "-noout", "-out", str(path)])
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _ca_is_reusable() -> bool:
+    """Whether the CA on disk can be kept: both files are there, the key belongs
+    to the certificate, it is a CA, and it has more than CA_RENEW_BEFORE_DAYS left."""
+    if not (CA_CERT_FILE.is_file() and CA_KEY_FILE.is_file()) or not _is_ec_p256_key(CA_KEY_FILE):
+        return False
+    try:
+        # load_cert_chain refuses a key that does not match its certificate.
+        probe = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        probe.load_cert_chain(certfile=str(CA_CERT_FILE), keyfile=str(CA_KEY_FILE))
+    except (OSError, ssl.SSLError):
+        return False
+    # -checkend exits 1 when the certificate expires within that many seconds.
+    if _run_openssl_text(["x509", "-in", str(CA_CERT_FILE), "-noout", "-checkend", str(CA_RENEW_BEFORE_DAYS * 86400)]).returncode != 0:
+        return False
+    return "CA:TRUE" in _run_openssl_text(["x509", "-in", str(CA_CERT_FILE), "-noout", "-ext", "basicConstraints"]).stdout
+
+
+def _create_ca() -> None:
+    for path in (CA_KEY_FILE, CA_CERT_FILE, CA_SERIAL_FILE):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    _generate_ec_key(CA_KEY_FILE)
     _run_openssl(
         [
             "req",
@@ -157,14 +188,75 @@ def ensure_runtime_tls(host: str) -> RuntimeTlsMaterial:
             str(CA_KEY_FILE),
             "-sha256",
             "-days",
-            str(TLS_CERT_DAYS),
+            str(TLS_CA_DAYS),
             "-out",
             str(CA_CERT_FILE),
             "-subj",
-            "/CN=Sniff4Hound Temporary Runtime CA",
+            "/CN=Sniff4Hound Runtime CA",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE,pathlen:0",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
         ]
     )
-    _run_openssl(["genrsa", "-out", str(SERVER_KEY_FILE), "2048"])
+
+
+def ensure_runtime_ca() -> tuple[Path, bool]:
+    """The runtime CA, created on first use and then kept.
+
+    Returns ``(ca_certificate, created)``. Everything that has been told to
+    trust it - a remote sensor's pasted copy, the server key below - stays valid
+    from one launch to the next until it is renewed (when fewer than
+    CA_RENEW_BEFORE_DAYS remain, or if its files are missing or do not match).
+    """
+    TLS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if _ca_is_reusable():
+        return CA_CERT_FILE, False
+    _create_ca()
+    return CA_CERT_FILE, True
+
+
+def ensure_server_key(*, renew: bool = False) -> Path:
+    """The server's private key, kept between launches so its public key is a
+    stable thing for a client to trust. Replaced when ``renew`` is set (the CA was
+    just recreated) or when the file is not a usable EC key."""
+    TLS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if renew or not (SERVER_KEY_FILE.is_file() and _is_ec_p256_key(SERVER_KEY_FILE)):
+        _generate_ec_key(SERVER_KEY_FILE)
+    return SERVER_KEY_FILE
+
+
+def _spki_pin(pem_public_key: str) -> str:
+    body = "".join(line for line in pem_public_key.splitlines() if line and not line.startswith("-----"))
+    return base64.b64encode(hashlib.sha256(base64.b64decode(body)).digest()).decode("ascii")
+
+
+def server_key_pin(key: Path | None = None) -> str:
+    """Base64 of the SHA-256 of the server key's SubjectPublicKeyInfo - the form
+    Chromium's --ignore-certificate-errors-spki-list takes."""
+    result = _run_openssl_text(["pkey", "-in", str(key or SERVER_KEY_FILE), "-pubout"])
+    if result.returncode != 0:
+        raise RuntimeError(f"could not read the server key: {result.stderr.strip()}")
+    return _spki_pin(result.stdout)
+
+
+def ensure_runtime_tls(host: str) -> RuntimeTlsMaterial:
+    """The runtime's TLS material: a persistent CA, a persistent server key, and
+    a server certificate signed for this launch.
+
+    What a client can trust about this runtime therefore does not change every
+    time it restarts: the CA can be installed once, and the server's public key
+    is the same from launch to launch. Only the certificate is new each time - it
+    follows the host's current names and addresses and is short-lived. The keys
+    stay in the 0700 TLS directory with mode 0600.
+    """
+    _, created = ensure_runtime_ca()
+    ensure_server_key(renew=created)
+    for path in (SERVER_CSR_FILE, SERVER_CERT_FILE, SERVER_EXT_FILE):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
     common_name = str(host or "localhost").strip()
     if common_name in {"0.0.0.0", "::", ""}:
         common_name = "localhost"
@@ -201,11 +293,6 @@ def ensure_runtime_tls(host: str) -> RuntimeTlsMaterial:
             str(SERVER_EXT_FILE),
         ]
     )
-    for secret in (CA_KEY_FILE, SERVER_KEY_FILE):
-        try:
-            secret.chmod(0o600)
-        except OSError:
-            pass
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certfile=str(SERVER_CERT_FILE), keyfile=str(SERVER_KEY_FILE))
@@ -308,3 +395,4 @@ def ensure_mobile_tls(host: str) -> RuntimeTlsMaterial:
     context.load_cert_chain(certfile=str(server_cert), keyfile=str(server_key))
     _MOBILE_CA_CERT_ACTIVE = ca_cert
     return RuntimeTlsMaterial(ca_cert, server_cert, server_key, context)
+

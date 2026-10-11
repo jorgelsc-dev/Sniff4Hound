@@ -130,6 +130,79 @@ class AltSvcOnResponsesTests(unittest.TestCase):
         self.assertNotIn("Alt-Svc", self._dispatch().headers)
 
 
+class ResponseHeaderPolicyOnEveryTransportTests(unittest.TestCase):
+    """HTTP/3 does not go through the HTTP/1.1 writer, so what that writer adds
+    has to be on the response the app returns. Without it the desktop shell, which
+    talks HTTP/3 to its runtime, had its preflight for X-Security-Code refused."""
+
+    def setUp(self):
+        self._previous = os.environ.get("SNIFF4HOUND_DATA_DIR")
+        self._tmp = tempfile.TemporaryDirectory()
+        os.environ["SNIFF4HOUND_DATA_DIR"] = self._tmp.name
+        import sniff4hound.app as app_module
+
+        self.app_module = app_module
+
+    def tearDown(self):
+        if self._previous is None:
+            os.environ.pop("SNIFF4HOUND_DATA_DIR", None)
+        else:
+            os.environ["SNIFF4HOUND_DATA_DIR"] = self._previous
+        self._tmp.cleanup()
+
+    def _dispatch(self, method, path, headers=None):
+        from wsbuilder import Request
+
+        request = Request(method, path, "", {"host": "127.0.0.1", **(headers or {})}, b"", ("127.0.0.1", 1))
+        return self.app_module.app.dispatch(request)
+
+    def test_a_dispatched_response_carries_the_security_headers(self):
+        headers = self._dispatch("GET", "/api/hello").headers
+        self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(headers.get("Referrer-Policy"), "no-referrer")
+        self.assertEqual(headers.get("X-Frame-Options"), "DENY")
+
+    def test_the_preflight_allows_the_security_code_header(self):
+        response = self._dispatch(
+            "OPTIONS",
+            "/api/auth/session",
+            {"origin": "app://shell", "access-control-request-method": "GET", "access-control-request-headers": "x-security-code"},
+        )
+        allowed = {item.strip().lower() for item in response.headers["Access-Control-Allow-Headers"].split(",")}
+        self.assertIn("x-security-code", allowed)
+
+    def test_applying_the_policy_twice_changes_nothing(self):
+        headers = {"Access-Control-Allow-Headers": "Content-Type"}
+        self.app_module._apply_response_header_policy(headers)
+        once = dict(headers)
+        self.app_module._apply_response_header_policy(headers)
+        self.assertEqual(headers, once)
+        self.assertEqual(headers["Access-Control-Allow-Headers"], "Content-Type, X-Security-Code")
+
+    def test_a_response_the_handler_already_secured_is_left_alone(self):
+        headers = {"X-Frame-Options": "SAMEORIGIN", "x-content-type-options": "nosniff"}
+        self.app_module._apply_response_header_policy(headers)
+        self.assertEqual(headers["X-Frame-Options"], "SAMEORIGIN")
+        self.assertEqual([k for k in headers if k.lower() == "x-content-type-options"], ["x-content-type-options"])
+
+    def test_the_http_one_writer_and_dispatch_agree(self):
+        import io
+
+        class Conn:
+            def __init__(self):
+                self.sent = io.BytesIO()
+
+            def sendall(self, data):
+                self.sent.write(data)
+
+        response = self._dispatch("OPTIONS", "/api/auth/session", {"origin": "app://shell"})
+        conn = Conn()
+        self.app_module._guarded_send_http_response(conn, response)
+        wire = conn.sent.getvalue().decode("utf-8", "replace")
+        self.assertEqual(wire.lower().count("x-security-code"), 1, "the allow-list must not list it twice")
+        self.assertEqual(wire.count("X-Frame-Options"), 1)
+
+
 class SendGuardKeepAliveTests(unittest.TestCase):
     """wsbuilder decides keep-alive per request and passes it to the send guard.
     Announcing ``Connection: close`` while the server keeps the socket open makes

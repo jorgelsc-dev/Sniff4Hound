@@ -146,6 +146,29 @@ def _is_benign_http_send_error(exc: Exception) -> bool:
     }
 
 
+def _apply_response_header_policy(headers) -> None:
+    """The headers every response carries, whichever transport sends it: the
+    default security headers, and the CORS allow-list extended with the headers
+    the desktop shell's requests use. Applied in place and safe to apply twice.
+
+    It runs on the response the app dispatch returns, so HTTP/1.1, HTTP/2 and
+    HTTP/3 all get it. It used to live only in the HTTP/1.1 writer, which left
+    HTTP/3 without the security headers and with a CORS preflight that refused
+    ``X-Security-Code`` - the header the desktop shell authenticates with.
+    """
+    present = {name.lower(): name for name in headers}
+    for name, value in DEFAULT_SECURITY_HEADERS.items():
+        if name.lower() not in present:
+            headers[name] = value
+    key = present.get("access-control-allow-headers")
+    if key is None or not headers[key]:
+        return
+    allowed = {item.strip().lower() for item in str(headers[key]).split(",") if item.strip()}
+    additions = [item for item in REQUIRED_CORS_HEADERS if item.lower() not in allowed]
+    if additions:
+        headers[key] = f"{headers[key]}, {', '.join(additions)}"
+
+
 def _guarded_send_http_response(conn, response, *, send_body=True, keep_alive=False, version=None):
     # wsbuilder decides keep-alive per request and passes it down. HTTP/0.9 has
     # no status line or headers at all, so that case stays with wsbuilder's own
@@ -167,11 +190,7 @@ def _guarded_send_http_response(conn, response, *, send_body=True, keep_alive=Fa
             raise ValueError(f"Duplicate response header: {header_name}")
         seen_headers.add(normalized)
         headers[header_name] = _wsbuilder_http.validate_header_value(value)
-    for name, value in DEFAULT_SECURITY_HEADERS.items():
-        if name.lower() in seen_headers:
-            continue
-        seen_headers.add(name.lower())
-        headers[name] = value
+    _apply_response_header_policy(headers)
 
     lowermap = {k.lower(): v for k, v in headers.items()}
     status_allows_body = not (100 <= status_code < 200 or status_code in {204, 304})
@@ -194,15 +213,6 @@ def _guarded_send_http_response(conn, response, *, send_body=True, keep_alive=Fa
         # would make the client drop it.
         headers["Connection"] = "close"
         lowermap = {k.lower(): v for k, v in headers.items()}
-    allow_headers = lowermap.get("access-control-allow-headers", "")
-    if allow_headers:
-        allowed = {item.strip().lower() for item in allow_headers.split(",") if item.strip()}
-        additions = [item for item in REQUIRED_CORS_HEADERS if item.lower() not in allowed]
-        if additions:
-            for name in list(headers):
-                if name.lower() == "access-control-allow-headers":
-                    headers[name] = f"{headers[name]}, {', '.join(additions)}"
-                    break
     status_line = f"HTTP/1.1 {status_code} {reason}\r\n"
     hdrs = ""
     for key, value in headers.items():
@@ -297,6 +307,8 @@ def _install_access_log():
         advertised = http3_listener.alt_svc_value()
         if advertised and hasattr(response, "headers"):
             response.headers.setdefault("Alt-Svc", advertised)
+        if isinstance(getattr(response, "headers", None), dict):
+            _apply_response_header_policy(response.headers)
         try:
             access_log.log_response(request, response, started_at)
         except Exception:

@@ -210,7 +210,7 @@ def _write_desktop_code_file(port: int, code: str) -> str:
     return path
 
 
-def _emit_desktop_ready(host: str, port: int) -> None:
+def _emit_desktop_ready(host: str, port: int, http3: bool = False) -> None:
     from .auth import REQUIRE_AUTH, get_security_code
 
     ca_pem = ""
@@ -228,6 +228,9 @@ def _emit_desktop_ready(host: str, port: int) -> None:
         "auth_required": bool(REQUIRE_AUTH),
         "security_code_file": code_file,
         "ca_pem": ca_pem,
+        # Whether the UDP/HTTP3 side is listening: a shell that was told to use
+        # HTTP/3 for this port has no TCP fallback and needs to know.
+        "http3": bool(http3),
     }
     print(f"{DESKTOP_READY_PREFIX}{json.dumps(payload, separators=(',', ':'))}", flush=True)
 
@@ -1061,10 +1064,18 @@ def main():
         # (see _restore_tty_attrs) - put it back before printing anything.
         _restore_tty_attrs(tty_attrs)
 
+        # Before anything announces the runtime: a client that has been told to
+        # use HTTP/3 for this port (the desktop shell does) must find the UDP
+        # side bound by the time it hears about it.
+        if tls_material:
+            from .http3_listener import start_http3, stop_http3
+
+            http3_server = start_http3(app, tls_material, host, selected_port)
+
         if selected_port != requested_port:
             _print_port_fallback_notice(requested_port, selected_port)
         if desktop_mode:
-            _emit_desktop_ready(host, selected_port)
+            _emit_desktop_ready(host, selected_port, http3=http3_server is not None)
         else:
             _print_startup_banner(host, selected_port)
             console_thread = _start_interactive_console(
@@ -1088,9 +1099,6 @@ def main():
             capture_supervisor.start()
         bootstrap_capture()
         if tls_material:
-            from .http3_listener import start_http3, stop_http3
-
-            http3_server = start_http3(app, tls_material, host, selected_port)
             app.run(host, selected_port, ssl_context=tls_material.ssl_context)
         else:
             app.run(host, selected_port)
