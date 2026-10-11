@@ -1,0 +1,121 @@
+name: Tests
+
+# The full test suite, run on demand: Actions -> Tests -> Run workflow, on the
+# branch you want to check. It is not triggered by pushes or pull requests (see
+# ci.yml); the same commands run locally are in the README under "Checks".
+#
+#   backend  - scripts/check_test_shards.py, then the shards of
+#              .github/test-shards.json in parallel
+#   frontend - `npm test` in desktop/frontend (lint + node unit tests)
+
+on:
+  # TEMPORARY: lets this PR prove the workflow runs; removed before merge.
+  pull_request:
+    paths: [".github/workflows/tests.yml"]
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Which tests to run"
+        type: choice
+        default: all
+        options:
+          - all
+          - backend
+          - frontend
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The full backend suite (unittest discover) takes ~5-8 minutes running
+  # serially - most of that is the fixed per-test cost of standing up a real
+  # SniffStore/Sniffer against the full builtin monitor catalog, repeated
+  # hundreds of times, not any one slow test. Splitting it across parallel
+  # runners cuts wall-clock time to roughly that of the heaviest shard instead
+  # of the sum of all of them. The shard test lists live in
+  # .github/test-shards.json (balanced by measured per-module duration);
+  # scripts/check_test_shards.py fails the run if a test file exists under
+  # tests/ that no shard references, so a newly added test file can't silently
+  # stop running here. Register every new tests/test_*.py in that file.
+  backend-tests-plan:
+    name: Backend tests plan
+    if: ${{ (inputs.suite || 'all') == 'all' || inputs.suite == 'backend' }}
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify every test module is assigned to a shard
+        run: python3 scripts/check_test_shards.py
+      - name: Compute shard matrix
+        id: plan
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          data = json.load(open('.github/test-shards.json'))
+          shards = [{'shard': i + 1, 'tests': ' '.join(t)} for i, t in enumerate(data['shards'])]
+          print('shards=' + json.dumps(shards))
+          PY
+
+  backend-tests:
+    name: Backend tests (Python ${{ matrix.python-version }})
+    needs: backend-tests-plan
+    if: ${{ needs.backend-tests-plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+        shard: ${{ fromJson(needs.backend-tests-plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+      - name: Install frontend dependencies
+        working-directory: desktop/frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: desktop/frontend
+        run: npm run build
+      - name: Compile Python files
+        run: python -m compileall -q .
+      - name: Install project for tests
+        run: python -m pip install .
+      # wsbuilder is pinned in pyproject.toml, but record what was resolved: when
+      # a run fails, it has to say which version it actually used, or the
+      # failure is not reproducible after the fact.
+      - name: Report resolved wsbuilder version
+        run: python -c "import importlib.metadata as m; print('wsbuilder', m.version('wsbuilder'))"
+      - name: Run unit tests (shard ${{ matrix.shard.shard }})
+        run: python -m unittest ${{ matrix.shard.tests }} -q
+
+  frontend-tests:
+    name: Frontend tests
+    if: ${{ (inputs.suite || 'all') == 'all' || inputs.suite == 'frontend' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop/frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint and unit tests
+        run: npm test

@@ -18,7 +18,7 @@
 Follow the existing style in each layer rather than adding new formatters. Python code uses 4-space indentation, `snake_case` for functions/modules, and `PascalCase` for classes. Frontend code uses ESM, 2-space indentation, Vue SFCs, and `PascalCase` component filenames such as `AppTopBar.vue`. Keep environment variables uppercase with the `SNIFF4HOUND_` prefix.
 
 ## Testing Guidelines
-Tests are `unittest.TestCase` classes with `test_*` methods. Add backend coverage under `tests/` and keep fixtures self-contained by using temporary directories or isolated test data. There is no coverage threshold configured in repo settings, so prioritize smoke coverage for API, storage, auth, and packet-parsing changes.
+Tests are `unittest.TestCase` classes with `test_*` methods. Add backend coverage under `tests/` and keep fixtures self-contained by using temporary directories or isolated test data. There is no coverage threshold configured in repo settings, so prioritize smoke coverage for API, storage, auth, and packet-parsing changes. GitHub does not run the tests on push or pull request (only lint + build, CodeQL and the provenance checks), so run them locally before a PR, or start the manual `Tests` workflow from the Actions tab (`tests.yml`). Register every new `tests/test_*.py` in `.github/test-shards.json`; the manual run fails when one is missing.
 
 ## Commit & Pull Request Guidelines
 History is short and mostly uses concise imperative messages, with Conventional Commit style for dependency bumps, for example `chore(deps): bump ...`. Keep commit subjects brief and specific. PRs should explain the behavior change, list validation commands run, and include screenshots for UI updates. Update docs when API, UI, or schema behavior changes.
