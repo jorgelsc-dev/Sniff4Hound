@@ -72,6 +72,9 @@ if (!desktopDebugDisabled) {
 // Trade-off, accepted deliberately: loopback TLS is not pinned to the CA in
 // this process, and remote sensors over the LAN still use the pinned path
 // (TCP; HTTP/3 needs a trusted certificate there).
+// Once the local backend is ready the verify proc below is installed too, so
+// its certificate is validated against the pinned CA over TCP and the switch
+// only matters for a loopback runtime connected as a remote sensor.
 app.commandLine.appendSwitch("allow-insecure-localhost");
 
 // Every path that hands a URL to shell.openExternal() (new-window clicks,
@@ -222,16 +225,21 @@ function runtimeCertificateIsPinnedForHost(hostname, certificate) {
   return false;
 }
 
-// The session verify proc pins a remote runtime's CA for TCP requests (including
-// the main process's own net requests). It is installed only when a non-loopback
-// runtime is connected: installing it at all makes Chromium's QUIC stack ignore
-// the loopback switch (see allow-insecure-localhost above), and loopback is the
-// one case HTTP/3 needs to reach.
-let remoteVerifyProcInstalled = false;
+// The session verify proc pins a runtime's CA for TCP requests (including the
+// main process's own net requests). It is installed when a non-loopback runtime
+// is connected and when the local backend reports ready.
+// Without it, Chromium fails every new TLS connection to the runtime's private-CA
+// certificate with net_error -202 (logged as "handshake failed") and only then
+// lets the loopback switch (see allow-insecure-localhost above) override the
+// error: requests worked, but the console filled with errors. Installing it makes
+// Chromium's QUIC stack ignore that switch; the renderer's loopback responses
+// are HTTP/1.1 with or without it (measured), so nothing is lost for the local
+// backend.
+let runtimeVerifyProcInstalled = false;
 
-function installRemoteVerifyProc() {
-  if (remoteVerifyProcInstalled) return;
-  remoteVerifyProcInstalled = true;
+function installRuntimeVerifyProc() {
+  if (runtimeVerifyProcInstalled) return;
+  runtimeVerifyProcInstalled = true;
   session.defaultSession.setCertificateVerifyProc((request, callback) => {
     if (request.verificationResult === "net::OK") {
       callback(0);
@@ -495,6 +503,7 @@ function startBackend() {
           if (backendReady.ca_pem) {
             registerTrustedRuntimeCa(backendReady, backendReady.ca_pem);
           }
+          installRuntimeVerifyProc();
           writeConnectionState({ mode: "local" });
           loadBackendWindow();
         } catch (error) {
@@ -1030,7 +1039,7 @@ function stopBackend(options = {}) {
 
 async function connectRemote(payload) {
   const parsed = parseRemoteTarget(payload || {});
-  if (!isLoopbackHost(parsed.host)) installRemoteVerifyProc();
+  if (!isLoopbackHost(parsed.host)) installRuntimeVerifyProc();
   sendLauncherStatus("Checking remote backend...");
   const verified = await verifyRemoteConnection(parsed);
   if (backendProcess) {
