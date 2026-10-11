@@ -9,9 +9,6 @@ name: Tests
 #   frontend - `npm test` in desktop/frontend (lint + node unit tests)
 
 on:
-  # TEMPORARY: lets this PR prove the workflow runs; removed before merge.
-  pull_request:
-    paths: [".github/workflows/tests.yml"]
   workflow_dispatch:
     inputs:
       suite:
