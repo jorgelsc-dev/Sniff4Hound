@@ -591,7 +591,8 @@
               <v-switch
                 :model-value="item.enabled"
                 :loading="listenerTogglePending === item.id"
-                :disabled="Boolean(listenerTogglePending)"
+                :disabled="Boolean(listenerTogglePending) || listenerLocked(item)"
+                :title="listenerLocked(item) ? listenerLockedReason : undefined"
                 density="compact"
                 hide-details
                 color="success"
@@ -1897,6 +1898,7 @@ export default {
       listeners: [],
       listenersError: "",
       listenerTogglePending: "",
+      listenerLockedReason: "Puerto reservado: solo los listeners integrados curados se pueden encender",
       listenerSearch: "",
       listenerHeaders: [
         { title: "Listener", key: "endpoint", value: (item) => `${item.proto}/${item.port}` },
@@ -2858,6 +2860,12 @@ export default {
           this.listeners = [];
           this.listenersError = (err && err.message) || "No se pudieron cargar los listeners";
         });
+    },
+    // The backend refuses to turn on a listener whose port the honeypot port
+    // policy reserves, so the switch is not offered for it. One that is already
+    // on can always be turned off.
+    listenerLocked(listener) {
+      return !listener.enabled && listener.can_enable === false;
     },
     toggleListener(listener, value) {
       if (this.listenerTogglePending) return;

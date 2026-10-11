@@ -965,6 +965,48 @@ class CaptureServiceUnavailableTests(unittest.TestCase):
         self.assertEqual(response.status, 400)
         self.assertEqual(json.loads(response.body.decode("utf-8"))["code"], "invalid_request")
 
+    def _post_listener(self, body):
+        return self.app.app.dispatch(
+            _request("/api/honeypot/listeners/", method="POST", body=json.dumps(body))
+        )
+
+    def test_the_capture_process_refusing_a_request_is_a_400_not_an_outage(self):
+        """The capture service answered and said no (the honeypot port policy).
+        That used to surface as "The capture service is not responding", sending
+        the operator to restart a service that was running fine."""
+        from sniff4hound.ipc import IpcRemoteError
+
+        reason = "privileged ports below 1024 require a curated builtin listener"
+        with patch.object(
+            self.app.runtime,
+            "create_honeypot_listener",
+            side_effect=IpcRemoteError(reason, "ValueError"),
+        ):
+            response = self._post_listener({"proto": "tcp", "port": 22, "label": "ssh"})
+
+        self.assertEqual(response.status, 400)
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["code"], "invalid_request")
+        self.assertEqual(payload["message"], reason)
+        self.assertNotIn("not responding", payload["message"])
+
+    def test_a_crash_inside_the_capture_process_still_reads_as_unavailable(self):
+        """Only a refusal is a client mistake. An unexpected exception over there
+        is still the capture side being in trouble, so it keeps its 503."""
+        from sniff4hound.ipc import IpcRemoteError
+
+        with patch.object(
+            self.app.runtime,
+            "create_honeypot_listener",
+            side_effect=IpcRemoteError("kaboom", "RuntimeError"),
+        ):
+            response = self._post_listener({"proto": "tcp", "port": 40000})
+
+        self.assertEqual(response.status, 503)
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["code"], "capture_unavailable")
+        self.assertIn("kaboom", payload["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

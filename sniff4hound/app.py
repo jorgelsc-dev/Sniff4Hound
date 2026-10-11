@@ -35,7 +35,7 @@ from .export import (
     normalize_format,
     rows_to_csv,
 )
-from .ipc import IpcClient, IpcError
+from .ipc import IpcClient, IpcError, IpcRemoteError
 from .jobs import STATUS_DONE, STATUS_ERROR, JobQueue
 from .mobile_stream import MOBILE_STREAM_DEFAULT_PORT, MobileStreamService
 from .settings import (
@@ -3334,6 +3334,16 @@ def _apply_api_auth_guards():
                     status=400,
                 )
             except IpcError as exc:
+                if isinstance(exc, IpcRemoteError) and exc.remote_type == "ValueError":
+                    # The capture process answered and refused the request - the
+                    # honeypot port policy, a missing field - which is the same
+                    # client mistake as a ValueError raised here. Reporting it
+                    # as an outage told the operator the capture service was
+                    # down while it was running and had just said no.
+                    return Response.json(
+                        {"status": "error", "code": "invalid_request", "message": str(exc)},
+                        status=400,
+                    )
                 # Every engine control (start/stop/set_mode/listeners) runs in
                 # the privileged capture process over IPC, so a stalled or
                 # restarted capture process used to reach the operator as a

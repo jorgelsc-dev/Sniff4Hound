@@ -205,6 +205,42 @@ class TestHoneypotListenerStore(unittest.TestCase):
         self.assertGreaterEqual(snapshot["listener_count"], 10000)
         self.assertEqual(snapshot["enabled_listener_count"], expected_enabled)
 
+    def test_the_catalog_says_which_listeners_can_be_turned_on(self):
+        # The catalogue lists ~10k builtin rows but only the curated ones may be
+        # enabled; the UI uses this to stop offering a switch that is refused.
+        custom = self.store.create_honeypot_listener("tcp", _free_high_port())
+        engine = HoneypotEngine(self.store, MagicMock())
+        rows = {row["id"]: row for row in engine.snapshot()["listeners"]}
+
+        self.assertTrue(rows["tcp/22"]["can_enable"], "a curated builtin listener")
+        self.assertFalse(rows["tcp/2"]["can_enable"], "an uncurated privileged port")
+        self.assertTrue(rows[custom["id"]]["can_enable"], "a custom listener on a high port")
+        # ...and it matches what enabling actually does.
+        with self.assertRaises(ValueError):
+            self.store.set_honeypot_listener_enabled("tcp/2", True)
+
+    def test_the_runtime_listing_the_table_loads_carries_the_same_view(self):
+        # The table first loads GET /api/honeypot/listeners/, which used to hand
+        # back bare store rows: no `running`, no `can_enable`. After the first
+        # toggle it switched to the snapshot's rows, so what the UI knew about a
+        # listener changed under it.
+        from sniff4hound.runtime_controller import RuntimeController
+
+        engine = HoneypotEngine(self.store, MagicMock())
+        runtime = RuntimeController(
+            store=self.store, sniffer=MagicMock(), honeypot=engine, hub=MagicMock(), capture_auto_start=False
+        )
+        rows = {row["id"]: row for row in runtime.list_honeypot_listeners()}
+
+        self.assertGreaterEqual(len(rows), 10000)
+        self.assertIn("running", rows["tcp/22"])
+        self.assertTrue(rows["tcp/22"]["can_enable"])
+        self.assertFalse(rows["tcp/2"]["can_enable"])
+        # What the store row carried is still there.
+        stored = self.store.get_honeypot_listener("tcp/22")
+        self.assertTrue(all(rows["tcp/22"][key] == value for key, value in stored.items() if key in rows["tcp/22"]))
+        self.assertEqual(rows["tcp/22"]["port"], stored["port"])
+
 
 class TestListenerHonoursEngineStopEvent(unittest.TestCase):
     """`stop()` signals the listeners it finds in its roster snapshot. A

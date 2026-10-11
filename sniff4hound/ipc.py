@@ -46,6 +46,17 @@ class IpcDisconnected(IpcError):
     pass
 
 
+class IpcRemoteError(IpcError):
+    """The capture process answered, with an error its handler raised - as
+    opposed to not answering at all. `remote_type` is the exception class it
+    raised there, so a caller can tell a refused request (ValueError) from a
+    crash; it is empty when the other end does not report one."""
+
+    def __init__(self, message: str, remote_type: str = ""):
+        super().__init__(message)
+        self.remote_type = str(remote_type or "")
+
+
 def generate_ipc_token() -> str:
     return secrets.token_hex(32)
 
@@ -272,7 +283,11 @@ class IpcServer:
             result = handler(**args)
             _send_frame(conn, {"kind": "response", "id": request_id, "ok": True, "result": result}, self._write_lock)
         except Exception as exc:
-            _send_frame(conn, {"kind": "response", "id": request_id, "ok": False, "error": str(exc)}, self._write_lock)
+            _send_frame(
+                conn,
+                {"kind": "response", "id": request_id, "ok": False, "error": str(exc), "error_type": type(exc).__name__},
+                self._write_lock,
+            )
 
     def publish(self, payload: dict) -> None:
         with self._client_lock:
@@ -567,7 +582,12 @@ class IpcClient:
             raise IpcDisconnected("Not connected to the capture service")
         message = pending.wait(self._call_timeout)
         if not message.get("ok"):
-            raise IpcError(str(message.get("error") or "IPC call failed"))
+            error = str(message.get("error") or "IPC call failed")
+            remote_type = message.get("error_type")
+            if remote_type:
+                # The far end ran the handler and it raised: an answer, not an outage.
+                raise IpcRemoteError(error, remote_type)
+            raise IpcError(error)
         return message.get("result")
 
     def close(self) -> None:

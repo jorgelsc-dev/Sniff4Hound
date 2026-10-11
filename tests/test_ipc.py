@@ -11,6 +11,7 @@ from sniff4hound.ipc import (
     IpcClient,
     IpcError,
     IpcEventSink,
+    IpcRemoteError,
     IpcServer,
     generate_ipc_token,
 )
@@ -75,6 +76,36 @@ class IpcTests(unittest.TestCase):
         with self.assertRaises(IpcError) as ctx:
             client.call("boom")
         self.assertIn("kaboom", str(ctx.exception))
+
+    def test_a_handler_error_arrives_as_a_remote_error_that_keeps_its_type(self):
+        # A refused request (ValueError) and a crash (anything else) both come
+        # back as errors, but the caller needs to tell them apart: one is an
+        # answer, the other says the far end is in trouble.
+        def _refuse():
+            raise ValueError("privileged ports below 1024 require a curated builtin listener")
+
+        def _crash():
+            raise RuntimeError("kaboom")
+
+        self._start_server({"refuse": _refuse, "crash": _crash})
+        client = IpcClient(self.socket_path, self.token, connect_timeout=2)
+        client.connect()
+        self.addCleanup(client.close)
+
+        with self.assertRaises(IpcRemoteError) as refused:
+            client.call("refuse")
+        self.assertEqual(refused.exception.remote_type, "ValueError")
+        self.assertIn("curated builtin listener", str(refused.exception))
+
+        with self.assertRaises(IpcRemoteError) as crashed:
+            client.call("crash")
+        self.assertEqual(crashed.exception.remote_type, "RuntimeError")
+
+    def test_a_transport_failure_is_not_a_remote_error(self):
+        client = IpcClient(str(Path(self._tmp_dir.name) / "missing.sock"), self.token, connect_timeout=0.3)
+        with self.assertRaises(IpcError) as ctx:
+            client.connect()
+        self.assertNotIsInstance(ctx.exception, IpcRemoteError)
 
     def test_wrong_token_is_rejected(self):
         self._start_server()

@@ -873,13 +873,18 @@ class HoneypotEngine:
         listener_id = str(row.get("id") or "")
         with self._listener_lock:
             thread = self._listener_threads.get(listener_id)
+        source = row.get("source") or "builtin"
         return {
             "id": listener_id,
             "proto": row.get("proto"),
             "port": row.get("port"),
             "label": row.get("label") or "",
             "enabled": bool(row.get("enabled")),
-            "source": row.get("source") or "builtin",
+            "source": source,
+            # The port policy (honeypot_ports) only lets curated listeners bind
+            # privileged or sensitive ports. The catalogue lists the rest too,
+            # and turning one on is refused, so say so up front.
+            "can_enable": listener_port_allowed(row.get("proto"), row.get("port"), source=source),
             "running": bool(thread is not None and thread.is_alive()),
         }
 
