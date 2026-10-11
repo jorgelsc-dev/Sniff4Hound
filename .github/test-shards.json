@@ -62,7 +62,7 @@
       "tests.test_http3_listener",
       "tests.test_realtime_sse",
       "tests.test_persistent_runtime_ca",
-      "tests.test_embedded_capture"
+      "tests.test_documented_routes"
     ]
   ]
 }

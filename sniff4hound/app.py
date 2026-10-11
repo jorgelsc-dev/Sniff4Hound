@@ -3240,6 +3240,39 @@ def data_retention_config_api(request):
     return store.get_retention_config()
 
 
+@app.api("/api/detection/exclusions", methods=("GET", "POST"))
+def detection_exclusions(request):
+    """Shared exclusion filter (IP type/CIDR/port/protocol) that silences
+    Sniffer detection and Monitors for matching traffic - see
+    sniffer.Sniffer._exclusion_filtered and store.get_exclusion_filters.
+    Raw capture/storage is unaffected; this only mutes detection."""
+    if request.method.upper() == "GET":
+        return {"exclusion_filters": store.get_exclusion_filters()}
+    payload = _read_json_body(request)
+    return {"exclusion_filters": store.set_exclusion_filters(payload.get("exclusion_filters"))}
+
+
+@app.api("/api/pipeline/config", methods=("GET", "POST"))
+def pipeline_config(request):
+    """Packet cache limit, processing job count and persist mode.
+
+    The sniffer reads these from the store, so the web process only writes
+    them. cache_limit and persist_mode take effect on the running capture;
+    jobs is applied when capture is next started.
+    """
+    if request.method.upper() == "GET":
+        return store.get_packet_pipeline_config()
+    payload = _read_json_body(request)
+    return store.set_packet_pipeline_config(payload)
+
+
+@app.api("/api/pipeline/reset", methods=("POST",))
+def pipeline_reset(request):
+    """Zeroes the cache/jobs counters (accepted, dropped, peak, processed,
+    persisted, skipped, errors) without touching the settings or the queue."""
+    return runtime.reset_packet_pipeline()
+
+
 @app.api("/api/logs/config", methods=("GET", "POST"))
 def logs_config_api(request):
     """Log level, rotation (size and backups) and retention for both processes.
