@@ -20,7 +20,7 @@ from wsbuilder import App, Request, Response
 from wsbuilder.server import HTTPServer
 
 from . import http3_listener, log_setup
-from .tls import ensure_mobile_tls, public_mobile_ca_pem
+from .tls import ca_fingerprint_sha256, ensure_mobile_tls, public_mobile_ca_pem
 from .utils import safe_int, utc_now
 
 
@@ -103,6 +103,9 @@ class MobileServerState:
     running: bool = False
     url_base: str = ""
     ca_pem: str = ""
+    #: SHA-256 fingerprint of ca_pem, as the phone shows it, so the operator can
+    #: compare the two before trusting the certificate.
+    ca_sha256: str = ""
     http3: dict[str, Any] = field(default_factory=dict)
 
 
@@ -373,6 +376,7 @@ class MobileStreamService:
                     h3_server.stop()
                 app.close()
                 raise ValueError(f"the mobile stream could not listen on https://{address}:{port}")
+        ca_pem = public_mobile_ca_pem()
         with self._lock:
             self._app = app
             self._tcp_server = tcp_server
@@ -384,7 +388,8 @@ class MobileStreamService:
                 port=port,
                 running=True,
                 url_base=f"https://{address}:{port}",
-                ca_pem=public_mobile_ca_pem(),
+                ca_pem=ca_pem,
+                ca_sha256=ca_fingerprint_sha256(ca_pem),
                 http3={
                     "enabled": h3_server is not None,
                     "transport": "https+h3" if h3_server is not None else "https",
@@ -866,6 +871,26 @@ def _build_mobile_app(service: MobileStreamService, advertised: dict[str, str]) 
     def ca_pem(_request):
         return _reply(200, public_mobile_ca_pem(), "application/x-pem-file")
 
+    @app.view("/mobile/ca.crt")
+    def ca_download(_request):
+        # The type is what makes a phone offer to install it: iOS Safari treats
+        # application/x-x509-ca-cert as a profile to install, and Android keeps it as a
+        # .crt the certificate installer lists. Public by nature - it is a CA
+        # certificate, not a key - and the same bytes /mobile/ca.pem already serves.
+        pem = public_mobile_ca_pem()
+        if not pem.strip():
+            return _reply(404, _closed_page("No certificate is available."))
+        return _reply(
+            200,
+            pem,
+            "application/x-x509-ca-cert",
+            {"Content-Disposition": 'attachment; filename="sniff4hound-ca.crt"'},
+        )
+
+    @app.view("/mobile/certificate")
+    def certificate_page(_request):
+        return _reply(200, _certificate_page(public_mobile_ca_pem()))
+
     @app.view("/mobile/_pair")
     def pair_page(request):
         pairing = service.open_pairing(
@@ -937,7 +962,14 @@ def _build_mobile_app(service: MobileStreamService, advertised: dict[str, str]) 
     return app
 
 
-def _shell(title: str, body: str) -> str:
+_CERTIFICATE_LINK = (
+    '<p class="meta"><a href="/mobile/certificate">Install the certificate</a> '
+    "to remove the browser warning and let this phone use HTTP/3.</p>"
+)
+
+
+def _shell(title: str, body: str, *, certificate_link: bool = True) -> str:
+    footer = _CERTIFICATE_LINK if certificate_link else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -963,6 +995,11 @@ button {{ width: 100%; margin-top: 14px; border: 0; border-radius: 12px; padding
 .chip.lv-DEBUG.on {{ background: #9fb3ae; border-color: #9fb3ae; }}
 .chip.lv-WARNING.on {{ background: #fbbf24; border-color: #fbbf24; }}
 .chip.lv-ERROR.on {{ background: #f87171; border-color: #f87171; }}
+a {{ color: #7ee0b8; }}
+.button {{ display: block; box-sizing: border-box; width: 100%; margin-top: 14px; border-radius: 12px; padding: 14px 18px; background: #34d399; color: #05100c; font-weight: 800; font-size: 16px; text-align: center; text-decoration: none; }}
+h2 {{ font-size: 18px; margin: 22px 0 6px; }}
+ol {{ color: #b9cbc8; line-height: 1.55; padding-left: 22px; }}
+.fingerprint {{ overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #cfe3df; }}
 .badge {{ display: inline-block; min-width: 18px; margin-left: 4px; padding: 1px 6px; border-radius: 999px; background: #fbbf24; color: #1a1304; font-size: 12px; text-align: center; }}
 .badge[hidden], [hidden] {{ display: none; }}
 .log {{ display: grid; gap: 4px; padding: 10px 12px; border-left: 4px solid #9fb3ae; border-radius: 10px; }}
@@ -974,7 +1011,7 @@ button {{ width: 100%; margin-top: 14px; border: 0; border-radius: 12px; padding
 .log.lv-ERROR, .log.lv-CRITICAL {{ border-left-color: #f87171; }} .log.lv-ERROR .lvl, .log.lv-CRITICAL .lvl {{ color: #f87171; }}
 </style>
 </head>
-<body><main><section class="panel">{body}</section></main></body>
+<body><main><section class="panel">{body}{footer}</section></main></body>
 </html>"""
 
 
@@ -1002,6 +1039,7 @@ def _session_page(token: str) -> str:
 <h1>Live stream</h1>
 <p>Read-only alerts, traffic events and log lines. Payloads and control actions are not exposed to this device.</p>
 <div id="status" class="meta">Connecting...</div>
+<div id="protocol" class="meta"></div>
 <div class="tabs" role="tablist">
   <button type="button" class="tab on" role="tab" aria-selected="true" data-tab="events">Events</button>
   <button type="button" class="tab" role="tab" aria-selected="false" data-tab="logs">Logs <span id="log-badge" class="badge" hidden>0</span></button>
@@ -1022,6 +1060,12 @@ def _session_page(token: str) -> str:
 <script>
 const events = document.getElementById("events");
 const status = document.getElementById("status");
+(function showProtocol() {{
+  const nav = performance.getEntriesByType("navigation")[0];
+  const proto = nav && nav.nextHopProtocol;
+  const label = proto === "h3" ? "HTTP/3" : proto === "h2" ? "HTTP/2" : proto ? "HTTPS (" + proto + ")" : "";
+  if (label) document.getElementById("protocol").textContent = "Connection: " + label;
+}})();
 function addEvent(data) {{
   const row = document.createElement("div");
   row.className = "event";
@@ -1138,6 +1182,38 @@ paintLevels();
 connect();
 </script>
 """,
+    )
+
+
+def _certificate_page(pem: str) -> str:
+    fingerprint = ca_fingerprint_sha256(pem)
+    if not fingerprint:
+        return _shell("Sniff4Hound Certificate", "<h1>Certificate</h1><p>No certificate is available yet.</p>", certificate_link=False)
+    return _shell(
+        "Sniff4Hound Certificate",
+        f"""
+<h1>Install the certificate</h1>
+<p>This Sniff4Hound signs its own certificate, so the browser warns that the connection is not private and cannot use HTTP/3. Installing the certificate once on this phone removes the warning. Only do it if you started this Sniff4Hound yourself.</p>
+<a class="button" href="/mobile/ca.crt" download="sniff4hound-ca.crt">Download certificate</a>
+<p class="meta">SHA-256 fingerprint</p>
+<p class="fingerprint">{html.escape(fingerprint)}</p>
+<p class="meta">Sniff4Hound Settings on the desktop shows the same fingerprint. Install it only if both match.</p>
+<h2>Android</h2>
+<ol>
+  <li>Download the certificate with Chrome.</li>
+  <li>Open Settings, then Security (or Security &amp; privacy), then Encryption &amp; credentials, then Install a certificate, then CA certificate.</li>
+  <li>Confirm the warning and pick <b>sniff4hound-ca.crt</b> from Downloads.</li>
+</ol>
+<h2>iPhone and iPad</h2>
+<ol>
+  <li>Open this page in Safari and tap Download certificate, then Allow.</li>
+  <li>Open Settings, tap <b>Profile Downloaded</b> and install it.</li>
+  <li>Open Settings, General, About, Certificate Trust Settings, and turn on full trust for <b>Sniff4Hound Mobile Stream CA</b>.</li>
+</ol>
+<p class="meta">Remove it later under Settings, Security, Encryption &amp; credentials, User credentials on Android, or Settings, General, VPN &amp; Device Management on iOS.</p>
+<p class="meta">HTTP/3 starts on a later page load, once the browser has seen this server offer it.</p>
+""",
+        certificate_link=False,
     )
 
 
