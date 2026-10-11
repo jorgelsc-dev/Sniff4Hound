@@ -20,8 +20,11 @@ on:
           - backend
           - frontend
 
+# One group per branch and suite: starting the same suite again replaces the
+# run in progress, but starting the frontend tests no longer cancels a full run
+# on the same branch (it did while the group was only the branch).
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.ref }}-${{ inputs.suite || 'all' }}
   cancel-in-progress: true
 
 permissions:
