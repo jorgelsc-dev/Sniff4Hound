@@ -140,6 +140,112 @@ class PersistentRuntimeCaTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("openssl"), "OpenSSL is required")
+class PersistentMobileCaTests(unittest.TestCase):
+    """The mobile stream's CA is what a phone installs, so it has to outlive the
+    stream being stopped and started - and stay apart from the runtime's CA."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._previous = {name: os.environ.get(name) for name in ("SNIFF4HOUND_DATA_DIR", "SNIFF4HOUND_MOBILE_HOST")}
+        os.environ["SNIFF4HOUND_DATA_DIR"] = self._tmp.name
+        os.environ.pop("SNIFF4HOUND_MOBILE_HOST", None)
+        self.addCleanup(self._restore)
+        self.tls = self._reload()
+
+    def _reload(self):
+        import sniff4hound.settings as settings
+        import sniff4hound.tls as tls
+
+        reload(settings)
+        return reload(tls)
+
+    def _restore(self):
+        for name, value in self._previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        self._reload()
+
+    def _names(self, certificate):
+        return subprocess.run(
+            ["openssl", "x509", "-in", str(certificate), "-noout", "-ext", "subjectAltName"], capture_output=True, text=True
+        ).stdout
+
+    def test_the_ca_a_phone_installed_is_the_one_after_a_restart(self):
+        first = self.tls.ensure_mobile_tls("192.0.2.10")
+        installed = first.ca_cert.read_bytes()
+        second = self.tls.ensure_mobile_tls("192.0.2.10")
+        self.assertEqual(second.ca_cert.read_bytes(), installed)
+        self.assertEqual(self.tls.public_mobile_ca_pem().encode(), installed)
+
+    def test_the_certificate_is_new_each_time_and_still_signed_by_that_ca(self):
+        first = self.tls.ensure_mobile_tls("192.0.2.10")
+        before = first.server_cert.read_bytes()
+        second = self.tls.ensure_mobile_tls("192.0.2.10")
+        self.assertNotEqual(second.server_cert.read_bytes(), before)
+        verify = subprocess.run(["openssl", "verify", "-CAfile", str(second.ca_cert), str(second.server_cert)], capture_output=True, text=True)
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+
+    def test_it_answers_to_the_address_and_to_sniff4hound_local(self):
+        names = self._names(self.tls.ensure_mobile_tls("192.0.2.10").server_cert)
+        self.assertIn("IP Address:192.0.2.10", names)
+        self.assertIn("DNS:sniff4hound.local", names)
+
+    def test_the_name_can_be_changed_and_a_bad_one_is_ignored(self):
+        os.environ["SNIFF4HOUND_MOBILE_HOST"] = "stream.lan"
+        names = self._names(self._reload().ensure_mobile_tls("192.0.2.10").server_cert)
+        self.assertIn("DNS:stream.lan", names)
+        self.assertNotIn("sniff4hound.local", names)
+
+        # a value that would add lines to the OpenSSL extension file
+        os.environ["SNIFF4HOUND_MOBILE_HOST"] = "evil.local\nbasicConstraints=CA:TRUE"
+        names = self._names(self._reload().ensure_mobile_tls("192.0.2.10").server_cert)
+        self.assertNotIn("evil", names)
+        self.assertNotIn("CA:TRUE", names)
+
+    def test_names_are_checked_before_they_go_into_a_request(self):
+        for good in ("sniff4hound.local", "a.b-c.example", "h4ck"):
+            self.assertTrue(self.tls._valid_dns_name(good), good)
+        for bad in ("", "-bad.local", "a..b", "x y", "a=b", "x\ny", "ü.local", "a" * 64 + ".local"):
+            self.assertFalse(self.tls._valid_dns_name(bad), repr(bad))
+
+    def test_the_mobile_ca_is_not_the_runtime_ca(self):
+        mobile = self.tls.ensure_mobile_tls("192.0.2.10")
+        runtime = self.tls.ensure_runtime_tls("127.0.0.1")
+        self.assertNotEqual(mobile.ca_cert.read_bytes(), runtime.ca_cert.read_bytes())
+        subject = subprocess.run(["openssl", "x509", "-in", str(mobile.ca_cert), "-noout", "-subject"], capture_output=True, text=True).stdout
+        self.assertIn("Mobile Stream CA", subject)
+
+    def test_the_keys_are_owner_only(self):
+        self.tls.ensure_mobile_tls("192.0.2.10")
+        for key in (self.tls.MOBILE_CA_KEY_FILE, self.tls.MOBILE_SERVER_KEY_FILE):
+            self.assertEqual(os.stat(key).st_mode & 0o777, 0o600, key.name)
+
+    def test_an_unwritable_tls_directory_falls_back_to_material_that_is_not_kept(self):
+        unusable = Path(self._tmp.name) / "file-not-a-directory"
+        unusable.write_text("x")
+        with patch.object(self.tls, "TLS_DIR", unusable / "tls"):
+            material = self.tls.ensure_mobile_tls("192.0.2.10")
+        self.addCleanup(shutil.rmtree, material.ca_cert.parent, True)
+        self.assertTrue(material.ca_cert.is_file())
+        self.assertNotEqual(material.ca_cert.parent, unusable / "tls")
+        self.assertIsNotNone(material.ssl_context)
+
+    def test_the_fingerprint_is_what_openssl_reports(self):
+        material = self.tls.ensure_mobile_tls("192.0.2.10")
+        expected = subprocess.run(
+            ["openssl", "x509", "-in", str(material.ca_cert), "-noout", "-fingerprint", "-sha256"], capture_output=True, text=True
+        ).stdout.strip().split("=", 1)[1]
+        self.assertEqual(self.tls.ca_fingerprint_sha256(self.tls.public_mobile_ca_pem()), expected)
+
+    def test_a_fingerprint_needs_a_certificate(self):
+        for junk in ("", "not a certificate", None):
+            self.assertEqual(self.tls.ca_fingerprint_sha256(junk), "")
+
+
+@unittest.skipUnless(shutil.which("openssl"), "OpenSSL is required")
 class DesktopPrepareTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

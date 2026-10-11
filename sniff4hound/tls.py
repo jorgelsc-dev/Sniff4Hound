@@ -3,17 +3,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import ipaddress
-import secrets
+import re
 import shutil
 import socket
 import ssl
 import subprocess
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .settings import DATA_DIR, TLS_CA_DAYS, TLS_CERT_DAYS
+from .settings import DATA_DIR, MOBILE_HOST, TLS_CA_DAYS, TLS_CERT_DAYS
 
 
 TLS_DIR = DATA_DIR / "tls"
@@ -60,10 +59,21 @@ def _run_openssl(args: list[str]) -> None:
     )
 
 
-def _host_alt_names(host: str) -> tuple[list[str], list[str]]:
+_DNS_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _valid_dns_name(name: str) -> bool:
+    """A hostname that is safe to write into the certificate request: letters,
+    digits, hyphens and dots only, so a value from the environment cannot add
+    lines to the OpenSSL extension file."""
+    name = str(name or "").strip().lower().rstrip(".")
+    return 0 < len(name) <= 253 and all(_DNS_LABEL.match(label) for label in name.split("."))
+
+
+def _host_alt_names(host: str, extra_names=()) -> tuple[list[str], list[str]]:
     dns_names = {"localhost"}
     ip_names = {"127.0.0.1", "::1"}
-    candidates = {str(host or "").strip(), socket.gethostname(), socket.getfqdn()}
+    candidates = {str(host or "").strip(), socket.gethostname(), socket.getfqdn(), *(str(n).strip() for n in extra_names)}
     for candidate in candidates:
         if not candidate or candidate in {"0.0.0.0", "::"}:
             continue
@@ -74,8 +84,8 @@ def _host_alt_names(host: str) -> tuple[list[str], list[str]]:
     return sorted(dns_names), sorted(ip_names)
 
 
-def _write_server_ext(host: str, path: Path = SERVER_EXT_FILE) -> None:
-    dns_names, ip_names = _host_alt_names(host)
+def _write_server_ext(host: str, path: Path = SERVER_EXT_FILE, extra_names=()) -> None:
+    dns_names, ip_names = _host_alt_names(host, extra_names)
     lines = [
         "basicConstraints=CA:FALSE",
         "keyUsage=digitalSignature,keyEncipherment",
@@ -88,24 +98,8 @@ def _write_server_ext(host: str, path: Path = SERVER_EXT_FILE) -> None:
         lines.append(f"DNS.{index}={name}")
     for index, name in enumerate(ip_names, start=1):
         lines.append(f"IP.{index}={name}")
-    TLS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _remove_previous_mobile_material() -> None:
-    for path in (
-        MOBILE_CA_KEY_FILE,
-        MOBILE_CA_CERT_FILE,
-        MOBILE_SERVER_KEY_FILE,
-        MOBILE_SERVER_CSR_FILE,
-        MOBILE_SERVER_CERT_FILE,
-        MOBILE_SERVER_EXT_FILE,
-        MOBILE_CA_SERIAL_FILE,
-    ):
-        try:
-            path.unlink()
-        except (FileNotFoundError, OSError):
-            pass
 
 
 def public_ca_pem() -> str:
@@ -154,30 +148,40 @@ def _generate_ec_key(path: Path) -> None:
         pass
 
 
-def _ca_is_reusable() -> bool:
+def _ca_is_reusable(key: Path | None = None, cert: Path | None = None) -> bool:
     """Whether the CA on disk can be kept: both files are there, the key belongs
     to the certificate, it is a CA, and it has more than CA_RENEW_BEFORE_DAYS left."""
-    if not (CA_CERT_FILE.is_file() and CA_KEY_FILE.is_file()) or not _is_ec_p256_key(CA_KEY_FILE):
+    key = key or CA_KEY_FILE
+    cert = cert or CA_CERT_FILE
+    if not (cert.is_file() and key.is_file()) or not _is_ec_p256_key(key):
         return False
     try:
         # load_cert_chain refuses a key that does not match its certificate.
         probe = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        probe.load_cert_chain(certfile=str(CA_CERT_FILE), keyfile=str(CA_KEY_FILE))
+        probe.load_cert_chain(certfile=str(cert), keyfile=str(key))
     except (OSError, ssl.SSLError):
         return False
     # -checkend exits 1 when the certificate expires within that many seconds.
-    if _run_openssl_text(["x509", "-in", str(CA_CERT_FILE), "-noout", "-checkend", str(CA_RENEW_BEFORE_DAYS * 86400)]).returncode != 0:
+    if _run_openssl_text(["x509", "-in", str(cert), "-noout", "-checkend", str(CA_RENEW_BEFORE_DAYS * 86400)]).returncode != 0:
         return False
-    return "CA:TRUE" in _run_openssl_text(["x509", "-in", str(CA_CERT_FILE), "-noout", "-ext", "basicConstraints"]).stdout
+    return "CA:TRUE" in _run_openssl_text(["x509", "-in", str(cert), "-noout", "-ext", "basicConstraints"]).stdout
 
 
-def _create_ca() -> None:
-    for path in (CA_KEY_FILE, CA_CERT_FILE, CA_SERIAL_FILE):
+def _create_ca(
+    key: Path | None = None,
+    cert: Path | None = None,
+    serial: Path | None = None,
+    subject: str = "/CN=Sniff4Hound Runtime CA",
+) -> None:
+    key = key or CA_KEY_FILE
+    cert = cert or CA_CERT_FILE
+    serial = serial or CA_SERIAL_FILE
+    for path in (key, cert, serial):
         try:
             path.unlink()
         except FileNotFoundError:
             pass
-    _generate_ec_key(CA_KEY_FILE)
+    _generate_ec_key(key)
     _run_openssl(
         [
             "req",
@@ -185,14 +189,14 @@ def _create_ca() -> None:
             "-new",
             "-nodes",
             "-key",
-            str(CA_KEY_FILE),
+            str(key),
             "-sha256",
             "-days",
             str(TLS_CA_DAYS),
             "-out",
-            str(CA_CERT_FILE),
+            str(cert),
             "-subj",
-            "/CN=Sniff4Hound Runtime CA",
+            subject,
             "-addext",
             "basicConstraints=critical,CA:TRUE,pathlen:0",
             "-addext",
@@ -240,6 +244,51 @@ def server_key_pin(key: Path | None = None) -> str:
     return _spki_pin(result.stdout)
 
 
+def _issue_server_certificate(
+    host: str,
+    *,
+    ca_cert: Path,
+    ca_key: Path,
+    key: Path,
+    csr: Path,
+    cert: Path,
+    ext: Path,
+    extra_names=(),
+) -> None:
+    """Sign a new server certificate for ``key`` with the given CA. The CA's own
+    serial file (OpenSSL's ``.srl``, next to the CA certificate) is created on first use."""
+    for path in (csr, cert, ext):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    common_name = str(host or "localhost").strip()
+    if common_name in {"0.0.0.0", "::", ""}:
+        common_name = "localhost"
+    _run_openssl(["req", "-new", "-key", str(key), "-out", str(csr), "-subj", f"/CN={common_name}"])
+    _write_server_ext(host, ext, extra_names)
+    _run_openssl(
+        [
+            "x509",
+            "-req",
+            "-in",
+            str(csr),
+            "-CA",
+            str(ca_cert),
+            "-CAkey",
+            str(ca_key),
+            "-CAcreateserial",
+            "-out",
+            str(cert),
+            "-days",
+            str(TLS_CERT_DAYS),
+            "-sha256",
+            "-extfile",
+            str(ext),
+        ]
+    )
+
+
 def ensure_runtime_tls(host: str) -> RuntimeTlsMaterial:
     """The runtime's TLS material: a persistent CA, a persistent server key, and
     a server certificate signed for this launch.
@@ -252,46 +301,14 @@ def ensure_runtime_tls(host: str) -> RuntimeTlsMaterial:
     """
     _, created = ensure_runtime_ca()
     ensure_server_key(renew=created)
-    for path in (SERVER_CSR_FILE, SERVER_CERT_FILE, SERVER_EXT_FILE):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-    common_name = str(host or "localhost").strip()
-    if common_name in {"0.0.0.0", "::", ""}:
-        common_name = "localhost"
-    _run_openssl(
-        [
-            "req",
-            "-new",
-            "-key",
-            str(SERVER_KEY_FILE),
-            "-out",
-            str(SERVER_CSR_FILE),
-            "-subj",
-            f"/CN={common_name}",
-        ]
-    )
-    _write_server_ext(host)
-    _run_openssl(
-        [
-            "x509",
-            "-req",
-            "-in",
-            str(SERVER_CSR_FILE),
-            "-CA",
-            str(CA_CERT_FILE),
-            "-CAkey",
-            str(CA_KEY_FILE),
-            "-CAcreateserial",
-            "-out",
-            str(SERVER_CERT_FILE),
-            "-days",
-            str(TLS_CERT_DAYS),
-            "-sha256",
-            "-extfile",
-            str(SERVER_EXT_FILE),
-        ]
+    _issue_server_certificate(
+        host,
+        ca_cert=CA_CERT_FILE,
+        ca_key=CA_KEY_FILE,
+        key=SERVER_KEY_FILE,
+        csr=SERVER_CSR_FILE,
+        cert=SERVER_CERT_FILE,
+        ext=SERVER_EXT_FILE,
     )
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -299,100 +316,55 @@ def ensure_runtime_tls(host: str) -> RuntimeTlsMaterial:
     return RuntimeTlsMaterial(CA_CERT_FILE, SERVER_CERT_FILE, SERVER_KEY_FILE, context)
 
 
-def ensure_mobile_tls(host: str) -> RuntimeTlsMaterial:
-    """Create TLS material for the LAN-only mobile stream listener.
+def ca_fingerprint_sha256(pem: str) -> str:
+    """The SHA-256 fingerprint of a PEM certificate, as ``AA:BB:...`` - the form a
+    phone's certificate details and ``openssl x509 -fingerprint`` both show, so a
+    person can compare them. Empty when ``pem`` holds no certificate."""
+    try:
+        der = ssl.PEM_cert_to_DER_cert(str(pem or "").strip())
+    except (ValueError, TypeError):
+        return ""
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
 
-    The mobile listener binds to an operator-selected interface address, so it
-    needs a certificate whose SAN contains that exact IP. It uses distinct
-    files from the desktop/runtime API certificate to avoid invalidating the
-    Electron shell's trusted CA while the operator rotates mobile links.
+
+def ensure_mobile_tls(host: str) -> RuntimeTlsMaterial:
+    """TLS material for the LAN-only mobile stream listener.
+
+    The listener binds to an operator-selected interface address, so the
+    certificate's names include that exact IP, and also ``SNIFF4HOUND_MOBILE_HOST``
+    (``sniff4hound.local`` by default) for when the stream is reached by name.
+
+    The mobile CA is kept between launches, like the runtime's: a phone that
+    installed it once keeps trusting every certificate it signs afterwards, which
+    is what lets the browser stop warning and move to HTTP/3. It has its own files,
+    so rotating mobile links never touches the CA the desktop shell trusts. Only
+    the server certificate (and its key) are new each time.
+
+    When the shared TLS directory cannot be written - an unprivileged run after a
+    root-elevated one left 0600 files in it - the material is made in a temporary
+    directory instead, and is not kept.
     """
     global _MOBILE_CA_CERT_ACTIVE
 
-    tls_dir = TLS_DIR
+    extra = [MOBILE_HOST] if _valid_dns_name(MOBILE_HOST) else []
     try:
-        tls_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        probe = tls_dir / ".mobile-write-test"
-        probe.write_text("", encoding="utf-8")
-        probe.unlink()
-    except OSError:
-        tls_dir = Path(tempfile.mkdtemp(prefix="sniff4hound-mobile-tls-"))
-    # Use unique filenames so a developer run as an unprivileged user does not
-    # fail merely because an older root-elevated desktop run left 0600 files in
-    # the shared data dir. Best-effort cleanup above is kept for packaged runs,
-    # but startup never depends on it.
-    _remove_previous_mobile_material()
-    stem = f"sniff4hound-mobile-{int(time.time())}-{secrets.token_hex(4)}"
-    ca_key = tls_dir / f"{stem}-ca.key"
-    ca_cert = tls_dir / f"{stem}-ca.pem"
-    server_key = tls_dir / f"{stem}-server.key"
-    server_csr = tls_dir / f"{stem}-server.csr"
-    server_cert = tls_dir / f"{stem}-server.pem"
-    server_ext = tls_dir / f"{stem}-server.ext"
-
-    _run_openssl(["genrsa", "-out", str(ca_key), "2048"])
-    _run_openssl(
-        [
-            "req",
-            "-x509",
-            "-new",
-            "-nodes",
-            "-key",
-            str(ca_key),
-            "-sha256",
-            "-days",
-            str(TLS_CERT_DAYS),
-            "-out",
-            str(ca_cert),
-            "-subj",
-            "/CN=Sniff4Hound Mobile Stream CA",
-        ]
-    )
-    _run_openssl(["genrsa", "-out", str(server_key), "2048"])
-    common_name = str(host or "localhost").strip()
-    if common_name in {"0.0.0.0", "::", ""}:
-        common_name = "localhost"
-    _run_openssl(
-        [
-            "req",
-            "-new",
-            "-key",
-            str(server_key),
-            "-out",
-            str(server_csr),
-            "-subj",
-            f"/CN={common_name}",
-        ]
-    )
-    _write_server_ext(host, server_ext)
-    _run_openssl(
-        [
-            "x509",
-            "-req",
-            "-in",
-            str(server_csr),
-            "-CA",
-            str(ca_cert),
-            "-CAkey",
-            str(ca_key),
-            "-CAcreateserial",
-            "-out",
-            str(server_cert),
-            "-days",
-            str(TLS_CERT_DAYS),
-            "-sha256",
-            "-extfile",
-            str(server_ext),
-        ]
-    )
-    for secret in (ca_key, server_key):
-        try:
-            secret.chmod(0o600)
-        except OSError:
-            pass
+        TLS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ca_key, ca_cert, ca_serial = MOBILE_CA_KEY_FILE, MOBILE_CA_CERT_FILE, MOBILE_CA_SERIAL_FILE
+        key, csr, cert, ext = MOBILE_SERVER_KEY_FILE, MOBILE_SERVER_CSR_FILE, MOBILE_SERVER_CERT_FILE, MOBILE_SERVER_EXT_FILE
+        if not _ca_is_reusable(ca_key, ca_cert):
+            _create_ca(ca_key, ca_cert, ca_serial, "/CN=Sniff4Hound Mobile Stream CA")
+        _generate_ec_key(key)
+        _issue_server_certificate(host, ca_cert=ca_cert, ca_key=ca_key, key=key, csr=csr, cert=cert, ext=ext, extra_names=extra)
+    except (OSError, subprocess.CalledProcessError):
+        scratch = Path(tempfile.mkdtemp(prefix="sniff4hound-mobile-tls-"))
+        ca_key, ca_cert, ca_serial = scratch / "ca.key", scratch / "ca.pem", scratch / "ca.srl"
+        key, csr, cert, ext = scratch / "server.key", scratch / "server.csr", scratch / "server.pem", scratch / "server.ext"
+        _create_ca(ca_key, ca_cert, ca_serial, "/CN=Sniff4Hound Mobile Stream CA")
+        _generate_ec_key(key)
+        _issue_server_certificate(host, ca_cert=ca_cert, ca_key=ca_key, key=key, csr=csr, cert=cert, ext=ext, extra_names=extra)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(certfile=str(server_cert), keyfile=str(server_key))
+    context.load_cert_chain(certfile=str(cert), keyfile=str(key))
     _MOBILE_CA_CERT_ACTIVE = ca_cert
-    return RuntimeTlsMaterial(ca_cert, server_cert, server_key, context)
-
+    return RuntimeTlsMaterial(ca_cert, cert, key, context)

@@ -1315,6 +1315,12 @@
               <div v-if="mobilePairing.url" class="mobile-qr-wrap">
                 <img v-if="mobileQrDataUrl" :src="mobileQrDataUrl" alt="QR del stream móvil" class="mobile-qr" />
                 <div class="text-caption text-medium-emphasis mt-2">{{ mobilePairing.url }}</div>
+                <!-- The phone shows the same value on its certificate page; compare
+                     the two before installing the CA it offers. -->
+                <div v-if="mobileServer.ca_sha256" class="text-caption text-medium-emphasis mt-2 mobile-ca-fingerprint">
+                  Huella SHA-256 de la CA del stream (para instalarla en el teléfono):
+                  <span class="mobile-ca-fingerprint-value">{{ mobileServer.ca_sha256 }}</span>
+                </div>
               </div>
               <v-alert v-else type="info" variant="tonal" density="comfortable">
                 Elige una interfaz y crea un QR. El teléfono debe estar en la misma red.
@@ -3430,6 +3436,13 @@ export default {
 
 .mobile-qr-wrap {
   max-width: 280px;
+}
+
+/* A SHA-256 fingerprint is 95 characters with no spaces. */
+.mobile-ca-fingerprint-value {
+  display: block;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .mobile-qr {

@@ -643,6 +643,81 @@ class MobileStreamAppTests(unittest.TestCase):
         self.assertEqual(headers["referrer-policy"], "no-referrer")
         self.assertNotIn("access-control-allow-origin", headers, "the pages are same-origin; nothing here is for another site")
 
+    def test_the_ca_downloads_as_a_certificate_a_phone_offers_to_install(self):
+        pem = "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"
+        with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value=pem):
+            response = self._call("/mobile/ca.crt")
+        self.assertEqual(response.status, 200)
+        headers = self._headers(response)
+        self.assertEqual(headers["content-type"], "application/x-x509-ca-cert")
+        self.assertEqual(headers["content-disposition"], 'attachment; filename="sniff4hound-ca.crt"')
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertNotIn("access-control-allow-origin", headers)
+        self.assertEqual(self._text(response), pem)
+
+    def test_without_a_ca_the_download_is_a_clear_404_not_an_empty_file(self):
+        with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value=""):
+            response = self._call("/mobile/ca.crt")
+        self.assertEqual(response.status, 404)
+        self.assertNotEqual(self._headers(response)["content-type"], "application/x-x509-ca-cert")
+
+    def test_the_certificate_page_offers_the_download_and_the_fingerprint_to_check(self):
+        from sniff4hound.tls import ca_fingerprint_sha256
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"SNIFF4HOUND_DATA_DIR": tmp}):
+            import importlib
+
+            import sniff4hound.settings as settings
+            import sniff4hound.tls as tls
+
+            importlib.reload(settings)
+            tls = importlib.reload(tls)
+            try:
+                tls.ensure_mobile_tls("192.0.2.10")
+                pem = tls.public_mobile_ca_pem()
+                with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value=pem):
+                    page = self._text(self._call("/mobile/certificate"))
+                fingerprint = tls.ca_fingerprint_sha256(pem)
+            finally:
+                importlib.reload(settings)
+                importlib.reload(tls)
+        self.assertTrue(fingerprint)
+        self.assertIn(fingerprint, page)
+        self.assertIn('href="/mobile/ca.crt"', page)
+        for expected in ("Android", "iPhone", "Certificate Trust Settings", "Install a certificate"):
+            self.assertIn(expected, page)
+        self.assertNotIn("<script", page, "an instruction page needs no script")
+        self.assertNotIn("/mobile/certificate", page, "the page does not link to itself")
+
+    def test_the_certificate_page_without_a_ca_says_so(self):
+        with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value=""):
+            page = self._text(self._call("/mobile/certificate"))
+        self.assertIn("No certificate is available", page)
+        self.assertNotIn("/mobile/ca.crt", page)
+
+    def test_every_stream_page_links_to_the_certificate(self):
+        from sniff4hound.mobile_stream import _awaiting_approval_page, _closed_page, _pairing_page, _session_page
+
+        pairing = self._approved_pairing("pair-links")
+        pages = {
+            "awaiting": _awaiting_approval_page(),
+            "pairing": _pairing_page(pairing),
+            "session": _session_page("tok"),
+            "closed": _closed_page(),
+        }
+        for name, page in pages.items():
+            self.assertIn('href="/mobile/certificate"', page, name)
+
+    def test_the_waiting_page_still_runs_no_script(self):
+        from sniff4hound.mobile_stream import _awaiting_approval_page
+
+        self.assertNotIn("<script", _awaiting_approval_page())
+
+    def test_the_session_page_tells_which_protocol_it_arrived_by(self):
+        page = _session_page("tok-123")
+        self.assertIn("nextHopProtocol", page)
+        self.assertIn('id="protocol"', page)
+
     def test_a_device_that_knocks_sees_a_holding_page_until_the_operator_approves(self):
         pairing = Pairing(
             id="pair-1", interface="eth0", address="192.0.2.10", port=45679,
