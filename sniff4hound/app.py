@@ -4035,6 +4035,18 @@ def _realtime_session_for(request) -> "RealtimeSession | None":
     return session
 
 
+# The desktop shell's page (app://shell) is another origin than the runtime, and
+# an EventSource only reads a cross-origin stream that grants it access. Routes
+# registered with @app.view do not get the app-wide CORS header (public_ca sets
+# its own), so the stream carries it explicitly or the browser blocks it with a
+# bare net::ERR_FAILED.
+REALTIME_STREAM_HEADERS = {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    "access-control-allow-origin": "*",
+}
+
+
 @app.view("/realtime/stream", methods=("GET",))
 def realtime_stream(request):
     denied = _guard_websocket_auth(request)
@@ -4052,11 +4064,7 @@ def realtime_stream(request):
             "data: " + _json_text({"type": "auth_required", "status": status, "message": message, "generated_at": utc_now()}) + "\n\n"
             "event: close\ndata: " + _json_text({"code": WS_AUTH_CLOSE_CODE, "reason": "Unauthorized"}) + "\n\n"
         )
-        return Response(
-            200,
-            body=denied_body,
-            headers={"content-type": "text/event-stream", "cache-control": "no-cache"},
-        )
+        return Response(200, body=denied_body, headers=dict(REALTIME_STREAM_HEADERS))
     feed_name = str((getattr(request, "query", None) or {}).get("feed") or "").strip()
     if feed_name and feed_name not in WS_FEEDS:
         return Response.json({"error": f"unknown feed {feed_name!r}"}, status=404)
@@ -4112,7 +4120,7 @@ def realtime_stream(request):
     return Response(
         200,
         stream=events(),
-        headers={"content-type": "text/event-stream", "cache-control": "no-cache", "x-accel-buffering": "no"},
+        headers={**REALTIME_STREAM_HEADERS, "x-accel-buffering": "no"},
     )
 
 
