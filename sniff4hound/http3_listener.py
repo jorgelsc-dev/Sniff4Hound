@@ -21,9 +21,10 @@ from pathlib import Path
 
 from wsbuilder.http3_server import Http3Server, alt_svc_header
 
-#: How long a client may remember the HTTP/3 endpoint. Each launch generates a
-#: new certificate, so a stale entry only costs one failed attempt before the
-#: client falls back to TCP; keep it short rather than the library's 24 hours.
+#: How long a client may remember the HTTP/3 endpoint. The runtime can come back
+#: on another port, or without HTTP/3, so a stale entry costs one failed attempt
+#: before the client falls back to TCP; keep it short rather than the library's
+#: 24 hours.
 ALT_SVC_MAX_AGE_SECONDS = 3600
 
 _STARTUP_TIMEOUT_SECONDS = 5.0

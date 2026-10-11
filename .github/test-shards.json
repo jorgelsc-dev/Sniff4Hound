@@ -60,7 +60,8 @@
       "tests.test_blueteam_monitors",
       "tests.test_faqa_regressions",
       "tests.test_http3_listener",
-      "tests.test_realtime_sse"
+      "tests.test_realtime_sse",
+      "tests.test_persistent_runtime_ca"
     ]
   ]
 }

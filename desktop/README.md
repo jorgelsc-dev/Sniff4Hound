@@ -7,6 +7,20 @@ same way the `sniff4hound` CLI command does - see `sniff4hound/manage.py`'s
 `_ensure_running_as_root()` - and self-elevates with `pkexec` (falling back to
 `sudo`) on first start.
 
+HTTP/3: the shell talks to its local runtime over HTTP/3 (QUIC on the same port
+number, over UDP), including the realtime stream. Chromium only does that for a
+server it trusts, and it never acts on an `Alt-Svc` header for an IP address, so
+before Chromium starts the shell runs `python -m sniff4hound.desktop_prepare`,
+which answers with the port the runtime will use (free on TCP and UDP) and the
+public-key hash of the runtime's server key. Chromium is then told to trust that
+one key and to use QUIC for that one origin (`lib/quic-pin.js`). The key and the
+CA that signs for it are kept between launches (`SNIFF4HOUND_DATA_DIR/tls`, mode
+0600) - that is what makes the pin stable; only the certificate is new each time.
+A forced QUIC origin has no TCP fallback, so if the runtime reports it has no
+UDP listener the shell says so instead of showing a dead window. A remote sensor
+is unaffected and stays on HTTPS over TCP. `SNIFF4HOUND_DESKTOP_HTTP3=0` turns it
+off.
+
 When installed from the project's `.deb` (`scripts/build_deb.sh`), this app
 is not a separate package: it ships inside the same `sniff4hound` `.deb` as
 the CLI, installed only when the target machine has a graphical environment
