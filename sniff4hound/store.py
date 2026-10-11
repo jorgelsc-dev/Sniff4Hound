@@ -45,7 +45,7 @@ from .protocol_facets import (
 )
 from .rulesets import literal_packet_text_pattern, load_builtin_rulesets, normalize_ruleset
 from .regex_safety import validate_regex_pattern
-from .device_profiles import infer_device_profile
+from .device_profiles import infer_device_profile, unknown_profile
 from .settings import (
     MONITOR_FILTER_DEFAULT,
     MONITOR_MIN_SEVERITY_DEFAULT,
@@ -289,6 +289,13 @@ def _ip_scope(ip: str) -> str:
 
 
 IP_SCOPES = ("local", "private", "public", "multicast", "reserved", "unknown")
+
+# How many observations the device classifier reads per host, and how many of
+# those one protocol may take (see _enrich_ip_devices).
+DEVICE_ROWS_PER_PROTOCOL = 6
+DEVICE_ROWS_PER_IP = 60
+# Addresses that appear in a capture but are not a device anybody could classify.
+_NOT_A_DEVICE = {"0.0.0.0", "255.255.255.255"}
 
 # The shared detection-exclusion filter (Settings > Exclusiones - silences
 # Sniffer detection/Monitors/AI sampling for matching traffic, without
@@ -3082,23 +3089,46 @@ class SniffStore:
             if not chunk:
                 continue
             placeholders = ",".join("?" for _ in chunk)
+            # `sent` says whether this host sent the packet: what a packet carries is a
+            # fact about its sender, so a host that only received a page from an nginx
+            # is not an nginx. `ttl` and `eth` are only meaningful for the sender.
+            #
+            # Which rows are sampled matters as much as how they are read. A busy host
+            # is mostly DNS lookups and page-body chunks, and taking the most recent
+            # rows left out the one HTTP request whose User-Agent names the machine.
+            # So each protocol contributes at most DEVICE_ROWS_PER_PROTOCOL rows per
+            # direction, the ones the decoder gave structured fields first and then the
+            # newest, and the host as a whole at most DEVICE_ROWS_PER_IP.
             facts = self._fetchall(
                 f"""
-                SELECT ip, local_port, proto, summary, banner_text, domain, details_json, tags_json, created_at
+                SELECT ip, sent, local_port, peer_port, proto, summary, banner_text, domain,
+                       details_json, ttl, eth, created_at
                 FROM (
-                  SELECT endpoint_facts.*,
-                         ROW_NUMBER() OVER (PARTITION BY ip ORDER BY created_at DESC) AS metadata_rank
+                  SELECT per_protocol.*,
+                         ROW_NUMBER() OVER (
+                           PARTITION BY ip ORDER BY informative DESC, created_at DESC
+                         ) AS ip_rank
                   FROM (
-                    SELECT src_ip AS ip, src_port AS local_port, proto, summary,
-                           banner_text, domain, details_json, tags_json, created_at
-                    FROM packets WHERE src_ip IN ({placeholders})
-                    UNION ALL
-                    SELECT dst_ip AS ip, dst_port AS local_port, proto, summary,
-                           banner_text, domain, details_json, tags_json, created_at
-                    FROM packets WHERE dst_ip IN ({placeholders})
-                  ) AS endpoint_facts
+                    SELECT endpoint_facts.*,
+                           ROW_NUMBER() OVER (
+                             PARTITION BY ip, proto, sent ORDER BY informative DESC, created_at DESC
+                           ) AS protocol_rank
+                    FROM (
+                      SELECT src_ip AS ip, 1 AS sent, src_port AS local_port, dst_port AS peer_port, proto,
+                             summary, banner_text, domain, details_json, ttl, eth_src AS eth, created_at,
+                             CASE WHEN details_json IS NOT NULL AND details_json NOT IN ('', '{{}}')
+                                  THEN 1 ELSE 0 END AS informative
+                      FROM packets WHERE src_ip IN ({placeholders})
+                      UNION ALL
+                      SELECT dst_ip AS ip, 0 AS sent, dst_port AS local_port, src_port AS peer_port, proto,
+                             summary, banner_text, domain, details_json, NULL AS ttl, NULL AS eth, created_at,
+                             0 AS informative
+                      FROM packets WHERE dst_ip IN ({placeholders})
+                    ) AS endpoint_facts
+                  ) AS per_protocol
+                  WHERE protocol_rank <= {DEVICE_ROWS_PER_PROTOCOL}
                 )
-                WHERE metadata_rank <= 20
+                WHERE ip_rank <= {DEVICE_ROWS_PER_IP}
                 """,
                 tuple(chunk + chunk),
             )
@@ -3108,7 +3138,11 @@ class SniffStore:
             ip = str(row.get("ip") or "")
             if "device_type" in row:
                 continue
-            profile = infer_device_profile(observations.get(ip, ()))
+            scope = str(row.get("scope") or _ip_scope(ip))
+            if ip in _NOT_A_DEVICE or scope in ("multicast", "reserved"):
+                profile = unknown_profile()
+            else:
+                profile = infer_device_profile(observations.get(ip, ()), scope=scope)
             row.update(profile)
             self._device_profile_cache[ip] = {
                 "signature": (row.get("last_seen"), safe_int(row.get("hit_count"), 0)),

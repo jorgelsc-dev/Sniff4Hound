@@ -98,7 +98,7 @@
       <template #cell-device_type="{ item }">
         <div class="device-cell">
           <v-avatar size="30" :color="deviceDisplay(item).color" variant="tonal">
-            <v-icon :icon="deviceDisplay(item).icon" size="18" />
+            <v-icon :icon="deviceDisplay(item).icon" :color="deviceDisplay(item).iconColor" size="18" />
           </v-avatar>
           <div>
             <div class="device-cell__label">
