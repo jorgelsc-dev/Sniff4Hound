@@ -708,6 +708,13 @@ ENDPOINTS = [
     {"method": "POST", "path": "/api/whitelist/ip", "desc": "Whitelist one IP and purge everything already captured about it (packets, tags, payloads, flows, domains, paths). Without {\"confirm\": true}, returns how many packets would be deleted instead of doing it."},
     {"method": "GET", "path": "/api/domains/", "desc": "Searchable catalog of domains seen in DNS/HTTP/TLS traffic. Optional ?ip= narrows to one address."},
     {"method": "GET", "path": "/api/paths/", "desc": "Searchable catalog of HTTP request paths. Optional ?ip= narrows to one address."},
+    {"method": "GET", "path": "/api/history/dns/", "desc": "DNS history: one row per distinct (domain, record_type, answer) ever seen, with query/response/error counts, TTL range, last response code, the clients and resolvers involved and first/last seen. Recorded for every DNS, mDNS and LLMNR packet the sniffer sees, whether or not it alerted. ?search= matches domain, answer, record type or peer; ?type=A|AAAA|CNAME|...; ?rcode=NOERROR|NXDOMAIN|...; ?domain= exact; ?ip= answer or peer; ?since=."},
+    {"method": "GET", "path": "/api/history/arp/", "desc": "ARP history: one row per IP-to-MAC binding ever seen, with packet counts (requests, replies, gratuitous, MAC mismatches) and first/last seen. ?search=, ?ip=, ?mac=, ?since=."},
+    {"method": "GET", "path": "/api/history/arp/devices/", "desc": "ARP devices: one row per MAC address with every IP it has claimed (ips), the latest one (current_ip), packet and mismatch totals and first/last seen. ?search=, ?since=."},
+    {"method": "GET", "path": "/api/history/arp/events/", "desc": "ARP changes, newest first: new_device, mac_new_ip (a known device took another address), ip_mac_changed (an address moved to another MAC) and mac_mismatch (the Ethernet source disagrees with the ARP sender). ?kind=, ?search=, ?ip=, ?mac=, ?since=."},
+    {"method": "GET", "path": "/api/history/config", "desc": "History settings (dns_enabled, arp_enabled, retention_days, max_dns_rows, max_arp_bindings, max_arp_events) and the current row counts."},
+    {"method": "POST", "path": "/api/history/config", "desc": "Change any of the history settings; the sniffer applies them within a few seconds. Unknown or out-of-range values reject the whole update."},
+    {"method": "POST", "path": "/api/history/clear", "desc": "Delete recorded history: {\"scope\": \"dns\"|\"arp\"|\"all\", \"confirm\": true}. Without confirm it only reports how many rows it would delete."},
     {"method": "GET", "path": "/api/intel/ips/", "desc": "Searchable catalog of IPs seen in stored traffic. ?scope=public|private|local|multicast|reserved|unknown (comma separated) filters by address scope; the full vocabulary and per-scope counts come back in the X-Scope-Counts header. Each row carries the passive device profile: device_type, device_confidence, device_evidence and, when a product was recognised, device_product (an id such as nginx), device_product_label and device_product_version (empty strings otherwise)."},
     {"method": "GET", "path": "/api/intel/ips/graph", "desc": "IP relationship graph: `nodes` (same shape as /api/intel/ips/, device type included) and `edges` (src_ip, dst_ip, weight = total packets, flow_count), one edge per host pair, both ends restricted to the returned node set."},
     {"method": "GET", "path": "/api/monitors/packets/", "desc": "Packets that matched a given monitor."},
@@ -3031,6 +3038,97 @@ def paths_collection(request):
         limit=limit,
         offset=offset,
     )
+
+
+def _history_listing(request, list_rows, count_rows, **filters):
+    limit = _normalize_limit(request.query.get("limit"), default=200)
+    offset = _normalize_offset(request.query.get("offset"))
+    since = _normalize_since(request)
+    return _listing_response(
+        list_rows(**filters, since=since, limit=limit, offset=offset),
+        total=count_rows(**filters, since=since),
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _query_text(request, name):
+    return str(request.query.get(name) or "").strip()
+
+
+@app.api("/api/history/dns/", methods=("GET",))
+def dns_history_collection(request):
+    return _history_listing(
+        request,
+        store.list_dns_history,
+        store.count_dns_history,
+        search=_query_text(request, "search"),
+        record_type=_query_text(request, "type"),
+        rcode=_query_text(request, "rcode"),
+        ip=_query_text(request, "ip"),
+        domain=_query_text(request, "domain"),
+    )
+
+
+@app.api("/api/history/arp/", methods=("GET",))
+def arp_history_collection(request):
+    return _history_listing(
+        request,
+        store.list_arp_bindings,
+        store.count_arp_bindings,
+        search=_query_text(request, "search"),
+        ip=_query_text(request, "ip"),
+        mac=_query_text(request, "mac"),
+    )
+
+
+@app.api("/api/history/arp/devices/", methods=("GET",))
+def arp_devices_collection(request):
+    return _history_listing(
+        request,
+        store.list_arp_devices,
+        store.count_arp_devices,
+        search=_query_text(request, "search"),
+    )
+
+
+@app.api("/api/history/arp/events/", methods=("GET",))
+def arp_events_collection(request):
+    return _history_listing(
+        request,
+        store.list_arp_events,
+        store.count_arp_events,
+        search=_query_text(request, "search"),
+        kind=_query_text(request, "kind"),
+        ip=_query_text(request, "ip"),
+        mac=_query_text(request, "mac"),
+    )
+
+
+@app.api("/api/history/config", methods=("GET", "POST"))
+def history_config_api(request):
+    """History settings and row counts. POST changes the settings; the sniffer
+    (which may be another process) reads them from the shared database and
+    applies them within a few seconds."""
+    if request.method.upper() == "POST":
+        store.set_history_config(_read_json_body(request))
+    return {"config": store.get_history_config(), "totals": store.history_totals()}
+
+
+@app.api("/api/history/clear", methods=("POST",))
+def history_clear_api(request):
+    """Delete the recorded history. Irreversible, so a request without
+    {"confirm": true} only reports what it would remove."""
+    payload = _read_json_body(request)
+    scope = str(payload.get("scope") or "all").strip().lower()
+    if scope not in ("dns", "arp", "all"):
+        raise ValueError("scope must be dns, arp or all")
+    if not bool(payload.get("confirm")):
+        totals = store.history_totals()
+        pending = {"dns": totals["dns_history"], "arp": totals["arp_bindings"] + totals["arp_events"]}
+        pending["all"] = pending["dns"] + pending["arp"]
+        return {"status": "confirm_required", "scope": scope, "rows": pending[scope]}
+    return {"status": "ok", "scope": scope, "deleted": store.clear_history(scope)}
 
 
 @app.api("/api/intel/ips/", methods=("GET",))

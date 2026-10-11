@@ -25,6 +25,16 @@ export const NAV_LINKS = [
   { label: "Honeypot", to: "/honeypot", icon: "mdi-spider-web", color: "warning" },
   { label: "Dominios", to: "/domains", icon: "mdi-web", color: "primary" },
   { label: "Paths", to: "/paths", icon: "mdi-routes", color: "secondary" },
+  {
+    label: "Historial",
+    to: "/history",
+    icon: "mdi-history",
+    color: "info",
+    children: [
+      { label: "DNS", to: "/history/dns", icon: "mdi-dns-outline" },
+      { label: "ARP", to: "/history/arp", icon: "mdi-lan-connect" },
+    ],
+  },
   { label: "IPs", to: "/ips", icon: "mdi-ip-network", color: "success" },
 ];
 

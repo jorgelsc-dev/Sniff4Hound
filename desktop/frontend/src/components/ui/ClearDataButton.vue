@@ -89,6 +89,7 @@ import store from "../../state/appStore";
 const REMOVED_ITEMS = [
   "Paquetes, etiquetas y payloads",
   "Flujos, dominios y rutas",
+  "Historial DNS y ARP",
   "Sesiones de captura y contadores",
   "Eventos de conexión, TLS y DNS del honeypot",
 ];

@@ -11,6 +11,7 @@ Sniff4Hound usa SQLite como unico almacenamiento local. La base por defecto es `
 - `tags`: etiquetas y metadatos de analisis.
 - `rulesets`: catalogo de reglas editables.
 - `runtime_config`: estado persistido del runtime.
+- `dns_history`, `arp_bindings`, `arp_events`: historial de DNS y de ARP (ver mas abajo).
 
 ## Comportamiento de la base
 
@@ -28,6 +29,42 @@ Sniff4Hound usa SQLite como unico almacenamiento local. La base por defecto es `
   trafico muteado/whitelisteado/excluido: no se evalua (nada que levantar
   por diseno) pero igual se guarda sin tags, para no perder visibilidad de
   lo que se esta excluyendo.
+
+## Historial de DNS y ARP
+
+Ademas de `packets`, que solo guarda lo que alerto, Sniff4Hound lleva un
+historial de lo que la red *dijo* en DNS y en ARP. Se escribe para **todo**
+paquete DNS (incluidos mDNS y LLMNR) y ARP que el sniffer ve, **haya o no una
+alerta** y **sin importar las exclusiones**: `Sniffer._store_packet` se lo
+entrega al `HistoryRecorder` antes de la deteccion, y los filtros de exclusion y
+los ambitos silenciados solo deciden si se *detecta*, nunca que se registra. Lo
+unico que lo omite es una IP de la lista blanca ("deja de seguir a este
+equipo") y el trafico del propio panel.
+
+No crece con el trafico: son *agregados*. Una consulta repetida mil veces es una
+fila cuyo contador marca mil, y el grabador las vuelca a SQLite cada dos
+segundos en una sola transaccion.
+
+- `dns_history`: una fila por (`domain`, `record_type`, `answer`). Cuenta
+  consultas, respuestas y errores, guarda el ultimo codigo de respuesta, el
+  rango y el ultimo TTL, los clientes y resolvers (hasta 20) y primera/ultima
+  vez. Una consulta sin respuesta, o respondida con error (NXDOMAIN...), queda
+  con `answer = ''`.
+- `arp_bindings`: una fila por par (`ip`, `mac`), tomado del emisor que el
+  paquete ARP declara en su carga (no de la cabecera Ethernet). Cuenta
+  paquetes, solicitudes, respuestas, ARP gratuito y discrepancias.
+- `arp_events`: los cambios, del mas reciente al mas antiguo: `new_device`
+  (MAC nunca vista), `mac_new_ip` (un dispositivo conocido usa otra IP),
+  `ip_mac_changed` (una IP pasa a otra MAC: la firma de la suplantacion ARP) y
+  `mac_mismatch` (la MAC de Ethernet no es la que dice el ARP; un maximo de un
+  evento por hora y par).
+
+Se configura en *Configuracion > Historial DNS y ARP* (o `GET|POST
+/api/history/config`): activar o apagar DNS y ARP por separado, dias a conservar
+(`0` = sin limite de tiempo, por defecto `90`) y un tope de filas por tabla. La
+retencion mide `last_seen`, asi que lo que sigue apareciendo no caduca. El
+sniffer, que puede ser otro proceso, aplica los cambios en unos segundos.
+*Borrar todos los datos de captura* tambien vacia el historial.
 
 ## Limites de retencion
 

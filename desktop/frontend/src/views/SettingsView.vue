@@ -1243,6 +1243,10 @@
         <ExclusionsPanel />
       </v-window-item>
 
+      <v-window-item value="history">
+        <HistoryPanel @changed="refreshGraph" />
+      </v-window-item>
+
       <v-window-item value="connection">
         <dl class="settings-connection">
           <dt>WebSocket</dt>
@@ -1711,6 +1715,7 @@ import LocationPicker from "../components/settings/LocationPicker.vue";
 import RegexHelperButton from "../components/ui/RegexHelperButton.vue";
 import BlacklistPanel from "../components/settings/BlacklistPanel.vue";
 import ExclusionsPanel from "../components/settings/ExclusionsPanel.vue";
+import HistoryPanel from "../components/settings/HistoryPanel.vue";
 import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 import ConfigGraphNav from "../components/settings/ConfigGraphNav.vue";
 import { SETTINGS_NODES } from "../components/settings/settingsGraph";
@@ -1813,6 +1818,7 @@ export default {
     RegexHelperButton,
     BlacklistPanel,
     ExclusionsPanel,
+    HistoryPanel,
     LocationPicker,
     RuleDetailDialog,
     ConfigGraphNav,
@@ -1847,7 +1853,7 @@ export default {
       logTailLoading: false,
       logTailError: "",
       pipelineResetting: false,
-      graphExtras: { blacklist: null, whitelist: null, exclusions: null, retentionDays: null },
+      graphExtras: { blacklist: null, whitelist: null, exclusions: null, retentionDays: null, history: null },
       enginePending: "",
       engineError: "",
       ruleDetailOpen: false,
@@ -2029,6 +2035,19 @@ export default {
           metric("Retención", extras.retentionDays != null ? `${extras.retentionDays} días` : "—"),
           metric("Auto-vacuum", storage ? (storage.incremental_reclaim ? "Activa" : "Inactiva") : "—", storage && !storage.incremental_reclaim ? "warn" : "ok"),
         ]),
+        history: (() => {
+          const history = extras.history;
+          const config = history?.config;
+          const totals = history?.totals || {};
+          const on = Boolean(config && (config.dns_enabled || config.arp_enabled));
+          const label = !config ? "Sin datos" : config.dns_enabled && config.arp_enabled ? "DNS y ARP activos" : on ? (config.dns_enabled ? "Solo DNS" : "Solo ARP") : "Historial apagado";
+          return state(label, online && on, [
+            metric("DNS", config ? (config.dns_enabled ? "Activo" : "Apagado") : "—", config && config.dns_enabled ? "ok" : "warn"),
+            metric("ARP", config ? (config.arp_enabled ? "Activo" : "Apagado") : "—", config && config.arp_enabled ? "ok" : "warn"),
+            metric("Registros", config ? num((totals.dns_history || 0) + (totals.arp_bindings || 0)) : "—"),
+            metric("Retención", config ? (config.retention_days ? `${config.retention_days} días` : "Sin límite") : "—"),
+          ]);
+        })(),
         exclusions: state("Filtros compartidos", true, [
           metric("Tipos IP", num(ipCount)),
           metric("CIDR", num((exclusions.cidrs || []).length)),
@@ -2305,6 +2324,7 @@ export default {
         this.store.getStorageStats(),
         this.store.fetchJsonPromise("/api/limits"),
         this.store.fetchJsonPromise("/api/monitors/stats"),
+        this.store.getHistoryConfig(),
       ]);
       const value = (index) => (results[index].status === "fulfilled" ? results[index].value : null);
       this.graphExtras = {
@@ -2312,6 +2332,7 @@ export default {
         whitelist: value(3),
         exclusions: value(4)?.exclusion_filters || null,
         retentionDays: value(5)?.retention_days ?? null,
+        history: value(10),
       };
       // Indices follow the request list above: logs is 6, storage is 7.
       if (value(7)) this.storageStats = value(7);

@@ -18,6 +18,7 @@ from .packet_pipeline import PACKET_JOBS_DEFAULT, PACKET_CACHE_LIMIT_DEFAULT, PI
 from .monitors import RuleAlertThrottle, ensure_monitor_index, evaluate_packet, indexed_monitors_by_id
 from .regex_safety import compiled_regex, regex_search
 from .rulesets import build_packet_text, classify_packet, literal_packet_text_pattern
+from .history_recorder import HistoryRecorder
 from .store import compile_exclusion_networks, packet_matches_exclusion_filter
 from .settings import (
     CAPTURE_BUFFER_BYTES,
@@ -601,6 +602,8 @@ def build_base_packet(
 class Sniffer:
     def __init__(self, store, hub, *, interfaces: tuple[str, ...] = ()):
         self.store = store
+        # DNS and ARP history, recorded for every packet before detection looks at it.
+        self._history = HistoryRecorder(store)
         self.hub = hub
         self._allowed_interfaces = tuple(
             str(interface).strip()
@@ -856,6 +859,7 @@ class Sniffer:
         self._pipeline_threads = []
         # The cache object is kept (closed) so its counters stay readable until
         # the next start(); _enqueue_packet evaluates inline once it is closed.
+        self._history.flush()
         return self.snapshot()
 
     def restart(self):
@@ -1532,6 +1536,11 @@ class Sniffer:
             self._touch_packet(packet, stored=False)
             self._broadcast_stats_throttled()
             return
+        # DNS and ARP history is kept for everything that gets this far: before
+        # detection, so it does not depend on an alert, and before the mute and
+        # exclusion checks below, which only decide whether to *detect* - they
+        # have never decided what is recorded.
+        self._history.observe(packet)
         monitors, filter_enabled = self._get_monitor_context()
         detection_muted = self._detection_muted(packet) or self._exclusion_filtered(packet)
         monitor_matched = False
@@ -2779,6 +2788,26 @@ class Sniffer:
         packet["dns_rcode"] = DNS_RCODE_NAMES.get(
             parsed.get("rcode") or 0, str(parsed.get("rcode") or 0)
         )
+        # The whole message, for the DNS history (history.py). Only the keys in
+        # protocol_facets.DETAIL_KEYS are ever written to the packets table, so
+        # this stays in memory and costs the database nothing.
+        packet["dns_records"] = {
+            "is_response": bool(parsed.get("is_response")),
+            "rcode": packet["dns_rcode"],
+            "questions": [
+                {"name": item.get("name"), "type": DNS_QTYPE_NAMES.get(item.get("qtype"), str(item.get("qtype") or ""))}
+                for item in questions
+            ],
+            "answers": [
+                {
+                    "name": item.get("name"),
+                    "type": DNS_QTYPE_NAMES.get(item.get("qtype"), str(item.get("qtype") or "")),
+                    "ttl": item.get("ttl"),
+                    "data": item.get("rdata"),
+                }
+                for item in answers
+            ],
+        }
         # The resolved value, and the name->value pair it belongs to. Both were
         # parsed already and then survived only inside the summary string, so
         # "which address did this name resolve to" could not be answered
