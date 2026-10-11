@@ -1,18 +1,23 @@
 name: CI
 
+# Build checks only: lint and production build of the frontend and the landing.
+# The unit tests are not run here. The backend suite took 3-5 minutes on every
+# push and pull request, so it lives in tests.yml instead: start it by hand
+# from the Actions tab (Tests -> Run workflow), or run it locally (README,
+# "Checks").
+
 on:
   # Push only on the long-lived branches. Every auxiliary branch reaches main
   # through a pull request, and the pull_request trigger below already covers
-  # it - so listing the branch prefixes here ran the whole suite twice for
-  # every push to an open PR, once per event, doubling the machine time each
-  # review costs.
+  # it - so listing the branch prefixes here ran every job twice for each push
+  # to an open PR, once per event.
   #
   # The usual fix - one concurrency group per branch with cancel-in-progress -
   # is not safe here. The two events would cancel each other, and whichever
   # loses the race is the one that reports: if that is the pull_request run,
-  # its check lands as `cancelled`, and those checks are required on main, so
-  # the pull request becomes unmergeable until someone re-runs it by hand.
-  # Not running the duplicate at all has no such failure mode.
+  # its check lands as `cancelled` and the pull request shows a red check until
+  # someone re-runs it by hand. Not running the duplicate at all has no such
+  # failure mode.
   #
   # CI before opening a pull request is still available: open it as a draft.
   push:
@@ -28,81 +33,6 @@ permissions:
   contents: read
 
 jobs:
-  # The full backend suite (unittest discover) takes ~5-8 minutes running
-  # serially - most of that is the fixed per-test cost of standing up a real
-  # SniffStore/Sniffer against the full builtin monitor catalog, repeated
-  # hundreds of times, not any one slow test. Splitting it across parallel
-  # runners cuts wall-clock time to roughly that of the heaviest shard
-  # instead of the sum of all of them. The shard test lists live in
-  # .github/test-shards.json (balanced by measured per-module duration);
-  # scripts/check_test_shards.py fails the job if a test file exists under
-  # tests/ that no shard references, so a newly added test file can't
-  # silently stop running in CI.
-  #
-  # `name:` intentionally has no shard/index in it - branch protection has a
-  # single required status check called "Backend tests (Python 3.12)".
-  # GitHub treats same-named check runs from a matrix as one requirement
-  # (all of them have to pass), so every shard reports under that identical
-  # name and the required check keeps working unmodified.
-  backend-tests-plan:
-    name: Backend tests plan
-    runs-on: ubuntu-latest
-    outputs:
-      shards: ${{ steps.plan.outputs.shards }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Verify every test module is assigned to a shard
-        run: python3 scripts/check_test_shards.py
-      - name: Compute shard matrix
-        id: plan
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          data = json.load(open('.github/test-shards.json'))
-          shards = [{'shard': i + 1, 'tests': ' '.join(t)} for i, t in enumerate(data['shards'])]
-          print('shards=' + json.dumps(shards))
-          PY
-
-  backend-tests:
-    name: Backend tests (Python ${{ matrix.python-version }})
-    needs: backend-tests-plan
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12"]
-        shard: ${{ fromJson(needs.backend-tests-plan.outputs.shards) }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: ${{ matrix.python-version }}
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: desktop/frontend/package-lock.json
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
-      - name: Install frontend dependencies
-        working-directory: desktop/frontend
-        run: npm ci
-      - name: Build frontend
-        working-directory: desktop/frontend
-        run: npm run build
-      - name: Compile Python files
-        run: python -m compileall -q .
-      - name: Install project for tests
-        run: python -m pip install .
-      # wsbuilder is no longer pinned to an exact version, so every run picks up
-      # whatever is newest on PyPI. Record which one that was: when a wsbuilder
-      # release breaks this suite, the failing run has to say which version it
-      # actually resolved, or the failure is not reproducible after the fact.
-      - name: Report resolved wsbuilder version
-        run: python -c "import importlib.metadata as m; print('wsbuilder', m.version('wsbuilder'))"
-      - name: Run unit tests (shard ${{ matrix.shard.shard }})
-        run: python -m unittest ${{ matrix.shard.tests }} -q
-
   frontend-checks:
     name: Frontend lint + build
     runs-on: ubuntu-latest

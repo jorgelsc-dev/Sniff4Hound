@@ -382,7 +382,13 @@ Frontend:
 cd desktop/frontend
 npm run lint
 npm run build
+npm test          # lint + unit tests
 ```
+
+GitHub no ejecuta las pruebas en cada push ni pull request (solo lint + build,
+CodeQL y los checks de procedencia). Para correrlas en GitHub: pestaña Actions
+→ **Tests** → *Run workflow* sobre tu rama (`suite`: `all`, `backend` o
+`frontend`).
 
 ## Documentacion
 

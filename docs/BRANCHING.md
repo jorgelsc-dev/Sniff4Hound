@@ -30,6 +30,15 @@ is two reviews wearing one hat, and the bug fix is the one that gets rushed.
 - Every commit needs a DCO sign-off (`git commit -s`). CI enforces this.
 - `CODEOWNERS` review is required; the owner owns every path.
 
+## Tests
+
+The unit tests do not run on pushes or pull requests. Run them locally before
+opening a PR (`README.md`, "Checks"), or start them in GitHub from
+Actions → Tests → Run workflow on your branch (`tests.yml`: the backend shards
+plus `npm test` for the frontend; the `suite` input picks one or both). Register
+every new `tests/test_*.py` in `.github/test-shards.json`; the manual run
+fails if one is missing.
+
 ## Required checks
 
 These must pass before merge (see
@@ -37,10 +46,6 @@ These must pass before merge (see
 They are listed below by the job name GitHub reports, which is what branch
 protection matches on — not by workflow name:
 
-- `Backend tests (Python 3.12)` — unit suite, `compileall`, package install,
-  frontend build. The name carries the matrix value, so changing the Python
-  version in `ci.yml` also renames this check and it has to be re-selected in
-  the branch protection settings.
 - `Frontend lint + build` — ESLint with `--max-warnings=0`, production build
   of `desktop/frontend/`
 - `Landing lint + build` — the same for `landing/`. `docs-pages.yml` only runs
