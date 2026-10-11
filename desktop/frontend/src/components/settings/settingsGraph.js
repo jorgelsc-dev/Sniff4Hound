@@ -27,6 +27,7 @@ export const SETTINGS_NODES = [
   { id: "jobs", section: "packetjobs", label: "Jobs de procesamiento", icon: "mdi-cog-sync-outline", lane: 0, column: 3, row: 1, detail: "Procesan y persisten" },
   { id: "monitors", section: "detection", label: "Monitores", icon: "mdi-radar", lane: 0, column: 4, row: 2, detail: "Reglas y severidad" },
   { id: "store", section: "storage", label: "SniffStore", icon: "mdi-database-outline", lane: 0, column: 5, row: 1, detail: "Historial y retención" },
+  { id: "history", section: "history", label: "Historial DNS y ARP", icon: "mdi-history", lane: 0, column: 5, row: 0, detail: "Siempre se guarda" },
 
   // Group 1 - what the operator sets and what reaches them.
   { id: "scope", section: "scope", label: "Alcance", icon: "mdi-select-search", lane: 1, column: 2, row: 2, detail: "Ámbitos de detección" },
@@ -49,6 +50,11 @@ export const SETTINGS_EDGES = [
   { from: "cache", to: "jobs", label: "lotes" },
   { from: "jobs", to: "monitors", label: "alertas" },
   { from: "jobs", to: "store", label: "persiste" },
+  // The sniffer feeds the history directly, ahead of detection: it records DNS
+  // and ARP whether or not anything alerted, which is why this edge does not
+  // go through the cache, the jobs or the monitors.
+  { from: "sniffer", to: "history", label: "DNS y ARP" },
+  { from: "history", to: "store", label: "persiste" },
   // Monitor hits are stored as alerts (sniffer: is_alert), not only through the job queue.
   { from: "monitors", to: "store", label: "guarda alertas" },
   { from: "honeypot", to: "monitors", label: "señuelos" },

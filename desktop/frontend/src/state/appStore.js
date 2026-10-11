@@ -661,6 +661,46 @@ function listPaths(options) {
   return fetchJsonPromise(`/api/paths/${buildIntelQuery(options)}`);
 }
 
+// DNS and ARP history. Unlike the other listings these do not follow the
+// global time range unless the caller passes one: a history is read "as far
+// back as it goes" by default, and a range left at 1h from another view would
+// look like the history had vanished.
+function listDnsHistory({ search = "", type = "", rcode = "", ip = "", domain = "", since = "", limit = 500, offset = 0 } = {}) {
+  return fetchListPromise("/api/history/dns/", { params: { search, type, rcode, ip, domain }, limit, offset, since });
+}
+
+function listArpHistory({ search = "", ip = "", mac = "", since = "", limit = 500, offset = 0 } = {}) {
+  return fetchListPromise("/api/history/arp/", { params: { search, ip, mac }, limit, offset, since });
+}
+
+function listArpDevices({ search = "", since = "", limit = 500, offset = 0 } = {}) {
+  return fetchListPromise("/api/history/arp/devices/", { params: { search }, limit, offset, since });
+}
+
+function listArpEvents({ search = "", kind = "", ip = "", mac = "", since = "", limit = 500, offset = 0 } = {}) {
+  return fetchListPromise("/api/history/arp/events/", { params: { search, kind, ip, mac }, limit, offset, since });
+}
+
+function getHistoryConfig() {
+  return fetchJsonPromise("/api/history/config");
+}
+
+function saveHistoryConfig(payload) {
+  return fetchJsonPromise("/api/history/config", {
+    method: "POST",
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+// Irreversible, so the server only reports what it would delete until it is
+// called again with confirm: true (same shape as whitelistIpAndForget).
+function clearHistory(scope, { confirm = false } = {}) {
+  return fetchJsonPromise("/api/history/clear", {
+    method: "POST",
+    body: JSON.stringify({ scope: String(scope || "all").trim().toLowerCase(), confirm: Boolean(confirm) }),
+  });
+}
+
 // One protocol slice: counters, protocol-specific facets, timeline, rows,
 // banners and tags. Replaces the five separate calls the Protocols view used
 // to make on every refresh.
@@ -2419,6 +2459,13 @@ export default {
   toggleHoneypotListenerEnabled,
   listDomains,
   listPaths,
+  listDnsHistory,
+  listArpHistory,
+  listArpDevices,
+  listArpEvents,
+  getHistoryConfig,
+  saveHistoryConfig,
+  clearHistory,
   fetchProtocolSnapshot,
   listIpCatalogWithScopes,
   fetchIpRelationshipGraph,
