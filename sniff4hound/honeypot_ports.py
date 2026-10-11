@@ -288,6 +288,11 @@ CUSTOM_LISTENER_DENY_PORTS = {
 }
 
 
+# Built once: the listener view asks about every row of a ~10k catalogue on each
+# snapshot, and rebuilding this set per call made that visibly slower.
+_DEFAULT_ENABLED_SETS = {proto: frozenset(ports) for proto, ports in DEFAULT_ENABLED_PORTS.items()}
+
+
 def listener_port_allowed(proto: str, port: int, *, source: str = "custom") -> bool:
     proto = str(proto or "").strip().lower()
     try:
@@ -296,7 +301,7 @@ def listener_port_allowed(proto: str, port: int, *, source: str = "custom") -> b
         return False
     if proto not in ("tcp", "udp") or port < 1 or port > 65535:
         return False
-    if source == "builtin" and port in set(DEFAULT_ENABLED_PORTS.get(proto, ())):
+    if source == "builtin" and port in _DEFAULT_ENABLED_SETS.get(proto, frozenset()):
         return True
     return port not in CUSTOM_LISTENER_DENY_PORTS.get(proto, frozenset())
 

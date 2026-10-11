@@ -251,8 +251,16 @@ class RuntimeController:
         """Listener management is independent of which engine is currently
         active - you can create or toggle a honeypot listener while the
         Sniffer is the active mode; it just won't have a live thread until
-        honeypot mode is started."""
-        return self._honeypot.store.list_honeypot_listeners()
+        honeypot mode is started.
+
+        Each row carries the engine's own view of it too (`running`, and
+        `can_enable`, which says whether the port policy lets it be turned on)
+        - the same shape the toggle's snapshot returns, so the table does not
+        change what it knows about a listener after the first click."""
+        return [
+            {**row, **self._honeypot._listener_view(row)}
+            for row in self._honeypot.store.list_honeypot_listeners()
+        ]
 
     def create_honeypot_listener(self, proto: str, port, label: str = ""):
         with self._lock:
