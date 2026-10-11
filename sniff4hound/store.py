@@ -46,6 +46,7 @@ from .protocol_facets import (
 from .rulesets import literal_packet_text_pattern, load_builtin_rulesets, normalize_ruleset
 from .regex_safety import validate_regex_pattern
 from .device_profiles import infer_device_profile, unknown_profile
+from .history_store import HISTORY_INDEXES, HISTORY_SCHEMA, HISTORY_TABLES, HistoryStoreMixin
 from .settings import (
     MONITOR_FILTER_DEFAULT,
     MONITOR_MIN_SEVERITY_DEFAULT,
@@ -712,7 +713,7 @@ def _soc_payload_signature(text: str) -> str:
     return "text"
 
 
-class SniffStore:
+class SniffStore(HistoryStoreMixin):
     def __init__(self, path: str | Path):
         self.path = Path(path)
         if not self.path.is_absolute():
@@ -1217,6 +1218,7 @@ class SniffStore:
                 finished_at TEXT NOT NULL DEFAULT ''
             )
             """,
+            *HISTORY_SCHEMA,
         ]
         with self._lock:
             for statement in schema:
@@ -1342,6 +1344,8 @@ class SniffStore:
         self._conn.commit()
 
     def _create_indexes(self):
+        for statement in HISTORY_INDEXES:
+            self._conn.execute(statement)
         # `packets` had no index at all beyond its implicit rowid, which
         # only went unnoticed because the table was capped at 2000 rows.
         # Temporal retention (settings.RETENTION_DAYS) makes it grow by
@@ -6046,7 +6050,11 @@ class SniffStore:
         else:
             with self._lock:
                 self._last_retention_at = now
-        return self.enforce_retention()
+        result = self.enforce_retention()
+        # The DNS/ARP history has its own window and caps (Settings > Historial),
+        # separate from the packets' 7-day default.
+        self.prune_history()
+        return result
 
     def enforce_retention(self) -> dict:
         """Temporal retention with a row-count backstop.
@@ -6134,7 +6142,7 @@ class SniffStore:
     # `blacklist_entries`, `whitelist_entries` and `runtime_config`: those are definitions and
     # configuration the operator authored, not captured traffic, and wiping
     # them would silently undo tuning work.
-    CAPTURE_DATA_TABLES = ("tags", "payloads", "packets", "flows", "domains", "paths", "sessions")
+    CAPTURE_DATA_TABLES = ("tags", "payloads", "packets", "flows", "domains", "paths", "sessions", *HISTORY_TABLES)
 
     def get_declared_location(self) -> dict:
         """Where this sensor sits, as declared by the operator.

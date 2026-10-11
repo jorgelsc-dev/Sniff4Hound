@@ -18,6 +18,12 @@ La superficie publica se expone desde el mismo proceso que sirve la UI. Para ver
 | `GET|DELETE /banners/` | Respuestas registradas. |
 | `GET /tags/` | Etiquetas de paquetes. |
 | `GET /api/ip/domains/` | Dominios asociados a una IP. |
+| `GET /api/history/dns/` | Historial DNS: dominio, tipo de registro, respuesta, contadores, TTL, clientes y resolvers. Filtros `search`, `type`, `rcode`, `domain`, `ip`, `since`. |
+| `GET /api/history/arp/` | Asociaciones IP-MAC vistas por ARP. Filtros `search`, `ip`, `mac`, `since`. |
+| `GET /api/history/arp/devices/` | Dispositivos ARP: una fila por MAC con todas las IP que reclamo. |
+| `GET /api/history/arp/events/` | Cambios ARP: `new_device`, `mac_new_ip`, `ip_mac_changed`, `mac_mismatch`. Filtros `kind`, `search`, `ip`, `mac`, `since`. |
+| `GET|POST /api/history/config` | Ajustes del historial (activar DNS/ARP, dias de retencion, topes de filas) y recuentos. |
+| `POST /api/history/clear` | Borra el historial (`scope`: `dns`, `arp` o `all`). Sin `confirm: true` solo informa cuantas filas borraria. |
 | `GET /api/ip/ttl-path/` | Estimacion de saltos para una IP. |
 | `GET /api/ip/intel/` | Perfil combinado de una IP. |
 | `GET|POST /api/catalog/file/banner-rules` | Archivo de reglas de banners. |

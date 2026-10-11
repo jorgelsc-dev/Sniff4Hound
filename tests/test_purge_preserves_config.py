@@ -15,7 +15,13 @@ from sniff4hound.store import SniffStore
 
 # Everything the purge is allowed to touch. Anything outside this set is
 # operator configuration and must survive.
-PURGEABLE_TABLES = {"tags", "payloads", "packets", "flows", "domains", "paths", "sessions"}
+# The DNS/ARP history is capture data like the rest: the "delete all captured
+# data" button promises everything the capture recorded, so it goes too (the
+# Settings > Historial panel can also clear it on its own).
+PURGEABLE_TABLES = {
+    "tags", "payloads", "packets", "flows", "domains", "paths", "sessions",
+    "dns_history", "arp_bindings", "arp_events",
+}
 
 CONFIG_TABLES = ("monitors", "honeypot_listeners", "rulesets", "blacklist_entries", "whitelist_entries")
 
