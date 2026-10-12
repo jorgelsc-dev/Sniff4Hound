@@ -84,11 +84,26 @@ function shouldElevate({ platform, euid, env }) {
 
 /** The `KEY=VALUE` arguments for `env`, for the root copy. */
 function forwardedAssignments({ env, uid, gid, home }) {
+  const launchEnv = { ...env };
+  // Xlib's implicit authority lookup can change after switching users. Make
+  // the operator's default explicit without changing X11's access controls.
+  if (launchEnv.DISPLAY && !launchEnv.XAUTHORITY && home) {
+    const authority = path.join(home, ".Xauthority");
+    try {
+      fs.accessSync(authority, fs.constants.R_OK);
+      if (fs.statSync(authority).isFile()) launchEnv.XAUTHORITY = authority;
+    } catch {
+      // A cookie-less display (for example a test X server) needs no file.
+    }
+  }
+  if (typeof launchEnv.XAUTHORITY === "string" && launchEnv.XAUTHORITY && !/[\0\n\r]/.test(launchEnv.XAUTHORITY)) {
+    launchEnv.XAUTHORITY = path.resolve(launchEnv.XAUTHORITY);
+  }
   const out = [];
-  for (const key of Object.keys(env).sort()) {
+  for (const key of Object.keys(launchEnv).sort()) {
     const listed = FORWARDED.includes(key) || FORWARDED_PREFIXES.some((prefix) => key.startsWith(prefix));
     if (!listed || NEVER_FORWARDED.has(key)) continue;
-    const value = env[key];
+    const value = launchEnv[key];
     // A newline or NUL would split or truncate the assignment.
     if (typeof value !== "string" || /[\0\n\r]/.test(value)) continue;
     out.push(`${key}=${value}`);
@@ -202,8 +217,22 @@ function runElevatedLauncher({ spawn, exit, log, onSignal, env, argv, execPath, 
     stdio: ["inherit", "inherit", "pipe"],
   });
   let stderrTail = "";
+  let previousStderrByte = null;
   child.stderr.on("data", (chunk) => {
-    stderr.write(chunk);
+    if (stderr.isTTY) {
+      // sudo may keep the controlling tty in raw mode while relaying its
+      // child. Our separately piped stderr bypasses that relay, so LF alone
+      // leaves the cursor in the previous column after a PAM prompt.
+      const output = [];
+      for (const byte of chunk) {
+        if (byte === 10 && previousStderrByte !== 13) output.push(13);
+        output.push(byte);
+        previousStderrByte = byte;
+      }
+      stderr.write(Buffer.from(output));
+    } else {
+      stderr.write(chunk);
+    }
     stderrTail = (stderrTail + chunk.toString("utf8")).slice(-4000);
   });
   // sudo relays these to the root copy instead of leaving it running.

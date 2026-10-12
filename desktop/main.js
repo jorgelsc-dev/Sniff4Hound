@@ -8,6 +8,8 @@ const path = require("node:path");
 const os = require("node:os");
 const { URL, URLSearchParams } = require("./lib/simple-url");
 const elevation = require("./lib/elevation");
+const { configureGraphics } = require("./lib/graphics");
+const { startPrivateSessionBus } = require("./lib/session-bus");
 const quicPin = require("./lib/quic-pin");
 
 const READY_PREFIX = "SNIFF4HOUND_DESKTOP_READY ";
@@ -45,6 +47,19 @@ function startElevatedLauncher() {
   });
 }
 const launcherOnly = startElevatedLauncher();
+const stopSessionBus = startPrivateSessionBus({
+  platform: process.platform,
+  euid: effectiveUid(),
+  env: process.env,
+  which: elevation.findExecutable,
+  execFileSync,
+  kill: (pid, signal) => process.kill(pid, signal),
+  log: (line) => console.error(line),
+});
+if (stopSessionBus) {
+  process.on("exit", stopSessionBus);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => app.quit());
+}
 
 // The root copy leaves the configuration directory root-owned; give it back so
 // an unprivileged launch can still use it.
@@ -89,9 +104,7 @@ protocol.registerSchemesAsPrivileged([
 // Chromium refuses to start as root at all without this switch, and the
 // relaunch passes it on the real command line, where Chromium reads it before
 // any JavaScript runs.
-if (process.platform === "linux") {
-  app.commandLine.appendSwitch("no-sandbox");
-}
+configureGraphics({ app, platform: process.platform, euid: effectiveUid(), launcherOnly });
 
 // AI/automation channel: opt-in Chrome DevTools Protocol remote debugging -
 // off unless SNIFF4HOUND_DESKTOP_DEBUG_PORT names a port, so a normal launch

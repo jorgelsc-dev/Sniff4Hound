@@ -10,6 +10,7 @@ import test from "node:test";
 // only build the command the shell would run, from fake lookups.
 const require = createRequire(import.meta.url);
 const elevation = require("../../lib/elevation.js");
+const { configureGraphics } = require("../../lib/graphics.js");
 
 const BASE_ENV = {
   DISPLAY: ":0",
@@ -86,14 +87,44 @@ test("HOME is taken from the lookup when the environment has none", () => {
   assert.ok(assignments.includes("HOME=/home/op"));
 });
 
+test("the operator's implicit X11 authority is made explicit before elevation", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "s4h-xauth-test-"));
+  try {
+    const env = { DISPLAY: ":0", HOME: home };
+    const forward = () => elevation.forwardedAssignments({ env, uid: 1000, gid: 1000, home });
+    assert.ok(!forward().some((item) => item.startsWith("XAUTHORITY=")), "do not invent a missing authority file");
+    const authority = path.join(home, ".Xauthority");
+    fs.writeFileSync(authority, "fixture-cookie", { mode: 0o600 });
+    const assignments = forward();
+    assert.ok(assignments.includes(`XAUTHORITY=${authority}`));
+    assert.doesNotMatch(assignments.join("\n"), /fixture-cookie/, "only the path goes on the command line");
+    assert.equal(fs.statSync(authority).mode & 0o777, 0o600, "cookie permissions remain private");
+
+    env.XAUTHORITY = "/run/user/1000/xwayland-auth";
+    assert.ok(forward().includes("XAUTHORITY=/run/user/1000/xwayland-auth"), "an explicit compositor cookie wins");
+    delete env.DISPLAY;
+    delete env.XAUTHORITY;
+    assert.ok(!forward().some((item) => item.startsWith("XAUTHORITY=")), "a Wayland-only session needs no X11 cookie");
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("relative authority paths survive a privilege tool changing its working directory", () => {
+  const assignments = elevation.forwardedAssignments({
+    env: { DISPLAY: ":0", XAUTHORITY: "relative-cookie" }, uid: 1000, gid: 1000, home: "/home/op",
+  });
+  assert.ok(assignments.includes(`XAUTHORITY=${path.resolve("relative-cookie")}`));
+});
+
 test("a value with a newline or NUL cannot split the assignment", () => {
   const assignments = elevation.forwardedAssignments({
-    env: { DISPLAY: ":0\nSNIFF4HOUND_X=1", LANG: "a\0b", PATH: "/usr/bin" },
+    env: { DISPLAY: ":0\nSNIFF4HOUND_X=1", LANG: "a\0b", PATH: "/usr/bin", XAUTHORITY: {} },
     uid: 1,
     gid: 1,
     home: "/h",
   });
-  assert.ok(!assignments.some((item) => item.startsWith("DISPLAY=") || item.startsWith("LANG=")));
+  assert.ok(!assignments.some((item) => /^(DISPLAY|LANG|XAUTHORITY)=/.test(item)));
   assert.ok(assignments.includes("PATH=/usr/bin"));
 });
 
@@ -124,6 +155,26 @@ test("pkexec is the fallback when sudo cannot prompt", () => {
   const plan = build({ which: which({ sudo: "/usr/bin/sudo", pkexec: "/usr/bin/pkexec" }), askpass: null });
   assert.equal(plan.command, "/usr/bin/pkexec");
   assert.equal(plan.args[0], "env");
+});
+
+test("Linux root and the waiting launcher avoid GL, while an unprivileged window keeps acceleration", () => {
+  for (const [platform, euid, launcherOnly, expected] of [
+    ["linux", 0, false, true],
+    ["linux", 1000, true, true],
+    ["linux", 1000, false, false],
+    ["darwin", 0, false, false],
+    ["win32", 0, false, false],
+  ]) {
+    const switches = [];
+    let software = false;
+    const app = {
+      commandLine: { appendSwitch: (name) => switches.push(name) },
+      disableHardwareAcceleration: () => { software = true; },
+    };
+    configureGraphics({ app, platform, euid, launcherOnly });
+    assert.equal(software, expected, `${platform}, uid ${euid}, launcher ${launcherOnly}`);
+    assert.deepEqual(switches, platform === "linux" ? ["no-sandbox"] : []);
+  }
 });
 
 test("no sudo and no pkexec means no way to elevate", () => {
@@ -272,6 +323,28 @@ test("a cancelled prompt exits quietly with an explanation, not an error", () =>
   assert.equal(calls.log.length, 1);
   assert.match(calls.log[0], /Privileges were not granted/);
   assert.deepEqual(calls.stderr, ["sudo: no password was provided\n"], "sudo's own message still reaches the terminal");
+});
+
+test("terminal stderr returns to column zero even while sudo leaves the tty raw", () => {
+  const chunks = [];
+  const { child, run } = launcherRig({ stderr: { isTTY: true, write: (chunk) => chunks.push(chunk) } });
+  run();
+  const unicode = Buffer.from("línea uno\n");
+  child.stderr.emit("data", unicode.subarray(0, 2)); // split the multibyte character
+  child.stderr.emit("data", unicode.subarray(2));
+  child.stderr.emit("data", Buffer.from("line two\r"));
+  child.stderr.emit("data", Buffer.from("\nline three\n"));
+  assert.equal(Buffer.concat(chunks).toString("utf8"), "línea uno\r\nline two\r\nline three\r\n");
+});
+
+test("redirected stderr preserves its original bytes and line endings", () => {
+  const chunks = [];
+  const { child, run } = launcherRig({ stderr: { isTTY: false, write: (chunk) => chunks.push(chunk) } });
+  run();
+  const original = Buffer.from("línea uno\nline two\r\n");
+  child.stderr.emit("data", original.subarray(0, 2));
+  child.stderr.emit("data", original.subarray(2));
+  assert.deepEqual(Buffer.concat(chunks), original);
 });
 
 test("a crash of the root copy is not reported as a refusal", () => {

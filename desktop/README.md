@@ -21,6 +21,20 @@ configuration and database are used, not a fresh set under `/root`), `PATH`,
 token and the JWT secret. Files the root copy writes into the configuration
 directory are handed back to the operator when it exits.
 
+For X11, the launcher also forwards the operator's readable `~/.Xauthority`
+explicitly when `XAUTHORITY` is unset; relative authority paths are resolved
+before elevation. When `dbus-daemon` is installed, the elevated app starts
+its own temporary session bus rather than connecting as root to the operator's
+bus, and stops it on normal exit or a termination signal. Terminal stderr uses
+CRLF while attached to a tty so sudo's password/fingerprint prompt cannot leave
+the logs staircasing.
+
+On Linux, the elevated shell and the waiting launcher use
+[software rendering](https://www.electronjs.org/docs/latest/api/app#appdisablehardwareacceleration).
+This avoids GPU initialization retries and `libGLESv2.so: Permission denied`
+errors when the application lives inside a private home directory. The
+unprivileged shell (`SNIFF4HOUND_DESKTOP_ELEVATE=0`) keeps hardware acceleration.
+
 Trade-off, chosen deliberately: the renderer now runs as root too, and Chromium
 runs without its sandbox (it refuses to start as root otherwise, and the shell
 already ran without it, since the `.deb` cannot ship a setuid helper). The window
@@ -82,6 +96,13 @@ python3 -m venv --copies build/desktop/runtime/python-venv
 build/desktop/runtime/python-venv/bin/python -m pip install -e .
 cd desktop && npm install && npm run dev
 ```
+
+If npm prints `DEP0169` before starting Electron, run
+`NODE_OPTIONS=--trace-deprecation npm run` to locate the deprecated call.
+A stack under `/usr/share/nodejs/nopt` or `@npmcli/config` comes from the
+system npm installation, not the desktop app; update that npm installation
+separately. Unset `ELECTRON_RUN_AS_NODE` before launching Electron if your
+development shell sets it.
 
 ## AI/Automation Access
 
