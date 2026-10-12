@@ -305,6 +305,9 @@ Rutas mas utiles:
 Variables practicas del runtime:
 
 - `SNIFF4HOUND_HOST`
+- `SNIFF4HOUND_MDNS`: `1` por defecto. Publica el runtime y el stream con mDNS/DNS-SD mediante `wsbuilder[mdns]`; `0` conserva las URLs por IP.
+- `SNIFF4HOUND_MDNS_HOST`: nombre `.local` del runtime, por defecto `sniff4hound-runtime-<id>.local`, estable y distinto por máquina.
+- `SNIFF4HOUND_MOBILE_HOST`: nombre `.local` del stream, por defecto `sniff4hound-<id>.local`. El QR y los enlaces usan este nombre y el certificado lo incluye.
 - `SNIFF4HOUND_PORT`: override explicito del puerto HTTP. Si no se define, Sniff4Hound siempre intenta `45678` primero.
 - `SNIFF4HOUND_DB_PATH`
 - `SNIFF4HOUND_RUNTIME_MODE`
@@ -323,6 +326,13 @@ Variables practicas del runtime:
 - `SNIFF4HOUND_AUTH_FAILURE_THRESHOLD`
 - `SNIFF4HOUND_AUTH_FAILURE_WINDOW_SECONDS`
 - `SNIFF4HOUND_FRONTEND_DIST`
+
+mDNS anuncia y resuelve nombres y puertos; los datos continúan por HTTPS y
+HTTP/3. El runtime conserva su interfaz de escucha (loopback por defecto) y el
+stream se anuncia únicamente en la interfaz elegida. Electron verifica el
+servicio DNS-SD publicado por su backend y utiliza su nombre `.local` para la API
+y el canal en vivo, conservando el pin TLS. Si mDNS está activado y falla, el
+arranque indica el error en lugar de cambiar silenciosamente a una URL por IP.
 
 `sniff4hound` requiere root **desde el arranque**, no solo para la captura: si
 no se invoca ya como root, se relanza automaticamente a si mismo con `sudo`

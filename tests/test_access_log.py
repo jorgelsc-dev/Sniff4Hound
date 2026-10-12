@@ -47,6 +47,14 @@ def _capture(fn, *args, **kwargs) -> str:
 
 
 class AccessLogFormatTests(unittest.TestCase):
+    def test_the_protocol_comes_from_wsbuilder_request_version(self):
+        from wsbuilder import Request
+
+        request = Request(method="GET", path="/realtime/stream", query_string="", headers={},
+                          body=b"", client=("127.0.0.1", 51234), version="HTTP/3")
+        line = _capture(access_log.log_response, request, _FakeResponse(), 0.0)
+        self.assertEqual(LINE_RE.match(line).group("protocol"), "HTTP/3")
+
     def setUp(self):
         # Colour codes would break the strict field parsing below, and the
         # tests must not depend on whether stdout happens to be a TTY.

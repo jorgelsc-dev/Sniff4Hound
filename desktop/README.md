@@ -45,13 +45,27 @@ off outside a session where you want it. `SNIFF4HOUND_DESKTOP_ELEVATE=0` keeps
 the shell unprivileged, with the backend asking for privileges on its own as it
 did before.
 
-HTTP/3: the shell talks to its local runtime over HTTP/3 (QUIC on the same port
-number, over UDP), including the realtime stream. Chromium only does that for a
-server it trusts, and it never acts on an `Alt-Svc` header for an IP address, so
-before Chromium starts the shell runs `python -m sniff4hound.desktop_prepare`,
-which answers with the port the runtime will use (free on TCP and UDP) and the
-public-key hash of the runtime's server key. Chromium is then told to trust that
-one key and to use QUIC for that one origin (`lib/quic-pin.js`). The key and the
+mDNS: `wsbuilder[tls,mdns]` publishes a `_sniff4hound._tcp.local.` service for
+the runtime on its bound interface and a separate service for the mobile stream
+on the operator-selected interface. Names are stable per machine:
+`sniff4hound-runtime-<id>.local` and `sniff4hound-<id>.local`. Override them with
+`SNIFF4HOUND_MDNS_HOST` and `SNIFF4HOUND_MOBILE_HOST`; both must be valid `.local`
+names. No pairing codes, session tokens or TLS secrets are published in TXT
+records. Stopping a service withdraws its announcements.
+
+Before Chromium starts, `python -m sniff4hound.desktop_prepare` supplies the
+runtime name, its bound address, a port free on TCP and UDP, and the public-key
+hash of its server key. Chromium maps only that exact name to the local
+interface, so Electron needs no system mDNS daemon. Before connecting, the shell
+uses wsbuilder to resolve the exact service its child announced and checks its
+name, role, address and port against the prepared endpoint. API requests and the
+realtime stream then use the `.local` origin, with the existing TLS pinning and
+HTTP/3 (QUIC on the same port number, over UDP). The mobile QR and links also use
+the stream's `.local` name; the phone's OS must support mDNS and the selected
+network must allow multicast. `SNIFF4HOUND_MDNS=0` explicitly keeps IP origins.
+
+Chromium is told to trust the runtime's server key and use QUIC for that one
+origin (`lib/quic-pin.js`). The key and the
 CA that signs for it are kept between launches (`SNIFF4HOUND_DATA_DIR/tls`, mode
 0600) - that is what makes the pin stable; only the certificate is new each time.
 A forced QUIC origin has no TCP fallback, so if the runtime reports it has no
