@@ -104,6 +104,7 @@ class MdnsLoopbackIntegrationTests(unittest.TestCase):
                     found = mdns.resolve(state["mdns"]["service_name"], "127.0.0.1")
                     self.assertEqual(found["role"], "stream")
                     context = ssl.create_default_context(cadata=state["ca_pem"])
+                    context.minimum_version = ssl.TLSVersion.TLSv1_2
                     with socket.create_connection((found["addresses"][0], found["port"]), timeout=3) as connection:
                         with context.wrap_socket(connection, server_hostname=host) as secure:
                             secure.sendall(f"GET {target.path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n".encode())
