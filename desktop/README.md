@@ -115,16 +115,16 @@ If npm prints `DEP0169` before starting Electron, run
 `NODE_OPTIONS=--trace-deprecation npm run` to locate the deprecated call.
 A stack under `/usr/share/nodejs/nopt` or `@npmcli/config` comes from the
 system npm installation, not the desktop app; update that npm installation
-separately. Unset `ELECTRON_RUN_AS_NODE` before launching Electron if your
-development shell sets it.
+separately. The desktop `dev` script clears `ELECTRON_RUN_AS_NODE` automatically,
+so `cd desktop && npm run dev` always launches Electron.
 
 ## AI/Automation Access
 
 Chrome DevTools Protocol access is **off by default**. Set
 `SNIFF4HOUND_DESKTOP_DEBUG_PORT=9223` deliberately for a dedicated test launch;
 leaving it unset or setting it to `0` keeps the port closed.
-See `AGENTS.md`'s "Desktop App: AI/Automation Access" for how to attach and a couple of gotchas
-(notably `ELECTRON_RUN_AS_NODE`).
+See `AGENTS.md`'s "Desktop App: AI/Automation Access" for how to attach and verify
+the actual Electron app.
 
 After building the frontend, audit the production bundle in an isolated Electron
 session with synthetic data:
