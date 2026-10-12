@@ -23,6 +23,11 @@ class RuntimeTlsTests(unittest.TestCase):
                 self.assertIsInstance(material.ssl_context, ssl.SSLContext)
                 self.assertTrue(material.server_cert.exists())
                 self.assertTrue(material.server_key.exists())
+                from cryptography import x509
+
+                certificate = x509.load_pem_x509_certificate(material.server_cert.read_bytes())
+                names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+                self.assertIn(settings.MDNS_HOST, names.get_values_for_type(x509.DNSName))
                 self.assertEqual(Path(tmp) / "tls", runtime_tls.TLS_DIR)
             finally:
                 if previous is None:

@@ -185,7 +185,7 @@ def _target(request) -> str:
 
 
 def _protocol(request) -> str:
-    protocol = str(getattr(request, "http_version", "") or "HTTP/1.1")
+    protocol = str(getattr(request, "http_version", "") or getattr(request, "version", "") or "HTTP/1.1")
     return _sanitize_field(protocol) if protocol.upper().startswith("HTTP") else "HTTP/1.1"
 
 

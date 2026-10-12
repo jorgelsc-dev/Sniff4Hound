@@ -18,6 +18,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import mdns
+
 from .ipc import generate_ipc_token
 from .process_control import process_shutdown_requested, request_process_shutdown, reset_process_shutdown_request
 from .terminal import PROMPT, set_prompt_active
@@ -210,7 +212,7 @@ def _write_desktop_code_file(port: int, code: str) -> str:
     return path
 
 
-def _emit_desktop_ready(host: str, port: int, http3: bool = False) -> None:
+def _emit_desktop_ready(host: str, port: int, http3: bool = False, discovery: dict | None = None) -> None:
     from .auth import REQUIRE_AUTH, get_security_code
 
     ca_pem = ""
@@ -218,11 +220,13 @@ def _emit_desktop_ready(host: str, port: int, http3: bool = False) -> None:
         from .tls import public_ca_pem
 
         ca_pem = public_ca_pem()
-    base_url = f"{_runtime_scheme()}://{host}:{port}"
+    connection_host = discovery["hostname"] if discovery else host
+    url_host = f"[{connection_host}]" if ":" in connection_host else connection_host
+    base_url = f"{_runtime_scheme()}://{url_host}:{port}"
     code_file = _write_desktop_code_file(port, get_security_code()) if REQUIRE_AUTH else ""
     payload = {
         "url": f"{base_url}/?desktop=1",
-        "host": str(host),
+        "host": str(connection_host),
         "port": int(port),
         "protocol": _runtime_scheme(),
         "auth_required": bool(REQUIRE_AUTH),
@@ -232,6 +236,9 @@ def _emit_desktop_ready(host: str, port: int, http3: bool = False) -> None:
         # HTTP/3 for this port has no TCP fallback and needs to know.
         "http3": bool(http3),
     }
+    if discovery:
+        payload["bind_host"] = str(host)
+        payload["mdns"] = discovery
     print(f"{DESKTOP_READY_PREFIX}{json.dumps(payload, separators=(',', ':'))}", flush=True)
 
 
@@ -986,6 +993,7 @@ def main():
     capture_process = None
     capture_supervisor = None
     http3_server = None
+    mdns_service = None
 
     if selected_port is None:
         _print_address_in_use_error(host, requested_port)
@@ -1074,8 +1082,10 @@ def main():
 
         if selected_port != requested_port:
             _print_port_fallback_notice(requested_port, selected_port)
+        mdns_service = mdns.publish("runtime", host, selected_port, tls=TLS_ENABLED, http3=http3_server is not None)
         if desktop_mode:
-            _emit_desktop_ready(host, selected_port, http3=http3_server is not None)
+            _emit_desktop_ready(host, selected_port, http3=http3_server is not None,
+                                discovery=mdns_service.metadata() if mdns_service else None)
         else:
             _print_startup_banner(host, selected_port)
             console_thread = _start_interactive_console(
@@ -1110,6 +1120,11 @@ def main():
     except KeyboardInterrupt:
         print("\n\n🛑 Shutting down gracefully...\n")
     finally:
+        if mdns_service is not None:
+            try:
+                mdns_service.close()
+            except Exception as exc:  # noqa: BLE001 - still stop the runtime
+                print(f"[!] Could not withdraw the mDNS service: {exc}", file=sys.stderr)
         if capture_supervisor is not None:
             # Before anything below can make the child exit. Ctrl+C does not
             # go through request_process_shutdown(), so the supervisor's own
@@ -1155,6 +1170,7 @@ def main_web():
 
     tls_material = None
     http3_server = None
+    mdns_service = None
     if TLS_ENABLED:
         from .tls import ensure_runtime_tls
 
@@ -1187,8 +1203,10 @@ def main_web():
             from .http3_listener import start_http3, stop_http3
 
             http3_server = start_http3(app, tls_material, host, selected_port)
+            mdns_service = mdns.publish("runtime", host, selected_port, tls=True, http3=http3_server is not None)
             app.run(host, selected_port, ssl_context=tls_material.ssl_context)
         else:
+            mdns_service = mdns.publish("runtime", host, selected_port, tls=False)
             app.run(host, selected_port)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
@@ -1198,6 +1216,11 @@ def main_web():
     except KeyboardInterrupt:
         print("\n\n🛑 Shutting down gracefully...\n")
     finally:
+        if mdns_service is not None:
+            try:
+                mdns_service.close()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[!] Could not withdraw the mDNS service: {exc}", file=sys.stderr)
         if http3_server is not None:
             stop_http3(http3_server)
         _stop_interactive_console(console_thread)

@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlencode
 from wsbuilder import App, Request, Response
 from wsbuilder.server import HTTPServer
 
-from . import http3_listener, log_setup
+from . import http3_listener, log_setup, mdns
 from .tls import ca_fingerprint_sha256, ensure_mobile_tls, public_mobile_ca_pem
 from .utils import safe_int, utc_now
 
@@ -107,6 +107,7 @@ class MobileServerState:
     #: compare the two before trusting the certificate.
     ca_sha256: str = ""
     http3: dict[str, Any] = field(default_factory=dict)
+    mdns: dict[str, Any] = field(default_factory=dict)
 
 
 def discover_interfaces() -> list[InterfaceAddress]:
@@ -304,6 +305,7 @@ class MobileStreamService:
         self._tcp_server: HTTPServer | None = None
         self._tcp_thread: threading.Thread | None = None
         self._h3_server = None
+        self._mdns_service = None
         self._state = MobileServerState()
         # Log feed. A subscriber appears in `_log_levels` only if its phone asked
         # for logs, mapped to the lowest rank it wants. The follower thread and
@@ -376,20 +378,32 @@ class MobileStreamService:
                     h3_server.stop()
                 app.close()
                 raise ValueError(f"the mobile stream could not listen on https://{address}:{port}")
+        try:
+            published = mdns.publish("stream", address, port, http3=h3_server is not None)
+        except Exception as exc:
+            tcp_server.stop()
+            if h3_server is not None:
+                h3_server.stop()
+            app.close()
+            raise ValueError(f"could not publish the mobile stream with mDNS: {exc}") from exc
+        discovery = published.metadata() if published else {}
+        hostname = discovery.get("hostname", address)
         ca_pem = public_mobile_ca_pem()
         with self._lock:
             self._app = app
             self._tcp_server = tcp_server
             self._tcp_thread = thread
             self._h3_server = h3_server
+            self._mdns_service = published
             self._state = MobileServerState(
                 interface=interface,
                 address=address,
                 port=port,
                 running=True,
-                url_base=f"https://{address}:{port}",
+                url_base=f"https://{hostname}:{port}",
                 ca_pem=ca_pem,
                 ca_sha256=ca_fingerprint_sha256(ca_pem),
+                mdns=discovery,
                 http3={
                     "enabled": h3_server is not None,
                     "transport": "https+h3" if h3_server is not None else "https",
@@ -404,6 +418,8 @@ class MobileStreamService:
         with self._lock:
             servers = (self._tcp_server, self._h3_server)
             app = self._app
+            published = self._mdns_service
+            self._mdns_service = None
             self._tcp_server = None
             self._tcp_thread = None
             self._h3_server = None
@@ -414,6 +430,11 @@ class MobileStreamService:
                 session.revoked_at = _now()
             self._notify_all({"type": "revoked", "generated_at": utc_now()})
             self._log_stop.set()
+        if published is not None:
+            try:
+                published.close()
+            except Exception:  # noqa: BLE001 - still stop both data listeners
+                pass
         for server in servers:
             if server is not None:
                 try:

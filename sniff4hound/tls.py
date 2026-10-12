@@ -12,7 +12,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .settings import DATA_DIR, MOBILE_HOST, TLS_CA_DAYS, TLS_CERT_DAYS
+from .settings import DATA_DIR, MDNS_HOST, MOBILE_HOST, TLS_CA_DAYS, TLS_CERT_DAYS
 
 
 TLS_DIR = DATA_DIR / "tls"
@@ -309,6 +309,7 @@ def ensure_runtime_tls(host: str) -> RuntimeTlsMaterial:
         csr=SERVER_CSR_FILE,
         cert=SERVER_CERT_FILE,
         ext=SERVER_EXT_FILE,
+        extra_names=[MDNS_HOST.strip().lower().rstrip(".")] if _valid_dns_name(MDNS_HOST) else [],
     )
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -333,7 +334,7 @@ def ensure_mobile_tls(host: str) -> RuntimeTlsMaterial:
 
     The listener binds to an operator-selected interface address, so the
     certificate's names include that exact IP, and also ``SNIFF4HOUND_MOBILE_HOST``
-    (``sniff4hound.local`` by default) for when the stream is reached by name.
+    (a stable per-machine ``sniff4hound-*.local`` name by default).
 
     The mobile CA is kept between launches, like the runtime's: a phone that
     installed it once keeps trusting every certificate it signs afterwards, which
@@ -347,7 +348,7 @@ def ensure_mobile_tls(host: str) -> RuntimeTlsMaterial:
     """
     global _MOBILE_CA_CERT_ACTIVE
 
-    extra = [MOBILE_HOST] if _valid_dns_name(MOBILE_HOST) else []
+    extra = [MOBILE_HOST.strip().lower().rstrip(".")] if _valid_dns_name(MOBILE_HOST) else []
     try:
         TLS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
         ca_key, ca_cert, ca_serial = MOBILE_CA_KEY_FILE, MOBILE_CA_CERT_FILE, MOBILE_CA_SERIAL_FILE

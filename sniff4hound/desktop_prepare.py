@@ -12,9 +12,12 @@ is about to talk to is not running yet. So the shell asks this module first
   Chromium can be told to trust that one key for QUIC. The key, not the CA, is
   what is pinned: the runtime's QUIC stack sends its certificate chain in a single
   packet, which only has room for the server's own certificate.
+* ``mdns_host`` and ``connect_address``: the exact .local runtime name and its
+  bound interface address, when mDNS is enabled. Chromium maps only that name;
+  the shell resolves and verifies the child's DNS-SD service before connecting.
 
-Both are absent when they cannot be provided (TLS off, OpenSSL missing, no free
-port); the shell then simply does not turn HTTP/3 on.
+An unavailable port or key prevents the shell from turning HTTP/3 on. The
+mDNS preparation also runs when HTTP/3 or TLS is explicitly disabled.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import json
 import socket
 import sys
 
-from .settings import HOST, PORT, TLS_ENABLED
+from .settings import HOST, MDNS_ENABLED, MDNS_HOST, PORT, TLS_ENABLED
 
 
 def udp_port_is_available(host: str, port: int) -> bool:
@@ -49,6 +52,11 @@ def choose_port(host: str, preferred: int) -> int | None:
 def prepare(host: str = HOST, preferred: int = PORT) -> dict:
     result: dict = {"host": host, "port": None, "server_spki_sha256": "", "ca_created": False}
     result["port"] = choose_port(host, preferred)
+    if MDNS_ENABLED:
+        from .mdns import bind_addresses, normalize_hostname
+
+        result["mdns_host"] = normalize_hostname(MDNS_HOST)
+        result["connect_address"] = bind_addresses(host)[0]
     if TLS_ENABLED:
         try:
             from .tls import ensure_runtime_ca, ensure_server_key, server_key_pin

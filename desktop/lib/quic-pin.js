@@ -6,14 +6,15 @@
 // has no way to be told afterwards: its trust and QUIC switches are read once,
 // at launch. So before the shell starts Chromium it asks the Python runtime for
 // two facts (sniff4hound/desktop_prepare.py): the port the runtime is going to
-// listen on, free on TCP and UDP, and the public-key hash of its persistent CA.
+// listen on, free on TCP and UDP, and the public-key hash of its persistent
+// server key. It also supplies the runtime's .local name and bound address.
 //
 // With those, Chromium is told to
 //   - trust that one public key (--ignore-certificate-errors-spki-list), which
-//     the runtime's server certificate chains to, and
-//   - use QUIC for that one origin (--origin-to-force-quic-on): browsers learn
-//     about HTTP/3 from an Alt-Svc header, but never act on one for an IP
-//     address, and the runtime is addressed as 127.0.0.1.
+//     the runtime's server certificate contains, and
+//   - use QUIC for that one origin (--origin-to-force-quic-on), including its
+//     first request. The exact .local name maps to the prepared bound address;
+//     the shell verifies the matching DNS-SD service before connecting.
 //
 // Plain functions of their inputs, so the switches can be checked without
 // starting anything.
@@ -21,6 +22,8 @@
 const OFF_VALUES = new Set(["0", "false", "off", "no"]);
 const SPKI_RE = /^[A-Za-z0-9+/]{43}=$/;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const { isIP } = require("node:net");
+const { validHostname } = require("./mdns");
 
 function http3Disabled(env) {
   return OFF_VALUES.has(String(env.SNIFF4HOUND_DESKTOP_HTTP3 ?? "").trim().toLowerCase());
@@ -55,7 +58,13 @@ function prepareRuntime({ execFileSync, python, env, cwd, timeoutMs = 10000 }) {
   const host = String((parsed && parsed.host) || "");
   const spki = String((parsed && parsed.server_spki_sha256) || "");
   if (!Number.isInteger(port) || port < 1 || port > 65535 || !host) return null;
-  return { host, port, spki: SPKI_RE.test(spki) ? spki : "" };
+  const prepared = { host, port, spki: SPKI_RE.test(spki) ? spki : "" };
+  if (parsed.mdns_host) {
+    if (!validHostname(parsed.mdns_host) || !isIP(parsed.connect_address)) return null;
+    prepared.mdnsHost = parsed.mdns_host;
+    prepared.address = parsed.connect_address;
+  }
+  return prepared;
 }
 
 /** `host:port` as Chromium writes an origin in --origin-to-force-quic-on. */
@@ -65,18 +74,26 @@ function originForQuic(host, port) {
 
 /**
  * The [switch, value] pairs that turn on HTTP/3 to the local runtime, or []
- * when it should not be: opted out, TLS off, no CA yet, or a runtime that is
- * not on this machine's loopback (a remote sensor keeps going over TCP).
+ * when it should not be: opted out, TLS off, no key yet, or an unprepared
+ * non-loopback origin (a remote sensor keeps going over TCP).
  */
 function quicSwitches({ prepared, env }) {
   if (!prepared || !prepared.spki) return [];
   if (http3Disabled(env) || tlsDisabled(env)) return [];
-  if (!LOOPBACK_HOSTS.has(prepared.host)) return [];
-  const host = prepared.host === "localhost" ? "127.0.0.1" : prepared.host;
+  if (prepared.mdnsHost && (!validHostname(prepared.mdnsHost) || !isIP(prepared.address))) return [];
+  if (!prepared.mdnsHost && !LOOPBACK_HOSTS.has(prepared.host)) return [];
+  const host = prepared.mdnsHost || (prepared.host === "localhost" ? "127.0.0.1" : prepared.host);
   return [
     ["ignore-certificate-errors-spki-list", prepared.spki],
     ["origin-to-force-quic-on", originForQuic(host, prepared.port)],
   ];
+}
+
+/** Keep the discovered local service on its own interface, without requiring an OS mDNS daemon. */
+function resolverSwitches(prepared) {
+  if (!prepared || !validHostname(prepared.mdnsHost) || !isIP(prepared.address)) return [];
+  const address = prepared.address.includes(":") ? `[${prepared.address}]` : prepared.address;
+  return [["host-resolver-rules", `MAP ${prepared.mdnsHost} ${address}`]];
 }
 
 /**
@@ -90,4 +107,4 @@ function forcedOriginIsUnserved(forcedOrigin, ready) {
   return announced === forcedOrigin && ready.http3 === false;
 }
 
-module.exports = { forcedOriginIsUnserved, http3Disabled, originForQuic, prepareRuntime, quicSwitches };
+module.exports = { forcedOriginIsUnserved, http3Disabled, originForQuic, prepareRuntime, quicSwitches, resolverSwitches };

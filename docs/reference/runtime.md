@@ -6,6 +6,9 @@
 | --- | --- | --- |
 | `SNIFF4HOUND_HOST` | `127.0.0.1` | Host de escucha de la app. |
 | `SNIFF4HOUND_PORT` | `45678` | Override explicito del puerto HTTP principal; sin override, Sniff4Hound intenta `45678` primero. |
+| `SNIFF4HOUND_MDNS` | `1` | Anuncios y resolución DNS-SD con `wsbuilder[mdns]`. `0` utiliza URLs por IP. |
+| `SNIFF4HOUND_MDNS_HOST` | `sniff4hound-runtime-<id>.local` | Nombre estable por máquina para la API y el canal Electron/backend. Debe terminar en `.local`. |
+| `SNIFF4HOUND_MOBILE_HOST` | `sniff4hound-<id>.local` | Nombre del stream móvil, usado en el QR y en el certificado TLS. Debe terminar en `.local` cuando mDNS está activado. |
 | `SNIFF4HOUND_DB_PATH` | `Sniff4Hound.db` | Ruta de SQLite. |
 | `SNIFF4HOUND_RUNTIME_MODE` | `sniffer` | Motor inicial. |
 | `SNIFF4HOUND_MODE` | `sniffer` | Alias legado de `SNIFF4HOUND_RUNTIME_MODE`. |

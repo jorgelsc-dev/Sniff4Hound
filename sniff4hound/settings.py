@@ -5,6 +5,8 @@ import secrets
 from os import getenv
 from pathlib import Path
 
+from .mdns import default_hostname
+
 
 # The project was renamed from SniffHound to Sniff4Hound. Every setting is
 # read through _env(), so honouring the old variable names here is all it
@@ -55,10 +57,10 @@ TLS_CERT_DAYS = max(1, _as_int(_env("SNIFF4HOUND_TLS_CERT_DAYS", "1"), 1))
 # The runtime CA outlives the process (clients trust it once and keep that trust
 # across launches); only the server certificate it signs is renewed per launch.
 TLS_CA_DAYS = max(1, _as_int(_env("SNIFF4HOUND_TLS_CA_DAYS", "365"), 365))
-# The name the mobile stream's certificate also answers to. Phones reach the
-# stream by this name once something announces it on the local network; until
-# then the address is what they use, and the certificate covers both.
-MOBILE_HOST = str(_env("SNIFF4HOUND_MOBILE_HOST", "sniff4hound.local")).strip().lower()
+# Names are stable per machine and distinct for loopback RPC and the LAN stream.
+MDNS_ENABLED = _as_bool(_env("SNIFF4HOUND_MDNS", "1"), default=True)
+MDNS_HOST = str(_env("SNIFF4HOUND_MDNS_HOST", default_hostname("runtime"))).strip().lower()
+MOBILE_HOST = str(_env("SNIFF4HOUND_MOBILE_HOST", default_hostname())).strip().lower()
 # X-Forwarded-* are set by whoever speaks to us, so by default the same-origin
 # guard trusts only the real Host header. Turn this on solely when a reverse
 # proxy you control sits in front and rewrites those headers itself.

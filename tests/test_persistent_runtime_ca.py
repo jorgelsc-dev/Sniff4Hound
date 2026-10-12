@@ -188,10 +188,10 @@ class PersistentMobileCaTests(unittest.TestCase):
         verify = subprocess.run(["openssl", "verify", "-CAfile", str(second.ca_cert), str(second.server_cert)], capture_output=True, text=True)
         self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
 
-    def test_it_answers_to_the_address_and_to_sniff4hound_local(self):
+    def test_it_answers_to_the_address_and_to_the_published_mobile_name(self):
         names = self._names(self.tls.ensure_mobile_tls("192.0.2.10").server_cert)
         self.assertIn("IP Address:192.0.2.10", names)
-        self.assertIn("DNS:sniff4hound.local", names)
+        self.assertIn(f"DNS:{self.tls.MOBILE_HOST}", names)
 
     def test_the_name_can_be_changed_and_a_bad_one_is_ignored(self):
         os.environ["SNIFF4HOUND_MOBILE_HOST"] = "stream.lan"
@@ -312,10 +312,25 @@ class DesktopPrepareTests(unittest.TestCase):
             self.assertEqual(self.prepare.main(), 0)
         line = buffer.getvalue().strip()
         self.assertEqual(len(line.splitlines()), 1)
-        self.assertEqual(set(json.loads(line)), {"host", "port", "server_spki_sha256", "ca_created"})
+        self.assertEqual(set(json.loads(line)), {"host", "port", "server_spki_sha256", "ca_created", "mdns_host", "connect_address"})
+        self.assertEqual(json.loads(line)["connect_address"], "127.0.0.1")
+        self.assertTrue(json.loads(line)["mdns_host"].endswith(".local"))
 
 
 class DesktopReadyHttp3Tests(unittest.TestCase):
+    def test_a_published_runtime_uses_its_mdns_origin_in_the_ready_line(self):
+        from sniff4hound import manage
+
+        discovery = {"enabled": True, "hostname": "runtime-test.local", "addresses": ["127.0.0.1"], "port": 45678}
+        buffer = io.StringIO()
+        with patch("sniff4hound.auth.REQUIRE_AUTH", False), redirect_stdout(buffer):
+            manage._emit_desktop_ready("127.0.0.1", 45678, http3=True, discovery=discovery)
+        payload = json.loads(buffer.getvalue().split(manage.DESKTOP_READY_PREFIX, 1)[1])
+        self.assertEqual(payload["host"], "runtime-test.local")
+        self.assertEqual(payload["bind_host"], "127.0.0.1")
+        self.assertIn("://runtime-test.local:45678/", payload["url"])
+        self.assertEqual(payload["mdns"], discovery)
+
     def test_the_ready_line_says_whether_http3_is_listening(self):
         from sniff4hound import manage
 
