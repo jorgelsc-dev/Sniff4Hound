@@ -9,7 +9,7 @@
   "author": "JorgelSC Dev",
   "license": "MIT",
   "scripts": {
-    "dev": "electron .",
+    "dev": "env -u ELECTRON_RUN_AS_NODE electron .",
     "pack": "electron-builder --linux dir",
     "dist": "electron-builder --linux AppImage deb"
   },
