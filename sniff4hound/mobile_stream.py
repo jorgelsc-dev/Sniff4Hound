@@ -58,6 +58,9 @@ class InterfaceAddress:
     address: str
     label: str
     loopback: bool = False
+    up: bool = True
+    virtual: bool = False
+    default_route: bool = False
 
 
 @dataclass
@@ -102,6 +105,7 @@ class MobileServerState:
     port: int = MOBILE_STREAM_DEFAULT_PORT
     running: bool = False
     url_base: str = ""
+    mdns_url_base: str = ""
     ca_pem: str = ""
     #: SHA-256 fingerprint of ca_pem, as the phone shows it, so the operator can
     #: compare the two before trusting the certificate.
@@ -110,8 +114,19 @@ class MobileServerState:
     mdns: dict[str, Any] = field(default_factory=dict)
 
 
+def _default_route_interface() -> str:
+    try:
+        routes = Path("/proc/net/route").read_text().splitlines()[1:]
+        defaults = [row.split() for row in routes if len(row.split()) > 7
+                    and row.split()[1] == "00000000" and int(row.split()[3], 16) & 1]
+        return min(defaults, key=lambda row: int(row[6]))[0] if defaults else ""
+    except (OSError, ValueError):
+        return ""
+
+
 def discover_interfaces() -> list[InterfaceAddress]:
     rows: list[InterfaceAddress] = []
+    default_route = _default_route_interface()
     try:
         names = [name for _, name in socket.if_nameindex()]
     except OSError:
@@ -128,15 +143,23 @@ def discover_interfaces() -> list[InterfaceAddress]:
             except OSError:
                 continue
             loopback = address.startswith("127.")
+            try:
+                flags = fcntl.ioctl(probe.fileno(), 0x8913, struct.pack("256s", name[:15].encode("utf-8")))
+                up = bool(struct.unpack_from("H", flags, 16)[0] & 1)
+            except OSError:
+                up = False
             rows.append(
                 InterfaceAddress(
                     name=name,
                     address=address,
                     label=f"{name} - {address}",
                     loopback=loopback,
+                    up=up,
+                    virtual=name.startswith(("docker", "br-", "veth", "virbr")),
+                    default_route=name == default_route,
                 )
             )
-    rows.sort(key=lambda item: (item.loopback, item.name, item.address))
+    rows.sort(key=lambda item: (not item.up, item.loopback, not item.default_route, item.virtual, item.name, item.address))
     return rows
 
 
@@ -378,16 +401,24 @@ class MobileStreamService:
                     h3_server.stop()
                 app.close()
                 raise ValueError(f"the mobile stream could not listen on https://{address}:{port}")
+        published = None
         try:
             published = mdns.publish("stream", address, port, http3=h3_server is not None)
         except Exception as exc:
-            tcp_server.stop()
-            if h3_server is not None:
-                h3_server.stop()
-            app.close()
-            raise ValueError(f"could not publish the mobile stream with mDNS: {exc}") from exc
-        discovery = published.metadata() if published else {}
-        hostname = discovery.get("hostname", address)
+            # The listener is reachable by its selected LAN address even when
+            # the OS/browser cannot publish or resolve .local names. Keep mDNS
+            # as optional discovery instead of making it a single point of
+            # failure for the QR.
+            discovery = {
+                "enabled": False,
+                "hostname": "",
+                "port": port,
+                "addresses": [address],
+                "error": str(exc),
+            }
+        else:
+            discovery = published.metadata() if published else {"enabled": False, "addresses": [address], "port": port}
+        mdns_hostname = str(discovery.get("hostname") or "").strip()
         ca_pem = public_mobile_ca_pem()
         with self._lock:
             self._app = app
@@ -400,7 +431,11 @@ class MobileStreamService:
                 address=address,
                 port=port,
                 running=True,
-                url_base=f"https://{hostname}:{port}",
+                # Numeric LAN addresses work in browsers that lack an mDNS NSS
+                # module (the common Firefox "Server Not Found" case). The
+                # certificate already contains this exact IP.
+                url_base=f"https://{address}:{port}",
+                mdns_url_base=f"https://{mdns_hostname}:{port}" if mdns_hostname else "",
                 ca_pem=ca_pem,
                 ca_sha256=ca_fingerprint_sha256(ca_pem),
                 mdns=discovery,
@@ -463,7 +498,7 @@ class MobileStreamService:
             )
             self._pairings[pairing_id] = pairing
             view = self._pairing_view(pairing)
-            view["url"] = f"{self._state.url_base}/mobile/pair/{pairing_id}"
+            self._add_pairing_urls(view, pairing)
             view["server"] = state
             return view
 
@@ -474,7 +509,7 @@ class MobileStreamService:
             if not pairing:
                 return None
             view = self._pairing_view(pairing)
-            view["url"] = f"{self._state.url_base}/mobile/pair/{pairing.id}"
+            self._add_pairing_urls(view, pairing)
             return view
 
     def open_pairing(self, pairing_id: str, *, client: str, user_agent: str = "") -> Pairing | None:
@@ -533,7 +568,7 @@ class MobileStreamService:
                 pairing.code = f"{secrets.randbelow(1_000_000):06d}"
                 pairing.expires_at = now + PAIRING_TTL_SECONDS
             view = self._pairing_view(pairing)
-            view["url"] = f"{self._state.url_base}/mobile/pair/{pairing.id}"
+            self._add_pairing_urls(view, pairing)
             return view
 
     def verify_pairing(self, pairing_id: str, code: str, *, client: str, user_agent: str) -> str | None:
@@ -814,6 +849,11 @@ class MobileStreamService:
             "seen_at": pairing.seen_at_utc,
             "expires_in": max(0, int(pairing.expires_at - now)),
         }
+
+    def _add_pairing_urls(self, view: dict[str, Any], pairing: Pairing) -> None:
+        path = f"/mobile/pair/{pairing.id}"
+        view["url"] = f"{self._state.url_base}{path}"
+        view["mdns_url"] = f"{self._state.mdns_url_base}{path}" if self._state.mdns_url_base else ""
 
     def _session_view(self, session: MobileSession) -> dict[str, Any]:
         return {

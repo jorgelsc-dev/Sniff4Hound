@@ -3,47 +3,55 @@
 Linux desktop shell for Sniff4Hound. It runs the Vue console inside Electron
 and starts the Python backend as a child process.
 
-The whole app runs as root, in one process tree: Sniff4Hound needs root for raw
-capture and low-port honeypot listeners, and the shell is part of that tree. An
-unprivileged launch (`npm run dev`, the desktop entry, the AppImage) therefore
-opens no window of its own: it relaunches itself through `sudo` and waits for
-that root copy, which starts the backend. The backend sees it is already root
-and does not ask a second time, and it runs the web server, the sniffer and the
-honeypot in a single process. `sudo` prompts in the terminal when there is one
-(so a fingerprint reader works) and otherwise through a graphical askpass
-(`zenity`, or `ssh-askpass`); with no usable `sudo` it falls back to `pkexec`.
-Cancelling the prompt closes the app. The command is built in `lib/elevation.js`.
+`npm run dev` opens Electron in the operator's graphical session, then
+immediately requests root authorization through the desktop's **native Polkit
+prompt**. The app uses `pkexec --disable-internal-agent`, so GNOME, KDE or the
+installed desktop authentication agent owns the password/fingerprint UI. There
+is no custom approval/password dialog or terminal authentication fallback.
+Install `pkexec` (Polkit) and have a desktop authentication agent running.
 
-What carries over to the root copy: the display (`DISPLAY`, `XAUTHORITY`,
-`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`), the operator's own `HOME` (so the same
-configuration and database are used, not a fresh set under `/root`), `PATH`,
-`VIRTUAL_ENV`, `PYTHONPATH` and every `SNIFF4HOUND_*` variable except the IPC
-token and the JWT secret. Files the root copy writes into the configuration
-directory are handed back to the operator when it exits.
+Electron and its renderer retain the operator's uid, display credentials and
+session bus. Only the Python runtime (web server, database, sniffer and honeypot)
+runs as root. Capture engines start paused. This avoids blank root Chromium
+windows and display/library permission failures in private home and Wayland
+sessions. `lib/elevation.js` builds the native authorization command; passwords
+never enter the renderer, application IPC or logs.
 
-For X11, the launcher also forwards the operator's readable `~/.Xauthority`
-explicitly when `XAUTHORITY` is unset; relative authority paths are resolved
-before elevation. When `dbus-daemon` is installed, the elevated app starts
-its own temporary session bus rather than connecting as root to the operator's
-bus, and stops it on normal exit or a termination signal. Terminal stderr uses
-CRLF while attached to a tty so sudo's password/fingerprint prompt cannot leave
-the logs staircasing.
+Cancelling the native prompt returns to the connection screen, where the
+operator can retry the local sensor or connect remotely. A saved remote
+connection skips the automatic root request. For automation,
+`SNIFF4HOUND_DESKTOP_ELEVATE=0` skips that initial request; explicitly starting a
+local sensor still requires root. It no longer controls Electron's uid.
 
-On Linux, the elevated shell and the waiting launcher use
-[software rendering](https://www.electronjs.org/docs/latest/api/app#appdisablehardwareacceleration).
-This avoids GPU initialization retries and `libGLESv2.so: Permission denied`
-errors when the application lives inside a private home directory. The
-unprivileged shell (`SNIFF4HOUND_DESKTOP_ELEVATE=0`) keeps hardware acceleration.
+`python -m sniff4hound.desktop_runtime` runs the server with a lifetime pipe
+from Electron. Closing the window, disconnecting the local sensor or crashing
+the shell closes that pipe and makes the root runtime terminate itself. This
+also works after Polkit switches uid, when Electron cannot signal root directly.
 
-Trade-off, chosen deliberately: the renderer now runs as root too, and Chromium
-runs without its sandbox (it refuses to start as root otherwise, and the shell
-already ran without it, since the `.deb` cannot ship a setuid helper). The window
-only loads the app bundled on disk and the backend it started, never arbitrary
-pages; the opt-in debug port (`SNIFF4HOUND_DESKTOP_DEBUG_PORT`) is a different
-matter - anything local that can reach it controls a root window - so leave it
-off outside a session where you want it. `SNIFF4HOUND_DESKTOP_ELEVATE=0` keeps
-the shell unprivileged, with the backend asking for privileges on its own as it
-did before.
+The privileged runtime receives the operator's data location, Python environment
+and `SNIFF4HOUND_*` settings, except the IPC token and JWT secret, which never
+travel on the command line. The runtime hands its database and desktop security
+code back to the operator. Electron retains its normal graphics acceleration.
+A manually root-launched shell still uses software rendering as a fallback;
+normal launches should run without `sudo`.
+
+The renderer and preload use Chromium's sandbox, context isolation and no Node
+integration. Both the chooser and console enforce `script-src 'self'`; console
+connections are restricted to its selected runtime origin and WebSocket origin.
+Unused browser permissions are denied. On Linux the normal operator launch uses
+the platform sandbox; `SNIFF4HOUND_DESKTOP_NO_SANDBOX=1` is an explicit compatibility
+opt-out for systems without working Chromium sandbox support. Manually running
+Electron as root also requires that fallback. The debug port
+(`SNIFF4HOUND_DESKTOP_DEBUG_PORT`) remains opt-in.
+
+For headless GNOME/Wayland checks, use an isolated data/config directory and force
+X11 as well as Xvfb: `xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11
+SNIFF4HOUND_DESKTOP_ELEVATE=0 npm run dev -- --ozone-platform=x11`.
+
+Authenticated desktop consoles may control a remote sensor without setting
+`SNIFF4HOUND_DESKTOP` on the server. Foreign HTTP(S) origins remain rejected.
+The disconnected banner offers **Reconectar / Cambiar sensor**. Pipeline values
+remain unknown until a response arrives and become stale on an error or outage.
 
 mDNS: `wsbuilder[tls,mdns]` publishes a `_sniff4hound._tcp.local.` service for
 the runtime on its bound interface and a separate service for the mobile stream
@@ -60,9 +68,10 @@ interface, so Electron needs no system mDNS daemon. Before connecting, the shell
 uses wsbuilder to resolve the exact service its child announced and checks its
 name, role, address and port against the prepared endpoint. API requests and the
 realtime stream then use the `.local` origin, with the existing TLS pinning and
-HTTP/3 (QUIC on the same port number, over UDP). The mobile QR and links also use
-the stream's `.local` name; the phone's OS must support mDNS and the selected
-network must allow multicast. `SNIFF4HOUND_MDNS=0` explicitly keeps IP origins.
+HTTP/3 (QUIC on the same port number, over UDP). The mobile QR uses the selected
+LAN IP so it also works in browsers without `.local` resolution; the separately
+shown mDNS URL remains available for systems that support it. Both names are
+present in the stream certificate.
 
 Chromium is told to trust the runtime's server key and use QUIC for that one
 origin (`lib/quic-pin.js`). The key and the
@@ -91,6 +100,14 @@ The connection screen uses responsive local and remote sensor cards, keyboard-vi
 focus states, and a live connection status indicator. On narrow windows, the cards
 stack vertically and the screen scrolls to keep all controls accessible.
 
+The power button starts a visible three-second countdown without confirmation.
+Cleanup begins immediately: the UI closes realtime feeds and stops polling and
+refresh timers, while Electron closes the local runtime's lifetime pipe and its
+HTTP streams. The runtime requests graceful SIGINT shutdown, stops capture
+engines and jobs, joins snapshot delivery, and closes its stores. Electron keeps
+the countdown visible even if the runtime exits early, then closes at three
+seconds. Closing a remote console leaves the remote sensor running.
+
 The console uses shared surface, spacing, corner and focus styles for tables,
 charts, menus and forms. The capture pipeline starts as a compact status strip
 so telemetry is immediately visible. Expanding or collapsing it saves the
@@ -99,6 +116,18 @@ capture stopped; green means a capture engine is running, and red means disconne
 Dashboard metrics use six, three, two or one column as the window narrows. Chart
 bars move beneath their labels when the card itself is narrow. Keyboard focus and
 field validation remain visible, and motion follows the system's reduced-motion preference.
+
+ARP and DNS have separate sidebar entries and command-palette destinations.
+ARP (`/#/arp`) shows IP/MAC bindings, devices and recorded address changes.
+Every global MAC is matched offline against the bundled IEEE MA-L, MA-M, MA-S
+and legacy IAB public assignments; the manufacturer and exact assignment class
+appear in bindings, devices and changes, and manufacturer names are searchable.
+Locally administered or randomized MAC addresses are identified explicitly.
+DNS (`/#/dns`) shows domain and record-type charts, answers, errors, clients and
+resolvers. Both have search, time filters, live refresh and table export; their
+"Ver paquetes" button opens the corresponding Protocols traffic view. Settings
+continues to manage their history retention and recording. The previous
+`/#/history/arp` and `/#/history/dns` links redirect to these views.
 
 ## Development
 

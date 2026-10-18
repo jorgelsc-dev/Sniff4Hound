@@ -43,7 +43,7 @@ include-package-data = true
 packages = ["sniff4hound", "sniff4hound.data"]
 
 [tool.setuptools.package-data]
-"sniff4hound.data" = ["*.json"]
+"sniff4hound.data" = ["*.json", "*.dat"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

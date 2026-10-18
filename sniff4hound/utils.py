@@ -346,3 +346,19 @@ def is_probably_ipv6(text: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def service_endpoint(packet: dict) -> tuple[str, int]:
+    """Attribute transport evidence to the server, never an ephemeral client port."""
+    src = safe_int(packet.get("src_port"), 0)
+    dst = safe_int(packet.get("dst_port"), 0)
+    transport = str(packet.get("transport") or packet.get("proto") or "").lower()
+    if transport not in {"tcp", "udp", "sctp"} or not src or not dst:
+        return "", 0
+    flags = str(packet.get("tcp_flags") or "").upper()
+    if transport == "tcp" and "SYN" in flags:
+        server_src = "ACK" in flags
+    else:
+        known = TCP_PORT_PROTOCOLS if transport == "tcp" else UDP_PORT_PROTOCOLS
+        server_src = src in known if (src in known) != (dst in known) else src < dst
+    return (str(packet.get("src_ip") or ""), src) if server_src else (str(packet.get("dst_ip") or ""), dst)

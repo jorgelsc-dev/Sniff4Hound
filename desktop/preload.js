@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("sniff4houndDesktop", {
   minimize: () => ipcRenderer.invoke("desktop-window:minimize"),
   maximize: () => ipcRenderer.invoke("desktop-window:maximize"),
   close: () => ipcRenderer.invoke("desktop-window:close"),
+  shutdown: () => ipcRenderer.invoke("desktop-window:shutdown"),
   openExternal: (url) => ipcRenderer.invoke("desktop-shell:open-external", String(url || "")),
   // HTTP through the main process, which speaks HTTP/3 to the pinned runtime.
   httpRequest: (payload) => ipcRenderer.invoke("desktop-http:request", payload || {}),

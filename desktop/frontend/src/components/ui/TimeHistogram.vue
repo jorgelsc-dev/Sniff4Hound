@@ -159,13 +159,13 @@ export default {
   methods: {
     formatTime(date) {
       try {
-        return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        return date.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
       } catch {
         return "";
       }
     },
     formatCount(value) {
-      return Number(value || 0).toLocaleString();
+      return Number(value || 0).toLocaleString("es-ES");
     },
   },
 };

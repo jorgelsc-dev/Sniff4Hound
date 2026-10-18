@@ -16,7 +16,8 @@
       "tests.test_monitor_false_positives",
       "tests.test_packet_pipeline",
       "tests.test_resource_guard",
-      "tests.test_history_api"
+      "tests.test_history_api",
+      "tests.test_runtime_qa"
     ],
     [
       "tests.test_monitors.TestLoadBuiltinMonitors",
@@ -66,6 +67,8 @@
       "tests.test_realtime_sse",
       "tests.test_persistent_runtime_ca",
       "tests.test_network_history",
+      "tests.test_domain_names",
+      "tests.test_mac_vendor",
       "tests.test_documented_routes"
     ]
   ]

@@ -170,7 +170,7 @@ def main() -> int:
     store = SniffStore(DB_PATH)
     # Logs first: everything below should be recorded from the start. The
     # files go back to the operator so the web process can keep appending.
-    owner = (owner_uid, owner_uid) if owner_uid is not None and os.geteuid() == 0 else None
+    owner = log_setup.invoking_owner() or ((owner_uid, owner_uid) if owner_uid is not None and os.geteuid() == 0 else None)
     log_setup.configure("capture", log_setup.default_log_dir(), store.get_log_config(), owner=owner)
     log_setup.start_reload_loop(store.get_log_config)
     server = IpcServer(socket_path, token)
@@ -201,6 +201,8 @@ def main() -> int:
             "set_sniffer_interfaces": runtime.set_sniffer_interfaces,
             "set_sniffer_interface": runtime.set_sniffer_interface,
             "list_honeypot_listeners": runtime.list_honeypot_listeners,
+            "honeypot_listener_page": runtime.honeypot_listener_page,
+            "set_dashboard_port": runtime.set_dashboard_port,
             "create_honeypot_listener": runtime.create_honeypot_listener,
             "set_honeypot_listener_enabled": runtime.set_honeypot_listener_enabled,
             "snapshot": runtime.snapshot,

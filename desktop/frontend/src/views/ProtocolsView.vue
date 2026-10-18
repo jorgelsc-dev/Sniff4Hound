@@ -1,9 +1,9 @@
 <template>
   <div class="protocols-view">
     <ViewHeader
-      overline="Protocol Atlas"
-      title="Protocols"
-      description="Pick a supported family and review tables, stats, and charts tailored to that traffic type."
+      overline="Atlas de protocolos"
+      title="Protocolos"
+      description="Elige una familia de protocolos y revisa sus tablas, estadísticas y gráficas."
       :refresh-loading="loading"
       :show-time-range="true"
       @refresh="load"
@@ -12,7 +12,7 @@
     <section class="protocol-hero" :style="heroStyle">
       <v-row dense class="align-center">
         <v-col cols="12" lg="8">
-          <div class="text-overline">Selected slice</div>
+          <div class="text-overline">Protocolo seleccionado</div>
           <h2 class="protocol-hero__title">
             {{ selectedProfile.label }}
           </h2>
@@ -21,42 +21,45 @@
           </p>
 
           <div class="protocol-hero__chips">
+            <v-btn v-if="selectedProtocol === 'arp' || selectedProtocol === 'dns'" :to="`/${selectedProtocol}`" variant="outlined" size="small" :prepend-icon="selectedProtocol === 'arp' ? 'mdi-lan-connect' : 'mdi-dns-outline'">
+              Abrir {{ selectedProtocol.toUpperCase() }}
+            </v-btn>
             <v-chip size="small" color="primary" variant="tonal">
-              Rows: {{ formatNumber(packetRows.length) }}
+              Filas: {{ formatNumber(packetRows.length) }}
             </v-chip>
             <v-chip size="small" color="success" variant="tonal">
               Banners: {{ formatNumber(bannerRows.length) }}
             </v-chip>
             <v-chip size="small" color="info" variant="tonal">
-              Tags: {{ formatNumber(tagRows.length) }}
+              Etiquetas: {{ formatNumber(tagRows.length) }}
             </v-chip>
             <v-chip size="small" variant="outlined">
-              Signal: {{ selectedProfile.signalLabel }}
+              Señal: {{ selectedProfile.signalLabel }}
             </v-chip>
           </div>
         </v-col>
 
         <v-col cols="12" lg="4">
           <div class="protocol-hero__panel">
-            <div class="protocol-hero__panel-kicker">Current focus</div>
+            <div class="protocol-hero__panel-kicker">Vista actual</div>
             <div class="protocol-hero__panel-title">
               {{ selectedProfile.focusTitle }}
             </div>
             <div class="protocol-hero__stats">
               <div class="protocol-hero__stat">
-                <span>Unique endpoints</span>
+                <span>Endpoints únicos</span>
                 <strong>{{ formatNumber(uniqueEndpointCount) }}</strong>
               </div>
               <div class="protocol-hero__stat">
-                <span>Average frame</span>
+                <span>Trama media</span>
                 <strong>{{ formatHumanBytes(averageFrameSize) }}</strong>
               </div>
               <div class="protocol-hero__stat">
-                <span>Last updated</span>
-                <strong>{{ lastUpdated || "pending" }}</strong>
+                <span>Última actualización</span>
+                <strong>{{ lastUpdated || "pendiente" }}</strong>
               </div>
               <div class="protocol-hero__stat">
-                <span>Supported protocols</span>
+                <span>Protocolos compatibles</span>
                 <strong>{{ formatNumber(protocolCards.length) }}</strong>
               </div>
             </div>
@@ -67,10 +70,10 @@
 
     <div class="d-flex align-center justify-space-between flex-wrap ga-3 mt-6 mb-2">
       <div>
-        <div class="text-subtitle-1">Protocol stack</div>
+        <div class="text-subtitle-1">Capas de protocolos</div>
         <div class="text-caption text-medium-emphasis">
-          Grouped by the layer each protocol lives at. By default only protocols with
-          traffic are shown.
+          Agrupados por la capa de cada protocolo. Por defecto se muestran los protocolos con
+          tráfico observado.
         </div>
       </div>
       <v-switch
@@ -79,7 +82,7 @@
         density="compact"
         hide-details
         inset
-        :label="`Show all ${formatNumber(protocolCards.length)} supported`"
+        :label="`Mostrar los ${formatNumber(protocolCards.length)} protocolos disponibles`"
       />
     </div>
 
@@ -88,7 +91,7 @@
         <v-chip :color="layer.color" size="small" variant="flat">{{ layer.label }}</v-chip>
         <span class="text-caption text-medium-emphasis">{{ layer.description }}</span>
         <span class="protocol-layer__count text-caption text-medium-emphasis">
-          {{ formatNumber(layer.seen) }} seen · {{ formatNumber(layer.total) }} frames
+          {{ formatNumber(layer.seen) }} observados · {{ formatNumber(layer.total) }} tramas
         </span>
       </div>
       <div class="protocol-rail">
@@ -168,7 +171,7 @@
           </div>
 
           <div v-else class="chart-empty text-medium-emphasis mt-4">
-            No data available for this slice.
+            No hay datos disponibles para este tráfico.
           </div>
         </v-card>
       </v-col>
@@ -179,7 +182,7 @@
     </v-alert>
 
     <v-alert v-if="!loading && !packetRows.length" type="info" variant="tonal" class="mt-6">
-      No {{ selectedProfile.label }} traffic recorded yet.
+      Todavía no hay tráfico {{ selectedProfile.label }} registrado.
     </v-alert>
 
     <v-row class="mt-4" dense>
@@ -191,7 +194,7 @@
           :rows="packetRows"
           :columns="packetColumns"
           :search-enabled="true"
-          search-label="Search packets"
+          search-label="Buscar paquetes"
           :search-placeholder="packetSearchPlaceholder"
           :search-fields="packetSearchFields"
           :filter-definitions="packetFilterDefinitions"
@@ -269,7 +272,7 @@
           :rows="bannerRows"
           :columns="bannerColumns"
           :search-enabled="true"
-          search-label="Search banners"
+          search-label="Buscar banners"
           search-placeholder="IP, port, response, summary..."
           :search-fields="bannerSearchFields"
           :filter-definitions="bannerFilterDefinitions"
@@ -328,7 +331,7 @@
           :rows="tagRows"
           :columns="tagColumns"
           :search-enabled="true"
-          search-label="Search tags"
+          search-label="Buscar etiquetas"
           search-placeholder="Key, value, IP, port..."
           :search-fields="tagSearchFields"
           :filter-definitions="tagFilterDefinitions"
@@ -375,6 +378,7 @@
 
 <script>
 import store from "../state/appStore";
+import { protocolText } from "../utils/protocolText";
 import {
   ALL_PROTOCOLS,
   LAYERS,
@@ -413,321 +417,321 @@ const PROTOCOL_PROFILES = {
   tcp: {
     label: "TCP",
     description: "Inspect connection-oriented flows, flags, ports, and banners.",
-    focusTitle: "Top ports",
+    focusTitle: "Puertos destacados",
     signalLabel: "Flags",
     icon: "mdi-ethernet",
     color: "success",
     accent: "rgba(53, 230, 177, 0.92)",
     subtitle: "Connection-oriented transport",
-    tableHint: "Connection rows with response state and payload markers.",
+    tableHint: "Conexiones con estado de respuesta e indicadores de contenido.",
   },
   udp: {
     label: "UDP",
     description: "Review datagrams, observed ports, and logged responses.",
-    focusTitle: "Top ports",
-    signalLabel: "Ports",
+    focusTitle: "Puertos destacados",
+    signalLabel: "Puertos",
     icon: "mdi-lan",
     color: "info",
     accent: "rgba(74, 136, 255, 0.92)",
     subtitle: "Datagram transport",
-    tableHint: "Datagram rows with lightweight state and payload hints.",
+    tableHint: "Datagramas con estado observado e indicadores de contenido.",
   },
   sctp: {
     label: "SCTP",
     description: "Group transport associations, ports, and related artifacts.",
-    focusTitle: "Top ports",
-    signalLabel: "Ports",
+    focusTitle: "Puertos destacados",
+    signalLabel: "Puertos",
     icon: "mdi-lan-connect",
     color: "warning",
     accent: "rgba(243, 177, 75, 0.92)",
     subtitle: "Association transport",
-    tableHint: "Multi-stream transport rows with endpoint visibility.",
+    tableHint: "Transporte de múltiples flujos con sus endpoints.",
   },
   icmp: {
     label: "ICMP",
     description: "Analyze ICMP types and codes for echo, error, and reachability.",
-    focusTitle: "Top ICMP types",
-    signalLabel: "Type / Code",
+    focusTitle: "Tipos ICMP destacados",
+    signalLabel: "Tipo / código",
     icon: "mdi-pulse",
     color: "warning",
     accent: "rgba(243, 177, 75, 0.92)",
     subtitle: "Network control",
-    tableHint: "Control packets with type, code, and reply state.",
+    tableHint: "Paquetes de control con tipo, código y estado de respuesta.",
   },
   icmpv6: {
     label: "ICMPv6",
     description: "Study IPv6 control messages and their types and codes.",
-    focusTitle: "Top ICMP types",
-    signalLabel: "Type / Code",
+    focusTitle: "Tipos ICMP destacados",
+    signalLabel: "Tipo / código",
     icon: "mdi-pulse",
     color: "info",
     accent: "rgba(71, 176, 255, 0.92)",
     subtitle: "IPv6 control",
-    tableHint: "IPv6 control traffic with hop visibility and type/code pairs.",
+    tableHint: "Control IPv6 con saltos y pares de tipo y código.",
   },
   arp: {
     label: "ARP",
     description: "Check ARP requests and replies with opcode, MAC, and IP.",
-    focusTitle: "Top opcodes",
+    focusTitle: "Operaciones destacadas",
     signalLabel: "Opcode",
     icon: "mdi-transit-connection-variant",
     color: "secondary",
     accent: "rgba(255, 159, 67, 0.92)",
     subtitle: "Link-layer resolution",
-    tableHint: "Address resolution packets with ethernet and IPv4 fields.",
+    tableHint: "Resolución de direcciones con campos Ethernet e IPv4.",
   },
   ipv6: {
     label: "IPv6",
     description: "Look at IPv6 headers, hop limits, and visible routes.",
-    focusTitle: "Hop distribution",
-    signalLabel: "Hop limit",
+    focusTitle: "Distribución de saltos",
+    signalLabel: "Límite de saltos",
     icon: "mdi-ip-network",
     color: "primary",
     accent: "rgba(52, 230, 255, 0.92)",
     subtitle: "Network layer",
-    tableHint: "Network-layer frames with hop limit and version metadata.",
+    tableHint: "Tramas de red con límite de saltos y versión.",
   },
   unknown: {
     label: "Unknown",
     description: "Group traffic without a clear classification using generic metrics and columns.",
-    focusTitle: "Top interfaces",
-    signalLabel: "Generic",
+    focusTitle: "Interfaces destacadas",
+    signalLabel: "Genérica",
     icon: "mdi-help-circle-outline",
     color: "secondary",
     accent: "rgba(151, 177, 207, 0.86)",
     subtitle: "Unclassified traffic",
-    tableHint: "Generic packets that still expose IP, interface, and summary data.",
+    tableHint: "Paquetes genéricos con IP, interfaz y resumen.",
   },
   igmp: {
     label: "IGMP",
     description: "Track multicast group membership queries, reports, and leaves.",
-    focusTitle: "Top groups",
+    focusTitle: "Grupos destacados",
     signalLabel: "Groups",
     icon: "mdi-account-group-outline",
     color: "info",
     accent: "rgba(74, 136, 255, 0.92)",
     subtitle: "Multicast membership",
-    tableHint: "Membership reports with group address and source.",
+    tableHint: "Informes de pertenencia con dirección de grupo y origen.",
   },
   mdns: {
     label: "mDNS",
     description: "Follow Bonjour service announcements and the hosts behind them.",
-    focusTitle: "Top services",
+    focusTitle: "Servicios destacados",
     signalLabel: "Services",
     icon: "mdi-apple-finder",
     color: "info",
     accent: "rgba(122, 162, 247, 0.92)",
     subtitle: "Multicast service discovery",
-    tableHint: "Advertised service names and the hosts announcing them.",
+    tableHint: "Nombres de servicios anunciados y sus hosts.",
   },
   llmnr: {
     label: "LLMNR",
     description: "Watch link-local name resolution, the protocol Responder abuses.",
-    focusTitle: "Top names",
+    focusTitle: "Nombres destacados",
     signalLabel: "Names",
     icon: "mdi-dns-outline",
     color: "warning",
     accent: "rgba(255, 184, 76, 0.92)",
     subtitle: "Link-local name resolution",
-    tableHint: "Requested names and the responders that answered.",
+    tableHint: "Nombres solicitados y equipos que respondieron.",
   },
   nbns: {
     label: "NetBIOS",
     description: "Inspect legacy NetBIOS name registration and lookup traffic.",
-    focusTitle: "Top names",
+    focusTitle: "Nombres destacados",
     signalLabel: "Names",
     icon: "mdi-microsoft-windows",
     color: "warning",
     accent: "rgba(255, 184, 76, 0.92)",
     subtitle: "Legacy Windows naming",
-    tableHint: "NetBIOS names, node types, and registrations.",
+    tableHint: "Nombres NetBIOS, tipos de nodo y registros.",
   },
   dhcp: {
     label: "DHCP",
     description: "Follow address leases, and spot servers that should not be there.",
-    focusTitle: "Top servers",
+    focusTitle: "Servidores destacados",
     signalLabel: "Message",
     icon: "mdi-ip-network-outline",
     color: "info",
     accent: "rgba(74, 136, 255, 0.92)",
     subtitle: "Address assignment",
-    tableHint: "Discover/offer/request/ack exchanges per client.",
+    tableHint: "Intercambios DISCOVER/OFFER/REQUEST/ACK por cliente.",
   },
   gre: {
     label: "GRE",
     description: "Examine encapsulated tunnels crossing segment boundaries.",
-    focusTitle: "Top endpoints",
+    focusTitle: "Endpoints destacados",
     signalLabel: "Tunnel",
     icon: "mdi-tunnel-outline",
     color: "warning",
     accent: "rgba(255, 184, 76, 0.92)",
     subtitle: "Tunnelled traffic",
-    tableHint: "Tunnel endpoints and the protocol carried inside.",
+    tableHint: "Endpoints del túnel y protocolo encapsulado.",
   },
   esp: {
     label: "IPsec ESP",
     description: "Account for encrypted IPsec payloads by SPI and peer.",
-    focusTitle: "Top peers",
+    focusTitle: "Pares destacados",
     signalLabel: "SPI",
     icon: "mdi-lock-outline",
     color: "success",
     accent: "rgba(53, 230, 177, 0.92)",
     subtitle: "Encrypted tunnel",
-    tableHint: "Security parameter index and sequence per peer.",
+    tableHint: "Índice de parámetros de seguridad y secuencia por par.",
   },
   ah: {
     label: "IPsec AH",
     description: "Account for integrity-protected IPsec traffic.",
-    focusTitle: "Top peers",
+    focusTitle: "Pares destacados",
     signalLabel: "SPI",
     icon: "mdi-shield-check-outline",
     color: "success",
     accent: "rgba(53, 230, 177, 0.92)",
     subtitle: "Authenticated tunnel",
-    tableHint: "Security parameter index and sequence per peer.",
+    tableHint: "Índice de parámetros de seguridad y secuencia por par.",
   },
   stp: {
     label: "STP",
     description: "Review spanning-tree BPDUs and watch for topology takeovers.",
-    focusTitle: "Top bridges",
+    focusTitle: "Puentes destacados",
     signalLabel: "BPDU",
     icon: "mdi-lan-pending",
     color: "secondary",
     accent: "rgba(151, 177, 207, 0.86)",
     subtitle: "Layer 2 topology",
-    tableHint: "Bridge identifiers, priorities, and port roles.",
+    tableHint: "Identificadores de puentes, prioridades y roles de puertos.",
   },
   llc: {
     label: "LLC",
     description: "Decode IEEE 802.2 frames by DSAP/SSAP and control field.",
-    focusTitle: "Top SAPs",
+    focusTitle: "SAP destacados",
     signalLabel: "DSAP",
     icon: "mdi-layers-outline",
     color: "secondary",
     accent: "rgba(151, 177, 207, 0.86)",
     subtitle: "IEEE 802.2 encapsulation",
-    tableHint: "Service access points and the protocol they carry.",
+    tableHint: "Puntos de acceso al servicio y protocolo transportado.",
   },
   "llc-snap": {
     label: "LLC/SNAP",
     description: "Decode SNAP-encapsulated frames and the protocol inside.",
-    focusTitle: "Top protocols",
+    focusTitle: "Protocolos destacados",
     signalLabel: "OUI",
     icon: "mdi-layers-triple-outline",
     color: "secondary",
     accent: "rgba(151, 177, 207, 0.86)",
     subtitle: "SNAP encapsulation",
-    tableHint: "Organisation identifier and encapsulated EtherType.",
+    tableHint: "Identificador de organización y EtherType encapsulado.",
   },
   rarp: {
     label: "RARP",
     description: "Spot reverse ARP, obsolete since BOOTP and rare in the wild.",
-    focusTitle: "Top hosts",
+    focusTitle: "Hosts destacados",
     signalLabel: "Opcode",
     icon: "mdi-swap-horizontal",
     color: "warning",
     accent: "rgba(255, 184, 76, 0.92)",
     subtitle: "Reverse address resolution",
-    tableHint: "Requests, replies, and the hardware addresses involved.",
+    tableHint: "Peticiones, respuestas y direcciones físicas implicadas.",
   },
   modbus: {
     label: "Modbus",
     description: "Inspect industrial reads and writes against PLC registers.",
-    focusTitle: "Top units",
-    signalLabel: "Function",
+    focusTitle: "Unidades destacadas",
+    signalLabel: "Función",
     icon: "mdi-factory",
     color: "error",
     accent: "rgba(255, 107, 129, 0.92)",
     subtitle: "Industrial control",
-    tableHint: "Function codes, unit identifiers, and register ranges.",
+    tableHint: "Códigos de función, identificadores de unidad y rangos de registros.",
   },
   dnp3: {
     label: "DNP3",
     description: "Inspect SCADA outstation polling, controls, and unsolicited reports.",
-    focusTitle: "Top outstations",
-    signalLabel: "Function",
+    focusTitle: "Estaciones destacadas",
+    signalLabel: "Función",
     icon: "mdi-transmission-tower",
     color: "error",
     accent: "rgba(255, 107, 129, 0.92)",
     subtitle: "Industrial control",
-    tableHint: "Application function codes and outstation addresses.",
+    tableHint: "Códigos de función y direcciones de estaciones.",
   },
   snmp: {
     label: "SNMP",
     description: "Review management queries, traps, and the community strings used.",
-    focusTitle: "Top agents",
-    signalLabel: "Community",
+    focusTitle: "Agentes destacados",
+    signalLabel: "Comunidad",
     icon: "mdi-router-network",
     color: "warning",
     accent: "rgba(255, 184, 76, 0.92)",
     subtitle: "Device management",
-    tableHint: "Versions, community strings, and requested OIDs.",
+    tableHint: "Versiones, comunidades y OID solicitados.",
   },
   syslog: {
     label: "Syslog",
     description: "Read forwarded log messages and their facility and severity.",
-    focusTitle: "Top senders",
-    signalLabel: "Severity",
+    focusTitle: "Emisores destacados",
+    signalLabel: "Severidad",
     icon: "mdi-text-box-outline",
     color: "info",
     accent: "rgba(74, 136, 255, 0.92)",
     subtitle: "Log forwarding",
-    tableHint: "Facility, severity, and message text per sender.",
+    tableHint: "Instalación, severidad y mensaje por emisor.",
   },
   tftp: {
     label: "TFTP",
     description: "Track unauthenticated file transfers, often firmware or configs.",
-    focusTitle: "Top files",
+    focusTitle: "Archivos destacados",
     signalLabel: "Opcode",
     icon: "mdi-file-download-outline",
     color: "error",
     accent: "rgba(255, 107, 129, 0.92)",
     subtitle: "Unauthenticated transfer",
-    tableHint: "Requested filenames, transfer modes, and directions.",
+    tableHint: "Archivos solicitados, modos de transferencia y direcciones.",
   },
   radius: {
     label: "RADIUS",
     description: "Follow network authentication requests and their outcomes.",
-    focusTitle: "Top clients",
+    focusTitle: "Clientes destacados",
     signalLabel: "Code",
     icon: "mdi-account-key-outline",
     color: "warning",
     accent: "rgba(255, 184, 76, 0.92)",
     subtitle: "Network authentication",
-    tableHint: "Access requests, accepts, rejects, and usernames.",
+    tableHint: "Peticiones de acceso, aceptaciones, rechazos y usuarios.",
   },
   mqtt: {
     label: "MQTT",
     description: "Inspect IoT publish/subscribe traffic and cleartext credentials.",
-    focusTitle: "Top topics",
-    signalLabel: "Packet type",
+    focusTitle: "Temas destacados",
+    signalLabel: "Tipo de paquete",
     icon: "mdi-access-point",
     color: "warning",
     accent: "rgba(255, 184, 76, 0.92)",
     subtitle: "IoT messaging",
-    tableHint: "Connect, publish, and subscribe packets per topic.",
+    tableHint: "Paquetes de conexión, publicación y suscripción por tema.",
   },
   unparseable: {
     label: "Unparseable",
     description: "Frames that could not be decoded at all, kept rather than dropped.",
-    focusTitle: "Top interfaces",
-    signalLabel: "Reason",
+    focusTitle: "Interfaces destacadas",
+    signalLabel: "Motivo",
     icon: "mdi-alert-octagon-outline",
     color: "error",
     accent: "rgba(255, 107, 129, 0.92)",
     subtitle: "Malformed frames",
-    tableHint: "Frame length and the reason decoding failed.",
+    tableHint: "Tamaño de trama y motivo del fallo de decodificación.",
   },
   default: {
     label: "Traffic",
     description: "Inspect protocol-specific traffic patterns.",
-    focusTitle: "Focus",
-    signalLabel: "Signal",
+    focusTitle: "Vista",
+    signalLabel: "Señal",
     icon: "mdi-radar",
     color: "info",
     accent: "rgba(74, 136, 255, 0.92)",
     subtitle: "Protocol slice",
-    tableHint: "Traffic rows with generic frame details.",
+    tableHint: "Tráfico con detalles generales de las tramas.",
   },
 };
 
@@ -843,7 +847,7 @@ function formatDayLabel(value) {
   if (!text) return "-";
   const date = new Date(`${text}T00:00:00`);
   if (Number.isNaN(date.getTime())) return text;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return date.toLocaleDateString("es-ES", { month: "short", day: "numeric" });
 }
 
 function uniqueEndpointSet(rows) {
@@ -875,12 +879,13 @@ export default {
       lastUpdated: "",
       liveRefreshEnabled: true,
       protocolCatalog: [],
+      defaultProtocol: "",
       snapshot: {},
       showEmptyProtocols: false,
       packetRows: [],
       bannerRows: [],
       tagRows: [],
-      packetLimit: 500,
+      packetLimit: 100,
       bannerLimit: 250,
       tagLimit: 250,
       packetsMeta: { totalAvailable: null, returned: null, truncated: null },
@@ -907,10 +912,12 @@ export default {
       return orderProtocols(names);
     },
     selectedProtocol() {
-      const routeProto = normalizeProtocolKey(this.$route && this.$route.params ? this.$route.params.proto : "");
+      const rawRouteProto = this.$route?.params?.proto;
+      const routeProto = rawRouteProto ? normalizeProtocolKey(rawRouteProto) : "";
       if (routeProto && this.supportedProtocols.includes(routeProto)) {
         return routeProto;
       }
+      if (this.defaultProtocol && this.supportedProtocols.includes(this.defaultProtocol)) return this.defaultProtocol;
       // No route param: land on whichever protocol actually has retained
       // traffic instead of the catalog's declaration order, which can put a
       // protocol with zero observed packets - including "unknown" itself -
@@ -972,23 +979,23 @@ export default {
       if (declared.length) {
         return declared.map((column) => ({
           key: column.key,
-          label: column.label,
+          label: protocolText(column.label),
           sortable: column.key !== "summary",
         }));
       }
       return [
-        { key: "updated_at", label: "Seen" },
-        { key: "interface", label: "Interface" },
-        { key: "direction", label: "Direction" },
-        { key: "state", label: "State" },
-        { key: "src_ip", label: "Src IP" },
-        { key: "src_port", label: "Src Port" },
-        { key: "dst_ip", label: "Dst IP" },
-        { key: "dst_port", label: "Dst Port" },
-        { key: "size", label: "Size" },
-        { key: "route", label: "Network" },
+        { key: "updated_at", label: "Visto" },
+        { key: "interface", label: "Interfaz" },
+        { key: "direction", label: "Dirección" },
+        { key: "state", label: "Estado" },
+        { key: "src_ip", label: "IP origen" },
+        { key: "src_port", label: "Puerto origen" },
+        { key: "dst_ip", label: "IP destino" },
+        { key: "dst_port", label: "Puerto destino" },
+        { key: "size", label: "Tamaño" },
+        { key: "route", label: "Red" },
         { key: "signal", label: this.selectedProfile.signalLabel, sortable: false },
-        { key: "summary", label: "Summary", sortable: false },
+        { key: "summary", label: "Resumen", sortable: false },
       ];
     },
     packetSearchFields() {
@@ -1020,32 +1027,32 @@ export default {
       return [
         {
           key: "state",
-          label: "State",
+          label: "Estado",
           field: "state",
         },
         {
           key: "direction",
-          label: "Direction",
+          label: "Dirección",
           field: "direction",
         },
         {
           key: "interface",
-          label: "Interface",
+          label: "Interfaz",
           field: "interface",
         },
       ];
     },
     bannerColumns() {
       return [
-        { key: "updated_at", label: "Seen" },
-        { key: "interface", label: "Interface" },
-        { key: "state", label: "State" },
-        { key: "src_ip", label: "Src IP" },
-        { key: "src_port", label: "Src Port" },
-        { key: "dst_ip", label: "Dst IP" },
-        { key: "dst_port", label: "Dst Port" },
-        { key: "response_size", label: "Size" },
-        { key: "response_plain", label: "Response", sortable: false },
+        { key: "updated_at", label: "Visto" },
+        { key: "interface", label: "Interfaz" },
+        { key: "state", label: "Estado" },
+        { key: "src_ip", label: "IP origen" },
+        { key: "src_port", label: "Puerto origen" },
+        { key: "dst_ip", label: "IP destino" },
+        { key: "dst_port", label: "Puerto destino" },
+        { key: "response_size", label: "Tamaño" },
+        { key: "response_plain", label: "Respuesta", sortable: false },
       ];
     },
     bannerSearchFields() {
@@ -1067,23 +1074,23 @@ export default {
       return [
         {
           key: "state",
-          label: "State",
+          label: "Estado",
           field: "state",
         },
         {
           key: "interface",
-          label: "Interface",
+          label: "Interfaz",
           field: "interface",
         },
       ];
     },
     tagColumns() {
       return [
-        { key: "updated_at", label: "Seen" },
+        { key: "updated_at", label: "Visto" },
         { key: "ip", label: "IP" },
-        { key: "port", label: "Port" },
-        { key: "key", label: "Key" },
-        { key: "value", label: "Value", sortable: false },
+        { key: "port", label: "Puerto" },
+        { key: "key", label: "Clave" },
+        { key: "value", label: "Valor", sortable: false },
       ];
     },
     tagSearchFields() {
@@ -1093,40 +1100,40 @@ export default {
       return [
         {
           key: "key",
-          label: "Key",
+          label: "Clave",
           field: "key",
         },
       ];
     },
     packetTableTitle() {
-      return `${this.selectedProfile.label} Packets`;
+      return `Paquetes ${this.selectedProfile.label}`;
     },
     packetTableSubtitle() {
       return this.selectedProfile.tableHint;
     },
     packetSearchPlaceholder() {
-      return `${this.selectedProfile.label}, IP, port, summary...`;
+      return `${this.selectedProfile.label}, IP, puerto, resumen...`;
     },
     packetEmptyText() {
-      return `No ${this.selectedProfile.label} packet rows available`;
+      return `No hay paquetes ${this.selectedProfile.label} disponibles`;
     },
     bannerTableTitle() {
       return `${this.selectedProfile.label} Banners`;
     },
     bannerTableSubtitle() {
-      return `Decoded response payloads for ${this.selectedProfile.label}.`;
+      return `Contenido de respuestas ${this.selectedProfile.label} decodificadas.`;
     },
     bannerEmptyText() {
-      return `No ${this.selectedProfile.label} banners available`;
+      return `No hay banners ${this.selectedProfile.label} disponibles`;
     },
     tagTableTitle() {
-      return `${this.selectedProfile.label} Tags`;
+      return `Etiquetas ${this.selectedProfile.label}`;
     },
     tagTableSubtitle() {
-      return `Parsed tags and labels for ${this.selectedProfile.label}.`;
+      return `Etiquetas analizadas de ${this.selectedProfile.label}.`;
     },
     tagEmptyText() {
-      return `No ${this.selectedProfile.label} tags available`;
+      return `No hay etiquetas ${this.selectedProfile.label} disponibles`;
     },
     averageFrameSize() {
       if (!this.packetRows.length) return 0;
@@ -1149,7 +1156,7 @@ export default {
             const srcPort = Number(row && row.src_port ? row.src_port : 0);
             return dstPort || srcPort || 0;
           },
-          { labelPrefix: "Port", ignoreZero: true, limit: 6 }
+          { labelPrefix: "Puerto", ignoreZero: true, limit: 6 }
         );
       }
       if (proto === "icmp" || proto === "icmpv6") {
@@ -1190,7 +1197,7 @@ export default {
             const srcPort = Number(row && row.src_port ? row.src_port : 0);
             return dstPort || srcPort || 0;
           },
-          { labelPrefix: "Port", ignoreZero: true, limit: 6 }
+          { labelPrefix: "Puerto", ignoreZero: true, limit: 6 }
         );
       }
       return buildCountSeries(
@@ -1213,23 +1220,23 @@ export default {
       const facets = Array.isArray(this.snapshot.facets) ? this.snapshot.facets : [];
       const panels = facets.map((facet) => ({
         key: facet.key,
-        title: facet.title,
+        title: protocolText(facet.title),
         // `missing` counts frames in the slice that carry no value for this
         // facet. They are kept out of the series so one "none" bar cannot
         // flatten every real value, but saying so matters: a chart built from
         // 4 of 900 frames means something very different from one built from
         // all 900, and the reader cannot tell them apart otherwise.
         subtitle: facet.missing
-          ? `${facet.subtitle} ${facet.missing} frame${facet.missing === 1 ? "" : "s"} without this field.`
-          : facet.subtitle,
+          ? `${protocolText(facet.subtitle)} ${this.formatNumber(facet.missing)} tramas sin este campo.`
+          : protocolText(facet.subtitle),
         color: this.selectedProfile.color,
         fill: `linear-gradient(90deg, ${this.selectedProfile.accent || "rgba(74, 136, 255, 0.92)"}, rgba(255, 255, 255, 0.12))`,
-        series: (facet.series || []).map((item) => ({ label: item.label, value: item.count })),
+        series: (facet.series || []).map((item) => ({ label: protocolText(item.label), value: item.count })),
       }));
       panels.push({
         key: "timeline",
-        title: "Activity timeline",
-        subtitle: "Frames per hour across the selected range.",
+        title: "Actividad en el tiempo",
+        subtitle: "Tramas por hora durante el período seleccionado.",
         color: "secondary",
         fill: "linear-gradient(90deg, rgba(255, 159, 67, 0.92), rgba(243, 177, 75, 0.78))",
         series: (Array.isArray(this.snapshot.timeline) ? this.snapshot.timeline : []).map((item) => ({
@@ -1251,41 +1258,41 @@ export default {
       const cards = [
         {
           key: "frames",
-          label: "Frames",
+          label: "Tramas",
           value: this.formatNumber(totals.frames || 0),
-          caption: `Every ${this.selectedProfile.label} frame in range.`,
+          caption: `Tramas ${this.selectedProfile.label} del período.`,
           icon: this.selectedProfile.icon,
           colorClass: "text-primary",
         },
         {
           key: "sources",
-          label: "Sources",
+          label: "Orígenes",
           value: this.formatNumber(totals.unique_sources || 0),
-          caption: "Distinct addresses emitting this protocol.",
+          caption: "Direcciones distintas que emiten este protocolo.",
           icon: "mdi-account-arrow-right",
           colorClass: "text-info",
         },
         {
           key: "destinations",
-          label: "Destinations",
+          label: "Destinos",
           value: this.formatNumber(totals.unique_destinations || 0),
-          caption: "Distinct addresses being addressed.",
+          caption: "Direcciones distintas que reciben este protocolo.",
           icon: "mdi-account-arrow-left",
           colorClass: "text-success",
         },
         {
           key: "conversations",
-          label: "Conversations",
+          label: "Conversaciones",
           value: this.formatNumber(totals.unique_flows || 0),
-          caption: "Distinct flows in this slice.",
+          caption: "Flujos distintos en este tráfico.",
           icon: "mdi-swap-horizontal",
           colorClass: "text-secondary",
         },
         {
           key: "volume",
-          label: "Volume",
+          label: "Volumen",
           value: this.formatHumanBytes(totals.bytes_total || 0),
-          caption: `Average frame ${this.formatHumanBytes(totals.bytes_avg || 0)}.`,
+          caption: `Trama media ${this.formatHumanBytes(totals.bytes_avg || 0)}.`,
           icon: "mdi-database",
           colorClass: "text-warning",
         },
@@ -1297,7 +1304,7 @@ export default {
           key: "banners",
           label: "Banners",
           value: this.formatNumber(this.bannerRows.length),
-          caption: "Decoded replies in this slice.",
+          caption: "Respuestas decodificadas en este tráfico.",
           icon: "mdi-message-text",
           colorClass: "text-info",
         });
@@ -1365,7 +1372,7 @@ export default {
     formatNumber(value) {
       const numeric = Number(value || 0);
       if (!Number.isFinite(numeric)) return "0";
-      return numeric.toLocaleString();
+      return numeric.toLocaleString("es-ES");
     },
     formatHumanBytes(value) {
       const numeric = Number(value || 0);
@@ -1378,7 +1385,7 @@ export default {
         unitIndex += 1;
       }
       const rounded = size >= 10 || unitIndex === 0 ? Math.round(size) : Number(size.toFixed(1));
-      return `${rounded} ${units[unitIndex]}`;
+      return `${rounded.toLocaleString("es-ES")} ${units[unitIndex]}`;
     },
     normalizeStateLabel(value) {
       const raw = String(value || "unknown").trim().toLowerCase();
@@ -1489,7 +1496,7 @@ export default {
     handleSnapshotMessage(payload) {
       if (!payload) return;
       if (payload.type === "protocol_snapshot_error") {
-        this.error = payload.message || "The protocol stream stopped updating";
+        this.error = payload.message || "El flujo de protocolos dejó de actualizarse";
         return;
       }
       // A frame for a protocol the view has since navigated away from would
@@ -1512,7 +1519,7 @@ export default {
       this.bannersMeta = { totalAvailable: null, returned: this.bannerRows.length, truncated: null };
       this.tagRows = snapshot.tags || [];
       this.tagsMeta = { totalAvailable: null, returned: this.tagRows.length, truncated: null };
-      this.lastUpdated = new Date().toLocaleTimeString();
+      this.lastUpdated = new Date().toLocaleTimeString("es-ES");
       this.error = "";
       this.loading = false;
     },
@@ -1526,6 +1533,14 @@ export default {
       if (!options.silent) this.loading = true;
       this.error = "";
       try {
+        // Discover counts before choosing a slice. A computed selection alone
+        // changes the heading after the first fetch but leaves Unknown's rows.
+        if (!this.$route?.params?.proto) {
+          const overview = await this.store.fetchProtocolSnapshot({ proto: "", limit: 1 });
+          this.snapshot = { ...this.snapshot, catalog: overview.catalog || [] };
+          const busiest = [...(overview.catalog || [])].sort((a, b) => Number(b.count || 0) - Number(a.count || 0))[0];
+          this.defaultProtocol = busiest?.count > 0 ? normalizeProtocolKey(busiest.protocol) : "";
+        }
         const selectedProto = this.selectedProtocol;
         // One request for the whole slice. Packets, banners, tags, the
         // per-protocol facets and the counters all come from
@@ -1541,6 +1556,7 @@ export default {
           limit: this.packetLimit,
         });
         this.applySnapshot(snapshot || {});
+        this.startSnapshotStream();
       } catch (err) {
         this.protocolCatalog = orderProtocols(FALLBACK_SUPPORTED_PROTOCOLS);
         this.snapshot = {};
@@ -1548,7 +1564,7 @@ export default {
         this.bannerRows = [];
         this.tagRows = [];
         this.lastUpdated = "";
-        this.error = (err && err.message) || "Failed to load protocol view";
+        this.error = (err && err.message) || "No se pudo cargar la vista de protocolos";
       } finally {
         this.loading = false;
       }

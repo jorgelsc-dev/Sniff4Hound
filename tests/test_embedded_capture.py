@@ -287,6 +287,7 @@ class ManageMainWiringTests(unittest.TestCase):
             patched(manage, "_print_startup_banner")
             patched(app_module, "connect_capture_service", return_value=True)
             patched(app_module, "bootstrap_capture")
+            patched(app_module.runtime, "set_dashboard_port")
             patched(app_module, "shutdown_capture")
             stack.enter_context(patch.object(app_module.app, "run", side_effect=KeyboardInterrupt))
             exit_code = manage.main()
@@ -303,6 +304,7 @@ class ManageMainWiringTests(unittest.TestCase):
         for name in ("SNIFF4HOUND_IPC_SOCKET", "SNIFF4HOUND_IPC_TOKEN_FILE", "SNIFF4HOUND_IPC_OWNER_UID"):
             self.assertNotIn(name, env, "there is no capture process to hand a socket or token to")
         mocks["bootstrap_capture"].assert_called_once()
+        mocks["set_dashboard_port"].assert_called_once_with(45678)
         mocks["shutdown_capture"].assert_called_once()
 
     def test_the_flag_set_to_zero_brings_back_the_separate_capture_process(self):

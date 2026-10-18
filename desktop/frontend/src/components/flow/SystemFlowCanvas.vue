@@ -58,7 +58,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { connectionPath, flowAnimation, graphBounds } from "../../utils/flowGraph";
+import { connectionPath, flowAnimation, graphBounds, stageReading } from "../../utils/flowGraph";
 
 const CARD = { width: 186, height: 104 };
 const STAGES = {
@@ -75,6 +75,9 @@ const props = defineProps({
   runtime: { type: Object, default: () => ({}) },
   activity: { type: Object, default: () => ({}) },
   online: { type: Boolean, default: false },
+  loading: { type: Boolean, default: false },
+  error: { type: Boolean, default: false },
+  updatedAt: { type: String, default: "" },
 });
 defineEmits(["open"]);
 
@@ -91,7 +94,7 @@ const snifferOn = computed(() => Boolean(props.runtime?.sniffer?.running));
 const honeypotOn = computed(() => Boolean(props.runtime?.honeypot?.running));
 const anyEngineOn = computed(() => snifferOn.value || honeypotOn.value);
 
-const displayRate = computed(() => (rate.value >= 10 ? Math.round(rate.value) : rate.value.toFixed(1)));
+const displayRate = computed(() => props.online ? rate.value.toLocaleString("es-ES", { maximumFractionDigits: 1 }) : "—");
 const pulseClass = computed(() => {
   if (!props.online) return "is-off";
   return rate.value > 0 ? "is-live" : "is-ready";
@@ -104,17 +107,17 @@ const headline = computed(() => {
 const subline = computed(() => {
   if (!props.online) return "Sin conexión con el backend";
   if (!anyEngineOn.value) return "Arranca un motor para ver el flujo";
-  return `${count("interfaces")} interfaces · ${count("protocols")} protocolos`;
+  return `${count("interfaces") ?? "—"} interfaces · ${count("protocols") ?? "—"} protocolos`;
 });
 
 function count(key) {
-  return Number(props.totals?.[key]) || 0;
+  const value = props.totals?.[key];
+  return value == null ? null : Number(value);
 }
 function compact(value) {
+  if (value == null) return null;
   const n = Number(value) || 0;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
+  return n.toLocaleString("es-ES", { notation: "compact", maximumFractionDigits: 1 });
 }
 
 // Left-to-right: what the sensor sees, what processes it, where it lands, what
@@ -129,13 +132,13 @@ const layout = computed(() => [
   },
   {
     id: "sniffer", label: "Sniffer", icon: "mdi-radar", column: 1, row: 0,
-    color: STAGES.engine, metric: snifferRate.value.toFixed(1), unit: "paq/s",
+    color: STAGES.engine, metric: snifferRate.value.toLocaleString("es-ES", { minimumFractionDigits: 1, maximumFractionDigits: 1 }), unit: "paq/s",
     status: snifferOn.value ? "En ejecución" : "Detenido",
     live: props.online && snifferOn.value, route: "/sniffer",
   },
   {
     id: "honeypot", label: "Honeypot", icon: "mdi-spider-web", column: 1, row: 2,
-    color: STAGES.engine, metric: honeypotRate.value.toFixed(1), unit: "paq/s",
+    color: STAGES.engine, metric: honeypotRate.value.toLocaleString("es-ES", { minimumFractionDigits: 1, maximumFractionDigits: 1 }), unit: "paq/s",
     status: honeypotOn.value ? "En ejecución" : "Detenido",
     live: props.online && honeypotOn.value, route: "/honeypot",
   },
@@ -161,6 +164,7 @@ const layout = computed(() => [
 
 const nodes = computed(() => layout.value.map(node => ({
   ...node,
+  ...stageReading({ value: node.metric, status: node.status, online: props.online, loading: props.loading, error: props.error, updatedAt: props.updatedAt }),
   x: 30 + node.column * (CARD.width + 86),
   y: 26 + node.row * (CARD.height + 34),
 })));

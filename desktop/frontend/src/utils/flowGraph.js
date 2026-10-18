@@ -69,3 +69,10 @@ export function flowAnimation(rate) {
     opacity: (0.45 + intensity * 0.5).toFixed(2),
   };
 }
+
+
+export function stageReading({ value, status, online, loading, error, updatedAt }) {
+  if (!online || error) return { metric: value == null ? "—" : String(value), status: updatedAt ? "Datos obsoletos" : "Sin datos", live: false };
+  if (value == null) return { metric: "—", status: loading ? "Cargando" : "Sin datos", live: false };
+  return { metric: String(value), status };
+}

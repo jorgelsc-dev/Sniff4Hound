@@ -8,12 +8,12 @@
         </div>
       </div>
       <v-chip size="small" variant="outlined" :color="color">
-        {{ series.length }}
+        {{ series.length.toLocaleString("es-ES") }}
       </v-chip>
     </div>
 
     <div v-if="series.length" class="chart-stack mt-4" role="list">
-      <div v-for="item in series" :key="item.label" class="chart-row" :class="{ 'chart-row--large': item.value.toLocaleString().length > 10 }" role="listitem">
+      <div v-for="item in series" :key="item.label" class="chart-row" :class="{ 'chart-row--large': item.value.toLocaleString('es-ES').length > 10 }" role="listitem">
         <div class="chart-row__label" :title="item.label">
           {{ item.label }}
         </div>
@@ -21,7 +21,7 @@
           <div class="chart-row__fill" :style="{ width: `${item.width}%`, background: fill }" />
         </div>
         <div class="chart-row__value">
-          {{ item.value.toLocaleString() }}
+          {{ item.value.toLocaleString("es-ES") }}
         </div>
       </div>
     </div>

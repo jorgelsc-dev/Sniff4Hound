@@ -531,7 +531,7 @@ export default {
       this.packetsMeta = meta;
       this.error = "";
       this.syncFilters();
-      this.lastUpdated = new Date().toLocaleTimeString();
+      this.lastUpdated = new Date().toLocaleTimeString("es-ES");
       this.loading = false;
     },
     loadMorePackets() {
@@ -556,7 +556,7 @@ export default {
             this.error = (packetsRes.reason && packetsRes.reason.message) || "No se pudieron cargar los paquetes del sniffer";
           }
           this.syncFilters();
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .finally(() => {
           this.loading = false;

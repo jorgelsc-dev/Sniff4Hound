@@ -17,7 +17,7 @@
       </div>
       <div class="d-flex align-center ga-2 panel-head__actions">
         <v-chip v-if="count !== null && count !== undefined" size="small" variant="tonal" color="primary">
-          {{ count }} {{ countLabel }}
+          {{ typeof count === "number" ? count.toLocaleString("es-ES") : count }} {{ countLabel }}
         </v-chip>
         <v-chip v-if="lastUpdated" size="small" variant="outlined" color="info">
           {{ lastUpdated }}
@@ -47,12 +47,12 @@
           size="small"
           variant="text"
           :color="liveEnabled ? 'success' : 'warning'"
-          :aria-label="liveEnabled ? 'Pause live refresh' : 'Resume live refresh'"
+          :aria-label="liveEnabled ? 'Pausar actualizaciones' : 'Reanudar actualizaciones'"
           @click="toggleLive"
         >
           <v-icon :icon="liveEnabled ? 'mdi-pause-circle-outline' : 'mdi-play-circle-outline'" />
           <v-tooltip activator="parent" location="bottom">
-            {{ liveEnabled ? "Pause live refresh (freeze this panel)" : "Resume live refresh" }}
+            {{ liveEnabled ? "Pausar actualizaciones de este panel" : "Reanudar actualizaciones" }}
           </v-tooltip>
         </v-btn>
         <v-btn
@@ -74,11 +74,11 @@
           size="small"
           variant="text"
           color="secondary"
-          :aria-label="collapsed ? `Expand ${title}` : `Collapse ${title}`"
+          :aria-label="collapsed ? `Expandir ${title}` : `Contraer ${title}`"
           @click="collapsed = !collapsed"
         >
           <v-icon :icon="collapsed ? 'mdi-chevron-down' : 'mdi-chevron-up'" />
-          <v-tooltip activator="parent" location="bottom">{{ collapsed ? "Expand" : "Collapse" }}</v-tooltip>
+          <v-tooltip activator="parent" location="bottom">{{ collapsed ? "Expandir" : "Contraer" }}</v-tooltip>
         </v-btn>
       </div>
     </div>

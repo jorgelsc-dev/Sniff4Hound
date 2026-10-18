@@ -1,0 +1,182 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import { parse } from "@vue/compiler-sfc";
+import { describeProtocol, LAYERS } from "../src/utils/protocolCatalog.js";
+import { protocolText } from "../src/utils/protocolText.js";
+import { stageReading } from "../src/utils/flowGraph.js";
+import { bridgedFetch, connectionErrorMessage } from "../src/utils/httpBridge.js";
+import { formatTimestamp, normalizeProto } from "../src/utils/traffic.js";
+
+const source = path => readFileSync(new URL(path, import.meta.url), "utf8");
+function method(file, name, globals = {}) {
+  const { descriptor } = parse(source(file));
+  const match = descriptor.script.content.match(new RegExp(`^    (async )?${name}\\(([^)]*)\\) \\{([\\s\\S]*?)^    \\},`, "m"));
+  assert.ok(match, `method ${name}`);
+  return new Function(...Object.keys(globals), `return ${match[1] || ""}function(${match[2]}) {${match[3]}}`)(...Object.values(globals));
+}
+
+test("pipeline distinguishes loading, failure, confirmed zero and stale values", () => {
+  assert.equal(stageReading({ value: null, online: true, loading: true }).status, "Cargando");
+  assert.equal(stageReading({ value: null, online: true, error: true }).metric, "—");
+  assert.equal(stageReading({ value: 0, online: true, status: "Vacío" }).status, "Vacío");
+  const stale = stageReading({ value: 93, online: false, updatedAt: "now", status: "Persistiendo" });
+  assert.equal(stale.metric, "93");
+  assert.equal(stale.status, "Datos obsoletos");
+  assert.equal(stale.live, false);
+});
+
+test("failed dashboard refresh preserves values and marks them stale", async () => {
+  const store = { state: {}, fetchJsonPromise: async () => { throw new Error("timeout"); } };
+  const load = method("../src/components/layout/FlowShell.vue", "load", { store });
+  const vm = { expanded: true, requestId: 0, counts: { count_ports: 93 }, updatedAt: "earlier" };
+  await load.call(vm);
+  assert.deepEqual(vm.counts, { count_ports: 93 });
+  assert.equal(vm.loadError, true);
+  assert.equal(vm.loading, false);
+});
+
+test("disconnected sensor has a visible chooser action wired to preload", async () => {
+  const calls = [];
+  const reconnect = method("../src/components/layout/FlowShell.vue", "reconnect", {
+    window: { sniff4houndDesktop: { showConnectionChooser: () => calls.push("chooser") } },
+  });
+  await reconnect.call({});
+  assert.deepEqual(calls, ["chooser"]);
+  const template = parse(source("../src/components/layout/FlowShell.vue")).descriptor.template.content;
+  assert.match(template, /v-if="!online"[\s\S]*@click="reconnect">Reconectar \/ Cambiar sensor/);
+});
+
+test("bridge strips Electron invocation details and suggests a useful action", async () => {
+  const original = globalThis.window;
+  globalThis.window = { sniff4houndDesktop: { httpRequest: async () => { throw new Error("Error invoking remote method 'desktop-http:request': Error: Remote backend timed out."); } } };
+  try {
+    await assert.rejects(bridgedFetch("https://sensor.local/api/hello"), error => {
+      assert.match(error.message, /sensor.*Reintenta/);
+      assert.doesNotMatch(error.message, /remote method|Remote backend/);
+      return true;
+    });
+    assert.match(connectionErrorMessage(new Error("Response is too large.")), /Reduce la búsqueda/);
+    assert.match(connectionErrorMessage(new Error("ECONNREFUSED")), /cambia de sensor/);
+    assert.match(connectionErrorMessage(new Error("CERT_INVALID")), /certificado/);
+  } finally { globalThis.window = original; }
+});
+
+test("monitor settings send search, enabled, page size and offset to the server", async () => {
+  const requests = [];
+  const store = {
+    listMonitors: async query => { requests.push(query); return { items: [{ id: "result" }], total_available: 99 }; },
+    getMonitorConfig: async () => ({}),
+  };
+  const vm = { store, monitorRequestId: 0, monitorPage: 3, monitorQuery: "dns", monitorEnabled: "1", applyMonitorConfig() {} };
+  await method("../src/views/SettingsView.vue", "load").call(vm);
+  assert.deepEqual(requests, [{ limit: 25, offset: 50, q: "dns", enabled: "1" }]);
+  assert.equal(vm.monitorTotal, 99);
+  assert.equal(vm.monitors[0].id, "result");
+});
+
+test("lightweight monitor rows fetch full details before opening the editor", async () => {
+  const requests = [];
+  const vm = { store: { fetchJsonPromise: async path => { requests.push(path); return { id: "a/b", match: { ports: [53] } }; } } };
+  const detail = await method("../src/views/SettingsView.vue", "monitorDetail").call(vm, { id: "a/b" });
+  assert.deepEqual(detail.match.ports, [53]);
+  assert.deepEqual(requests, ["/api/monitors/?id=a%2Fb"]);
+});
+
+test("listener settings search and paginate on the backend", async () => {
+  const queries = [];
+  const vm = { listenerRequestId: 0, listenerPage: 2, listenerSearch: "ssh", store: {
+    listHoneypotListeners: async query => { queries.push(query); return { items: [{ id: "tcp/22" }], total_available: 27 }; },
+  } };
+  await method("../src/views/SettingsView.vue", "loadListeners").call(vm);
+  assert.deepEqual(queries, [{ limit: 25, offset: 25, q: "ssh" }]);
+  assert.equal(vm.listenerTotal, 27);
+});
+
+test("protocol landing fetches the busiest slice after obtaining period counts", async () => {
+  const body = source("../src/views/ProtocolsView.vue").match(/function normalizeProtocolKey\(value\) \{([\s\S]*?)\n\}/)[1];
+  const normalizeProtocolKey = new Function("normalizeProto", `return function(value) {${body}}`)(normalizeProto);
+  const selected = method("../src/views/ProtocolsView.vue", "selectedProtocol", { normalizeProtocolKey });
+  const calls = [];
+  const vm = {
+    $route: { params: {} }, supportedProtocols: ["unknown", "arp", "dns"], snapshot: {},
+    store: { fetchProtocolSnapshot: async query => {
+      calls.push(query.proto);
+      return { catalog: [{ protocol: "unknown", count: 0 }, { protocol: "arp", count: 2 }, { protocol: "dns", count: 20 }], packets: query.proto === "dns" ? [{ proto: "dns" }] : [] };
+    } },
+    packetLimit: 100, applySnapshot(snapshot) { this.snapshot = snapshot; this.packetRows = snapshot.packets; }, startSnapshotStream() {},
+  };
+  Object.defineProperty(vm, "protocolCountMap", { get() { return Object.fromEntries((this.snapshot.catalog || []).map(row => [row.protocol, row.count])); } });
+  Object.defineProperty(vm, "selectedProtocol", { get() { return selected.call(this); } });
+  await method("../src/views/ProtocolsView.vue", "load", { normalizeProtocolKey }).call(vm);
+  assert.deepEqual(calls, ["", "dns"]);
+  assert.equal(vm.packetRows[0].proto, "dns");
+  vm.$route.params.proto = "arp";
+  assert.equal(vm.selectedProtocol, "arp");
+});
+
+test("undeclared sensor coordinates do not project null to Null Island", () => {
+  const project = method("../src/components/MapPanel.vue", "projectedOrigin");
+  const vm = { originPoint: { lat: null, lon: null, declared: false }, projectPoint: () => assert.fail("no projection without a location") };
+  assert.equal(project.call(vm), null);
+  vm.originPoint = { lat: 0, lon: 0, declared: true };
+  vm.projectPoint = (lon, lat) => ({ x: lon, y: lat });
+  assert.deepEqual(project.call(vm), { x: 0, y: 0 });
+  assert.match(source("../src/components/MapPanel.vue"), /Configura la ubicación del sensor/);
+});
+
+test("dates and numbers use Spanish independently of the operator locale", () => {
+  const iso = "2026-10-17T18:37:38Z";
+  assert.equal(formatTimestamp(iso), new Date(iso).toLocaleString("es-ES"));
+  const formatNumber = method("../src/views/IpsView.vue", "formatCount");
+  assert.equal(formatNumber.call({}, 43811), Number(43811).toLocaleString("es-ES"));
+  assert.match(source("../src/main.js"), /locale: \{ locale: "es"/);
+});
+
+test("desktop CSP, renderer sandbox and permission denial remain wired", () => {
+  const index = source("../index.html");
+  const splash = source("../../splash.html");
+  const main = source("../../main.js");
+  for (const html of [index, splash]) {
+    assert.match(html, /Content-Security-Policy/);
+    assert.match(html, /script-src 'self'/);
+    assert.doesNotMatch(html, /<script>(?!<\/script>)/);
+  }
+  assert.match(main, /sandbox: true/);
+  assert.match(main, /setPermissionRequestHandler\([\s\S]*?callback\(false\)/);
+  assert.match(main, /setPermissionCheckHandler\(\(\) => false\)/);
+  assert.match(main, /const connect = origin \? `connect-src 'self' \$\{origin\} \$\{websocketOrigin\}`/);
+});
+
+test("connection modes show Spanish status and no remote status for local startup", () => {
+  const splash = source("../../splash.html");
+  const script = source("../../splash.js");
+  assert.match(splash, /lang="es"/);
+  assert.match(splash, /Conecta tu sensor/);
+  assert.match(script, /Esperando autorización/);
+  assert.match(script, /Comprobando el sensor remoto/);
+  assert.doesNotMatch(script, /Checking|Authorize|Unable to/);
+});
+
+
+test("protocol presentation metadata is Spanish while protocol identifiers stay stable", () => {
+  assert.equal(describeProtocol("dns").key, "dns");
+  assert.match(describeProtocol("dns").description, /Resolución de nombres/);
+  assert.equal(LAYERS.find(layer => layer.key === "application").label, "Aplicación");
+  assert.equal(protocolText("Destination port"), "Puerto destino");
+  assert.equal(protocolText("example.test"), "example.test");
+});
+
+
+test("settings use aggregate listener counts rather than the current catalog page", () => {
+  const vm = {
+    store: { state: { wsStatus: "online" } },
+    runtime: { sniffer: {}, honeypot: { enabled_listener_count: 290 } },
+    listeners: [{ enabled: true }], detectionScopes: [], detectionScopeOptions: [],
+    monitorStats: { enabled: 18032, total: 29465 },
+    graphFresh: { honeypot: true, detection: true },
+  };
+  const states = method("../src/views/SettingsView.vue", "graphStates").call(vm);
+  assert.equal(states.honeypot.label, "290 listeners habilitados");
+  assert.equal(states.detection.metrics[0].value, "18.032/29.465");
+});

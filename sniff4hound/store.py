@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import copy
 import ctypes
 import ctypes.util
 import ipaddress
 import json
-import random
 import shutil
 import sqlite3
-import sys
 import threading
 from contextlib import contextmanager
 import time
@@ -17,6 +14,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from . import ip_registry
+from .mac_vendor import lookup as lookup_mac_vendor
 from .logger import get_logger
 from .log_setup import LOG_DEFAULTS, coerce_log_settings, note_statement
 from .resource_guard import LIMIT_BOUNDS, LIMIT_DEFAULTS, coerce_limit_settings
@@ -31,7 +29,7 @@ from .packet_pipeline import (
     PERSIST_MODES,
     coerce_pipeline_settings,
 )
-from .runtime_paths import ensure_data_dir, resolve_data_file
+from .runtime_paths import resolve_data_file
 from .honeypot_ports import listener_port_allowed, listener_port_policy_error
 from .monitors import builtin_monitor_seed_fields, describe_match, normalize_monitor
 from .protocol_facets import (
@@ -65,8 +63,8 @@ from .settings import (
 )
 from .utils import (
     KNOWN_PROTOCOLS,
+    service_endpoint,
     bytes_to_hex_preview,
-    bytes_to_text_preview,
     clamp_int,
     json_dumps,
     json_loads,
@@ -353,7 +351,7 @@ def _ip_entity_variants(ip: str) -> tuple:
     try:
         parsed = ipaddress.ip_address(text)
     except ValueError as exc:
-        raise ValueError(f"'{text}' no es una direccion IP valida") from exc
+        raise ValueError(f"'{text}' no es una dirección IP válida") from exc
     return tuple({text, str(parsed)})
 
 
@@ -366,8 +364,13 @@ def _normalize_domain_query(value: str) -> str:
         raise ValueError("domain is required")
     try:
         text = text.encode("idna").decode("ascii")
-    except Exception:
-        pass
+    except UnicodeError as exc:
+        raise ValueError("Dominio no válido") from exc
+    labels = text.split(".")
+    if len(text) > 253 or any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
+                              or any(not (char.isascii() and (char.isalnum() or char in "-_")) for char in label)
+                              for label in labels):
+        raise ValueError("Dominio no válido")
     return text
 
 
@@ -761,6 +764,16 @@ class SniffStore(HistoryStoreMixin):
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=15000")
+        # Manufacturer remains derived from the bundled IEEE catalog rather
+        # than copied into every ARP row.  Exposing the deterministic lookup
+        # to SQLite makes the normal server-side search include vendor names
+        # while preserving correct pagination and counts.
+        conn.create_function(
+            "sniff4hound_mac_vendor",
+            1,
+            lambda mac: lookup_mac_vendor(mac).get("vendor", ""),
+            deterministic=True,
+        )
         return conn
 
     def _recover_connection(self):
@@ -3265,6 +3278,42 @@ class SniffStore(HistoryStoreMixin):
             row["enabled"] = bool(row.get("enabled"))
         return rows
 
+    def monitor_page(self, *, limit=100, offset=0, q="", enabled=None) -> dict:
+        clauses, params = [], []
+        if q:
+            clauses.append("(name LIKE ? OR description LIKE ? OR id LIKE ?)")
+            params.extend([f"%{q}%"] * 3)
+        if enabled is not None:
+            clauses.append("enabled = ?")
+            params.append(int(enabled))
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        total = self._fetchone(f"SELECT COUNT(*) AS n FROM monitors {where}", tuple(params))["n"]
+        rows = self._fetchall(
+            f"SELECT id, name, description, enabled, priority, source, mode, action_json, created_at, updated_at "
+            f"FROM monitors {where} ORDER BY priority ASC, name ASC, id ASC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        for row in rows:
+            row["enabled"] = bool(row["enabled"])
+            row["action"] = _coerce_json(row.pop("action_json"), {}) or {}
+        return {"items": rows, "total_available": total, "limit": limit, "offset": offset}
+
+    def honeypot_listener_page(self, *, limit=100, offset=0, q="", enabled=None) -> dict:
+        clauses, params = [], []
+        if q:
+            clauses.append("(id LIKE ? OR label LIKE ? OR CAST(port AS TEXT) LIKE ?)")
+            params.extend([f"%{q}%"] * 3)
+        if enabled is not None:
+            clauses.append("enabled = ?")
+            params.append(int(enabled))
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        total = self._fetchone(f"SELECT COUNT(*) AS n FROM honeypot_listeners {where}", tuple(params))["n"]
+        rows = self._fetchall(f"SELECT * FROM honeypot_listeners {where} ORDER BY proto, port, id LIMIT ? OFFSET ?",
+                              (*params, limit, offset))
+        for row in rows:
+            row["enabled"] = bool(row["enabled"])
+        return {"items": rows, "total_available": total, "stats": self.count_honeypot_listeners(), "limit": limit, "offset": offset}
+
     def monitor_catalog_stats(self) -> dict:
         row = self._fetchone(
             """
@@ -5522,6 +5571,9 @@ class SniffStore(HistoryStoreMixin):
         related_tags = self.list_tags_for_entity_ip(ip, limit=400, since=since)
         services = []
         for row in related_packets:
+            server_ip, server_port = service_endpoint(row)
+            if not server_port or server_ip not in _ip_entity_variants(ip):
+                continue
             tags = json_loads(row.get("tags_json"), default=[]) or []
             tags_text = ", ".join(
                 str(tag.get("value") or tag.get("key") or "").strip()
@@ -5536,10 +5588,10 @@ class SniffStore(HistoryStoreMixin):
                 )
             services.append(
                 {
-                    "ip": row.get("dst_ip") or row.get("src_ip") or ip,
-                    "port": safe_int(row.get("dst_port") or row.get("src_port"), 0),
+                    "ip": server_ip,
+                    "port": server_port,
                     "proto": row.get("proto") or "unknown",
-                    "state": row.get("state") or "open",
+                    "state": row.get("state") or "unknown",
                     "banner": row.get("banner_text") or row.get("summary") or "",
                     "tags_text": tags_text,
                 }

@@ -31,6 +31,8 @@ Punto importante:
 - Captura raw para IPv4, IPv6, ARP, TCP, UDP, ICMP y STP.
 - Persistencia SQLite para sesiones, flows, packets, payloads, tags y runtime config.
 - Modo `honeypot` con un catalogo de 10k+ listeners TCP/UDP; el set curado se habilita por defecto y el resto queda disponible para activar bajo demanda.
+- Identificación local del fabricante de cada MAC observada por ARP mediante las listas oficiales IEEE MA-L, MA-M, MA-S e IAB empaquetadas; no consulta servicios externos y distingue las MAC locales o aleatorias.
+- Historial DNS agrupable y filtrable por dominio registrable, con todos sus subdominios calculados localmente mediante la Public Suffix List empaquetada.
 - Dashboard Vue 3 + Vuetify, cargado directamente por la app de escritorio Electron (no se sirve como pagina web).
 - La vista inicial muestra métricas de telemetría, actividad diaria, protocolos, hosts, puertos y etiquetas del período seleccionado. Incluye el estado actual de Sniffer/Honeypot y accesos a alertas y mapas; se actualiza con los eventos de captura y permite actualización manual.
 - Autenticacion por token de sesion y JWT HS256.
@@ -327,6 +329,25 @@ Variables practicas del runtime:
 - `SNIFF4HOUND_AUTH_FAILURE_WINDOW_SECONDS`
 - `SNIFF4HOUND_FRONTEND_DIST`
 
+### Catalogos empaquetados
+
+`sniff4hound/data/mac_vendors.json` contiene las asignaciones publicas MA-L,
+MA-M, MA-S e IAB de IEEE usadas para identificar el fabricante de una MAC sin
+depender de Internet. Para actualizarlo de forma reproducible desde las listas
+oficiales:
+
+```bash
+python scripts/build_mac_vendor_registry.py
+```
+
+`sniff4hound/data/public_suffix_list.dat` permite separar dominios registrables
+y subdominios correctamente, incluidos sufijos multinivel como `co.uk`. Se
+actualiza desde su fuente oficial con:
+
+```bash
+python scripts/update_public_suffix_list.py
+```
+
 mDNS anuncia y resuelve nombres y puertos; los datos continúan por HTTPS y
 HTTP/3. El runtime conserva su interfaz de escucha (loopback por defecto) y el
 stream se anuncia únicamente en la interfaz elegida. Electron verifica el
@@ -435,3 +456,28 @@ mkdocs build --strict
 - Reporta vulnerabilidades por canal privado.
 - Soporte y notas adicionales: `SUPPORT.md`
 
+
+### Correcciones de operación y catálogos
+
+El sensor excluye sus propios paquetes TCP y UDP/QUIC antes del parser y de la
+cola, usando el puerto elegido después del fallback. Un SYN sin respuesta se
+muestra como `filtered`, un SYN-ACK como `open` y un RST como `closed`; un ACK sin
+esa evidencia queda `unknown`. El tamaño del contenido corresponde al payload
+de transporte. La investigación atribuye el servicio al servidor y evita crear
+servicios ARP o puertos de cliente DNS.
+
+`GET /api/monitors/` y `GET /api/honeypot/listeners/` aceptan `limit` (100 por
+defecto, máximo 500), `offset`, `q` y `enabled=true|false`. Conservan la respuesta
+como array y los encabezados `X-Total-Available`, `X-Returned`, `X-Truncated`.
+`metadata=1` devuelve `{items, total_available, limit, offset}`; listeners añade
+`stats`. El listado de monitores omite `match` y su JSON completo. Para consultar
+o editar una regla se solicita `GET /api/monitors/?id=<id>`. Los conteos globales
+están en `/api/monitors/stats`; la búsqueda y paginación de Configuración se
+realizan en el servidor. Protocolos solicita inicialmente 100 filas y consulta
+los conteos del período antes de abrir el protocolo con más tráfico.
+
+El nivel de log inicial es INFO. Las trazas individuales de paquetes requieren
+DEBUG y `SNIFF4HOUND_TRACE_PACKETS=1`; los logs del runtime elevado conservan el
+UID/GID del operador. El banner y los avisos de puerto se vacían inmediatamente,
+también cuando stdout está conectado a un pipe. Las credenciales válidas siguen
+funcionando tras el bloqueo por intentos fallidos de otra conexión local.

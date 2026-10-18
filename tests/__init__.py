@@ -30,9 +30,10 @@ ended up opening the operator's live database and wedging a running capture.
 pytest imports them as package members either way.
 
 Note this only redirects the *runtime* data directory (database, logs). The
-packaged read-only catalogs - default_monitors.json, ip_registry.json - are
-resolved separately by `runtime_paths.resolve_data_file()` against the
-installed package, so they keep loading normally.
+packaged read-only catalogs - default_monitors.json, ip_registry.json,
+mac_vendors.json and public_suffix_list.dat - are resolved separately by
+`runtime_paths.resolve_data_file()` against the installed package, so they
+keep loading normally.
 """
 
 from __future__ import annotations
