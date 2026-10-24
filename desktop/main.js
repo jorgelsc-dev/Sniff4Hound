@@ -119,9 +119,14 @@ configureGraphics({ app, platform: process.platform, euid: effectiveUid(), launc
 // than closed off deliberately.
 const desktopDebugPortRaw = String(process.env.SNIFF4HOUND_DESKTOP_DEBUG_PORT ?? "0").trim();
 const desktopDebugDisabled = ["0", "false", "off", "no", ""].includes(desktopDebugPortRaw.toLowerCase());
-if (!desktopDebugDisabled && !launcherOnly) {
-  app.commandLine.appendSwitch("remote-debugging-port", desktopDebugPortRaw);
-  app.commandLine.appendSwitch("remote-allow-origins", "*");
+const desktopDebugPort = /^\d+$/.test(desktopDebugPortRaw) ? Number(desktopDebugPortRaw) : NaN;
+const desktopDebugPortValid = Number.isInteger(desktopDebugPort) && desktopDebugPort >= 1024 && desktopDebugPort <= 65535;
+const desktopRunningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
+if (!desktopDebugDisabled && !launcherOnly && desktopDebugPortValid && !desktopRunningAsRoot) {
+  app.commandLine.appendSwitch("remote-debugging-port", String(desktopDebugPort));
+  app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
+} else if (!desktopDebugDisabled && (!desktopDebugPortValid || desktopRunningAsRoot)) {
+  console.error("SNIFF4HOUND_DESKTOP_DEBUG_PORT ignored: valid loopback-only debug requires a non-root desktop process and a port in 1024..65535");
 }
 
 // The runtime's certificate is issued by a private CA. Over TCP this switch lets
@@ -785,6 +790,8 @@ function requestText(url, headers = {}) {
 // open proxy from the renderer.
 
 const HTTP_BRIDGE_BODY_LIMIT = 32 * 1024 * 1024;
+const HTTP_BRIDGE_STREAM_LIMIT = 8 * 1024 * 1024;
+const HTTP_BRIDGE_STREAM_TIMEOUT_MS = 30000;
 const httpStreams = new Map();
 
 function bridgeTargetAllowed(rawUrl) {
@@ -811,40 +818,73 @@ ipcMain.handle("desktop-http:stream-open", (event, payload) => {
   const options = bridgeRequestOptions({ ...payload, method: "GET" });
   const id = String(payload.id || "");
   if (!id || httpStreams.has(id)) throw new Error("Invalid stream id.");
+  const ownerId = event.sender.id;
   const decoder = new StringDecoder("utf8");
+  let bytes = 0;
+  let finished = false;
+  let timeout = null;
+  let request = null;
   const send = (message) => {
     if (!event.sender.isDestroyed()) event.sender.send("desktop-http:stream", { id, ...message });
   };
-  const request = net.request({ method: "GET", url: options.url, redirect: "error" });
+  const cleanup = () => {
+    if (finished) return false;
+    finished = true;
+    if (timeout) clearTimeout(timeout);
+    timeout = null;
+    if (httpStreams.get(id)?.ownerId === ownerId) httpStreams.delete(id);
+    return true;
+  };
+  request = net.request({ method: "GET", url: options.url, redirect: "error" });
   for (const [name, value] of Object.entries(options.headers)) request.setHeader(name, value);
-  httpStreams.set(id, request);
+  httpStreams.set(id, { request, ownerId, cleanup });
+  timeout = setTimeout(() => {
+    if (!cleanup()) return;
+    request.abort();
+    send({ type: "error", message: "Stream timed out." });
+  }, HTTP_BRIDGE_STREAM_TIMEOUT_MS);
   request.on("response", (response) => {
-    response.on("data", (chunk) => send({ type: "data", chunk: decoder.write(chunk) }));
+    response.on("data", (chunk) => {
+      bytes += chunk.length;
+      if (bytes > HTTP_BRIDGE_STREAM_LIMIT) {
+        if (!cleanup()) return;
+        request.abort();
+        send({ type: "error", message: "Stream is too large." });
+        return;
+      }
+      send({ type: "data", chunk: decoder.write(chunk) });
+    });
     response.on("end", () => {
-      httpStreams.delete(id);
+      if (!cleanup()) return;
       send({ type: "end", status: response.statusCode });
     });
     response.on("error", (error) => {
-      httpStreams.delete(id);
+      if (!cleanup()) return;
       send({ type: "error", message: error.message });
     });
   });
   request.on("error", (error) => {
-    httpStreams.delete(id);
+    if (!cleanup()) return;
     send({ type: "error", message: error.message });
+  });
+  event.sender.once("destroyed", () => {
+    const stream = httpStreams.get(id);
+    if (stream?.ownerId !== ownerId || !stream.cleanup()) return;
+    stream.request.abort();
   });
   request.end();
   return { id };
 });
 
-ipcMain.handle("desktop-http:stream-close", (_event, payload) => {
+ipcMain.handle("desktop-http:stream-close", (event, payload) => {
   const id = String((payload && payload.id) || "");
-  const request = httpStreams.get(id);
-  if (request) {
-    httpStreams.delete(id);
-    request.abort();
+  const stream = httpStreams.get(id);
+  if (stream && stream.ownerId === event.sender.id) {
+    stream.cleanup();
+    stream.request.abort();
+    return { closed: true };
   }
-  return { closed: Boolean(request) };
+  return { closed: false };
 });
 
 async function requestJson(url, headers = {}, optionsOverride = {}) {

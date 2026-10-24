@@ -479,6 +479,18 @@ class TestHoneypotEnginePerListenerControl(unittest.TestCase):
         finally:
             self.engine.stop()
 
+    def test_failed_start_is_not_running_and_can_be_retried(self):
+        first = self.engine.start()
+        self.assertEqual(first["status"], "starting")
+        self.assertTrue(_wait_until(lambda: self.engine.snapshot()["status"] == "failed", timeout=3))
+        self.assertFalse(self.engine.snapshot()["running"])
+
+        port = _free_high_port()
+        self.engine.create_listener("tcp", port)
+        self.engine.start()
+        self.assertTrue(_wait_until(lambda: self.engine.snapshot()["status"] in {"ready", "degraded"}, timeout=3))
+        self.assertTrue(self.engine.snapshot()["running"])
+
 
 class TestHoneypotPacketNotificationTags(unittest.TestCase):
     def setUp(self):

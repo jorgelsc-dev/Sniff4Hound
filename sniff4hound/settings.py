@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import ipaddress
 import secrets
 from os import getenv
 from pathlib import Path
@@ -48,9 +49,43 @@ def _as_bool(value, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on", "y"}
 
 
+def _strict_auth_bool() -> bool:
+    raw = os.getenv("SNIFF4HOUND_REQUIRE_AUTH")
+    if raw is None:
+        raw = os.getenv("SNIFFHOUND_REQUIRE_AUTH")
+    if raw is None or not str(raw).strip():
+        return True
+    normalized = str(raw).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "y"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "n"}:
+        return False
+    raise RuntimeError(
+        "SNIFF4HOUND_REQUIRE_AUTH must be a boolean: true/false, 1/0, yes/no, or on/off"
+    )
+
+
 DEFAULT_PORT = 45678
 
 HOST = str(_env("SNIFF4HOUND_HOST", _env("HOST", "127.0.0.1"))).strip() or "127.0.0.1"
+REQUIRE_AUTH = _strict_auth_bool()
+
+
+def _is_loopback_host(value: str) -> bool:
+    candidate = str(value or "").strip().strip("[]").lower()
+    if candidate == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+if not REQUIRE_AUTH and not _is_loopback_host(HOST):
+    raise RuntimeError(
+        "SNIFF4HOUND_REQUIRE_AUTH=0 is only allowed with a loopback "
+        "SNIFF4HOUND_HOST (127.0.0.1, ::1, or localhost)"
+    )
 PORT = _as_int(_env("SNIFF4HOUND_PORT", str(DEFAULT_PORT)), DEFAULT_PORT)
 TLS_ENABLED = _as_bool(_env("SNIFF4HOUND_TLS", "1"), default=True)
 TLS_CERT_DAYS = max(1, _as_int(_env("SNIFF4HOUND_TLS_CERT_DAYS", "1"), 1))
@@ -91,6 +126,8 @@ def default_data_dir() -> Path:
 # location to purge instead of guessing at whatever cwd sniff4hound was last
 # run from.
 DATA_DIR = Path(str(_env("SNIFF4HOUND_DATA_DIR", "")).strip() or default_data_dir())
+HONEYPOT_LOG_FILE = DATA_DIR / "service_listener.log"
+HONEYPOT_EVENT_DB_FILE = DATA_DIR / "service_events.db"
 
 
 def resolve_data_path(value: str, default_name: str) -> str:

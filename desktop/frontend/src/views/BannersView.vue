@@ -172,6 +172,7 @@ import {
   matchesSearch,
   uniqueSorted,
 } from "../utils/traffic";
+import { buildFaviconPath } from "../utils/favicon.js";
 
 // Cadence for the stream, in milliseconds.
 const FEED_REFRESH_MS = 1000;
@@ -339,10 +340,7 @@ export default {
       return this.bannerActionLoading.id === id && this.bannerActionLoading.action === action;
     },
     faviconSrc(item) {
-      const params = new URLSearchParams();
-      params.set("id", String(item.id || ""));
-      if (this.store.state.authToken) params.set("security_code", this.store.state.authToken);
-      return this.store.apiUrl(`/favicons/raw/?${params.toString()}`);
+      return this.store.apiUrl(buildFaviconPath(item));
     },
     openFavicon(item) {
       if (typeof window === "undefined") return;

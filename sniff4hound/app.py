@@ -584,6 +584,9 @@ WS_AUTH_CLOSE_CODE = 4401
 WS_TICKET_TTL_SECONDS = 15.0
 _WS_TICKETS: dict[str, dict[str, Any]] = {}
 _WS_TICKET_LOCK = threading.Lock()
+FAVICON_TICKET_TTL_SECONDS = 60.0
+_FAVICON_TICKETS: dict[str, tuple[int, float]] = {}
+_FAVICON_TICKET_LOCK = threading.Lock()
 # Bounds for the periodic snapshot channel. The floor is not a preference:
 # each delivery runs the same aggregate queries the HTTP endpoint does, over
 # the whole filtered set, so an unbounded interval lets any authenticated
@@ -1441,6 +1444,26 @@ def _favicon_icon_url(row: dict, ip: str, port: int, mime_type: str) -> str:
     return f"{scheme}://{host}{port_part}{path}"
 
 
+def _issue_favicon_ticket(favicon_id: int) -> str:
+    ticket = secrets.token_urlsafe(24)
+    now = time.monotonic()
+    with _FAVICON_TICKET_LOCK:
+        for key, (_target, expires) in list(_FAVICON_TICKETS.items()):
+            if expires <= now:
+                _FAVICON_TICKETS.pop(key, None)
+        _FAVICON_TICKETS[ticket] = (int(favicon_id), now + FAVICON_TICKET_TTL_SECONDS)
+    return ticket
+
+
+def _valid_favicon_ticket(ticket: str, favicon_id: int) -> bool:
+    with _FAVICON_TICKET_LOCK:
+        target, expires = _FAVICON_TICKETS.get(str(ticket or ""), (0, 0.0))
+        if expires <= time.monotonic():
+            _FAVICON_TICKETS.pop(str(ticket or ""), None)
+            return False
+        return target == int(favicon_id)
+
+
 def _is_favicon_candidate(row: dict, mime_type: str, body: bytes) -> bool:
     if not mime_type or mime_type not in FAVICON_IMAGE_MIME_TYPES:
         return False
@@ -1468,6 +1491,7 @@ def _favicon_candidate_from_payload(row: dict) -> dict | None:
         "port": port,
         "proto": row.get("proto") or "unknown",
         "icon_url": _favicon_icon_url(row, ip, port, mime_type),
+        "raw_url": f"/favicons/raw/?id={safe_int(row.get('id'), 0)}&ticket={_issue_favicon_ticket(safe_int(row.get('id'), 0))}",
         "mime_type": mime_type,
         "size": len(body),
         "sha256": hashlib.sha256(body).hexdigest(),
@@ -2043,12 +2067,13 @@ def favicons(request):
 
 @app.view("/favicons/raw/", methods=("GET",))
 def favicon_raw(request):
-    denied = _guard_request_auth(request, allow_query=True)
-    if denied is not None:
-        return denied
     favicon_id = safe_int(request.query.get("id"), 0)
     if not favicon_id:
         return Response.text("Not Found", status=404)
+    if not _valid_favicon_ticket(request.query.get("ticket", ""), favicon_id):
+        denied = _guard_request_auth(request, allow_query=False)
+        if denied is not None:
+            return denied
     row = store.get_payload_with_packet(favicon_id)
     candidate = _favicon_candidate_from_payload(row or {})
     if not candidate:

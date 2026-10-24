@@ -82,20 +82,29 @@ def rss_mb() -> float:
 
 def storage_mb(paths: list[Path]) -> float:
     total = 0
+    counted: set[Path] = set()
+
+    def add_file(candidate: Path) -> None:
+        nonlocal total
+        try:
+            resolved = candidate.resolve()
+            if resolved in counted or not candidate.is_file():
+                return
+            counted.add(resolved)
+            total += candidate.stat().st_size
+        except OSError:
+            return
+
     for root in paths:
         if root.is_dir():
             for child in root.rglob("*"):
-                try:
-                    if child.is_file():
-                        total += child.stat().st_size
-                except OSError:
-                    pass
+                add_file(child)
         else:
             for candidate in (root, Path(f"{root}-wal"), Path(f"{root}-shm")):
-                try:
-                    total += candidate.stat().st_size
-                except OSError:
-                    pass
+                add_file(candidate)
+            if root.parent.is_dir():
+                for candidate in root.parent.glob(f"{root.name}.*"):
+                    add_file(candidate)
     return total / (1024.0 * 1024.0)
 
 
@@ -105,6 +114,10 @@ class ResourceGuard:
         self._sniffer = sniffer
         self._log_dir = Path(log_dir)
         self._db_path = Path(settings.DB_PATH)
+        self._auxiliary_paths = (
+            Path(settings.HONEYPOT_EVENT_DB_FILE),
+            Path(settings.HONEYPOT_LOG_FILE),
+        )
         self._cpus = max(1, os.cpu_count() or 1)
         self._last_cpu = time.process_time()
         self._last_wall = time.monotonic()
@@ -172,7 +185,7 @@ class ResourceGuard:
         return {
             "cpu_percent": round(cpu_share, 1),
             "ram_mb": round(rss_mb(), 1),
-            "storage_mb": round(storage_mb([self._db_path, self._log_dir]), 1),
+            "storage_mb": round(storage_mb([self._db_path, self._log_dir, *self._auxiliary_paths]), 1),
         }
 
     def sample(self, config: dict | None = None) -> dict:

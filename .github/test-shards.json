@@ -16,6 +16,7 @@
       "tests.test_monitor_false_positives",
       "tests.test_packet_pipeline",
       "tests.test_resource_guard",
+      "tests.test_configuration_security",
       "tests.test_history_api"
     ],
     [
