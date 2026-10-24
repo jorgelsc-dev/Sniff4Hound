@@ -61,10 +61,9 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e .
 ```
 
-La instalación editable resuelve `wsbuilder[tls,mdns]` desde Git en el commit
-`e626249d80958464e6b114e60cbf700e22eec1f5`, que es la revisión exacta fijada
-por `pyproject.toml`. La versión publicada en PyPI no es suficiente para el
-stack QUIC/HTTP3 actual.
+La instalación editable resuelve `wsbuilder[tls,mdns]==1.3.0` desde PyPI, la
+versión exacta fijada por `pyproject.toml`. Esa release publicada incluye el
+stack QUIC/HTTP3, TLS (`[tls]`) y mDNS/DNS-SD (`[mdns]`) que usa el runtime.
 
 ### Build local del paquete Debian
 

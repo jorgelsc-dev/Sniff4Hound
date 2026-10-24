@@ -114,10 +114,10 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e .
 ```
 
-El editable instala la dependencia exacta que usa el runtime: `wsbuilder[tls,mdns]`
-desde Git en el commit `e626249d80958464e6b114e60cbf700e22eec1f5`, fijado en
-`pyproject.toml`. No basta con instalar el `wsbuilder` publicado en PyPI: el
-soporte QUIC/HTTP3 requerido todavía vive en `main` de ese repositorio.
+El editable instala la dependencia exacta que usa el runtime:
+`wsbuilder[tls,mdns]==1.3.0` desde PyPI, fijada en `pyproject.toml`. Esa
+release publicada incluye el stack QUIC/HTTP3, TLS (`[tls]`) y mDNS/DNS-SD
+(`[mdns]`) que necesita el runtime; Dependabot propone las nuevas versiones.
 
 ### Build local del paquete Debian
 
