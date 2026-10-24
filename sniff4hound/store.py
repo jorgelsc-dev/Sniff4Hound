@@ -6663,6 +6663,26 @@ class SniffStore(HistoryStoreMixin):
             "finished_at": row["finished_at"],
         }
 
+    def fail_orphaned_jobs(self, error: str = "interrupted by a backend restart",
+                           error_type: str = "Interrupted") -> int:
+        """Marks jobs left queued or running by a previous process as failed.
+
+        Only the process that owns the job queue may call this, and only before
+        it accepts work: its own registry is empty then, so every such row
+        belongs to a process that is gone and will never finish it. Rows that
+        already finished keep their status and result.
+        """
+        cursor = self._execute(
+            """
+            UPDATE jobs
+               SET status = 'error', error = ?, error_type = ?, finished_at = ?
+             WHERE status IN ('queued', 'running')
+            """,
+            (str(error), str(error_type), utc_now()),
+            commit=True,
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0)
+
     def delete_expired_jobs(self, ttl_seconds: int) -> int:
         cutoff = utc_since(max(1, int(ttl_seconds)))
         cursor = self._execute(
