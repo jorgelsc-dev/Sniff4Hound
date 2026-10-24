@@ -8,6 +8,7 @@ import ssl
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -175,6 +176,26 @@ class MobileStreamPairingTests(unittest.TestCase):
         self.assertIsNotNone(self.service.session(token))
         self.assertTrue(self.service.revoke_session(token))
         self.assertIsNone(self.service.session(token))
+
+    def test_concurrent_knocks_cannot_replace_the_approved_device(self):
+        self._pairing()
+        clients = [f"192.0.2.{20 + index}" for index in range(8)]
+        with ThreadPoolExecutor(max_workers=8) as workers:
+            list(workers.map(
+                lambda index: self.service.open_pairing(
+                    "pair-1", client=f"192.0.2.{20 + index}", user_agent=f"phone-{index}"
+                ),
+                range(8),
+            ))
+
+        view = self.service.pairing("pair-1")
+        self.assertIn(view["client"], clients)
+        self.assertEqual(view["user_agent"], f"phone-{clients.index(view['client'])}")
+        approved = self.service.approve_pairing("pair-1")
+        self.assertIsNotNone(approved)
+        self.assertIsNotNone(self.service.verify_pairing(
+            "pair-1", approved["code"], client=view["client"], user_agent=view["user_agent"]
+        ))
 
 
 class MobileStreamRevokeTests(unittest.TestCase):
@@ -633,8 +654,10 @@ class MobileStreamAppTests(unittest.TestCase):
         return token
 
     def test_the_ca_is_served_never_cached_and_without_cors(self):
+        self.assertEqual(self._call("/mobile/ca.pem").status, 403)
+        self._session()
         with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value="-----BEGIN CERTIFICATE-----\nx\n"):
-            response = self._call("/mobile/ca.pem")
+            response = self._call("/mobile/ca.pem", query="session=live-token")
         self.assertEqual(response.status, 200)
         headers = self._headers(response)
         self.assertEqual(headers["content-type"], "application/x-pem-file")
@@ -645,8 +668,10 @@ class MobileStreamAppTests(unittest.TestCase):
 
     def test_the_ca_downloads_as_a_certificate_a_phone_offers_to_install(self):
         pem = "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"
+        self.assertEqual(self._call("/mobile/ca.crt").status, 403)
+        self._session()
         with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value=pem):
-            response = self._call("/mobile/ca.crt")
+            response = self._call("/mobile/ca.crt", query="session=live-token")
         self.assertEqual(response.status, 200)
         headers = self._headers(response)
         self.assertEqual(headers["content-type"], "application/x-x509-ca-cert")
@@ -656,8 +681,9 @@ class MobileStreamAppTests(unittest.TestCase):
         self.assertEqual(self._text(response), pem)
 
     def test_without_a_ca_the_download_is_a_clear_404_not_an_empty_file(self):
+        self._session()
         with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value=""):
-            response = self._call("/mobile/ca.crt")
+            response = self._call("/mobile/ca.crt", query="session=live-token")
         self.assertEqual(response.status, 404)
         self.assertNotEqual(self._headers(response)["content-type"], "application/x-x509-ca-cert")
 
@@ -676,22 +702,24 @@ class MobileStreamAppTests(unittest.TestCase):
                 tls.ensure_mobile_tls("192.0.2.10")
                 pem = tls.public_mobile_ca_pem()
                 with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value=pem):
-                    page = self._text(self._call("/mobile/certificate"))
+                    self._session()
+                    page = self._text(self._call("/mobile/certificate", query="session=live-token"))
                 fingerprint = tls.ca_fingerprint_sha256(pem)
             finally:
                 importlib.reload(settings)
                 importlib.reload(tls)
         self.assertTrue(fingerprint)
         self.assertIn(fingerprint, page)
-        self.assertIn('href="/mobile/ca.crt"', page)
+        self.assertIn('href="/mobile/ca.crt?session=live-token"', page)
         for expected in ("Android", "iPhone", "Certificate Trust Settings", "Install a certificate"):
             self.assertIn(expected, page)
         self.assertNotIn("<script", page, "an instruction page needs no script")
         self.assertNotIn("/mobile/certificate", page, "the page does not link to itself")
 
     def test_the_certificate_page_without_a_ca_says_so(self):
+        self._session()
         with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value=""):
-            page = self._text(self._call("/mobile/certificate"))
+            page = self._text(self._call("/mobile/certificate", query="session=live-token"))
         self.assertIn("No certificate is available", page)
         self.assertNotIn("/mobile/ca.crt", page)
 
@@ -706,7 +734,10 @@ class MobileStreamAppTests(unittest.TestCase):
             "closed": _closed_page(),
         }
         for name, page in pages.items():
-            self.assertIn('href="/mobile/certificate"', page, name)
+            if name == "session":
+                self.assertIn('href="/mobile/certificate?session=tok"', page, name)
+            else:
+                self.assertNotIn('href="/mobile/certificate"', page, name)
 
     def test_the_waiting_page_still_runs_no_script(self):
         from sniff4hound.mobile_stream import _awaiting_approval_page
@@ -805,11 +836,12 @@ class MobileStreamAppTests(unittest.TestCase):
                 self.assertIn("Not found.", self._text(response))
 
     def test_alt_svc_is_advertised_only_once_http3_is_listening(self):
+        self._session("live-token")
         with patch("sniff4hound.mobile_stream.public_mobile_ca_pem", return_value="PEM"):
-            self.assertNotIn("alt-svc", self._headers(self._call("/mobile/ca.pem")))
+            self.assertNotIn("alt-svc", self._headers(self._call("/mobile/ca.pem", query="session=live-token")))
 
             self.advertised["alt_svc"] = 'h3=":45679"; ma=3600'
-            self.assertEqual(self._headers(self._call("/mobile/ca.pem"))["alt-svc"], 'h3=":45679"; ma=3600')
+            self.assertEqual(self._headers(self._call("/mobile/ca.pem", query="session=live-token"))["alt-svc"], 'h3=":45679"; ma=3600')
         # ...on error pages too, so a client that first lands on a stale link still learns it.
         self.assertEqual(self._headers(self._call("/nothing"))["alt-svc"], 'h3=":45679"; ma=3600')
 
@@ -848,6 +880,10 @@ class MobileStreamListenTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.service = MobileStreamService()
+        self.service._sessions["live-token"] = MobileSession(
+            token="live-token", interface="lo", address="127.0.0.1", client="127.0.0.1",
+            user_agent="test", created_at=_now(), last_seen=_now(),
+        )
         self.addCleanup(self.service.stop)
 
     def _https_get(self, port, path):
@@ -883,7 +919,7 @@ class MobileStreamListenTests(unittest.TestCase):
         self.assertTrue(state["http3"]["enabled"])
         self.assertEqual(state["http3"]["transport"], "https+h3")
         self.assertIn(f'h3=":{port}"', state["http3"]["alt_svc"])
-        status, headers, body = self._https_get(port, "/mobile/ca.pem")
+        status, headers, body = self._https_get(port, "/mobile/ca.pem?session=live-token")
         self.assertEqual((status, body), (200, b"PEM"))
         self.assertEqual(headers["alt-svc"], state["http3"]["alt_svc"])
         status, _headers, body = self._https_get(port, "/mobile/nowhere")
@@ -913,7 +949,7 @@ class MobileStreamListenTests(unittest.TestCase):
         self.assertEqual(state["url_base"], f"https://127.0.0.1:{port}")
         self.assertFalse(state["mdns"]["enabled"])
         self.assertIn("multicast unavailable", state["mdns"]["error"])
-        status, _headers, _body = self._https_get(port, "/mobile/ca.pem")
+        status, _headers, _body = self._https_get(port, "/mobile/ca.pem?session=live-token")
         self.assertEqual(status, 200)
         self.service.stop()
         deadline = time.monotonic() + 5
@@ -944,7 +980,7 @@ class MobileStreamListenTests(unittest.TestCase):
             self.assertFalse(state["http3"]["enabled"])
             self.assertEqual(state["http3"]["transport"], "https")
             self.assertIn("HTTP/3 is off", state["http3"]["reason"])
-            status, headers, _body = self._https_get(port, "/mobile/ca.pem")
+            status, headers, _body = self._https_get(port, "/mobile/ca.pem?session=live-token")
             self.assertEqual(status, 200)
             self.assertNotIn("alt-svc", headers, "HTTP/3 was advertised while nothing listens for it")
 

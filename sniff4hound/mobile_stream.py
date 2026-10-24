@@ -14,7 +14,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, quote, urlencode
 
 from wsbuilder import App, Request, Response
 from wsbuilder.server import HTTPServer
@@ -321,6 +321,7 @@ def _sse_frame(event: str, data: dict[str, Any]) -> bytes:
 class MobileStreamService:
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._lifecycle_lock = threading.RLock()
         self._pairings: dict[str, Pairing] = {}
         self._sessions: dict[str, MobileSession] = {}
         self._subscribers: dict[int, tuple[str, queue.Queue[dict[str, Any]]]] = {}
@@ -353,21 +354,26 @@ class MobileStreamService:
             }
 
     def start(self, interface: str, *, port: int = MOBILE_STREAM_DEFAULT_PORT) -> dict[str, Any]:
-        interface = str(interface or "").strip()
-        if not interface:
-            raise ValueError("interface is required")
-        selected = next((item for item in discover_interfaces() if item.name == interface), None)
-        if selected is None:
-            raise ValueError(f"interface {interface!r} is not available")
-        if selected.loopback:
-            raise ValueError("loopback interfaces cannot be used for mobile streaming")
-        port = max(1, min(65535, safe_int(port, MOBILE_STREAM_DEFAULT_PORT)))
-        with self._lock:
-            same_listener = self._state.running and self._state.interface == selected.name and self._state.port == port
-        if same_listener:
-            return self.status()
-        self.stop()
-        return self._listen(selected.name, selected.address, port)
+        # Serialise stop/start transitions. Without this, two simultaneous
+        # operator requests can both observe an idle service, race through
+        # port probing, and leave one listener orphaned behind the state that
+        # the UI reports.
+        with self._lifecycle_lock:
+            interface = str(interface or "").strip()
+            if not interface:
+                raise ValueError("interface is required")
+            selected = next((item for item in discover_interfaces() if item.name == interface), None)
+            if selected is None:
+                raise ValueError(f"interface {interface!r} is not available")
+            if selected.loopback:
+                raise ValueError("loopback interfaces cannot be used for mobile streaming")
+            port = max(1, min(65535, safe_int(port, MOBILE_STREAM_DEFAULT_PORT)))
+            with self._lock:
+                same_listener = self._state.running and self._state.interface == selected.name and self._state.port == port
+            if same_listener:
+                return self.status()
+            self.stop()
+            return self._listen(selected.name, selected.address, port)
 
     def _listen(self, interface: str, address: str, port: int) -> dict[str, Any]:
         """Serve the mobile stream at ``address:port``: TLS over TCP and, on the
@@ -450,38 +456,39 @@ class MobileStreamService:
         return self.status()
 
     def stop(self) -> dict[str, Any]:
-        with self._lock:
-            servers = (self._tcp_server, self._h3_server)
-            app = self._app
-            published = self._mdns_service
-            self._mdns_service = None
-            self._tcp_server = None
-            self._tcp_thread = None
-            self._h3_server = None
-            self._app = None
-            self._state = MobileServerState()
-            self._pairings.clear()
-            for session in self._sessions.values():
-                session.revoked_at = _now()
-            self._notify_all({"type": "revoked", "generated_at": utc_now()})
-            self._log_stop.set()
-        if published is not None:
-            try:
-                published.close()
-            except Exception:  # noqa: BLE001 - still stop both data listeners
-                pass
-        for server in servers:
-            if server is not None:
+        with self._lifecycle_lock:
+            with self._lock:
+                servers = (self._tcp_server, self._h3_server)
+                app = self._app
+                published = self._mdns_service
+                self._mdns_service = None
+                self._tcp_server = None
+                self._tcp_thread = None
+                self._h3_server = None
+                self._app = None
+                self._state = MobileServerState()
+                self._pairings.clear()
+                for session in self._sessions.values():
+                    session.revoked_at = _now()
+                self._notify_all({"type": "revoked", "generated_at": utc_now()})
+                self._log_stop.set()
+            if published is not None:
                 try:
-                    server.stop()
-                except Exception:  # noqa: BLE001 - one listener failing to stop must not leave the other running
+                    published.close()
+                except Exception:  # noqa: BLE001 - still stop both data listeners
                     pass
-        if app is not None:
-            try:
-                app.close()
-            except Exception:  # noqa: BLE001
-                pass
-        return self.status()
+            for server in servers:
+                if server is not None:
+                    try:
+                        server.stop()
+                    except Exception:  # noqa: BLE001 - one listener failing to stop must not leave the other running
+                        pass
+            if app is not None:
+                try:
+                    app.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            return self.status()
 
     def create_pairing(self, interface: str, *, port: int = MOBILE_STREAM_DEFAULT_PORT) -> dict[str, Any]:
         state = self.start(interface, port=port)
@@ -928,12 +935,23 @@ def _build_mobile_app(service: MobileStreamService, advertised: dict[str, str]) 
     response: it is filled in once the HTTP/3 listener is up."""
     app = App()  # no CORS: the pages are same-origin, nothing here is for another site
 
+    def authorized_session(request: Request) -> MobileSession | None:
+        token = request.query.get("session", "")
+        authorization = _header(request, "authorization")
+        if not token and authorization.lower().startswith("bearer "):
+            token = authorization[7:].strip()
+        return service.session(token) if token else None
+
     @app.view("/mobile/ca.pem")
-    def ca_pem(_request):
+    def ca_pem(request):
+        if authorized_session(request) is None:
+            return _reply(403, b"forbidden", "text/plain; charset=utf-8")
         return _reply(200, public_mobile_ca_pem(), "application/x-pem-file")
 
     @app.view("/mobile/ca.crt")
-    def ca_download(_request):
+    def ca_download(request):
+        if authorized_session(request) is None:
+            return _reply(403, b"forbidden", "text/plain; charset=utf-8")
         # The type is what makes a phone offer to install it: iOS Safari treats
         # application/x-x509-ca-cert as a profile to install, and Android keeps it as a
         # .crt the certificate installer lists. Public by nature - it is a CA
@@ -949,8 +967,11 @@ def _build_mobile_app(service: MobileStreamService, advertised: dict[str, str]) 
         )
 
     @app.view("/mobile/certificate")
-    def certificate_page(_request):
-        return _reply(200, _certificate_page(public_mobile_ca_pem()))
+    def certificate_page(request):
+        session = authorized_session(request)
+        if session is None:
+            return _reply(403, b"forbidden", "text/plain; charset=utf-8")
+        return _reply(200, _certificate_page(public_mobile_ca_pem(), session.token))
 
     @app.view("/mobile/_pair")
     def pair_page(request):
@@ -1023,14 +1044,14 @@ def _build_mobile_app(service: MobileStreamService, advertised: dict[str, str]) 
     return app
 
 
-_CERTIFICATE_LINK = (
-    '<p class="meta"><a href="/mobile/certificate">Install the certificate</a> '
-    "to remove the browser warning and let this phone use HTTP/3.</p>"
-)
-
-
-def _shell(title: str, body: str, *, certificate_link: bool = True) -> str:
-    footer = _CERTIFICATE_LINK if certificate_link else ""
+def _shell(title: str, body: str, *, certificate_link: str | bool = True) -> str:
+    footer = ""
+    if certificate_link:
+        target = certificate_link if isinstance(certificate_link, str) else "/mobile/certificate"
+        footer = (
+            f'<p class="meta"><a href="{html.escape(target, quote=True)}">Install the certificate</a> '
+            "to remove the browser warning and let this phone use HTTP/3.</p>"
+        )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1087,7 +1108,8 @@ def _pairing_page(pairing: Pairing) -> str:
   <button type="submit">Unlock live stream</button>
 </form>
 <p class="meta">Interface {html.escape(pairing.interface)} · {html.escape(pairing.address)} · expires in {max(0, int(pairing.expires_at - _now()))}s</p>
-""",
+        """,
+        certificate_link=False,
     )
 
 
@@ -1242,11 +1264,12 @@ document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("clic
 paintLevels();
 connect();
 </script>
-""",
+        """,
+        certificate_link=f"/mobile/certificate?session={quote(token, safe='')}",
     )
 
 
-def _certificate_page(pem: str) -> str:
+def _certificate_page(pem: str, token: str) -> str:
     fingerprint = ca_fingerprint_sha256(pem)
     if not fingerprint:
         return _shell("Sniff4Hound Certificate", "<h1>Certificate</h1><p>No certificate is available yet.</p>", certificate_link=False)
@@ -1255,7 +1278,7 @@ def _certificate_page(pem: str) -> str:
         f"""
 <h1>Install the certificate</h1>
 <p>This Sniff4Hound signs its own certificate, so the browser warns that the connection is not private and cannot use HTTP/3. Installing the certificate once on this phone removes the warning. Only do it if you started this Sniff4Hound yourself.</p>
-<a class="button" href="/mobile/ca.crt" download="sniff4hound-ca.crt">Download certificate</a>
+<a class="button" href="/mobile/ca.crt?session={quote(token, safe='')}" download="sniff4hound-ca.crt">Download certificate</a>
 <p class="meta">SHA-256 fingerprint</p>
 <p class="fingerprint">{html.escape(fingerprint)}</p>
 <p class="meta">Sniff4Hound Settings on the desktop shows the same fingerprint. Install it only if both match.</p>
@@ -1290,9 +1313,10 @@ def _awaiting_approval_page() -> str:
 desktop - the access attempt is shown there with this device's address and
 browser. A 6-digit code appears here once it is accepted.</p>
 <p class="meta">This page refreshes itself.</p>
-""",
+        """,
+        certificate_link=False,
     )
 
 
 def _closed_page(message: str = "This mobile link is closed.") -> str:
-    return _shell("Sniff4Hound Mobile Stream", f"<h1>Closed</h1><p>{html.escape(message)}</p>")
+    return _shell("Sniff4Hound Mobile Stream", f"<h1>Closed</h1><p>{html.escape(message)}</p>", certificate_link=False)

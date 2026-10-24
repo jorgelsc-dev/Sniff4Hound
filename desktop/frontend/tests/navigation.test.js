@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { NAV_LINKS, matchesQuery, navDestinations } from "../src/utils/navigation.js";
+
+test("the desktop router uses hash history for file URLs", () => {
+  const source = readFileSync(new URL("../src/router/index.js", import.meta.url), "utf8");
+  assert.match(source, /createWebHashHistory\(appBaseUrl\(\)\)/);
+  const executable = source.replace(/\/\/.*$/gm, "");
+  assert.doesNotMatch(executable, /\bcreateWebHistory\s*\(/);
+});
 
 test("every nav destination is reachable from the flattened list", () => {
   const flattened = navDestinations();

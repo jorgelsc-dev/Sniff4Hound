@@ -4438,6 +4438,15 @@ def shutdown_capture():
     except (Exception, KeyboardInterrupt):
         pass
     try:
+        # The mobile listener owns independent TCP/UDP sockets. It must be
+        # torn down even when another shutdown step fails, otherwise an
+        # abnormal backend exit can leave a LAN-reachable stream behind.
+        mobile_service = globals().get("mobile_stream")
+        if mobile_service is not None:
+            mobile_service.stop()
+    except (Exception, KeyboardInterrupt):
+        pass
+    try:
         runtime.stop()
     except (Exception, KeyboardInterrupt):
         pass
