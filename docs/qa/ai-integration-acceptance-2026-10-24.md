@@ -1,4 +1,9 @@
-# QA independiente: integración IA
+# QA independiente: integración IA (registro histórico)
+
+Este informe registra la revisión previa a la implementación del control de
+preferencia y no constituye el veredicto del checkout actual. La resolución
+y la validación posteriores se documentan en [Auditoría #250](audit-250-resolution.md).
+La preferencia persistida no se presenta como un modelo operativo.
 
 Fecha: 2026-10-24  
 Rama: `agents/qa-independent-integration-sniff4hound`  
