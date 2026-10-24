@@ -40,10 +40,10 @@
         icon
         :disabled="!monitorsWithTraffic.length"
         @click="clearDialog = true"
-        aria-label="Clear alerts"
+        aria-label="Limpiar alertas"
       >
         <v-icon icon="mdi-delete-sweep-outline" />
-        <v-tooltip activator="parent" location="bottom">Clear alerts</v-tooltip>
+        <v-tooltip activator="parent" location="bottom">Limpiar alertas</v-tooltip>
       </v-btn>
       <v-btn
         size="small"
@@ -51,16 +51,16 @@
         color="primary"
         icon
         to="/settings?section=detection"
-        aria-label="Manage monitors &amp; persistence filter"
+        aria-label="Gestionar monitores y filtro de persistencia"
       >
         <v-icon icon="mdi-cog-outline" />
-        <v-tooltip activator="parent" location="bottom">Manage monitors &amp; persistence filter</v-tooltip>
+        <v-tooltip activator="parent" location="bottom">Gestionar monitores y filtro de persistencia</v-tooltip>
       </v-btn>
     </div>
 
     <v-dialog v-model="clearDialog" max-width="420">
       <v-card class="pa-4">
-        <div class="text-h6 mb-3">Clear alerts?</div>
+        <div class="text-h6 mb-3">¿Limpiar alertas?</div>
         <div class="text-caption text-medium-emphasis mb-3">
           Deletes every stored packet/tag matched by a monitor (sniffer-side traffic only - inbound
           service hits are cleared separately from the Services view). Monitor definitions and their

@@ -247,6 +247,11 @@ export default {
   color: var(--text-soft);
   font-size: 15px;
 }
+.palette__input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
 .palette__input::placeholder { color: var(--text-dim); }
 .palette__search:focus-within { box-shadow: inset 0 -2px var(--focus-ring); }
 .palette__hint {

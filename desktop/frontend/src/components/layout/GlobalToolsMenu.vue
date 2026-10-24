@@ -679,14 +679,16 @@ export default {
      where backdrop-filter is unsupported/disabled). */
   backdrop-filter: blur(32px) saturate(120%);
   -webkit-backdrop-filter: blur(32px) saturate(120%);
-  z-index: 3090;
+  /* Keep the mobile tools layer below Vuetify dialogs/menus (2400+), so an
+     open dialog remains visible and interactive when the FAB is toggled. */
+  z-index: 1990;
 }
 
 .tools-fab {
   position: fixed;
   right: 20px;
   bottom: 20px;
-  z-index: 3100;
+  z-index: 2000;
   display: flex;
   flex-direction: column;
   align-items: flex-end;

@@ -124,7 +124,7 @@
               type="submit"
               :disabled="creating || loading"
             >
-              Add
+              Añadir
             </v-btn>
           </v-col>
         </v-row>
@@ -135,7 +135,7 @@
       <v-col cols="12" md="5">
         <v-text-field
           v-model.trim="tableFilters.query"
-          label="Search sessions"
+          label="Buscar sesiones"
           name="target_table_search"
           placeholder="IP, network, protocol, port..."
           prepend-inner-icon="mdi-magnify"
