@@ -15,7 +15,7 @@ import { es } from "vuetify/locale";
 import { aliases, mdi } from "vuetify/iconsets/mdi";
 import router from "./router";
 import store from "./state/appStore";
-import { blockFileDrops } from "./utils/desktopShell.js";
+import { blockFileDrops, installMenuNavigation } from "./utils/desktopShell.js";
 
 const vuetify = createVuetify({
   locale: { locale: "es", fallback: "es", messages: { es } },
@@ -60,3 +60,4 @@ store.bootstrap();
 createApp(App).use(vuetify).use(router).mount("#app");
 
 blockFileDrops(window);
+installMenuNavigation(window.sniff4houndDesktop, router);

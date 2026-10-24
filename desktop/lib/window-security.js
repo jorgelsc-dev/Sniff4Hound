@@ -75,8 +75,16 @@ function permissionAllowed(permission, requestingUrl) {
   return permission === "notifications" && isShellUrl(requestingUrl);
 }
 
+// Menu shortcuts (Ctrl+1..4, Tools): a loaded SPA switches route in place, so
+// drafts, results and live streams survive; only when the window is not
+// showing a loaded shell does the menu load it.
+function menuNavigationMode(currentUrl, { loading = false } = {}) {
+  return isShellUrl(currentUrl) && !loading ? "renderer" : "load";
+}
+
 module.exports = {
   SHELL,
+  menuNavigationMode,
   SPLASH,
   documentKind,
   isShellUrl,

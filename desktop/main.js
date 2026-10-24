@@ -1034,7 +1034,16 @@ function loadShell(routePath) {
   mainWindow.loadURL(`${APP_SCHEME}://shell/index.html${search ? `?${search}` : ""}#${hash}`);
 }
 
+// Menu routes switch the loaded SPA's route in place (preload's
+// onMenuNavigate); loadShell() is only for a window not showing the shell yet.
 function navigate(routePath) {
+  if (!mainWindow || mainWindow.isDestroyed() || !backendReady) return;
+  const contents = mainWindow.webContents;
+  const loading = typeof contents.isLoadingMainFrame === "function" && contents.isLoadingMainFrame();
+  if (windowSecurity.menuNavigationMode(contents.getURL(), { loading }) === "renderer") {
+    contents.send("desktop-menu:navigate", String(routePath || "/"));
+    return;
+  }
   loadShell(routePath);
 }
 

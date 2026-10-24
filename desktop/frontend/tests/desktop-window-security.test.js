@@ -5,7 +5,7 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const {
-  isShellUrl, isSplashUrl, navigationAllowed, permissionAllowed, senderAllowed,
+  isShellUrl, isSplashUrl, menuNavigationMode, navigationAllowed, permissionAllowed, senderAllowed,
 } = require("../../lib/window-security.js");
 
 const SPLASH = "/opt/Sniff 4 Hound/resources/app/splash.html";
@@ -71,3 +71,9 @@ test("only notifications are granted, and only to app://shell", () => {
   }
 });
 
+test("menu shortcuts switch routes in a loaded shell and load it otherwise", () => {
+  assert.equal(menuNavigationMode("app://shell/index.html?api_base=x#/"), "renderer");
+  assert.equal(menuNavigationMode("app://shell/index.html#/", { loading: true }), "load");
+  assert.equal(menuNavigationMode(SPLASH_URL), "load");
+  assert.equal(menuNavigationMode(""), "load");
+});

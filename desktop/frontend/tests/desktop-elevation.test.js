@@ -611,7 +611,8 @@ test("early cleanup tolerates denied signals and its fallback targets only the f
   assert.equal(rig.state().backendProcess, current);
 });
 
-// Window hardening (#277, #278) on the real main.js.
+// Window hardening (#276, #277, #278) on the real main.js.
+const menuItem = (rig, label) => rig.menus.at(-1).flatMap((menu) => menu.submenu).find((item) => item.label === label);
 const navigateEvent = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
 
 test("will-navigate keeps the window on the chooser or the shell before and after connecting", async () => {
@@ -671,3 +672,18 @@ test("only app://shell is granted notifications; every other permission is denie
   }
 });
 
+test("menu shortcuts route a loaded shell over IPC and load the shell only when it is not showing", async () => {
+  const rig = await desktopVm();
+  const started = rig.api.startLocal();
+  await tick(); rig.announce(); rig.resolveDiscovery();
+  assert.equal((await started).ok, true);
+  const loads = rig.loads.length;
+  menuItem(rig, "SOC").click();
+  menuItem(rig, "Settings").click();
+  assert.equal(rig.loads.length, loads, "no document reload");
+  assert.deepEqual(rig.sent.filter(([channel]) => channel === "desktop-menu:navigate"), [
+    ["desktop-menu:navigate", "/soc"], ["desktop-menu:navigate", "/settings"]]);
+  rig.window.webContents.isLoadingMainFrame = () => true;
+  menuItem(rig, "Honeypot").click();
+  assert.match(rig.loads.at(-1), /^app:\/\/shell\/index\.html\?.*#\/honeypot$/, "a shell still loading is reloaded at the route");
+});
