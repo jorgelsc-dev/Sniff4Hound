@@ -1,13 +1,14 @@
 <template>
   <div>
     <ViewHeader
-      overline="Historial"
-      title="Historial DNS"
-      description="Cada dominio consultado, las direcciones y registros que devolvió y quién lo pidió. Se guarda siempre que el sniffer vea el tráfico, haya o no una alerta."
+      overline="Protocolos"
+      title="DNS"
+      description="Consultas y respuestas DNS, mDNS y LLMNR: dominios, registros, direcciones y clientes. Se guarda todo el tráfico observado por el sniffer, haya o no una alerta."
       :refresh-loading="loading"
       @refresh="load"
     >
       <template #actions-prepend>
+        <v-btn to="/protocols/dns" variant="text" prepend-icon="mdi-ethernet">Ver paquetes</v-btn>
         <v-switch
           v-model="autoRefresh"
           label="En vivo"
@@ -37,7 +38,7 @@
 
     <EntityTablePanel
       title="Registros DNS"
-      subtitle="Una fila por dominio, tipo de registro y respuesta. Las consultas repetidas suman al contador, no crean filas nuevas."
+      :subtitle="recordsSubtitle"
       class="mt-6"
       :rows="rows"
       :columns="columns"
@@ -47,6 +48,7 @@
       :total-available="meta.totalAvailable"
       :returned-count="meta.returned"
       :truncated="meta.truncated"
+      :group-by="tableGroupBy"
       :page-size="25"
       row-key="id"
       expandable-rows
@@ -65,6 +67,18 @@
           prepend-inner-icon="mdi-magnify"
           class="filter-field filter-field--search"
         />
+        <v-combobox
+          v-model="domainScope"
+          :items="baseDomainOptions"
+          label="Dominio base"
+          placeholder="example.com"
+          density="compact"
+          variant="outlined"
+          hide-details
+          clearable
+          class="filter-field filter-field--domain"
+        />
+        <v-select v-model="groupMode" :items="groupOptions" label="Organización" density="compact" variant="outlined" hide-details class="filter-field" />
         <v-select v-model="recordType" :items="typeOptions" label="Tipo" density="compact" variant="outlined" hide-details class="filter-field" />
         <v-select v-model="rcode" :items="rcodeOptions" label="Respuesta" density="compact" variant="outlined" hide-details class="filter-field" />
         <v-select v-model="since" :items="sinceOptions" label="Visto en" density="compact" variant="outlined" hide-details class="filter-field" />
@@ -72,6 +86,12 @@
       <template #cell-domain="{ value }">
         <span class="mono">{{ value }}</span>
         <ListActionIcons inline :value="value" category="domain" />
+      </template>
+      <template #cell-base_domain="{ value }">
+        <v-chip size="x-small" variant="tonal" color="info" class="base-domain-chip" @click.stop="filterBaseDomain(value)">
+          {{ value }}
+          <v-tooltip activator="parent" location="bottom">Mostrar este dominio y todos sus subdominios</v-tooltip>
+        </v-chip>
       </template>
       <template #cell-record_type="{ value }">
         <v-chip size="x-small" variant="tonal" :color="typeColor(value)">{{ value }}</v-chip>
@@ -114,6 +134,11 @@
             </div>
           </div>
           <div class="expanded__block">
+            <div class="text-caption text-medium-emphasis">Jerarquía</div>
+            <div class="mono">Base: {{ item.base_domain || item.domain }}</div>
+            <div class="mono text-medium-emphasis">Subdominio: {{ item.subdomain || "-" }}</div>
+          </div>
+          <div class="expanded__block">
             <div class="text-caption text-medium-emphasis">Transporte</div>
             <div>{{ String(item.transport || "udp").toUpperCase() }}</div>
           </div>
@@ -137,7 +162,7 @@ const LIVE_REFRESH_MS = 5000;
 const SEARCH_DEBOUNCE_MS = 300;
 
 export default {
-  name: "DnsHistoryView",
+  name: "DnsView",
   components: { ViewHeader, EntityTablePanel, ChartCard, ListActionIcons },
   data() {
     return {
@@ -149,6 +174,8 @@ export default {
       meta: { totalAvailable: null, returned: null, truncated: null },
       limit: PAGE_SIZE,
       search: "",
+      domainScope: "",
+      groupMode: "base",
       recordType: "",
       rcode: "",
       since: "",
@@ -157,6 +184,10 @@ export default {
       timer: null,
       searchTimer: null,
       requestId: 0,
+      groupOptions: [
+        { title: "Por dominio base", value: "base" },
+        { title: "Sin agrupar", value: "records" },
+      ],
       typeOptions: [
         { title: "Todos", value: "" },
         ...["A", "AAAA", "CNAME", "MX", "TXT", "NS", "PTR", "SRV", "HTTPS", "SOA", "ANY"].map((value) => ({ title: value, value })),
@@ -175,6 +206,7 @@ export default {
       ],
       columns: [
         { key: "domain", label: "Dominio" },
+        { key: "base_domain", label: "Dominio base" },
         { key: "record_type", label: "Tipo" },
         { key: "answer", label: "Respuesta" },
         { key: "query_count", label: "Consultas" },
@@ -191,6 +223,20 @@ export default {
     };
   },
   computed: {
+    baseDomainOptions() {
+      const values = this.rows.map((row) => String(row.base_domain || row.domain || "").trim()).filter(Boolean);
+      if (this.domainScope) values.push(String(this.domainScope));
+      return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+    },
+    tableGroupBy() {
+      return this.groupMode === "base" ? [{ key: "base_domain", order: "asc" }] : [];
+    },
+    recordsSubtitle() {
+      const prefix = this.domainScope
+        ? `Mostrando ${this.domainScope} y todos sus subdominios.`
+        : "Agrupado por el dominio registrable según la Public Suffix List.";
+      return `${prefix} Una fila por dominio, tipo de registro y respuesta.`;
+    },
     disabledNotice() {
       if (this.historyConfig && this.historyConfig.dns_enabled === false) {
         return "El historial DNS está desactivado: no se está registrando tráfico nuevo.";
@@ -202,11 +248,11 @@ export default {
       return [
         {
           key: "domains",
-          title: "Dominios más consultados",
-          subtitle: "Consultas más respuestas en esta lista.",
+          title: "Dominios base más consultados",
+          subtitle: "Suma la actividad de todos sus subdominios.",
           color: "info",
           fill: "linear-gradient(90deg, rgba(52, 230, 255, 0.94), rgba(74, 136, 255, 0.85))",
-          series: groupSumSeries(this.rows, (row) => row.domain, total, 8),
+          series: groupSumSeries(this.rows, (row) => row.base_domain || row.domain, total, 8),
         },
         {
           key: "types",
@@ -218,11 +264,16 @@ export default {
         },
         {
           key: "errors",
-          title: "Dominios con errores",
-          subtitle: "Respuestas fallidas (NXDOMAIN, SERVFAIL...): una racha suele ser malware que genera dominios.",
+          title: "Dominios base con errores",
+          subtitle: "Agrupa NXDOMAIN, SERVFAIL y otros fallos de todos sus subdominios.",
           color: "error",
           fill: "linear-gradient(90deg, rgba(255, 107, 129, 0.94), rgba(222, 71, 99, 0.82))",
-          series: groupSumSeries(this.rows.filter((row) => Number(row.error_count) > 0), (row) => row.domain, (row) => row.error_count, 8),
+          series: groupSumSeries(
+            this.rows.filter((row) => Number(row.error_count) > 0),
+            (row) => row.base_domain || row.domain,
+            (row) => row.error_count,
+            8,
+          ),
         },
       ];
     },
@@ -231,6 +282,9 @@ export default {
     search() {
       clearTimeout(this.searchTimer);
       this.searchTimer = setTimeout(() => this.reload(), SEARCH_DEBOUNCE_MS);
+    },
+    domainScope() {
+      this.reload();
     },
     recordType() {
       this.reload();
@@ -266,6 +320,9 @@ export default {
     ttlLabel(item) {
       return formatTtlRange(item.ttl_min, item.ttl_max);
     },
+    filterBaseDomain(value) {
+      this.domainScope = String(value || "").trim();
+    },
     schedule() {
       clearInterval(this.timer);
       this.timer = this.autoRefresh ? setInterval(() => this.load({ silent: true }), LIVE_REFRESH_MS) : null;
@@ -296,6 +353,7 @@ export default {
       return this.store
         .listDnsHistory({
           search: this.search || "",
+          parent: this.domainScope || "",
           type: this.recordType,
           rcode: this.rcode,
           since: this.since,
@@ -306,7 +364,7 @@ export default {
           this.rows = rows;
           this.meta = meta;
           this.error = "";
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .catch((err) => {
           if (requestId !== this.requestId) return;
@@ -352,6 +410,15 @@ export default {
 .filter-field--search {
   min-width: 220px;
   max-width: 320px;
+}
+
+.filter-field--domain {
+  min-width: 200px;
+  max-width: 280px;
+}
+
+.base-domain-chip {
+  cursor: pointer;
 }
 
 .expanded {

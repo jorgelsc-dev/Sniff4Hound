@@ -603,7 +603,7 @@ export default {
             ...this.portsByProto,
             [activeProto]: this.store.extractArray(payload),
           };
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
           this.ensureTableStateForProto(activeProto);
           this.syncFilters();
         })
@@ -632,7 +632,7 @@ export default {
           return this.loadPortsForProtocols(protocols);
         })
         .then(() => {
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
           this.lastProtocolsSyncAt = Date.now();
           this.syncFilters();
         })

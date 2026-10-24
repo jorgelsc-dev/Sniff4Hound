@@ -120,7 +120,7 @@ class StoredLogConfigTests(unittest.TestCase):
         self.addCleanup(self.store.close)
 
     def test_defaults_then_round_trip(self):
-        self.assertEqual(self.store.get_log_config()["level"], "DEBUG")
+        self.assertEqual(self.store.get_log_config()["level"], "INFO")
         saved = self.store.set_log_config({"level": "info", "max_mb": 3, "retention_days": 2})
         self.assertEqual((saved["level"], saved["max_mb"], saved["retention_days"]), ("INFO", 3, 2))
         self.assertEqual(saved["backups"], log_setup.LOG_DEFAULTS["backups"])

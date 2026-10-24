@@ -65,7 +65,7 @@
 
 <script>
 import store from "../../state/appStore";
-import { matchesQuery, navDestinations } from "../../utils/navigation";
+import { queryScore, navDestinations } from "../../utils/navigation";
 import { SETTINGS_NODES } from "../settings/settingsGraph";
 
 export default {
@@ -108,7 +108,7 @@ export default {
           id: `settings:${node.section}`,
           group: "Configuración",
           label: node.label,
-          parent: "Settings",
+          parent: "Configuración",
           icon: node.icon,
           keywords: `${node.detail} ajustes configuracion`,
           run: () => this.$router.push({ path: "/settings", query: { section: node.section } }),
@@ -116,7 +116,10 @@ export default {
       ];
     },
     results() {
-      return this.items.filter(item => matchesQuery(item, this.query));
+      return this.items.map(item => ({ item, score: queryScore(item, this.query) }))
+        .filter(result => result.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map(result => result.item);
     },
     grouped() {
       const order = ["Ir a", "Acciones", "Configuración"];

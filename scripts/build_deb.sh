@@ -138,10 +138,9 @@ fi
 # The GUI libs and policykit-1/pkexec are only ever needed by the desktop
 # app, which scripts/deb_postinst.sh prunes entirely on a machine with no
 # graphical environment - Recommends (not Depends) so a headless install
-# isn't forced to pull in graphics libraries it will never use. `sudo` is
-# listed as a fallback for policykit-1/pkexec so the combined `sniff4hound`
-# command can still self-elevate (see sniff4hound/manage.py's
-# _ensure_running_as_root()) on a machine that skips both.
+# isn't forced to pull in graphics libraries it will never use. The desktop
+# requires Polkit for native authentication. sudo is recommended separately
+# for the CLI's terminal elevation (sniff4hound/manage.py).
 #
 # `desktop/package.json`'s own "name" is "sniff4hound-desktop" - if that
 # package is ever installed standalone (electron-builder's raw `deb`
@@ -161,7 +160,7 @@ Priority: optional
 Architecture: $PACKAGE_ARCH
 Maintainer: JorgelSC Dev
 Depends: python3 (>= 3.12)
-Recommends: python3-venv, policykit-1 | pkexec | sudo, libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0
+Recommends: python3-venv, policykit-1 | pkexec, sudo, libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0
 Conflicts: sniff4hound-desktop
 Replaces: sniff4hound-desktop
 Homepage: https://github.com/jorgelsc-dev/Sniff4Hound

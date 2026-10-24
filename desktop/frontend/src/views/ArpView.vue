@@ -1,13 +1,14 @@
 <template>
   <div>
     <ViewHeader
-      overline="Historial"
-      title="Historial ARP"
-      description="Qué dirección MAC tuvo cada IP, los dispositivos que aparecieron y los cambios que se registraron. Se guarda siempre que el sniffer vea el tráfico, haya o no una alerta."
+      overline="Protocolos"
+      title="ARP"
+      description="Dispositivos de la red local, asociaciones entre IP y MAC y cambios de dirección. Se guarda todo el tráfico observado por el sniffer, haya o no una alerta."
       :refresh-loading="loading"
       @refresh="load"
     >
       <template #actions-prepend>
+        <v-btn to="/protocols/arp" variant="text" prepend-icon="mdi-ethernet">Ver paquetes</v-btn>
         <v-switch
           v-model="autoRefresh"
           label="En vivo"
@@ -48,7 +49,7 @@
       <v-text-field
         v-model="search"
         label="Buscar"
-        :placeholder="tab === 'events' ? 'IP, MAC, detalle...' : 'IP, MAC, interfaz...'"
+        :placeholder="tab === 'events' ? 'IP, MAC, fabricante, detalle...' : 'IP, MAC, fabricante, interfaz...'"
         density="compact"
         variant="outlined"
         hide-details
@@ -89,6 +90,10 @@
         <router-link class="mono ip-link" :to="{ path: '/investigate', query: { ip: value } }">{{ value }}</router-link>
       </template>
       <template #cell-mac="{ value }"><span class="mono">{{ value }}</span></template>
+      <template #cell-mac_vendor="{ item }">
+        <span>{{ vendorLabel(item) }}</span>
+        <v-tooltip activator="parent" location="top">{{ vendorHint(item) }}</v-tooltip>
+      </template>
       <template #cell-mismatch_count="{ value }">
         <v-chip v-if="Number(value) > 0" size="x-small" variant="tonal" color="warning">{{ value }}</v-chip>
         <span v-else class="text-medium-emphasis">0</span>
@@ -115,6 +120,10 @@
       @load-more="loadMore"
     >
       <template #cell-mac="{ value }"><span class="mono">{{ value }}</span></template>
+      <template #cell-mac_vendor="{ item }">
+        <span>{{ vendorLabel(item) }}</span>
+        <v-tooltip activator="parent" location="top">{{ vendorHint(item) }}</v-tooltip>
+      </template>
       <template #cell-current_ip="{ value }">
         <router-link v-if="value" class="mono ip-link" :to="{ path: '/investigate', query: { ip: value } }">{{ value }}</router-link>
         <span v-else>-</span>
@@ -158,6 +167,10 @@
         <span v-else>-</span>
       </template>
       <template #cell-mac="{ value }"><span class="mono">{{ value }}</span></template>
+      <template #cell-mac_vendor="{ item }">
+        <span>{{ vendorLabel(item) }}</span>
+        <v-tooltip activator="parent" location="top">{{ vendorHint(item) }}</v-tooltip>
+      </template>
       <template #cell-summary="{ item }">{{ eventSummary(item) }}</template>
       <template #cell-occurred_at="{ value }">{{ formatTimestamp(value) }}</template>
     </EntityTablePanel>
@@ -169,7 +182,7 @@ import store from "../state/appStore";
 import ViewHeader from "../components/ui/ViewHeader.vue";
 import EntityTablePanel from "../components/ui/EntityTablePanel.vue";
 import { formatTimestamp } from "../utils/traffic";
-import { ARP_EVENT_KINDS, arpEventColor, arpEventHelp, arpEventLabel, arpEventSummary } from "../utils/history";
+import { ARP_EVENT_KINDS, arpEventColor, arpEventHelp, arpEventLabel, arpEventSummary, macVendorHint, macVendorLabel } from "../utils/history";
 
 const PAGE_SIZE = 500;
 const LIVE_REFRESH_MS = 5000;
@@ -178,7 +191,7 @@ const SEARCH_DEBOUNCE_MS = 300;
 const emptyList = () => ({ rows: [], meta: { totalAvailable: null, returned: null, truncated: null } });
 
 export default {
-  name: "ArpHistoryView",
+  name: "ArpView",
   components: { ViewHeader, EntityTablePanel },
   data() {
     return {
@@ -212,6 +225,7 @@ export default {
       bindingColumns: [
         { key: "ip", label: "IP" },
         { key: "mac", label: "MAC" },
+        { key: "mac_vendor", label: "Fabricante", copy: false },
         { key: "interface", label: "Interfaz" },
         { key: "packet_count", label: "Paquetes" },
         { key: "request_count", label: "Solicitudes" },
@@ -223,6 +237,7 @@ export default {
       ],
       deviceColumns: [
         { key: "mac", label: "MAC" },
+        { key: "mac_vendor", label: "Fabricante", copy: false },
         { key: "current_ip", label: "IP actual" },
         { key: "ips", label: "IPs reclamadas", copy: false },
         { key: "ip_count", label: "Nº de IPs" },
@@ -237,6 +252,7 @@ export default {
         { key: "kind", label: "Cambio" },
         { key: "ip", label: "IP" },
         { key: "mac", label: "MAC" },
+        { key: "mac_vendor", label: "Fabricante", copy: false },
         { key: "summary", label: "Qué cambió", copy: false },
         { key: "interface", label: "Interfaz" },
       ],
@@ -251,7 +267,7 @@ export default {
     },
     summaryCards() {
       const totals = this.totals || {};
-      const count = (value) => (value === undefined || value === null ? "-" : Number(value).toLocaleString());
+      const count = (value) => (value === undefined || value === null ? "-" : Number(value).toLocaleString("es-ES"));
       return [
         { key: "devices", label: "Dispositivos", value: count(totals.arp_devices), color: "info" },
         { key: "bindings", label: "Asociaciones IP ↔ MAC", value: count(totals.arp_bindings), color: "primary" },
@@ -260,7 +276,7 @@ export default {
       ];
     },
     mismatchTotal() {
-      return this.bindings.rows.reduce((sum, row) => sum + (Number(row.mismatch_count) || 0), 0).toLocaleString();
+      return this.bindings.rows.reduce((sum, row) => sum + (Number(row.mismatch_count) || 0), 0).toLocaleString("es-ES");
     },
   },
   watch: {
@@ -291,6 +307,8 @@ export default {
   },
   methods: {
     formatTimestamp,
+    vendorLabel: macVendorLabel,
+    vendorHint: macVendorHint,
     eventLabel: arpEventLabel,
     eventColor: arpEventColor,
     eventHelp: arpEventHelp,
@@ -329,7 +347,7 @@ export default {
           if (requestId !== this.requestId) return;
           this[key] = { rows: result.rows, meta: result.meta };
           this.error = "";
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .catch((err) => {
           if (requestId !== this.requestId) return;

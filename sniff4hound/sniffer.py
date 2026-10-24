@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import contextlib
 import ipaddress
 import logging
-import math
-import queue
+import os
 import re
 import socket
 import sqlite3
@@ -44,6 +42,7 @@ from .app_protocols import (
     classify_udp,
 )
 from .utils import (
+    service_endpoint,
     detection_ip_scope,
     bytes_to_hex_preview,
     bytes_to_text_preview,
@@ -51,7 +50,6 @@ from .utils import (
     is_printable_payload,
     local_ip_candidates,
     normalize_protocol_name,
-    normalize_text,
     safe_int,
     stable_flow_key,
     utc_now,
@@ -576,8 +574,8 @@ def build_base_packet(
         "ttl": 0,
         "hop_limit": 0,
         "length": len(data),
-        "payload_len": len(payload),
-        "state": "filtered" if not payload else "open",
+        "payload_len": 0,
+        "state": "unknown",
         "scan_state": "active",
         "tcp_flags": "",
         "icmp_type": 0,
@@ -602,6 +600,7 @@ def build_base_packet(
 class Sniffer:
     def __init__(self, store, hub, *, interfaces: tuple[str, ...] = ()):
         self.store = store
+        self.dashboard_port = safe_int(os.environ.get("SNIFF4HOUND_BOUND_PORT"), PORT)
         # DNS and ARP history, recorded for every packet before detection looks at it.
         self._history = HistoryRecorder(store)
         self.hub = hub
@@ -1102,7 +1101,6 @@ class Sniffer:
             filter_enabled = self.store.get_monitor_filter_enabled()
             get_raw_retention = getattr(self.store, "get_raw_retention_enabled", None)
             raw_retention_enabled = get_raw_retention() if callable(get_raw_retention) else bool(STORE_RAW_PACKET_BYTES)
-            get_config = getattr(self.store, "get_runtime_config", None)
             get_min_severity = getattr(self.store, "get_monitor_min_severity", None)
             get_suppress_generated_info = getattr(self.store, "get_monitor_suppress_generated_info", None)
             min_severity = get_min_severity() if callable(get_min_severity) else MONITOR_MIN_SEVERITY_DEFAULT
@@ -1271,7 +1269,7 @@ class Sniffer:
                         break
                     consecutive_socket_errors = 0
                     continue
-                if not data:
+                if not data or self._is_own_dashboard_frame(data):
                     continue
                 try:
                     packet = self.parse_packet(data, interface=interface)
@@ -1337,25 +1335,37 @@ class Sniffer:
             self._set_error(interface, f"promiscuous mode unavailable: {exc}")
 
 
-    def _is_own_dashboard_traffic(self, packet: dict) -> bool:
-        """True for a TCP segment to/from this app's own web server port.
-
-        A live dashboard tab (or the VS Code extension) polling the API and
-        holding an open WebSocket generates a steady stream of loopback
-        traffic that this same sniffer then captures, classifies and
-        broadcasts right back over that very WebSocket - a self-amplifying
-        loop that was observed saturating the capture socket's receive
-        buffer under normal desktop use (an open dashboard tab plus one
-        editor extension), silently dropping *other* traffic's data
-        segments while empty TCP control packets kept getting through.
-        Nothing legitimate to detect ever talks to this port - it's this
-        process's own HTTP/WebSocket listener - so it's cheaper and safer
-        to not even classify/store/broadcast it, rather than try to detect
-        and later filter an ever-growing pile of it.
-        """
-        if str(packet.get("transport") or "").strip().lower() != "tcp":
+    def _is_own_dashboard_frame(self, data: bytes) -> bool:
+        """Read only network/transport headers, before parsing or enqueueing UI traffic."""
+        if self._looks_like_raw_ipv4(data) or self._looks_like_raw_ipv6(data):
+            payload = data
+        else:
+            if len(data) < 14:
+                return False
+            eth_type = int.from_bytes(data[12:14], "big")
+            offset = 14
+            while eth_type in ETHERTYPE_VLAN and len(data) >= offset + 4:
+                eth_type = int.from_bytes(data[offset + 2:offset + 4], "big")
+                offset += 4
+            if eth_type not in {ETHERTYPE_IPV4, ETHERTYPE_IPV6}:
+                return False
+            payload = data[offset:]
+        if len(payload) >= 20 and payload[0] >> 4 == 4:
+            offset = (payload[0] & 15) * 4
+            # Non-initial fragments have no transport header.
+            if offset < 20 or int.from_bytes(payload[6:8], "big") & 0x1FFF:
+                return False
+            proto, body = payload[9], payload[offset:]
+        elif len(payload) >= 40 and payload[0] >> 4 == 6:
+            proto, body, _ = self._unwrap_ipv6_transport(payload)
+        else:
             return False
-        return safe_int(packet.get("src_port"), 0) == PORT or safe_int(packet.get("dst_port"), 0) == PORT
+        return (proto in {IP_PROTO_TCP, IP_PROTO_UDP} and len(body) >= 4
+                and self.dashboard_port in {int.from_bytes(body[:2], "big"), int.from_bytes(body[2:4], "big")})
+
+    def _is_own_dashboard_traffic(self, packet: dict) -> bool:
+        return (str(packet.get("transport") or "").lower() in {"tcp", "udp"}
+                and self.dashboard_port in {safe_int(packet.get("src_port"), 0), safe_int(packet.get("dst_port"), 0)})
 
     def _read_pipeline_config(self) -> dict:
         get_config = getattr(self.store, "get_packet_pipeline_config", None)
@@ -1371,6 +1381,8 @@ class Sniffer:
         }
 
     def _enqueue_packet(self, packet: dict):
+        if self._is_own_dashboard_traffic(packet):
+            return
         cache = self._packet_cache
         if cache is None or cache.closed:
             # Not running through start() (direct use, e.g. tests): evaluate inline.
@@ -1500,7 +1512,7 @@ class Sniffer:
     def _trace_packet(self, packet: dict, stage: str, **fields) -> None:
         """DEBUG trace of one packet's path through detection, rate-limited to a
         few lines a second so a busy link cannot flood the log."""
-        if not LOGGER.isEnabledFor(logging.DEBUG):
+        if os.environ.get("SNIFF4HOUND_TRACE_PACKETS", "").lower() not in {"1", "true", "yes", "on"} or not LOGGER.isEnabledFor(logging.DEBUG):
             return
         now = time.monotonic()
         if now - self._trace_window_start >= 1.0:
@@ -1521,7 +1533,6 @@ class Sniffer:
 
     def _store_packet(self, packet: dict):
         if self._is_own_dashboard_traffic(packet):
-            self._touch_packet(packet, stored=False)
             return
         self._trace_packet(packet, "received")
         if self._whitelisted(packet):
@@ -1543,7 +1554,6 @@ class Sniffer:
         self._history.observe(packet)
         monitors, filter_enabled = self._get_monitor_context()
         detection_muted = self._detection_muted(packet) or self._exclusion_filtered(packet)
-        monitor_matched = False
         suppressed_hits: list[dict] = []
         if detection_muted:
             matches = []
@@ -1552,7 +1562,6 @@ class Sniffer:
             rulesets = self._get_rulesets()
             matches = classify_packet(packet, rulesets)
             catalog_hits = [] if not filter_enabled else evaluate_packet(packet, monitors)
-            monitor_matched = bool(catalog_hits)
             monitor_hits = self._filter_monitor_hits(catalog_hits)
             if monitor_hits:
                 # partition(), not filter(): what the throttle silenced still
@@ -1643,7 +1652,7 @@ class Sniffer:
                     name=domain,
                     source=str(packet.get("domain_source") or "").strip(),
                     ip=str(packet.get("dst_ip") or packet.get("src_ip") or "").strip(),
-                    port=safe_int(packet.get("dst_port") or packet.get("src_port") or 0, 0),
+                    port=service_endpoint(packet)[1],
                     proto=normalize_protocol_name(packet.get("proto")),
                 )
             except Exception:
@@ -1857,7 +1866,6 @@ class Sniffer:
             return
 
         dsap_name = LLC_SAP_NAMES.get(dsap & 0xFE)
-        ssap_name = LLC_SAP_NAMES.get(ssap & 0xFE)
         packet["proto"] = f"llc-{dsap_name}" if dsap_name else "llc"
         # The low bit of DSAP marks a group address, and of SSAP a response;
         # naming them off the masked value keeps both halves readable.
@@ -1894,7 +1902,7 @@ class Sniffer:
         )
         packet["direction"] = self._direction_for(packet)
         packet["banner_text"] = packet.get("banner_text") or packet.get("payload_text") or ""
-        packet["state"] = packet.get("state") or ("open" if packet.get("payload_len", 0) else "filtered")
+        packet["state"] = packet.get("state") or "unknown"
         packet["payload_text"] = packet.get("payload_text") or ""
         packet["payload_hex"] = packet.get("payload_hex") or ""
         packet["summary"] = packet.get("summary") or self._fallback_summary(packet)
@@ -2164,6 +2172,9 @@ class Sniffer:
         # say that - and a NULL scan is precisely a flagless segment.
         packet["tcp_flags"] = ",".join(flags) if flags else "NONE"
         payload = body[data_offset:] if data_offset and len(body) >= data_offset else body[20:]
+        packet["payload_len"] = len(payload)
+        packet["payload_hex"] = bytes_to_hex_preview(payload)
+        packet["state"] = "closed" if flags_byte & 0x04 else "open" if flags_byte & 0x12 == 0x12 else "filtered" if flags_byte & 0x02 else "unknown"
         if (packet["src_port"] == 53 or packet["dst_port"] == 53) and len(payload) > 2:
             # DNS-over-TCP (RFC 1035 §4.2.2): a 2-byte big-endian length prefix
             # precedes the message. Only take this path if it actually looks
@@ -2235,7 +2246,11 @@ class Sniffer:
         packet["src_port"] = int.from_bytes(body[0:2], "big")
         packet["dst_port"] = int.from_bytes(body[2:4], "big")
         length = int.from_bytes(body[4:6], "big")
-        payload = body[8:length] if length > 8 and length <= len(body) else body[8:]
+        payload = body[8:length] if 8 <= length <= len(body) else body[8:]
+        packet["payload_len"] = len(payload)
+        packet["payload_hex"] = bytes_to_hex_preview(payload)
+        if payload and service_endpoint(packet)[0] == packet["src_ip"]:
+            packet["state"] = "open"
         packet["payload_text"] = self._interpret_payload(packet, payload)
         packet["banner_text"] = packet["payload_text"] or self._classify_udp_banner(packet, payload)
         packet["summary"] = packet["banner_text"] or f"UDP {packet['src_ip']}:{packet['src_port']} → {packet['dst_ip']}:{packet['dst_port']}"
@@ -2890,6 +2905,8 @@ class Sniffer:
         return text
 
     def _classify_tcp_banner(self, packet: dict, payload: bytes) -> str:
+        if not payload:
+            return ""
         src_port = safe_int(packet.get("src_port"), 0)
         dst_port = safe_int(packet.get("dst_port"), 0)
         if payload.startswith(b"\x16\x03"):

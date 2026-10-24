@@ -3,7 +3,6 @@ from __future__ import annotations
 import errno
 import json
 import os
-import shlex
 import socket
 import shutil
 import tempfile
@@ -15,7 +14,6 @@ import time
 import unicodedata
 import contextlib
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
 from . import mdns
@@ -51,10 +49,6 @@ except ImportError:  # pragma: no cover - non-POSIX platforms
 
 
 from .console import (  # noqa: F401  (re-exported: manage.py is the console's public entry point)
-    CONSOLE_COMMAND_ALIASES,
-    CONSOLE_COMMAND_SPECS,
-    CONSOLE_COMPLETION_TOKENS,
-    ConsoleCommandSpec,
     ConsoleContext,
     build_console_completion_candidates,
     configure_console_autocomplete,
@@ -64,6 +58,14 @@ from .console import (  # noqa: F401  (re-exported: manage.py is the console's p
     resolve_console_command,
     set_active_console_context,
 )
+
+# Public compatibility exports.
+from . import console as _console
+CONSOLE_COMMAND_ALIASES = _console.CONSOLE_COMMAND_ALIASES
+CONSOLE_COMMAND_SPECS = _console.CONSOLE_COMMAND_SPECS
+CONSOLE_COMPLETION_TOKENS = _console.CONSOLE_COMPLETION_TOKENS
+ConsoleCommandSpec = _console.ConsoleCommandSpec
+
 
 # Private aliases kept so the existing console tests - and any operator muscle
 # memory in a REPL - keep addressing these by their original names.
@@ -213,7 +215,7 @@ def _write_desktop_code_file(port: int, code: str) -> str:
 
 
 def _emit_desktop_ready(host: str, port: int, http3: bool = False, discovery: dict | None = None) -> None:
-    from .auth import REQUIRE_AUTH, get_security_code
+    from .auth import REQUIRE_AUTH
 
     ca_pem = ""
     if TLS_ENABLED:
@@ -243,11 +245,10 @@ def _emit_desktop_ready(host: str, port: int, http3: bool = False, discovery: di
 
 
 def _print_startup_banner(host: str, port: int):
-    """Print the startup banner with the active security code."""
+    """Print the startup banner without exposing the security code."""
     from .auth import REQUIRE_AUTH, get_security_code
     from . import __version__
 
-    token = get_security_code()
     api_url = f"{_runtime_scheme()}://{host}:{port}"
     lines = [
         _banner_rule("╔", "═", "╗"),
@@ -263,8 +264,8 @@ def _print_startup_banner(host: str, port: int):
         lines.extend(
             [
                 _banner_line(),
-                _banner_line(f"  SECURITY CODE: {token}"),
-                _banner_line("  Use this code from the Electron app if prompted"),
+                _banner_line("  SECURITY CODE: available in the Electron app prompt"),
+                _banner_line("  The code is transferred through the protected desktop handoff"),
             ]
         )
     lines.extend([
@@ -279,7 +280,7 @@ def _print_startup_banner(host: str, port: int):
     # sitting right above the banner. Erase whatever is left on the current
     # line before drawing over it.
     prefix = "\r\033[K" if _stdout_is_tty() else ""
-    print(prefix + "\n" + "\n".join(lines))
+    print(prefix + "\n" + "\n".join(lines), flush=True)
 
 
 def _candidate_ports(preferred_port: int) -> tuple[int, ...]:
@@ -339,6 +340,7 @@ def _print_port_fallback_notice(preferred_port: int, selected_port: int) -> None
     print(
         f"\n[i] Port {preferred_port} is busy. Using {selected_port} instead.\n",
         file=sys.stderr,
+        flush=True,
     )
 
 
@@ -350,10 +352,12 @@ def _print_address_in_use_error(host: str, preferred_port: int) -> None:
     print(
         f"\n[!] Cannot start Sniff4Hound: no free port available on {host} in {window_start}-{window_end}.",
         file=sys.stderr,
+        flush=True,
     )
     print(
         "    Stop the existing process or set SNIFF4HOUND_HOST/SNIFF4HOUND_PORT to another value.\n",
         file=sys.stderr,
+        flush=True,
     )
 
 
@@ -379,12 +383,14 @@ def _print_db_permission_error(exc: sqlite3.OperationalError) -> None:
         "privileged (root/sudo) run and this unprivileged process can't write "
         "to it anymore.",
         file=sys.stderr,
+        flush=True,
     )
     print(
         f"    Fix: sudo chown \"$(id -un):$(id -gn)\" {db_path} {db_path}-wal {db_path}-shm 2>/dev/null\n"
         "    (or delete those files to let Sniff4Hound recreate them, or point "
         "SNIFF4HOUND_DB_PATH at a location you own).\n",
         file=sys.stderr,
+        flush=True,
     )
 
 
@@ -407,6 +413,7 @@ def _print_root_invocation_error() -> None:
         "risks leaving its database root-owned, which then breaks later "
         "unprivileged runs with 'attempt to write a readonly database'.",
         file=sys.stderr,
+        flush=True,
     )
     print("    Run it as yourself instead, without sudo.\n", file=sys.stderr)
 
@@ -532,6 +539,7 @@ def _ensure_running_as_root() -> bool:
         f"[i] Elevating to root (desktop mode: {'on' if desktop else 'off'}, "
         f"sudo: {shutil.which('sudo') or 'not found'}, askpass: {_graphical_askpass() or 'none'})...",
         file=sys.stderr,
+        flush=True,
     )
     command = _build_self_elevate_command(os.getuid())
     if command is None:
@@ -999,6 +1007,8 @@ def main():
         _print_address_in_use_error(host, requested_port)
         return 1
 
+    os.environ["SNIFF4HOUND_BOUND_PORT"] = str(selected_port)
+
     # Only the separate-capture-process shape has a socket and a token file.
     ipc_socket = None if embedded else resolve_ipc_socket(selected_port)
     # The token reaches the privileged child through a 0600 file whose path
@@ -1107,6 +1117,7 @@ def main():
                 reconnect=connect_capture_service,
             )
             capture_supervisor.start()
+        runtime.set_dashboard_port(selected_port)
         bootstrap_capture()
         if tls_material:
             app.run(host, selected_port, ssl_context=tls_material.ssl_context)
@@ -1198,6 +1209,7 @@ def main_web():
             append_chat_message=append_chat_message,
             store=store,
         )
+        runtime.set_dashboard_port(selected_port)
         bootstrap_capture()
         if tls_material:
             from .http3_listener import start_http3, stop_http3

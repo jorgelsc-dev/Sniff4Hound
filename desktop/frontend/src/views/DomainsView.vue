@@ -1,9 +1,9 @@
 <template>
   <div>
     <ViewHeader
-      overline="Detection"
-      title="Domains"
-      description="Domains observed via DNS lookups, HTTP Host headers, and TLS SNI. Only populated while the matching monitors are enabled."
+      overline="Detección"
+      title="Dominios"
+      description="Dominios observados en consultas DNS, cabeceras HTTP Host y TLS SNI."
       :refresh-loading="loading"
       @refresh="load"
     />
@@ -25,8 +25,8 @@
     </v-row>
 
     <EntityTablePanel
-      title="Domains"
-      subtitle="One row per distinct domain seen, with the source it was observed through."
+      title="Dominios"
+      subtitle="Una fila por dominio observado, con la fuente que permitió descubrirlo."
       class="mt-6"
       v-model:live-enabled="liveRefreshEnabled"
       :live-refresh="true"
@@ -36,10 +36,10 @@
       :error="error"
       :last-updated="lastUpdated"
       search-enabled
-      search-label="Search domains"
+      search-label="Buscar dominios"
       search-placeholder="Domain, source, IP..."
       :page-size="25"
-      empty-text="No domains observed yet"
+      empty-text="Todavía no se han observado dominios"
       @refresh="load"
     >
       <template #cell-name="{ value }">
@@ -185,14 +185,14 @@ export default {
     },
     applyFeed(payload) {
       if (payload && payload.type === "feed_error") {
-        this.error = payload.message || "The domains stream stopped updating";
+        this.error = payload.message || "El flujo de dominios dejó de actualizarse";
         this.loading = false;
         return;
       }
       if (!payload || payload.type !== "feed_data") return;
       this.domains = this.store.feedListResult(payload).rows;
       this.error = "";
-      this.lastUpdated = new Date().toLocaleTimeString();
+      this.lastUpdated = new Date().toLocaleTimeString("es-ES");
       this.loading = false;
     },
     // Kept as the single-shot fallback for when the stream cannot serve.
@@ -203,11 +203,11 @@ export default {
         .listDomains({ limit: 500 })
         .then((payload) => {
           this.domains = this.store.extractArray(payload);
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .catch((err) => {
           this.domains = [];
-          this.error = (err && err.message) || "Failed to load domains";
+          this.error = (err && err.message) || "No se pudieron cargar los dominios";
         })
         .finally(() => {
           this.loading = false;

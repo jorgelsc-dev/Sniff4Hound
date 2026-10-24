@@ -1,6 +1,6 @@
 <template>
   <div class="statistics-dashboard">
-    <ViewHeader overline="OPERACIONES" title="Dashboard" description="Actividad de red y estadísticas de la telemetría almacenada."
+    <ViewHeader overline="OPERACIONES" title="Panel principal" description="Actividad de red y estadísticas de la telemetría almacenada."
       show-time-range :refresh-loading="loading" refresh-label="Actualizar" @refresh="load" />
 
     <div class="dashboard-toolbar">

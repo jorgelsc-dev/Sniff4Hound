@@ -65,7 +65,7 @@ export function formatTimestamp(value) {
   if (!text) return "-";
   const date = new Date(text);
   if (Number.isNaN(date.getTime())) return text;
-  return date.toLocaleString();
+  return date.toLocaleString("es-ES");
 }
 
 export function formatEndpoint(ip, port) {

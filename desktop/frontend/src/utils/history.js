@@ -69,6 +69,29 @@ export function formatTtlRange(min, max) {
   return `${low}–${high} s`;
 }
 
+const MAC_KIND_LABELS = {
+  local: "Local / aleatoria",
+  multicast: "Multicast",
+  broadcast: "Broadcast",
+  unknown: "Fabricante desconocido",
+  invalid: "MAC no válida",
+};
+
+export function macVendorLabel(item, prefix = "mac_") {
+  const vendor = String((item && item[`${prefix}vendor`]) || "").trim();
+  if (vendor) return vendor;
+  const kind = String((item && item[`${prefix}address_kind`]) || "unknown");
+  return MAC_KIND_LABELS[kind] || MAC_KIND_LABELS.unknown;
+}
+
+export function macVendorHint(item, prefix = "mac_") {
+  const registry = String((item && item[`${prefix}vendor_registry`]) || "").trim();
+  const assignment = String((item && item[`${prefix}vendor_prefix`]) || "").trim();
+  const bits = Number((item && item[`${prefix}vendor_prefix_bits`]) || 0);
+  if (!registry || !assignment || !bits) return "La MAC no contiene una asignación pública de fabricante.";
+  return `${registry} · ${assignment} / ${bits} bits · IEEE Registration Authority`;
+}
+
 const ARP_EVENTS = {
   new_device: {
     label: "Dispositivo nuevo",

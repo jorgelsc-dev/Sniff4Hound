@@ -1,9 +1,9 @@
 <template>
   <div>
     <ViewHeader
-      overline="Active Defense"
+      overline="Defensa activa"
       title="Honeypot"
-      description="Inspect inbound traffic that reached honeypot listeners and review the responses emitted by those decoy services."
+      description="Inspecciona el tráfico que llegó a los servicios del honeypot y revisa las respuestas de estos señuelos."
       :refresh-loading="loading"
       :show-time-range="true"
       @refresh="load"
@@ -127,8 +127,8 @@
     <v-row class="mt-4" dense>
       <v-col cols="12" xl="7">
         <EntityTablePanel
-          title="Inbound Traffic"
-          subtitle="Connections and datagrams that hit honeypot listeners."
+          title="Tráfico entrante"
+          subtitle="Conexiones y datagramas recibidos por el honeypot."
           v-model:live-enabled="liveRefreshEnabled"
           :rows="filteredPackets"
           :columns="packetColumns"
@@ -183,8 +183,8 @@
 
       <v-col cols="12" xl="5">
         <EntityTablePanel
-          title="Honeypot Responses"
-          subtitle="Decoded payloads and replies emitted by honeypot listeners."
+          title="Respuestas del honeypot"
+          subtitle="Contenido decodificado y respuestas emitidas por el honeypot."
           v-model:live-enabled="liveRefreshEnabled"
           :rows="filteredBanners"
           :columns="bannerColumns"
@@ -389,13 +389,13 @@ export default {
         ...this.packets.map((item) => item.proto),
         ...this.banners.map((item) => item.proto),
       ]);
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: value.toUpperCase(), value }))];
+      return [{ label: "Todos", value: "" }, ...values.map((value) => ({ label: value.toUpperCase(), value }))];
     },
     serviceOptions() {
       const values = uniqueSorted(
         this.packets.map((item) => String(item.dst_port || item.port || "").trim()).filter(Boolean)
       );
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: `Port ${value}`, value }))];
+      return [{ label: "Todos", value: "" }, ...values.map((value) => ({ label: `Puerto ${value}`, value }))];
     },
     filteredPackets() {
       const query = String(this.filters.query || "").trim().toLowerCase();
@@ -549,7 +549,7 @@ export default {
       this.packetsMeta = meta;
       this.error = "";
       this.syncFilters();
-      this.lastUpdated = new Date().toLocaleTimeString();
+      this.lastUpdated = new Date().toLocaleTimeString("es-ES");
       this.loading = false;
     },
     applyBannerFeed(payload) {
@@ -592,7 +592,7 @@ export default {
           }
           this.error = errors.join(" | ");
           this.syncFilters();
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .finally(() => {
           this.loading = false;

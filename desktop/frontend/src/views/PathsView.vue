@@ -1,9 +1,9 @@
 <template>
   <div>
     <ViewHeader
-      overline="Detection"
-      title="Paths"
-      description="HTTP request paths observed on traffic that matched the HTTP requests monitor."
+      overline="Detección"
+      title="Rutas HTTP"
+      description="Rutas HTTP observadas en el tráfico capturado."
       :refresh-loading="loading"
       @refresh="load"
     />
@@ -25,8 +25,8 @@
     </v-row>
 
     <EntityTablePanel
-      title="Paths"
-      subtitle="One row per distinct HTTP path seen, with its method and host."
+      title="Rutas HTTP"
+      subtitle="Una fila por ruta HTTP observada, con su método y host."
       class="mt-6"
       v-model:live-enabled="liveRefreshEnabled"
       :live-refresh="true"
@@ -36,10 +36,10 @@
       :error="error"
       :last-updated="lastUpdated"
       search-enabled
-      search-label="Search paths"
+      search-label="Buscar rutas HTTP"
       search-placeholder="Path, host, method, IP..."
       :page-size="25"
-      empty-text="No HTTP paths observed yet"
+      empty-text="Todavía no se han observado rutas HTTP"
       @refresh="load"
     >
       <template #cell-method="{ value }">
@@ -105,7 +105,7 @@ export default {
       return [
         {
           key: "top",
-          title: "Top paths by hits",
+          title: "Rutas HTTP con más actividad",
           subtitle: "Highest-traffic HTTP paths in this slice.",
           color: "info",
           fill: "linear-gradient(90deg, rgba(52, 230, 255, 0.94), rgba(74, 136, 255, 0.85))",
@@ -121,8 +121,8 @@ export default {
         },
         {
           key: "host",
-          title: "Top hosts",
-          subtitle: "Total hits grouped by Host header.",
+          title: "Hosts destacados",
+          subtitle: "Coincidencias agrupadas por la cabecera Host.",
           color: "secondary",
           fill: "linear-gradient(90deg, rgba(158, 130, 255, 0.92), rgba(120, 96, 230, 0.78))",
           series: groupSumSeries(this.paths, (item) => item.host, (item) => item.hit_count),
@@ -161,14 +161,14 @@ export default {
     },
     applyFeed(payload) {
       if (payload && payload.type === "feed_error") {
-        this.error = payload.message || "The paths stream stopped updating";
+        this.error = payload.message || "El flujo de rutas HTTP dejó de actualizarse";
         this.loading = false;
         return;
       }
       if (!payload || payload.type !== "feed_data") return;
       this.paths = this.store.feedListResult(payload).rows;
       this.error = "";
-      this.lastUpdated = new Date().toLocaleTimeString();
+      this.lastUpdated = new Date().toLocaleTimeString("es-ES");
       this.loading = false;
     },
     // Kept as the single-shot fallback for when the stream cannot serve.
@@ -179,11 +179,11 @@ export default {
         .listPaths({ limit: 500 })
         .then((payload) => {
           this.paths = this.store.extractArray(payload);
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .catch((err) => {
           this.paths = [];
-          this.error = (err && err.message) || "Failed to load paths";
+          this.error = (err && err.message) || "No se pudieron cargar las rutas HTTP";
         })
         .finally(() => {
           this.loading = false;

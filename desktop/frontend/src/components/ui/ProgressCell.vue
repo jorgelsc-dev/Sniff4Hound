@@ -34,7 +34,7 @@ export default {
     },
     label() {
       if (this.showDecimals) {
-        return `${this.normalized.toFixed(1)}%`;
+        return `${this.normalized.toLocaleString("es-ES", { maximumFractionDigits: 1 })}%`;
       }
       return `${Math.round(this.normalized)}%`;
     },

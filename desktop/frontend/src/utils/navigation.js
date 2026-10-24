@@ -5,7 +5,7 @@
 
 export const NAV_LINKS = [
   {
-    label: "Dashboard",
+    label: "Panel principal",
     to: "/",
     icon: "mdi-view-dashboard",
     color: "primary",
@@ -22,19 +22,11 @@ export const NAV_LINKS = [
   { label: "Monitores", to: "/monitors", icon: "mdi-target-account", color: "success" },
   { label: "Protocolos", to: "/protocols", icon: "mdi-swap-horizontal", color: "secondary" },
   { label: "Sniffer", to: "/sniffer", icon: "mdi-ethernet", color: "info" },
+  { label: "ARP", to: "/arp", icon: "mdi-lan-connect", color: "success" },
+  { label: "DNS", to: "/dns", icon: "mdi-dns-outline", color: "info" },
   { label: "Honeypot", to: "/honeypot", icon: "mdi-spider-web", color: "warning" },
   { label: "Dominios", to: "/domains", icon: "mdi-web", color: "primary" },
-  { label: "Paths", to: "/paths", icon: "mdi-routes", color: "secondary" },
-  {
-    label: "Historial",
-    to: "/history",
-    icon: "mdi-history",
-    color: "info",
-    children: [
-      { label: "DNS", to: "/history/dns", icon: "mdi-dns-outline" },
-      { label: "ARP", to: "/history/arp", icon: "mdi-lan-connect" },
-    ],
-  },
+  { label: "Rutas HTTP", to: "/paths", icon: "mdi-routes", color: "secondary" },
   { label: "IPs", to: "/ips", icon: "mdi-ip-network", color: "success" },
 ];
 
@@ -63,15 +55,33 @@ function fold(value) {
     .toLowerCase();
 }
 
-export function matchesQuery(item, query) {
-  const needle = fold(query).replace(/\s+/g, "");
-  if (!needle) return true;
-  const haystack = fold(`${item.parent || ""} ${item.label} ${item.keywords || ""}`);
-  let index = 0;
-  for (const char of needle) {
-    index = haystack.indexOf(char, index);
-    if (index === -1) return false;
-    index += 1;
+export function queryScore(item, query) {
+  const needle = fold(query).trim();
+  if (!needle) return 1;
+  const label = fold(item.label);
+  if (label === needle) return 1000;
+  if (label.split(/\s+/).some(word => word.startsWith(needle))) return 800;
+  if (label.includes(needle)) return 600;
+  const context = fold(`${item.parent || ""} ${item.keywords || ""}`);
+  if (context.includes(needle)) return 400;
+  // Abbreviations are confined to a single word, with a density floor:
+  // "cnf" can find configuración; letters scattered across a sentence cannot.
+  if (needle.length < 3 || /\s/.test(needle)) return 0;
+  for (const word of label.split(/\s+/)) {
+    if (!word.startsWith(needle[0])) continue;
+    let index = 0;
+    let end = 0;
+    for (const char of needle) {
+      const found = word.indexOf(char, index);
+      if (found < 0) { index = -1; break; }
+      end = found + 1;
+      index = end;
+    }
+    if (index >= 0 && needle.length / end >= 0.45) return 100 * needle.length / end;
   }
-  return true;
+  return 0;
+}
+
+export function matchesQuery(item, query) {
+  return queryScore(item, query) > 0;
 }

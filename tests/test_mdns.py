@@ -99,7 +99,9 @@ class MdnsLoopbackIntegrationTests(unittest.TestCase):
                     state = service._listen("fixture", "127.0.0.1", port)
                     with patch.object(service, "start", return_value=state):
                         pairing = service.create_pairing("fixture", port=port)
-                    target = urlsplit(pairing["url"])
+                    primary = urlsplit(pairing["url"])
+                    target = urlsplit(pairing["mdns_url"])
+                    self.assertEqual(primary.hostname, "127.0.0.1")
                     self.assertEqual(target.hostname, host)
                     found = mdns.resolve(state["mdns"]["service_name"], "127.0.0.1")
                     self.assertEqual(found["role"], "stream")

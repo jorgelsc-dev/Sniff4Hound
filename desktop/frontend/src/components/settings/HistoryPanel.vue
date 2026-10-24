@@ -125,8 +125,8 @@
         <v-chip color="warning" variant="tonal" prepend-icon="mdi-history">{{ count("arp_events") }} cambios</v-chip>
       </div>
       <div class="d-flex flex-wrap ga-2">
-        <v-btn variant="outlined" prepend-icon="mdi-dns-outline" :to="'/history/dns'">Ver historial DNS</v-btn>
-        <v-btn variant="outlined" prepend-icon="mdi-lan-connect" :to="'/history/arp'">Ver historial ARP</v-btn>
+        <v-btn variant="outlined" prepend-icon="mdi-dns-outline" to="/dns">Abrir DNS</v-btn>
+        <v-btn variant="outlined" prepend-icon="mdi-lan-connect" to="/arp">Abrir ARP</v-btn>
         <v-spacer />
         <v-btn color="error" variant="text" prepend-icon="mdi-delete-outline" :disabled="clearing" @click="askClear('dns')">Vaciar DNS</v-btn>
         <v-btn color="error" variant="text" prepend-icon="mdi-delete-outline" :disabled="clearing" @click="askClear('arp')">Vaciar ARP</v-btn>
@@ -138,7 +138,7 @@
       <v-card>
         <v-card-title>Vaciar historial {{ scopeLabel(confirm.scope) }}</v-card-title>
         <v-card-text>
-          Se van a borrar <strong>{{ Number(confirm.rows).toLocaleString() }}</strong> filas. No se puede deshacer.
+          Se van a borrar <strong>{{ Number(confirm.rows).toLocaleString("es-ES") }}</strong> filas. No se puede deshacer.
           Lo que el sniffer vea a partir de ahora se vuelve a registrar.
         </v-card-text>
         <v-card-actions>
@@ -197,7 +197,7 @@ export default {
     },
     count(key) {
       const value = this.totals ? this.totals[key] : null;
-      return value === undefined || value === null ? "-" : Number(value).toLocaleString();
+      return value === undefined || value === null ? "-" : Number(value).toLocaleString("es-ES");
     },
     apply(payload) {
       const config = { ...DEFAULTS, ...((payload && payload.config) || {}) };

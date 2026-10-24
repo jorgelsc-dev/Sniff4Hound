@@ -1,7 +1,8 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sniff4Hound</title>
     <style>
@@ -100,9 +101,9 @@
     <div class="titlebar">
       <span class="window-label">SNIFF4HOUND</span>
       <div class="window-actions">
-        <button class="window-action" type="button" data-action="minimize" aria-label="Minimize">-</button>
-        <button class="window-action" type="button" data-action="maximize" aria-label="Maximize">□</button>
-        <button class="window-action close" type="button" data-action="close" aria-label="Close">×</button>
+        <button class="window-action" type="button" data-action="minimize" aria-label="Minimizar">-</button>
+        <button class="window-action" type="button" data-action="maximize" aria-label="Maximizar">□</button>
+        <button class="window-action close" type="button" data-action="close" aria-label="Cerrar">×</button>
       </div>
     </div>
     <main>
@@ -111,28 +112,28 @@
       </aside>
       <section class="content">
         <div class="panel">
-          <div class="brand"><img class="mark" src="assets/icon.png" alt="" /><div class="kicker">SNIFF4HOUND<span class="edition">DESKTOP CONSOLE</span></div></div>
-          <h1>Connect your sensor</h1>
-          <p class="intro">Your network, in focus. Start a sensor on this device or connect to a remote instance to open your console.</p>
+          <div class="brand"><img class="mark" src="assets/icon.png" alt="" /><div class="kicker">SNIFF4HOUND<span class="edition">CONSOLA DE ESCRITORIO</span></div></div>
+          <h1>Conecta tu sensor</h1>
+          <p class="intro">Tu red, a la vista. Inicia un sensor en este equipo o conecta uno remoto para abrir la consola.</p>
 
           <div class="mode-grid">
             <section class="mode-panel local-panel">
-              <div class="card-top"><div class="sensor-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8M12 16v5M7 10h3l2-3 2 6 2-3h2"/></svg></div><span class="badge">On this device</span></div>
-              <h2 class="mode-title">Local sensor</h2>
+              <div class="card-top"><div class="sensor-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8M12 16v5M7 10h3l2-3 2 6 2-3h2"/></svg></div><span class="badge">En este equipo</span></div>
+              <h2 class="mode-title">Sensor local</h2>
               <p class="mode-copy">
-                Launch your local workspace. You choose when to start monitoring.
+                Abre tu consola local y elige cuándo comenzar a capturar.
               </p>
-              <ul class="features"><li>No connection setup needed</li><li>Capture engines start paused</li><li>Sniffer &amp; honeypot controls in console</li></ul>
+              <ul class="features"><li>Sin configuración de conexión</li><li>Los motores de captura comienzan detenidos</li><li>Controla sniffer y honeypot desde la consola</li></ul>
               <div class="actions">
-                <button id="local-start" class="primary" type="button">Start local sensor <span class="arrow" aria-hidden="true">→</span></button>
+                <button id="local-start" class="primary" type="button">Iniciar sensor local <span class="arrow" aria-hidden="true">→</span></button>
               </div>
             </section>
 
             <section class="mode-panel">
-              <div class="card-top"><div class="sensor-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="6" rx="1.5"/><rect x="2" y="16" width="7" height="5" rx="1.5"/><rect x="15" y="16" width="7" height="5" rx="1.5"/><path d="M12 9v4M5.5 16v-3h13v3"/></svg></div><span class="remote-label">Over your network</span></div>
-              <h2 class="mode-title">Remote sensor</h2>
+              <div class="card-top"><div class="sensor-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="6" rx="1.5"/><rect x="2" y="16" width="7" height="5" rx="1.5"/><rect x="15" y="16" width="7" height="5" rx="1.5"/><path d="M12 9v4M5.5 16v-3h13v3"/></svg></div><span class="remote-label">En tu red</span></div>
+              <h2 class="mode-title">Sensor remoto</h2>
               <p class="mode-copy">
-                Access an existing sensor with HTTPS, HTTP/3 where available, and the CA text from /publicca.
+                Accede a un sensor con HTTPS, HTTP/3 cuando esté disponible y la CA de /publicca.
               </p>
               <form id="remote-form" class="form-grid">
                 <div class="field">
@@ -140,28 +141,28 @@
                   <input id="remote-host" name="host" autocomplete="hostname" placeholder="127.0.0.1" />
                 </div>
                 <div class="field">
-                  <label for="remote-port">Port</label>
+                  <label for="remote-port">Puerto</label>
                   <input id="remote-port" name="port" inputmode="numeric" placeholder="45678" />
                 </div>
                 <div class="field">
-                  <label>Protocol</label>
+                  <label>Protocolo</label>
                   <div class="protocol-display" aria-label="HTTPS HTTP3">
                     <strong>HTTPS</strong>
-                    <span>HTTP/3 READY</span>
+                    <span>HTTP/3 DISPONIBLE</span>
                   </div>
                 </div>
                 <div class="field">
-                  <label for="remote-code">Security code</label>
+                  <label for="remote-code">Código de seguridad</label>
                   <input id="remote-code" name="securityCode" autocomplete="one-time-code" spellcheck="false" />
                 </div>
                 <div class="field full">
-                  <label for="remote-ca">Public CA from /publicca</label>
+                  <label for="remote-ca">CA pública de /publicca</label>
                   <textarea id="remote-ca" name="caPem" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----
 ...
 -----END CERTIFICATE-----"></textarea>
                 </div>
                 <div class="actions field full">
-                  <button id="remote-connect" class="secondary" type="submit">Connect to sensor <span class="arrow" aria-hidden="true">→</span></button>
+                  <button id="remote-connect" class="secondary" type="submit">Conectar al sensor <span class="arrow" aria-hidden="true">→</span></button>
                 </div>
               </form>
             </section>
@@ -169,77 +170,12 @@
 
           <div class="status">
             <div id="status-row" class="status-row"></div>
-            <div id="log" class="log" role="status" aria-live="polite">Ready to connect</div>
-            <span class="footer-note">NETWORK VISIBILITY STARTS HERE</span>
+            <div id="log" class="log" role="status" aria-live="polite">Listo para conectar</div>
+            <span class="footer-note">VISIBILIDAD DE TU RED</span>
           </div>
         </div>
       </section>
     </main>
-    <script>
-      const api = window.sniff4houndDesktop;
-      const log = document.getElementById("log");
-      const statusRow = document.getElementById("status-row");
-      const localStart = document.getElementById("local-start");
-      const remoteForm = document.getElementById("remote-form");
-      const remoteConnect = document.getElementById("remote-connect");
-      const remoteHost = document.getElementById("remote-host");
-      const remotePort = document.getElementById("remote-port");
-      const remoteCode = document.getElementById("remote-code");
-      const remoteCa = document.getElementById("remote-ca");
-
-      function setBusy(isBusy, message) {
-        localStart.disabled = isBusy;
-        remoteConnect.disabled = isBusy;
-        statusRow.classList.toggle("active", Boolean(isBusy));
-        if (message) log.textContent = message;
-      }
-
-      for (const button of document.querySelectorAll("[data-action]")) {
-        button.addEventListener("click", () => {
-          const action = button.getAttribute("data-action");
-          if (api && typeof api[action] === "function") api[action]();
-        });
-      }
-
-      if (api && typeof api.onRuntimeStatus === "function") {
-        api.onRuntimeStatus((message) => {
-          if (message) log.textContent = message;
-        });
-      }
-
-      if (api && typeof api.getConnectionDefaults === "function") {
-        api.getConnectionDefaults().then((defaults) => {
-          remoteHost.value = defaults.host || "127.0.0.1";
-          remotePort.value = defaults.port || defaults.localPort || "45678";
-          if (defaults.mode === "remote") {
-            remoteCode.focus();
-          }
-        });
-      }
-
-      localStart.addEventListener("click", async () => {
-        if (!api || typeof api.startLocal !== "function") return;
-        setBusy(true, "Starting local backend...");
-        const result = await api.startLocal();
-        if (!result || result.ok === false) {
-          setBusy(false, (result && result.error) || "Unable to start local backend.");
-        }
-      });
-
-      remoteForm.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        if (!api || typeof api.connectRemote !== "function") return;
-        setBusy(true, "Checking remote backend...");
-        const result = await api.connectRemote({
-          host: remoteHost.value,
-          port: remotePort.value,
-          securityCode: remoteCode.value,
-          caPem: remoteCa.value,
-        });
-        if (!result || result.ok === false) {
-          setBusy(false, (result && result.error) || "Unable to connect remote backend.");
-        }
-      });
-    </script>
+    <script src="./splash.js"></script>
   </body>
 </html>

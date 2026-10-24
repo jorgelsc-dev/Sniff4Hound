@@ -10,7 +10,7 @@ import test from "node:test";
 // only build the command the shell would run, from fake lookups.
 const require = createRequire(import.meta.url);
 const elevation = require("../../lib/elevation.js");
-const { configureGraphics } = require("../../lib/graphics.js");
+const { configureGraphics, graphicsSwitches } = require("../../lib/graphics.js");
 
 const BASE_ENV = {
   DISPLAY: ":0",
@@ -28,36 +28,23 @@ const BASE_ENV = {
 const which = (found) => (name) => found[name] || null;
 const build = (overrides = {}) =>
   elevation.buildElevationCommand({
-    target: "/opt/s4h/electron",
-    args: ["."],
+    target: "/opt/s4h/python",
+    args: ["-m", "sniff4hound.desktop_runtime"],
     env: BASE_ENV,
     uid: 1000,
     gid: 1000,
     home: "/home/op",
     which: which({ sudo: "/usr/bin/sudo", pkexec: "/usr/bin/pkexec" }),
-    askpass: "/tmp/askpass.sh",
-    hasTerminal: false,
     ...overrides,
   });
 
-test("only an unprivileged Linux launch hands over to a root copy", () => {
-  const ok = { platform: "linux", euid: 1000, env: {} };
-  assert.equal(elevation.shouldElevate(ok), true);
-  assert.equal(elevation.shouldElevate({ ...ok, euid: 0 }), false, "already root");
-  assert.equal(elevation.shouldElevate({ ...ok, platform: "darwin" }), false);
-  assert.equal(elevation.shouldElevate({ ...ok, platform: "win32", euid: 0 }), false);
+test("the opt-out skips the automatic UI request but does not bypass runtime privileges", () => {
+  for (const off of ["0", "false", "off", "no", " OFF "]) assert.equal(elevation.optedOut({ SNIFF4HOUND_DESKTOP_ELEVATE: off }), true);
+  assert.equal(elevation.optedOut({}), false);
+  assert.equal(elevation.optedOut({ SNIFF4HOUND_DESKTOP_ELEVATE: "1" }), false);
 });
 
-test("the opt-out and the marker both stop a relaunch", () => {
-  const launch = (env) => elevation.shouldElevate({ platform: "linux", euid: 1000, env });
-  for (const off of ["0", "false", "off", "no", " OFF "]) {
-    assert.equal(launch({ SNIFF4HOUND_DESKTOP_ELEVATE: off }), false, off);
-  }
-  assert.equal(launch({ SNIFF4HOUND_DESKTOP_ELEVATE: "1" }), true);
-  assert.equal(launch({ SNIFF4HOUND_DESKTOP_ELEVATED: "1" }), false, "a root copy that is not root must not loop");
-});
-
-test("the root copy gets the display, the operator's HOME and the runtime settings", () => {
+test("the root runtime keeps the operator's HOME, data environment and settings", () => {
   const assignments = elevation.forwardedAssignments({ env: BASE_ENV, uid: 1000, gid: 1001, home: "/home/op" });
   for (const expected of [
     "DISPLAY=:0",
@@ -69,7 +56,6 @@ test("the root copy gets the display, the operator's HOME and the runtime settin
     "LC_ALL=es_VE.UTF-8",
     "SNIFF4HOUND_INVOKING_UID=1000",
     "SNIFF4HOUND_INVOKING_GID=1001",
-    "SNIFF4HOUND_DESKTOP_ELEVATED=1",
   ]) {
     assert.ok(assignments.includes(expected), `missing ${expected}`);
   }
@@ -128,95 +114,56 @@ test("a value with a newline or NUL cannot split the assignment", () => {
   assert.ok(assignments.includes("PATH=/usr/bin"));
 });
 
-test("without a terminal sudo runs with the graphical askpass", () => {
-  const plan = build();
-  assert.equal(plan.command, "/usr/bin/sudo");
-  assert.equal(plan.args[0], "-A");
-  assert.equal(plan.args[1], "env");
-  assert.deepEqual(plan.env, { SUDO_ASKPASS: "/tmp/askpass.sh" });
-});
-
-test("with a terminal sudo prompts there, without -A", () => {
-  const plan = build({ hasTerminal: true, askpass: null });
-  assert.equal(plan.command, "/usr/bin/sudo");
-  assert.equal(plan.args[0], "env");
-  assert.ok(!plan.args.includes("-A"));
-});
-
-test("the program is the target with --no-sandbox on the real command line", () => {
-  const { args } = build({ args: [".", "--inspect=0"] });
-  const at = args.indexOf("/opt/s4h/electron");
-  assert.deepEqual(args.slice(at), ["/opt/s4h/electron", "--no-sandbox", ".", "--inspect=0"]);
-  // every environment assignment comes before the program
-  assert.ok(args.slice(0, at).every((item) => item === "-A" || item === "env" || /^[A-Z_0-9]+=/.test(item)));
-});
-
-test("pkexec is the fallback when sudo cannot prompt", () => {
-  const plan = build({ which: which({ sudo: "/usr/bin/sudo", pkexec: "/usr/bin/pkexec" }), askpass: null });
+test("authentication uses the native Polkit agent even when sudo and zenity are installed", () => {
+  const plan = build({ which: which({ pkexec: "/usr/bin/pkexec", sudo: "/usr/bin/sudo", zenity: "/usr/bin/zenity" }) });
   assert.equal(plan.command, "/usr/bin/pkexec");
-  assert.equal(plan.args[0], "env");
+  assert.deepEqual(plan.args.slice(0, 3), ["--disable-internal-agent", "--keep-cwd", "env"]);
+  const at = plan.args.indexOf("/opt/s4h/python");
+  assert.deepEqual(plan.args.slice(at), ["/opt/s4h/python", "-m", "sniff4hound.desktop_runtime"]);
+  assert.doesNotMatch(plan.args.join("\n"), /electron|--no-sandbox|--ozone-platform|SUDO_ASKPASS/);
 });
 
-test("Linux root and the waiting launcher avoid GL, while an unprivileged window keeps acceleration", () => {
-  for (const [platform, euid, launcherOnly, expected] of [
-    ["linux", 0, false, true],
-    ["linux", 1000, true, true],
-    ["linux", 1000, false, false],
-    ["darwin", 0, false, false],
-    ["win32", 0, false, false],
+test("a normal desktop retains acceleration; only a manually root-launched shell avoids GL", () => {
+  for (const [platform, euid, expected] of [
+    ["linux", 0, true],
+    ["linux", 1000, false],
+    ["darwin", 0, false],
+    ["win32", 0, false],
   ]) {
     const switches = [];
     let software = false;
     const app = {
-      commandLine: { appendSwitch: (name) => switches.push(name) },
+      commandLine: { appendSwitch: (name, value) => switches.push([name, value].filter((item) => item !== undefined)) },
       disableHardwareAcceleration: () => { software = true; },
     };
-    configureGraphics({ app, platform, euid, launcherOnly });
-    assert.equal(software, expected, `${platform}, uid ${euid}, launcher ${launcherOnly}`);
-    assert.deepEqual(switches, platform === "linux" ? ["no-sandbox"] : []);
+    configureGraphics({ app, platform, euid, env: {}, args: [] });
+    assert.equal(software, expected, `${platform}, uid ${euid}`);
+    assert.deepEqual(switches, platform !== "linux" ? [] : expected
+      ? [["no-sandbox"], ["disable-gpu"], ["disable-software-rasterizer"]]
+      : []);
   }
 });
 
-test("no sudo and no pkexec means no way to elevate", () => {
+test("only root defaults to X11 when an authenticated display is available", () => {
+  const options = { platform: "linux", euid: 0, env: { DISPLAY: ":0", XDG_SESSION_TYPE: "wayland" } };
+  const platformSwitches = (overrides = {}) => graphicsSwitches({ ...options, ...overrides }).filter(([name]) => name === "ozone-platform");
+  assert.deepEqual(platformSwitches(), [["ozone-platform", "x11"]]);
+  assert.deepEqual(platformSwitches({ euid: 1000 }), []);
+  assert.deepEqual(platformSwitches({ env: { WAYLAND_DISPLAY: "wayland-0" } }), []);
+  assert.deepEqual(platformSwitches({ args: ["--ozone-platform=wayland"] }), []);
+  assert.deepEqual(platformSwitches({ args: ["--ozone-platform", "wayland"] }), []);
+});
+
+test("sudo and a generic password dialog cannot replace native Polkit authentication", () => {
   assert.equal(build({ which: which({}) }), null);
-  assert.equal(build({ which: which({ sudo: "/usr/bin/sudo" }), askpass: null }), null);
+  assert.equal(build({ which: which({ sudo: "/usr/bin/sudo", zenity: "/usr/bin/zenity" }) }), null);
 });
 
-test("a cancelled prompt is told apart from a crash", () => {
-  assert.equal(elevation.looksLikeRefusedElevation(126, ""), true, "pkexec: dismissed");
-  assert.equal(elevation.looksLikeRefusedElevation(127, ""), true, "pkexec: not authorized");
-  assert.equal(elevation.looksLikeRefusedElevation(1, "sudo: no password was provided\n"), true);
-  assert.equal(elevation.looksLikeRefusedElevation(1, "sudo: 3 incorrect password attempts\n"), true);
-  assert.equal(elevation.looksLikeRefusedElevation(1, "sudo: unable to resolve host box\nsegfault"), false);
-  assert.equal(elevation.looksLikeRefusedElevation(0, "sudo: a password is required"), false, "a clean exit is never a refusal");
-  assert.equal(elevation.looksLikeRefusedElevation(1, "Gtk-WARNING"), false);
-});
-
-test("the askpass helper is a private script that calls zenity, or ssh-askpass as is", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "s4h-askpass-test-"));
-  try {
-    const helper = elevation.createAskpassHelper({ which: which({ zenity: "/usr/bin/zenity" }), tmpdir: tmp });
-    assert.equal(path.dirname(helper.path), helper.dir);
-    assert.equal(fs.statSync(helper.dir).mode & 0o077, 0, "directory must be private");
-    assert.equal(fs.statSync(helper.path).mode & 0o777, 0o700);
-    assert.match(fs.readFileSync(helper.path, "utf8"), /exec '\/usr\/bin\/zenity' --password/);
-
-    const ssh = elevation.createAskpassHelper({ which: which({ "ssh-askpass": "/usr/bin/ssh-askpass" }), tmpdir: tmp });
-    assert.deepEqual(ssh, { path: "/usr/bin/ssh-askpass", dir: null });
-    assert.equal(elevation.createAskpassHelper({ which: which({}), tmpdir: tmp }), null);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("a zenity path with a quote cannot break out of the script", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "s4h-askpass-test-"));
-  try {
-    const helper = elevation.createAskpassHelper({ which: which({ zenity: "/opt/it's/zenity" }), tmpdir: tmp });
-    assert.match(fs.readFileSync(helper.path, "utf8"), /exec '\/opt\/it'\\''s\/zenity' --password/);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
+test("Polkit cancellation and authorization failure are distinguished from runtime crashes", () => {
+  assert.equal(elevation.looksLikeRefusedElevation(126), true);
+  assert.equal(elevation.looksLikeRefusedElevation(127), true);
+  assert.equal(elevation.looksLikeRefusedElevation(1), false);
+  assert.equal(elevation.looksLikeRefusedElevation(0), false);
 });
 
 test("system directories win over a same-named program earlier on PATH", () => {
@@ -252,166 +199,42 @@ test("handing a tree back changes only what is not already the operator's", () =
   }
 });
 
-// --- the launcher around a fake spawn --------------------------------------
-
-function launcherRig(overrides = {}) {
-  const calls = { spawn: [], exit: [], log: [], signals: new Map(), kills: [], stderr: [] };
-  const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), kill: (sig) => calls.kills.push(sig) });
+// Runtime spawning without requesting actual credentials.
+function runtimeRig(overrides = {}) {
+  const calls = [];
+  const child = new EventEmitter();
   const options = {
-    spawn: (command, args, opts) => {
-      calls.spawn.push({ command, args, opts });
-      return child;
-    },
-    exit: (code) => calls.exit.push(code),
-    log: (line) => calls.log.push(line),
-    onSignal: (signal, handler) => calls.signals.set(signal, handler),
-    stderr: { write: (chunk) => calls.stderr.push(String(chunk)) },
-    env: { ...BASE_ENV },
-    argv: ["/opt/s4h/electron", "."],
-    execPath: "/opt/s4h/electron",
-    platform: "linux",
-    euid: 1000,
-    uid: 1000,
-    gid: 1000,
-    home: "/home/op",
-    isTTY: true,
-    which: which({ sudo: "/usr/bin/sudo" }),
+    spawn: (...args) => { calls.push(args); return child; },
+    target: "/opt/s4h/python", args: ["-m", "sniff4hound.desktop_runtime"], cwd: "/repo",
+    env: { ...BASE_ENV }, platform: "linux", euid: 1000, uid: 1000, gid: 1000,
+    home: "/home/op", which: which({ pkexec: "/usr/bin/pkexec" }),
     ...overrides,
   };
-  return { calls, child, run: () => elevation.runElevatedLauncher(options) };
+  return { calls, child, run: () => elevation.launchRuntime(options) };
 }
 
-test("the launcher starts the root copy and exits with its code", () => {
-  const { calls, child, run } = launcherRig();
-  assert.equal(run(), true, "this process is only a launcher");
-  assert.equal(calls.spawn.length, 1);
-  assert.equal(calls.spawn[0].command, "/usr/bin/sudo");
-  assert.deepEqual(calls.spawn[0].opts.stdio, ["inherit", "inherit", "pipe"]);
-  assert.deepEqual(calls.exit, [], "it waits for the root copy");
-
-  child.emit("exit", 0, null);
-  assert.deepEqual(calls.exit, [0]);
+test("the runtime is launched with Polkit and a parent lifetime pipe", () => {
+  const { calls, child, run } = runtimeRig();
+  assert.equal(run(), child);
+  const [command, args, options] = calls[0];
+  assert.equal(command, "/usr/bin/pkexec");
+  assert.equal(args[0], "--disable-internal-agent");
+  assert.equal(options.cwd, "/repo");
+  assert.deepEqual(options.stdio, ["pipe", "pipe", "pipe"]);
+  assert.ok(!("SUDO_ASKPASS" in options.env));
 });
 
-test("the root copy's exit code, or a signal, is passed on", () => {
-  const first = launcherRig();
-  first.run();
-  first.child.emit("exit", 3, null);
-  assert.deepEqual(first.calls.exit, [3]);
-
-  const second = launcherRig();
-  second.run();
-  second.child.emit("exit", null, "SIGKILL");
-  assert.deepEqual(second.calls.exit, [1]);
-});
-
-test("stopping the launcher stops the root copy through sudo", () => {
-  const { calls, run } = launcherRig();
-  run();
-  assert.deepEqual([...calls.signals.keys()].sort(), ["SIGHUP", "SIGINT", "SIGTERM"]);
-  calls.signals.get("SIGTERM")();
-  calls.signals.get("SIGINT")();
-  assert.deepEqual(calls.kills, ["SIGTERM", "SIGINT"]);
-});
-
-test("a cancelled prompt exits quietly with an explanation, not an error", () => {
-  const { calls, child, run } = launcherRig();
-  run();
-  child.stderr.emit("data", Buffer.from("sudo: no password was provided\n"));
-  child.emit("exit", 1, null);
-  assert.deepEqual(calls.exit, [1]);
-  assert.equal(calls.log.length, 1);
-  assert.match(calls.log[0], /Privileges were not granted/);
-  assert.deepEqual(calls.stderr, ["sudo: no password was provided\n"], "sudo's own message still reaches the terminal");
-});
-
-test("terminal stderr returns to column zero even while sudo leaves the tty raw", () => {
-  const chunks = [];
-  const { child, run } = launcherRig({ stderr: { isTTY: true, write: (chunk) => chunks.push(chunk) } });
-  run();
-  const unicode = Buffer.from("línea uno\n");
-  child.stderr.emit("data", unicode.subarray(0, 2)); // split the multibyte character
-  child.stderr.emit("data", unicode.subarray(2));
-  child.stderr.emit("data", Buffer.from("line two\r"));
-  child.stderr.emit("data", Buffer.from("\nline three\n"));
-  assert.equal(Buffer.concat(chunks).toString("utf8"), "línea uno\r\nline two\r\nline three\r\n");
-});
-
-test("redirected stderr preserves its original bytes and line endings", () => {
-  const chunks = [];
-  const { child, run } = launcherRig({ stderr: { isTTY: false, write: (chunk) => chunks.push(chunk) } });
-  run();
-  const original = Buffer.from("línea uno\nline two\r\n");
-  child.stderr.emit("data", original.subarray(0, 2));
-  child.stderr.emit("data", original.subarray(2));
-  assert.deepEqual(Buffer.concat(chunks), original);
-});
-
-test("a crash of the root copy is not reported as a refusal", () => {
-  const { calls, child, run } = launcherRig();
-  run();
-  child.stderr.emit("data", Buffer.from("Segmentation fault\n"));
-  child.emit("exit", 139, null);
-  assert.deepEqual(calls.exit, [139]);
-  assert.deepEqual(calls.log, []);
-});
-
-test("a program that cannot be started ends the launcher", () => {
-  const { calls, child, run } = launcherRig();
-  run();
-  child.emit("error", new Error("spawn sudo ENOENT"));
-  assert.deepEqual(calls.exit, [1]);
-  assert.match(calls.log[0], /Could not start the privileged app: spawn sudo ENOENT/);
-});
-
-test("nothing is started when already root, opted out, or on another OS", () => {
-  for (const overrides of [
-    { euid: 0 },
-    { platform: "darwin" },
-    { env: { ...BASE_ENV, SNIFF4HOUND_DESKTOP_ELEVATE: "0" } },
-    { env: { ...BASE_ENV, SNIFF4HOUND_DESKTOP_ELEVATED: "1" } },
-  ]) {
-    const { calls, run } = launcherRig(overrides);
-    assert.equal(run(), false);
-    assert.deepEqual(calls.spawn, []);
-  }
-});
-
-test("with no way to elevate the launch goes on unprivileged and says why", () => {
-  const { calls, run } = launcherRig({ which: which({}) });
-  assert.equal(run(), false);
-  assert.deepEqual(calls.spawn, []);
-  assert.match(calls.log[0], /No way to ask for privileges/);
-});
-
-test("an AppImage is relaunched by its file, not by its mount", () => {
-  const { calls, run } = launcherRig({ env: { ...BASE_ENV, APPIMAGE: "/home/op/Sniff4Hound.AppImage" } });
-  run();
-  const { args } = calls.spawn[0];
-  assert.deepEqual(args.slice(args.indexOf("/home/op/Sniff4Hound.AppImage")), [
-    "/home/op/Sniff4Hound.AppImage",
-    "--no-sandbox",
-    ".",
-  ]);
-  assert.ok(!args.includes("/opt/s4h/electron"));
-});
-
-test("a launcher without a terminal cleans up its askpass helper when the root copy ends", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "s4h-launcher-test-"));
-  try {
-    const { calls, child, run } = launcherRig({
-      isTTY: false,
-      tmpdir: tmp,
-      which: which({ sudo: "/usr/bin/sudo", zenity: "/usr/bin/zenity" }),
-    });
+test("already-root and non-Linux runtimes start directly without a second prompt", () => {
+  for (const overrides of [{ euid: 0 }, { platform: "darwin" }]) {
+    const { calls, run } = runtimeRig(overrides);
     run();
-    assert.equal(calls.spawn[0].args[0], "-A");
-    const askpass = calls.spawn[0].opts.env.SUDO_ASKPASS;
-    assert.ok(fs.existsSync(askpass), "the helper exists while sudo may call it");
-    child.emit("exit", 0, null);
-    assert.equal(fs.existsSync(askpass), false);
-    assert.equal(fs.existsSync(path.dirname(askpass)), false);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    assert.equal(calls[0][0], "/opt/s4h/python");
+    assert.deepEqual(calls[0][1], ["-m", "sniff4hound.desktop_runtime"]);
   }
+});
+
+test("missing graphical elevation tools fail before starting any unprivileged backend", () => {
+  const { calls, run } = runtimeRig({ which: which({ sudo: "/usr/bin/sudo" }) });
+  assert.throws(run, /Install pkexec/);
+  assert.deepEqual(calls, []);
 });

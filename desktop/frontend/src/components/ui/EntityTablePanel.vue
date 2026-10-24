@@ -158,6 +158,7 @@
         v-model:expanded="expandedRowKeys"
         :headers="tableHeaders"
         :items="tableItems"
+        :group-by="groupBy"
         item-value="__entityTableRowKey"
         :items-per-page="enablePagination ? safePageSize : -1"
         :items-per-page-options="itemsPerPageOptions"
@@ -439,6 +440,10 @@ export default {
       type: Array,
       default: () => [],
     },
+    groupBy: {
+      type: Array,
+      default: () => [],
+    },
     loading: {
       type: Boolean,
       default: false,
@@ -697,9 +702,9 @@ export default {
       if (!isTruncated) return "";
       const scope = this.rangeLabel ? ` en ${this.rangeLabel}` : "";
       if (total !== null) {
-        return `Mostrando las ${shown.toLocaleString()} filas más recientes${scope} de ${total.toLocaleString()} almacenadas. Acota el rango de tiempo o carga más para ver el resto.`;
+        return `Mostrando las ${shown.toLocaleString("es-ES")} filas más recientes${scope} de ${total.toLocaleString("es-ES")} almacenadas. Acota el rango de tiempo o carga más para ver el resto.`;
       }
-      return `Mostrando las ${shown.toLocaleString()} filas más recientes${scope}; los registros anteriores están almacenados pero no se muestran.`;
+      return `Mostrando las ${shown.toLocaleString("es-ES")} filas más recientes${scope}; los registros anteriores están almacenados pero no se muestran.`;
     },
   },
   watch: {
@@ -1041,6 +1046,7 @@ export default {
       if (value === null || value === undefined || value === "") {
         return "-";
       }
+      if (typeof value === "number" && /count|hits|length|bytes|total|weight/.test(column.key || "")) return value.toLocaleString("es-ES");
       return value;
     },
   },

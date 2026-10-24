@@ -206,6 +206,12 @@ export default {
     };
   },
   watch: {
+    shutdownPending(pending) {
+      if (pending && this.quickStatusTimer) {
+        clearInterval(this.quickStatusTimer);
+        this.quickStatusTimer = null;
+      }
+    },
     $route() {
       this.open = false;
       this.openGroup = null;

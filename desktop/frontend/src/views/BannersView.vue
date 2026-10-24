@@ -56,7 +56,7 @@
 
     <EntityTablePanel
       v-if="tab === 'banners'"
-      title="Captured Responses"
+      title="Respuestas capturadas"
       subtitle="Service responses captured by listeners."
       v-model:live-enabled="liveRefreshEnabled"
       :rows="filteredBanners"
@@ -235,11 +235,11 @@ export default {
     protoFilterOptions() {
       const source = this.tab === "favicons" ? this.favicons : this.banners;
       const values = uniqueSorted(source.map((item) => item.proto));
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: value.toUpperCase(), value }))];
+      return [{ label: "Todos", value: "" }, ...values.map((value) => ({ label: value.toUpperCase(), value }))];
     },
     mimeFilterOptions() {
       const values = uniqueSorted(this.favicons.map((item) => item.mime_type));
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: value, value }))];
+      return [{ label: "Todos", value: "" }, ...values.map((value) => ({ label: value, value }))];
     },
     filteredBanners() {
       const query = String(this.tableFilters.query || "").trim().toLowerCase();
@@ -334,7 +334,7 @@ export default {
     formatProgress(value) {
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) return "-";
-      return `${numeric.toFixed(0)}%`;
+      return `${numeric.toLocaleString("es-ES", { maximumFractionDigits: 0 })}%`;
     },
     isBannerActionLoading(id, action) {
       return this.bannerActionLoading.id === id && this.bannerActionLoading.action === action;
@@ -385,7 +385,7 @@ export default {
       if (!payload || payload.type !== "feed_data") return;
       this.banners = this.store.feedListResult(payload).rows;
       this.error = "";
-      this.lastUpdated = new Date().toLocaleTimeString();
+      this.lastUpdated = new Date().toLocaleTimeString("es-ES");
       this.syncFilters();
       this.loading = false;
     },
@@ -402,7 +402,7 @@ export default {
     loadBannersOnce() {
       return this.store.fetchJsonPromise("/banners/").then((data) => {
         this.banners = this.store.extractArray(data);
-        this.lastUpdated = new Date().toLocaleTimeString();
+        this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         this.syncFilters();
         this.loading = false;
       });

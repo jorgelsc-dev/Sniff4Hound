@@ -1,9 +1,9 @@
 <template>
   <div>
     <ViewHeader
-      overline="Operations"
+      overline="Operaciones"
       title="Resumen"
-      description="Live telemetry metrics."
+      description="Métricas de telemetría en vivo."
       :refresh-loading="loading"
       :show-time-range="true"
       @refresh="load"
@@ -207,7 +207,7 @@ export default {
         },
         {
           key: "packets",
-          label: "Packets",
+          label: "Paquetes",
           value: Number(this.counts.count_ports || 0),
           caption: "Frames written into packet telemetry",
           icon: "mdi-ethernet",
@@ -223,7 +223,7 @@ export default {
         },
         {
           key: "hosts",
-          label: "Unique Hosts",
+          label: "Hosts únicos",
           value: Number(analyticsSummary.unique_hosts || 0),
           caption: "Distinct IPs seen across the capture set",
           icon: "mdi-lan-connect",
@@ -335,7 +335,7 @@ export default {
       const entries = this.snifferRuntime.errors && typeof this.snifferRuntime.errors === "object"
         ? Object.entries(this.snifferRuntime.errors)
         : [];
-      if (!entries.length) return "Packet capture is blocked on the selected interfaces.";
+      if (!entries.length) return "La captura está bloqueada en las interfaces seleccionadas.";
       return entries
         .slice(0, 2)
         .map(([name, message]) => `${name}: ${message}`)
@@ -477,13 +477,13 @@ export default {
             this.dashboard = dashboardRes.value || {};
           } else {
             this.dashboard = {};
-            errors.push((dashboardRes.reason && dashboardRes.reason.message) || "Failed to load dashboard snapshot");
+            errors.push((dashboardRes.reason && dashboardRes.reason.message) || "No se pudo cargar el resumen");
           }
           if (analyticsRes.status === "fulfilled") {
             this.analytics = analyticsRes.value || {};
           } else {
             this.analytics = {};
-            errors.push((analyticsRes.reason && analyticsRes.reason.message) || "Failed to load analytics");
+            errors.push((analyticsRes.reason && analyticsRes.reason.message) || "No se pudieron cargar las estadísticas");
           }
           if (packetsRes.status === "fulfilled") {
             this.packets = packetsRes.value.rows;
@@ -491,9 +491,9 @@ export default {
           } else {
             this.packets = [];
             this.packetsMeta = { totalAvailable: null, returned: null, truncated: null };
-            errors.push((packetsRes.reason && packetsRes.reason.message) || "Failed to load packets");
+            errors.push((packetsRes.reason && packetsRes.reason.message) || "No se pudieron cargar los paquetes");
           }
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
           this.error = errors.join(" | ");
         })
         .finally(() => {

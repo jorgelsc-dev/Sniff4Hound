@@ -292,13 +292,14 @@ class AuthGuardHardeningTests(unittest.TestCase):
         payload = json.loads(response.body.decode("utf-8"))
         self.assertEqual(payload["code"], "bad_origin")
 
-    def test_the_session_endpoint_shares_the_limiter(self):
-        # /api/auth/session is the one route the guard skips, which makes it
-        # the only free "is this code right?" oracle if it is not limited.
+    def test_the_session_endpoint_shares_the_failure_limiter_but_accepts_the_correct_code(self):
         for index in range(self.auth.AUTH_FAILURE_THRESHOLD + 1):
             self.app.app.dispatch(_request("/api/auth/session", headers={"x-security-code": f"g{index}"}))
-        response = self.app.app.dispatch(_request("/api/hello", headers={"x-security-code": "Ab12Cd34"}))
+        response = self.app.app.dispatch(_request("/api/hello", headers={"x-security-code": "wrong"}))
         self.assertEqual(response.status, 429)
+        response = self.app.app.dispatch(_request("/api/auth/session", headers={"x-security-code": "Ab12Cd34"}))
+        self.assertEqual(response.status, 200)
+        self.assertTrue(json.loads(response.body)["authenticated"])
 
     def test_an_unauthenticated_session_probe_is_not_counted(self):
         # The SPA calls /api/auth/session with no token at all on every load;

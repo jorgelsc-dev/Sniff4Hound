@@ -100,6 +100,22 @@ class HistoryApiTests(unittest.TestCase):
         self.assertEqual(len(self._json(page)), 1)
         self.assertEqual(self._headers(page)["x-total-available"], "3")
 
+    def test_dns_parent_filter_includes_subdomains_on_label_boundaries(self):
+        self.store.write_history(
+            [
+                _dns_row("example.co.uk", query_count=1),
+                _dns_row("api.example.co.uk", query_count=2),
+                _dns_row("deep.api.example.co.uk", query_count=3),
+                _dns_row("notexample.co.uk", query_count=4),
+            ],
+            [],
+            [],
+        )
+        rows = self._json(self._call("/api/history/dns/", query="parent=example.co.uk"))
+        self.assertEqual({row["domain"] for row in rows}, {"example.co.uk", "api.example.co.uk", "deep.api.example.co.uk"})
+        deep = next(row for row in rows if row["domain"] == "deep.api.example.co.uk")
+        self.assertEqual((deep["base_domain"], deep["subdomain"], deep["is_subdomain"]), ("example.co.uk", "deep.api", True))
+
     def test_a_bad_limit_is_a_400_not_a_silent_default(self):
         self.assertEqual(self._call("/api/history/dns/", query="limit=lots").status, 400)
 
@@ -107,14 +123,27 @@ class HistoryApiTests(unittest.TestCase):
         self._seed()
         bindings = self._json(self._call("/api/history/arp/"))
         self.assertEqual(len(bindings), 2)
+        self.assertEqual(bindings[0]["mac_address_kind"], "local")
+        self.assertEqual(bindings[0]["mac_vendor"], "")
         self.assertEqual(len(self._json(self._call("/api/history/arp/", query="ip=192.168.1.21"))), 1)
         devices = self._json(self._call("/api/history/arp/devices/"))
         self.assertEqual(len(devices), 1)
         self.assertEqual(sorted(devices[0]["ips"]), ["192.168.1.20", "192.168.1.21"])
+        self.assertEqual(devices[0]["mac_address_kind"], "local")
         events = self._json(self._call("/api/history/arp/events/"))
         self.assertEqual([e["kind"] for e in events], ["mac_new_ip", "new_device"])
+        self.assertTrue(all("mac_vendor_registry" in event for event in events))
         only = self._json(self._call("/api/history/arp/events/", query="kind=new_device"))
         self.assertEqual([e["kind"] for e in only], ["new_device"])
+
+    def test_arp_search_includes_the_derived_ieee_manufacturer(self):
+        self.store.write_history([], [_arp_row("192.168.1.50", "f0:ee:7a:12:34:56")], [])
+        bindings = self._json(self._call("/api/history/arp/", query="search=apple"))
+        devices = self._json(self._call("/api/history/arp/devices/", query="search=apple"))
+        self.assertEqual([row["mac"] for row in bindings], ["f0:ee:7a:12:34:56"])
+        self.assertEqual([row["mac"] for row in devices], ["f0:ee:7a:12:34:56"])
+        self.assertEqual(bindings[0]["mac_vendor"], "Apple, Inc.")
+        self.assertEqual(bindings[0]["mac_vendor_registry"], "MA-L")
 
     def test_the_config_comes_with_the_row_counts(self):
         self._seed()

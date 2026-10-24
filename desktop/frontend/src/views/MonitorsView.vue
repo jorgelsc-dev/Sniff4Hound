@@ -1,9 +1,9 @@
 <template>
   <div>
     <ViewHeader
-      overline="Detection"
-      title="Monitors"
-      description="Only traffic that matches an enabled monitor gets written to disk. Everything else is parsed, counted live, and discarded."
+      overline="Detección"
+      title="Monitores"
+      description="Con la persistencia de alertas, solo se guarda el tráfico que coincide con un monitor habilitado. El resto se analiza y cuenta en vivo."
       :refresh-loading="loading"
       @refresh="load"
     />
@@ -108,7 +108,7 @@
               prepend-icon="mdi-table-row"
               class="match-count-chip"
             >
-              {{ monitor.match_count.toLocaleString() }}
+              {{ monitor.match_count.toLocaleString("es-ES") }}
             </v-chip>
             <router-link
               class="font-weight-medium monitor-name-link"
@@ -377,7 +377,7 @@ export default {
           const rowPayload = payload && Array.isArray(payload.monitors) ? payload.monitors : payload;
           this.monitors = this.store.extractArray(rowPayload);
           this.monitorStats = payload && payload.stats ? payload.stats : null;
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .catch((err) => {
           this.monitors = [];

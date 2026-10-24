@@ -285,11 +285,11 @@
                   </div>
                   <div class="storage-stat-item">
                     <div class="text-caption text-medium-emphasis">Páginas totales</div>
-                    <div class="text-body-2 font-weight-medium">{{ (storageStats.page_count || 0).toLocaleString() }}</div>
+                    <div class="text-body-2 font-weight-medium">{{ (storageStats.page_count || 0).toLocaleString("es-ES") }}</div>
                   </div>
                   <div class="storage-stat-item">
                     <div class="text-caption text-medium-emphasis">Páginas libres</div>
-                    <div class="text-body-2 font-weight-medium">{{ (storageStats.freelist_count || 0).toLocaleString() }}</div>
+                    <div class="text-body-2 font-weight-medium">{{ (storageStats.freelist_count || 0).toLocaleString("es-ES") }}</div>
                   </div>
                   <div class="storage-stat-item">
                     <div class="text-caption text-medium-emphasis">Recuperación incremental</div>
@@ -556,13 +556,14 @@
             hide-details
           />
 
-          <v-data-table
+          <v-data-table-server
+            v-model:page="listenerPage"
             :headers="listenerHeaders"
             :items="listeners"
-            :search="listenerSearch"
-            :custom-filter="filterListenerRows"
+            :items-length="listenerTotal"
+            :items-per-page="25"
+            :items-per-page-options="[25]"
             density="comfortable"
-            items-per-page="10"
             no-data-text="Todavía no hay listeners."
             class="listeners-table"
           >
@@ -599,7 +600,7 @@
                 @update:model-value="(value) => toggleListener(item, value)"
               />
             </template>
-          </v-data-table>
+          </v-data-table-server>
         </DataPanel>
 
         <v-dialog v-model="newListenerDialog" max-width="420">
@@ -708,6 +709,12 @@
           </v-btn>
         </div>
 
+        <v-row>
+          <v-col cols="12" md="8"><v-text-field v-model="monitorQuery" label="Buscar monitores" clearable hide-details /></v-col>
+          <v-col cols="12" md="4"><v-select v-model="monitorEnabled" label="Estado" :items="[{ title: 'Todos', value: '' }, { title: 'Habilitados', value: '1' }, { title: 'Deshabilitados', value: '0' }]" hide-details /></v-col>
+        </v-row>
+        <v-pagination v-model="monitorPage" :length="Math.max(1, Math.ceil(monitorTotal / 25))" :total-visible="7" />
+        <p class="text-caption">{{ monitorTotal == null ? "Cargando monitores…" : `${monitorTotal.toLocaleString('es-ES')} monitores encontrados` }}</p>
         <EntityTablePanel
           title="Monitores de detección"
           subtitle="Los monitores integrados pueden habilitarse o deshabilitarse, pero no editarse ni eliminarse. Los personalizados sí pueden editarse o eliminarse. Su tráfico en vivo y gráficas están en la página Monitores."
@@ -716,10 +723,7 @@
           :loading="loading"
           :error="error"
           :last-updated="lastUpdated"
-          search-enabled
-          search-label="Buscar monitores"
-          search-placeholder="Nombre, etiqueta, descripción..."
-          :page-size="25"
+          :enable-pagination="false"
           empty-text="Todavía no hay monitores definidos"
           @refresh="load"
         >
@@ -1318,7 +1322,15 @@
             <v-col cols="12" md="4">
               <div v-if="mobilePairing.url" class="mobile-qr-wrap">
                 <img v-if="mobileQrDataUrl" :src="mobileQrDataUrl" alt="QR del stream móvil" class="mobile-qr" />
-                <div class="text-caption text-medium-emphasis mt-2">{{ mobilePairing.url }}</div>
+                <div class="text-caption text-medium-emphasis mt-2">
+                  Enlace directo por IP: <span class="mobile-stream-url">{{ mobilePairing.url }}</span>
+                </div>
+                <div v-if="mobilePairing.mdns_url" class="text-caption text-medium-emphasis mt-1">
+                  Alternativa mDNS: <span class="mobile-stream-url">{{ mobilePairing.mdns_url }}</span>
+                </div>
+                <v-alert v-if="mobileServer.mdns && mobileServer.mdns.error" type="warning" variant="tonal" density="compact" class="mt-2">
+                  mDNS no está disponible; el QR por IP continúa funcionando.
+                </v-alert>
                 <!-- The phone shows the same value on its certificate page; compare
                      the two before installing the CA it offers. -->
                 <div v-if="mobileServer.ca_sha256" class="text-caption text-medium-emphasis mt-2 mobile-ca-fingerprint">
@@ -1489,23 +1501,23 @@
             <v-row dense>
               <v-col cols="6">
                 <div class="text-caption text-medium-emphasis">En espera</div>
-                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_depth ?? 0).toLocaleString() }}</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_depth ?? 0).toLocaleString("es-ES") }}</div>
               </v-col>
               <v-col cols="6">
                 <div class="text-caption text-medium-emphasis">Límite</div>
-                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_limit ?? 0).toLocaleString() }}</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_limit ?? 0).toLocaleString("es-ES") }}</div>
               </v-col>
               <v-col cols="6">
                 <div class="text-caption text-medium-emphasis">Aceptados</div>
-                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_accepted ?? 0).toLocaleString() }}</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_accepted ?? 0).toLocaleString("es-ES") }}</div>
               </v-col>
               <v-col cols="6">
                 <div class="text-caption text-medium-emphasis">Descartados por límite</div>
-                <div class="text-body-1 font-weight-medium text-warning">{{ (pipelineLive.cache_dropped ?? 0).toLocaleString() }}</div>
+                <div class="text-body-1 font-weight-medium text-warning">{{ (pipelineLive.cache_dropped ?? 0).toLocaleString("es-ES") }}</div>
               </v-col>
               <v-col cols="6">
                 <div class="text-caption text-medium-emphasis">Pico de ocupación</div>
-                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_peak ?? 0).toLocaleString() }}</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.cache_peak ?? 0).toLocaleString("es-ES") }}</div>
               </v-col>
             </v-row>
           </div>
@@ -1561,23 +1573,23 @@
             <v-row dense>
               <v-col cols="6">
                 <div class="text-caption text-medium-emphasis">Procesados</div>
-                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.processed ?? 0).toLocaleString() }}</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.processed ?? 0).toLocaleString("es-ES") }}</div>
               </v-col>
               <v-col cols="6">
                 <div class="text-caption text-medium-emphasis">Persistidos</div>
-                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.persisted ?? 0).toLocaleString() }}</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.persisted ?? 0).toLocaleString("es-ES") }}</div>
               </v-col>
               <v-col cols="6">
                 <div class="text-caption text-medium-emphasis">Omitidos (sin alerta)</div>
-                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.skipped ?? 0).toLocaleString() }}</div>
+                <div class="text-body-1 font-weight-medium">{{ (pipelineLive.skipped ?? 0).toLocaleString("es-ES") }}</div>
               </v-col>
               <v-col cols="6">
                 <div class="text-caption text-medium-emphasis">Escrituras fallidas (BD)</div>
-                <div class="text-body-1 font-weight-medium text-warning">{{ (pipelineLive.write_errors ?? 0).toLocaleString() }}</div>
+                <div class="text-body-1 font-weight-medium text-warning">{{ (pipelineLive.write_errors ?? 0).toLocaleString("es-ES") }}</div>
               </v-col>
               <v-col cols="6">
                 <div class="text-caption text-medium-emphasis">Errores de evaluación</div>
-                <div class="text-body-1 font-weight-medium text-warning">{{ (pipelineLive.errors ?? 0).toLocaleString() }}</div>
+                <div class="text-body-1 font-weight-medium text-warning">{{ (pipelineLive.errors ?? 0).toLocaleString("es-ES") }}</div>
               </v-col>
             </v-row>
           </div>
@@ -1627,7 +1639,7 @@
               <v-btn size="small" variant="tonal" prepend-icon="mdi-restart" :loading="limitResetting" :disabled="limitResetting" @click="resetLimitCounters">Reiniciar contadores</v-btn>
             </div>
             <v-row dense>
-              <v-col cols="6" sm="3"><div class="text-caption text-medium-emphasis">Pausas totales</div><div class="text-body-1 font-weight-medium">{{ (limitsData.state?.counters?.trips ?? 0).toLocaleString() }}</div></v-col>
+              <v-col cols="6" sm="3"><div class="text-caption text-medium-emphasis">Pausas totales</div><div class="text-body-1 font-weight-medium">{{ (limitsData.state?.counters?.trips ?? 0).toLocaleString("es-ES") }}</div></v-col>
               <v-col cols="6" sm="3"><div class="text-caption text-medium-emphasis">Por CPU</div><div class="text-body-1 font-weight-medium">{{ limitsData.state?.counters?.by_kind?.cpu ?? 0 }}</div></v-col>
               <v-col cols="6" sm="3"><div class="text-caption text-medium-emphasis">Por RAM</div><div class="text-body-1 font-weight-medium">{{ limitsData.state?.counters?.by_kind?.ram ?? 0 }}</div></v-col>
               <v-col cols="6" sm="3"><div class="text-caption text-medium-emphasis">Por almacenamiento</div><div class="text-body-1 font-weight-medium">{{ limitsData.state?.counters?.by_kind?.storage ?? 0 }}</div></v-col>
@@ -1853,6 +1865,7 @@ export default {
       logTailLoading: false,
       logTailError: "",
       pipelineResetting: false,
+      graphFresh: {},
       graphExtras: { blacklist: null, whitelist: null, exclusions: null, retentionDays: null, history: null },
       enginePending: "",
       engineError: "",
@@ -1908,10 +1921,15 @@ export default {
 
       // Service listeners
       listeners: [],
+      listenerStats: null,
       listenersError: "",
       listenerTogglePending: "",
       listenerLockedReason: "Puerto reservado: solo los listeners integrados curados se pueden encender",
       listenerSearch: "",
+      listenerPage: 1,
+      listenerTotal: 0,
+      listenerRequestId: 0,
+      listenerSearchTimer: null,
       listenerHeaders: [
         { title: "Listener", key: "endpoint", value: (item) => `${item.proto}/${item.port}` },
         { title: "Etiqueta", key: "label" },
@@ -1929,6 +1947,12 @@ export default {
       error: "",
       lastUpdated: "",
       monitors: [],
+      monitorQuery: "",
+      monitorEnabled: "",
+      monitorPage: 1,
+      monitorTotal: null,
+      monitorRequestId: 0,
+      catalogSearchTimer: null,
       monitorStats: null,
       filterEnabled: true,
       monitorMinSeverity: "info",
@@ -1953,7 +1977,7 @@ export default {
         { key: "severity", label: "Severidad" },
         { key: "source", label: "Origen" },
         { key: "enabled", label: "Habilitado", sortable: false },
-        { key: "actions", label: "", sortable: false, width: 200 },
+        { key: "actions", label: "Acciones", sortable: false, width: 200 },
       ],
     };
   },
@@ -1970,7 +1994,7 @@ export default {
       const exclusions = extras.exclusions || {};
       const storage = this.storageStats || null;
       const show = (value) => (online ? value : "—");
-      const num = (value) => Number(value || 0).toLocaleString();
+      const num = (value) => value == null ? "—" : Number(value).toLocaleString("es-ES");
       const metric = (label, value, tone = "") => ({ label, value: show(value), tone: online ? tone : "" });
       const state = (label, active, metrics = []) => ({ label, metrics, active: online && Boolean(active), unknown: !online });
       const engineState = (name) => state(
@@ -1978,7 +2002,7 @@ export default {
         runtime[name]?.running,
       );
       const errorCount = (map) => Object.keys(map || {}).length;
-      const listenersEnabled = this.listeners.filter(item => item.enabled).length;
+      const listenersEnabled = honeypot.enabled_listener_count ?? this.listenerStats?.enabled ?? null;
       const freeBytes = storage ? Number(storage.free_bytes || 0) : 0;
       const liveBytes = storage ? Number(storage.live_bytes || 0) : 0;
       const configured = this.locationConfigured;
@@ -1987,7 +2011,7 @@ export default {
       const enabledMonitors = this.monitorStats ? this.monitorStats.enabled : this.monitors.filter(item => item.enabled).length;
       const totalMonitors = this.monitorStats ? this.monitorStats.total : this.monitors.length;
       const ipCount = (exclusions.ip_types || []).length;
-      return {
+      const states = {
         runtime: state(online ? (live ? "Captura activa" : "Motores detenidos") : "Sin conexión", live, [
           metric("Motores", `${(runtime.running_engines || []).length}/2`, live ? "ok" : ""),
           metric("Modo", runtime.mode ? runtime.mode.charAt(0).toUpperCase() + runtime.mode.slice(1) : "—"),
@@ -2005,7 +2029,7 @@ export default {
         },
         honeypot: {
           ...engineState("honeypot"),
-          label: online ? `${listenersEnabled} listeners habilitados` : "Sin conexión",
+          label: online ? `${num(listenersEnabled)} listeners habilitados` : "Sin conexión",
           metrics: [
             metric("Habilitados", num(honeypot.enabled_listener_count ?? listenersEnabled)),
             metric("Escuchando", num(honeypot.running_listener_count)),
@@ -2014,13 +2038,13 @@ export default {
           ],
         },
         location: state(this.locationConfigured ? this.locationSummary : "Sin ubicación", true, [
-          metric("Latitud", configured && Number.isFinite(saved.lat) ? Number(saved.lat).toFixed(4) : "—"),
-          metric("Longitud", configured && Number.isFinite(saved.lon) ? Number(saved.lon).toFixed(4) : "—"),
+          metric("Latitud", configured && Number.isFinite(saved.lat) ? Number(saved.lat).toLocaleString("es-ES", { maximumFractionDigits: 4 }) : "—"),
+          metric("Longitud", configured && Number.isFinite(saved.lon) ? Number(saved.lon).toLocaleString("es-ES", { maximumFractionDigits: 4 }) : "—"),
           metric("Estado", configured ? "Configurada" : "Pendiente", configured ? "ok" : "warn"),
           metric("Etiqueta", saved.label || "—"),
         ]),
-        detection: state(this.error ? "Sin datos" : enabledMonitors ? `${enabledMonitors} reglas habilitadas` : "Detección apagada", enabledMonitors > 0, [
-          metric("Habilitadas", `${enabledMonitors}/${totalMonitors}`),
+        detection: state(this.error ? "Sin datos" : enabledMonitors ? `${num(enabledMonitors)} reglas habilitadas` : "Detección apagada", enabledMonitors > 0, [
+          metric("Habilitadas", `${num(enabledMonitors)}/${num(totalMonitors)}`),
           metric("Severidad mín.", String(this.monitorMinSeverity || "info").toUpperCase()),
           metric("Info generada", this.suppressGeneratedInfo ? "Silenciada" : "Visible"),
           metric("Ámbitos", num(this.detectionScopes.length), this.detectionScopes.length ? "warn" : ""),
@@ -2107,6 +2131,15 @@ export default {
           ],
         ),
       };
+      for (const [key, value] of Object.entries(states)) {
+        if (!online || this.graphFresh[key] !== true) {
+          value.label = !online ? "Datos obsoletos · sin conexión" : this.statusRefreshing ? "Cargando" : "Sin datos actualizados";
+          value.active = false;
+          value.unknown = true;
+          value.metrics = value.metrics.map(item => ({ ...item, value: "—", tone: "" }));
+        }
+      }
+      return states;
     },
     retentionTables() {
       return this.retentionConfig ? Object.keys(this.retentionConfig.table_limits || {}) : [];
@@ -2203,7 +2236,7 @@ export default {
       if (label) return label;
       const { lat, lon } = this.locationSaved;
       return Number.isFinite(lat) && Number.isFinite(lon)
-        ? `${Number(lat).toFixed(2)}, ${Number(lon).toFixed(2)}`
+        ? `${Number(lat).toLocaleString("es-ES", { maximumFractionDigits: 2 })}, ${Number(lon).toLocaleString("es-ES", { maximumFractionDigits: 2 })}`
         : "Sin configurar";
     },
     locationDraftValid() {
@@ -2279,6 +2312,14 @@ export default {
     },
   },
   watch: {
+    monitorQuery() { this.scheduleMonitorSearch(); },
+    monitorEnabled() { this.scheduleMonitorSearch(); },
+    monitorPage() { this.load(); },
+    listenerPage() { this.loadListeners(); },
+    listenerSearch() {
+      clearTimeout(this.listenerSearchTimer);
+      this.listenerSearchTimer = setTimeout(() => { this.listenerPage = 1; this.loadListeners(); }, 250);
+    },
     "$route.query.section"(next) {
       const requested = String(next || "").trim();
       this.activeTab = VALID_TABS.has(requested) ? requested : "";
@@ -2306,10 +2347,16 @@ export default {
     if (this.activeTab === "detection") this.load({ silent: true });
   },
   beforeUnmount() {
+    clearTimeout(this.catalogSearchTimer);
+    clearTimeout(this.listenerSearchTimer);
     clearInterval(this.graphStatusTimer);
     clearInterval(this.mobilePairingTimer);
   },
   methods: {
+    scheduleMonitorSearch() {
+      clearTimeout(this.catalogSearchTimer);
+      this.catalogSearchTimer = setTimeout(() => { this.monitorPage = 1; this.load(); }, 250);
+    },
     async refreshGraph() {
       if (this.statusRefreshing) return;
       this.statusRefreshing = true;
@@ -2326,6 +2373,14 @@ export default {
         this.store.fetchJsonPromise("/api/monitors/stats"),
         this.store.getHistoryConfig(),
       ]);
+      const fresh = (index) => results[index].status === "fulfilled" && results[index].value != null;
+      this.graphFresh = {
+        runtime: fresh(0), capture: fresh(0), honeypot: fresh(0), connection: fresh(0),
+        packetcache: fresh(0) && fresh(1), packetjobs: fresh(0) && fresh(1),
+        detection: fresh(9), scope: fresh(9), storage: fresh(7), history: fresh(10),
+        exclusions: fresh(4), blacklist: fresh(2) && fresh(3), logs: fresh(6), limits: fresh(8),
+        location: !this.locationError, notifications: true,
+      };
       const value = (index) => (results[index].status === "fulfilled" ? results[index].value : null);
       this.graphExtras = {
         blacklist: value(2),
@@ -2702,9 +2757,9 @@ export default {
     formatDbBytes(value) {
       const n = Number(value || 0);
       if (!Number.isFinite(n) || n <= 0) return "0 B";
-      if (n >= 1073741824) return `${(n / 1073741824).toFixed(2)} GB`;
-      if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
-      if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
+      if (n >= 1073741824) return `${(n / 1073741824).toLocaleString("es-ES", { maximumFractionDigits: 2 })} GB`;
+      if (n >= 1048576) return `${(n / 1048576).toLocaleString("es-ES", { maximumFractionDigits: 1 })} MB`;
+      if (n >= 1024) return `${(n / 1024).toLocaleString("es-ES", { maximumFractionDigits: 0 })} KB`;
       return `${n} B`;
     },
     retentionFieldHint(field, envName) {
@@ -2794,7 +2849,7 @@ export default {
           const rows = payload && typeof payload === "object" ? payload : {};
           const detail = Object.entries(rows)
             .filter(([, value]) => Number(value) > 0)
-            .map(([table, value]) => `${Number(value).toLocaleString()} ${table}`)
+            .map(([table, value]) => `${Number(value).toLocaleString("es-ES")} ${table}`)
             .join(", ");
           this.purgeResult = detail ? `Eliminado: ${detail}.` : "No quedaba nada por eliminar.";
           this.purgeDialog = false;
@@ -2876,17 +2931,19 @@ export default {
       if (source === "custom") return "Personalizado";
       return value || "-";
     },
-    loadListeners() {
-      return this.store
-        .listHoneypotListeners()
-        .then((payload) => {
-          this.listeners = this.store.extractArray(payload);
-          this.listenersError = "";
-        })
-        .catch((err) => {
-          this.listeners = [];
-          this.listenersError = (err && err.message) || "No se pudieron cargar los listeners";
-        });
+    async loadListeners() {
+      const requestId = ++this.listenerRequestId;
+      try {
+        const payload = await this.store.listHoneypotListeners({ limit: 25, offset: (this.listenerPage - 1) * 25, q: this.listenerSearch || "" });
+        if (requestId !== this.listenerRequestId) return;
+        this.listeners = payload.items || [];
+        this.listenerTotal = payload.total_available;
+        this.listenerStats = payload.stats || null;
+        this.listenersError = "";
+      } catch (err) {
+        if (requestId !== this.listenerRequestId) return;
+        this.listenersError = err.message || "No se pudieron cargar los listeners";
+      }
     },
     // The backend refuses to turn on a listener whose port the honeypot port
     // policy reserves, so the switch is not offered for it. One that is already
@@ -2900,8 +2957,8 @@ export default {
       this.listenersError = "";
       this.store
         .toggleHoneypotListenerEnabled(listener.id, value)
-        .then((snapshot) => {
-          this.listeners = this.store.extractArray(snapshot && snapshot.listeners);
+        .then(async () => {
+          await this.loadListeners();
         })
         .catch((err) => {
           this.listenersError = (err && err.message) || `No se pudo ${value ? "habilitar" : "deshabilitar"} ${listener.id}`;
@@ -2930,8 +2987,8 @@ export default {
       this.newListenerError = "";
       this.store
         .createHoneypotListener(this.newListener.proto, port, this.newListener.label)
-        .then((snapshot) => {
-          this.listeners = this.store.extractArray(snapshot && snapshot.listeners);
+        .then(async () => {
+          await this.loadListeners();
           this.newListenerDialog = false;
         })
         .catch((err) => {
@@ -2969,6 +3026,7 @@ export default {
       return "primary";
     },
     matchSummary(item) {
+      if (!item.match) return "Consultar detalle";
       const match = item.match || {};
       const parts = [];
       if (match.protocols && match.protocols.length) parts.push(match.protocols.join("/").toUpperCase());
@@ -3096,11 +3154,23 @@ export default {
       this.formError = "";
       this.dialogOpen = true;
     },
-    openRuleDetail(item) {
-      this.ruleDetailMonitor = item;
+    async monitorDetail(item) {
+      try {
+        return await this.store.fetchJsonPromise(`/api/monitors/?id=${encodeURIComponent(item.id)}`);
+      } catch (err) {
+        this.error = err.message || "No se pudo cargar el detalle";
+        return null;
+      }
+    },
+    async openRuleDetail(item) {
+      const detail = await this.monitorDetail(item);
+      if (!detail) return;
+      this.ruleDetailMonitor = detail;
       this.ruleDetailOpen = true;
     },
-    openEditDialog(item) {
+    async openEditDialog(item) {
+      item = await this.monitorDetail(item);
+      if (!item) return;
       const match = item.match || {};
       const action = item.action || {};
       this.editingId = item.id;
@@ -3292,10 +3362,13 @@ export default {
     load(options = {}) {
       if (!options.silent) this.loading = true;
       this.error = "";
-      return Promise.allSettled([this.store.listMonitors(), this.store.getMonitorConfig()])
+      const requestId = ++this.monitorRequestId;
+      return Promise.allSettled([this.store.listMonitors({ limit: 25, offset: (this.monitorPage - 1) * 25, q: this.monitorQuery || "", enabled: this.monitorEnabled }), this.store.getMonitorConfig()])
         .then(([monitorsRes, configRes]) => {
+          if (requestId !== this.monitorRequestId) return;
           if (monitorsRes.status === "fulfilled") {
-            this.monitors = this.store.extractArray(monitorsRes.value);
+            this.monitors = monitorsRes.value.items || [];
+            this.monitorTotal = monitorsRes.value.total_available;
           } else {
             this.monitors = [];
             this.error = (monitorsRes.reason && monitorsRes.reason.message) || "No se pudieron cargar los monitores";
@@ -3306,7 +3379,7 @@ export default {
           } else {
             this.configError = (configRes.reason && configRes.reason.message) || "No se pudo cargar el estado del filtro de persistencia";
           }
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .finally(() => {
           this.loading = false;
@@ -3457,6 +3530,11 @@ export default {
 
 .mobile-qr-wrap {
   max-width: 280px;
+}
+
+.mobile-stream-url {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
 }
 
 /* A SHA-256 fingerprint is 95 characters with no spaces. */

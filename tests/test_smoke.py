@@ -140,6 +140,7 @@ class SmokeTests(unittest.TestCase):
         # leaves that decision in the environment for the app module to read.
         # Pin it per test so neither answer leaks into the tests that follow.
         self.enterContext(patch.dict(os.environ, {"SNIFF4HOUND_CAPTURE_EMBEDDED": embedded}))
+        self.enterContext(patch.object(importlib.import_module("sniff4hound.app").runtime, "set_dashboard_port"))
 
     def test_version(self):
         project_root = Path(__file__).resolve().parents[1]
@@ -436,7 +437,7 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertTrue(payload["require_auth"])
         self.assertFalse(payload["authenticated"])
-        self.assertEqual(payload["message"], "Security code required")
+        self.assertEqual(payload["message"], "Código de seguridad requerido")
         self.assertEqual(payload["security_code_length"], 8)
 
     def test_api_routes_return_401_without_token(self):
@@ -918,6 +919,68 @@ class SmokeTests(unittest.TestCase):
         with patch.object(manage_module, "_running_as_root", return_value=True):
             self.assertTrue(manage_module._ensure_running_as_root())
 
+    def test_desktop_runtime_waits_for_parent_pipe_to_close(self):
+        import threading
+        from sniff4hound.desktop_runtime import _watch_parent
+
+        stopped = threading.Event()
+        read_fd, write_fd = os.pipe()
+        with os.fdopen(read_fd, "rb", buffering=0) as reader, os.fdopen(write_fd, "wb", buffering=0) as writer:
+            watcher = threading.Thread(target=_watch_parent, args=(reader, stopped.set), daemon=True)
+            watcher.start()
+            writer.write(b"alive")
+            self.assertFalse(stopped.wait(0.05), "an open parent pipe must keep the runtime alive")
+            writer.close()
+            self.assertTrue(stopped.wait(1), "closing Electron's pipe must stop the runtime")
+            watcher.join(timeout=1)
+            self.assertFalse(watcher.is_alive())
+
+    def test_desktop_runtime_stops_when_parent_pipe_fails(self):
+        from sniff4hound.desktop_runtime import _watch_parent
+
+        class BrokenPipe:
+            def read(self, _size):
+                raise OSError("parent disconnected")
+
+        calls = []
+        _watch_parent(BrokenPipe(), lambda: calls.append("stop"))
+        self.assertEqual(calls, ["stop"])
+
+    def test_desktop_runtime_requests_graceful_shutdown_when_the_shell_disconnects(self):
+        from sniff4hound import desktop_runtime
+        import signal
+
+        with patch.object(desktop_runtime, "request_process_shutdown") as shutdown:
+            desktop_runtime._terminate_runtime()
+        shutdown.assert_called_once_with(signum=signal.SIGINT)
+
+    def test_shutdown_capture_stops_snapshot_work_before_closing_the_database(self):
+        # Execute the real shutdown function without importing app.py, which
+        # would otherwise open a runtime database and start background workers.
+        import ast
+        import threading
+        from unittest.mock import MagicMock
+
+        source_path = Path(sniff4hound.__file__).parent / "app.py"
+        parsed = ast.parse(source_path.read_text(encoding="utf-8"))
+        function = next(node for node in parsed.body if isinstance(node, ast.FunctionDef) and node.name == "shutdown_capture")
+        calls = []
+        stop = MagicMock()
+        stop.set.side_effect = lambda: calls.append("stop snapshots")
+        pusher = MagicMock()
+        pusher.join.side_effect = lambda **_kwargs: calls.append("join snapshots")
+        store = MagicMock()
+        store.close.side_effect = lambda: calls.append("close database")
+        namespace = {
+            "threading": threading, "runtime": MagicMock(), "job_queue": MagicMock(),
+            "ipc_client": None, "embedded_capture": None, "hub": MagicMock(), "store": store,
+            "_snapshot_pusher_stop": stop, "_snapshot_pusher_thread": pusher,
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
+        namespace["shutdown_capture"]()
+        self.assertEqual(calls, ["stop snapshots", "join snapshots", "close database"])
+        pusher.join.assert_called_once_with(timeout=1.0)
+
     def test_clear_stale_capture_socket_removes_a_leftover_socket_file(self):
         # Regression: a capture child from a run whose parent never exited
         # cleanly (killed terminal, crashed, `kill -9`) keeps listening on
@@ -1275,8 +1338,9 @@ class SmokeTests(unittest.TestCase):
         self.assertIn(f"🐕 SNIFF4HOUND v{sniff4hound.__version__}", banner)
         self.assertIn("API: http://127.0.0.1:45678", banner)
         self.assertIn("UI: Electron desktop app only", banner)
-        self.assertIn("SECURITY CODE: Ab12Cd34", banner)
-        self.assertIn("Use this code from the Electron app if prompted", banner)
+        self.assertIn("SECURITY CODE: available in the Electron app prompt", banner)
+        self.assertIn("protected desktop handoff", banner)
+        self.assertNotIn("Ab12Cd34", banner)
         self.assertNotIn("Link:", banner)
         self.assertNotIn("?code=", banner)
         self.assertNotIn("Open the link above", banner)

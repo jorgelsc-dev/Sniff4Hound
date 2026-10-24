@@ -17,11 +17,14 @@ import json
 import sqlite3
 from typing import Any, Iterable
 
+from .domain_names import enrich as enrich_domain
 from .history import (
     ARP_EVENT_KINDS,
     HISTORY_DEFAULTS,
     coerce_history_config,
+    normalize_domain,
 )
+from .mac_vendor import enrich as enrich_mac_vendor
 from .utils import json_dumps, json_loads, utc_now, utc_since
 
 HISTORY_CONFIG_KEY = "history_config"
@@ -268,7 +271,7 @@ class HistoryStoreMixin:
 
     # --- reading ---------------------------------------------------------
 
-    def _dns_filter(self, *, search="", record_type="", rcode="", since="", ip="", domain=""):
+    def _dns_filter(self, *, search="", record_type="", rcode="", since="", ip="", domain="", parent=""):
         clauses: list[str] = []
         params: list[Any] = []
         if since:
@@ -283,6 +286,16 @@ class HistoryStoreMixin:
         if domain:
             clauses.append("domain = ?")
             params.append(str(domain).strip().lower())
+        if parent:
+            # Exact parent plus every label below it. Substr comparison keeps
+            # SQL wildcard characters literal and enforces a dot boundary, so
+            # parent=example.com cannot match notexample.com.
+            scope = normalize_domain(parent)
+            if scope:
+                clauses.append("(domain = ? OR substr(domain, -(length(?) + 1)) = '.' || ?)")
+                params.extend([scope, scope, scope])
+            else:
+                clauses.append("0")
         if ip:
             clauses.append("(answer = ? OR last_client = ? OR last_resolver = ? OR clients_json LIKE ?)")
             value = str(ip).strip()
@@ -296,8 +309,10 @@ class HistoryStoreMixin:
             params.extend([needle] * 5)
         return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
 
-    def list_dns_history(self, *, search="", record_type="", rcode="", since="", ip="", domain="", limit=200, offset=0):
-        where, params = self._dns_filter(search=search, record_type=record_type, rcode=rcode, since=since, ip=ip, domain=domain)
+    def list_dns_history(self, *, search="", record_type="", rcode="", since="", ip="", domain="", parent="", limit=200, offset=0):
+        where, params = self._dns_filter(
+            search=search, record_type=record_type, rcode=rcode, since=since, ip=ip, domain=domain, parent=parent
+        )
         rows = self._fetchall(
             f"SELECT * FROM dns_history {where} ORDER BY last_seen DESC, id DESC LIMIT ? OFFSET ?",
             (*params, int(limit), int(offset)),
@@ -305,10 +320,13 @@ class HistoryStoreMixin:
         for row in rows:
             row["clients"] = json_loads(row.pop("clients_json", "[]"), default=[])
             row["resolvers"] = json_loads(row.pop("resolvers_json", "[]"), default=[])
+            enrich_domain(row)
         return rows
 
-    def count_dns_history(self, *, search="", record_type="", rcode="", since="", ip="", domain=""):
-        where, params = self._dns_filter(search=search, record_type=record_type, rcode=rcode, since=since, ip=ip, domain=domain)
+    def count_dns_history(self, *, search="", record_type="", rcode="", since="", ip="", domain="", parent=""):
+        where, params = self._dns_filter(
+            search=search, record_type=record_type, rcode=rcode, since=since, ip=ip, domain=domain, parent=parent
+        )
         row = self._fetchone(f"SELECT COUNT(*) AS count FROM dns_history {where}", tuple(params))
         return int((row or {}).get("count") or 0)
 
@@ -326,16 +344,22 @@ class HistoryStoreMixin:
             params.append(str(mac).strip().lower())
         if search:
             needle = _like(search)
-            clauses.append("(LOWER(ip) LIKE ? OR LOWER(mac) LIKE ? OR LOWER(interface) LIKE ?)")
-            params.extend([needle] * 3)
+            clauses.append(
+                "(LOWER(ip) LIKE ? OR LOWER(mac) LIKE ? OR LOWER(interface) LIKE ? "
+                "OR LOWER(sniff4hound_mac_vendor(mac)) LIKE ?)"
+            )
+            params.extend([needle] * 4)
         return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
 
     def list_arp_bindings(self, *, search="", ip="", mac="", since="", limit=200, offset=0):
         where, params = self._arp_binding_filter(search=search, ip=ip, mac=mac, since=since)
-        return self._fetchall(
+        rows = self._fetchall(
             f"SELECT * FROM arp_bindings {where} ORDER BY last_seen DESC, id DESC LIMIT ? OFFSET ?",
             (*params, int(limit), int(offset)),
         )
+        for row in rows:
+            enrich_mac_vendor(row)
+        return rows
 
     def count_arp_bindings(self, *, search="", ip="", mac="", since=""):
         where, params = self._arp_binding_filter(search=search, ip=ip, mac=mac, since=since)
@@ -365,6 +389,7 @@ class HistoryStoreMixin:
         )
         for row in rows:
             row["ips"] = [ip for ip in str(row.get("ips") or "").split(",") if ip]
+            enrich_mac_vendor(row)
         return rows
 
     def count_arp_devices(self, *, search="", since=""):
@@ -391,17 +416,23 @@ class HistoryStoreMixin:
             needle = _like(search)
             clauses.append(
                 "(LOWER(ip) LIKE ? OR LOWER(mac) LIKE ? OR LOWER(previous_ip) LIKE ? "
-                "OR LOWER(previous_mac) LIKE ? OR LOWER(detail) LIKE ?)"
+                "OR LOWER(previous_mac) LIKE ? OR LOWER(detail) LIKE ? "
+                "OR LOWER(sniff4hound_mac_vendor(mac)) LIKE ? "
+                "OR LOWER(sniff4hound_mac_vendor(previous_mac)) LIKE ?)"
             )
-            params.extend([needle] * 5)
+            params.extend([needle] * 7)
         return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
 
     def list_arp_events(self, *, search="", kind="", since="", ip="", mac="", limit=200, offset=0):
         where, params = self._arp_event_filter(search=search, kind=kind, since=since, ip=ip, mac=mac)
-        return self._fetchall(
+        rows = self._fetchall(
             f"SELECT * FROM arp_events {where} ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?",
             (*params, int(limit), int(offset)),
         )
+        for row in rows:
+            enrich_mac_vendor(row)
+            enrich_mac_vendor(row, field="previous_mac", prefix="previous_mac_")
+        return rows
 
     def count_arp_events(self, *, search="", kind="", since="", ip="", mac=""):
         where, params = self._arp_event_filter(search=search, kind=kind, since=since, ip=ip, mac=mac)

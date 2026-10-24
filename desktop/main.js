@@ -9,6 +9,7 @@ const os = require("node:os");
 const { URL, URLSearchParams } = require("./lib/simple-url");
 const elevation = require("./lib/elevation");
 const { configureGraphics } = require("./lib/graphics");
+const { createShutdownController } = require("./lib/shutdown");
 const { startPrivateSessionBus } = require("./lib/session-bus");
 const quicPin = require("./lib/quic-pin");
 const { verifyLocalService } = require("./lib/mdns");
@@ -18,36 +19,14 @@ const DEFAULT_PORT = "45678";
 const CONNECTION_STATE_FILE = "connection.json";
 const APP_SCHEME = "app";
 
-// The whole app runs as root: web server, database, sniffer and honeypot are
-// one privileged process, and so is this shell (see lib/elevation.js). An
-// unprivileged launch therefore only hands over to a root copy of itself
-// through sudo/pkexec and waits for it - it opens no window and no debug port.
-// SNIFF4HOUND_DESKTOP_ELEVATE=0 keeps the shell unprivileged; the backend then
-// asks for privileges on its own, as it did before.
+// Open Electron in the operator's desktop session first. The local runtime
+// is authorized from that window and launched separately as root; relaunching
+// Chromium as root breaks display access on modern Linux desktops.
 function effectiveUid() {
   // Not defined off POSIX; the elevation code treats that as "nothing to do".
   return typeof process.geteuid === "function" ? process.geteuid() : 0;
 }
 
-function startElevatedLauncher() {
-  return elevation.runElevatedLauncher({
-    spawn,
-    exit: (code) => app.exit(code),
-    log: (line) => console.error(line),
-    onSignal: (signal, handler) => process.on(signal, handler),
-    env: process.env,
-    argv: process.argv,
-    execPath: process.execPath,
-    platform: process.platform,
-    euid: effectiveUid(),
-    uid: typeof process.getuid === "function" ? process.getuid() : 0,
-    gid: typeof process.getgid === "function" ? process.getgid() : 0,
-    home: os.homedir(),
-    isTTY: process.stdin && process.stdin.isTTY,
-    which: elevation.findExecutable,
-  });
-}
-const launcherOnly = startElevatedLauncher();
 const stopSessionBus = startPrivateSessionBus({
   platform: process.platform,
   euid: effectiveUid(),
@@ -59,10 +38,11 @@ const stopSessionBus = startPrivateSessionBus({
 });
 if (stopSessionBus) {
   process.on("exit", stopSessionBus);
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => app.quit());
 }
+// Terminal interruption also runs before-quit, which stops the root runtime.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => app.quit());
 
-// The root copy leaves the configuration directory root-owned; give it back so
+// A manually root-launched shell leaves configuration root-owned; give it back so
 // an unprivileged launch can still use it.
 function handBackUserData() {
   const uid = Number(process.env.SNIFF4HOUND_INVOKING_UID);
@@ -93,19 +73,8 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-// Chromium's setuid sandbox helper needs a root-owned, setuid `chrome-sandbox`
-// binary (or an AppArmor profile permitting unprivileged user namespaces on
-// newer Debian/Ubuntu) to work at all. The combined .deb this app ships in
-// installs everything under /usr/lib/sniff4hound/desktop as regular files, so
-// that helper never has the permissions it needs - disable the sandbox
-// instead of shipping a setuid-root binary for it. The security cost is
-// modest here: this window only ever renders our own bundled frontend and the
-// backend this app started, never arbitrary remote content. It matters more
-// now that the whole shell runs as root (see startElevatedLauncher() below):
-// Chromium refuses to start as root at all without this switch, and the
-// relaunch passes it on the real command line, where Chromium reads it before
-// any JavaScript runs.
-configureGraphics({ app, platform: process.platform, euid: effectiveUid(), launcherOnly });
+// Keep renderer sandboxing enabled for normal operator launches.
+configureGraphics({ app, platform: process.platform, euid: effectiveUid() });
 
 // AI/automation channel: opt-in Chrome DevTools Protocol remote debugging -
 // off unless SNIFF4HOUND_DESKTOP_DEBUG_PORT names a port, so a normal launch
@@ -114,9 +83,7 @@ configureGraphics({ app, platform: process.platform, euid: effectiveUid(), launc
 // App: AI/Automation Access" for how to attach and drive/inspect the running
 // window - click elements, read the DOM, screenshot - exactly like a user
 // would). Any other local process can attach to an open port and fully
-// control the window, a real attack surface for a tool that already runs
-// elevated, which is why this now needs to be turned on deliberately rather
-// than closed off deliberately.
+// control a window connected to a privileged runtime, which is why access is opt-in.
 const desktopDebugPortRaw = String(process.env.SNIFF4HOUND_DESKTOP_DEBUG_PORT ?? "0").trim();
 const desktopDebugDisabled = ["0", "false", "off", "no", ""].includes(desktopDebugPortRaw.toLowerCase());
 const desktopDebugPort = /^\d+$/.test(desktopDebugPortRaw) ? Number(desktopDebugPortRaw) : NaN;
@@ -162,6 +129,7 @@ function isAllowedExternalUrl(url) {
 }
 
 let mainWindow = null;
+let mainWindowShown = Promise.resolve();
 let backendProcess = null;
 let backendReady = null;
 let backendExited = false;
@@ -172,6 +140,23 @@ let stderrBuffer = "";
 const recentBackendLines = [];
 const trustedRuntimeCas = new Map();
 let certificateTrustInstalled = false;
+let startupPrivilegeRequest = true;
+const shutdownController = createShutdownController({
+  cleanup: () => {
+    try {
+      stopBackend();
+    } finally {
+      for (const request of httpStreams.values()) {
+        try { request.abort(); } catch { /* The stream may already be closed. */ }
+      }
+      httpStreams.clear();
+    }
+  },
+  close: () => {
+    quitting = true;
+    app.quit();
+  },
+});
 
 function normalizeOrigin(value) {
   try {
@@ -539,7 +524,7 @@ function readLines(chunk, streamName, onLine) {
 
 function startBackend() {
   if (backendProcess) {
-    return;
+    return { ok: true };
   }
   backendExited = false;
   backendReady = null;
@@ -548,13 +533,22 @@ function startBackend() {
   const env = backendEnv(pythonPath);
   const cwd = app.isPackaged ? process.resourcesPath : repoRoot();
 
-  sendLauncherStatus("Starting local backend...");
-  backendProcess = spawn(pythonPath, ["-m", "sniff4hound.manage"], {
-    cwd,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  sendLauncherStatus("Autoriza el sensor local en el diálogo de autenticación...");
+  try {
+    backendProcess = elevation.launchRuntime({
+      spawn, target: pythonPath, args: ["-m", "sniff4hound.desktop_runtime"], cwd, env,
+      platform: process.platform, euid: effectiveUid(),
+      uid: typeof process.getuid === "function" ? process.getuid() : 0,
+      gid: typeof process.getgid === "function" ? process.getgid() : 0,
+      home: os.homedir(), which: elevation.findExecutable,
+    });
+  } catch (error) {
+    backendExited = true;
+    sendLauncherStatus(error.message);
+    return { ok: false, error: error.message };
+  }
   const startedProcess = backendProcess;
+  backendProcess.stdin.on("error", () => {}); // The child may close the lifetime pipe while exiting.
 
   backendProcess.stdout.on("data", (chunk) => {
     readLines(chunk, "stdout", async (line) => {
@@ -564,7 +558,7 @@ function startBackend() {
           backendReady.connection = "local";
           backendReady.protocol = backendReady.protocol || "http";
           backendReady.origin = new URL(backendReady.url).origin;
-          sendLauncherStatus("Checking local sensor...");
+          sendLauncherStatus("Comprobando el sensor local...");
           const announcedRuntime = backendReady;
           await verifyLocalService({ execFile, python: pythonPath, env, cwd, ready: announcedRuntime, prepared: preparedRuntime });
           if (backendProcess !== startedProcess || backendExited || backendReady !== announcedRuntime || quitting) return;
@@ -607,7 +601,13 @@ function startBackend() {
   });
 
   backendProcess.on("error", (error) => {
+    // Early shutdown may race with pkexec switching to root. The pipe still
+    // stops the runtime when a fallback signal is denied.
+    if (error.code === "EPERM" && startedProcess.stdin.writableEnded) return;
+    backendProcess = null;
+    backendExited = true;
     rememberBackendLine(error.message);
+    showConnectionChooser();
     showBackendFailure("Sniff4Hound could not start the Python runtime.");
   });
 
@@ -618,27 +618,21 @@ function startBackend() {
       suppressNextBackendExit = false;
       return;
     }
-    if (quitting) return;
+    if (quitting || shutdownController.isPending()) return;
     if (backendReady && (code === 0 || signal === "SIGINT" || signal === "SIGTERM")) {
       quitting = true;
       app.quit();
       return;
     }
-    // manage.py self-elevates via execvp() (see _ensure_running_as_root()),
-    // replacing its own process image with pkexec's - so this exit event
-    // carries pkexec's own exit code, and 126/127 mean the operator
-    // dismissed the polkit prompt or failed/declined authentication (see
-    // `man pkexec`), not a bug to diagnose. Quitting outright instead of
-    // parking the window behind a failure dialog matches canceling any
-    // other elevation prompt: the action just doesn't happen, rather than
-    // leaving the launcher stuck on screen for no obvious reason.
-    if (!backendReady && !signal && (code === 126 || code === 127)) {
-      quitting = true;
-      app.quit();
+    if (!backendReady && !signal && elevation.looksLikeRefusedElevation(code)) {
+      showConnectionChooser();
+      mainWindow.webContents.once("did-finish-load", () => sendLauncherStatus("Authorization cancelled. You can retry the local sensor or connect remotely."));
       return;
     }
+    showConnectionChooser();
     showBackendFailure(`Sniff4Hound backend exited (${signal || code}).`);
   });
+  return { ok: true };
 }
 
 function parseRemoteTarget(payload) {
@@ -714,7 +708,7 @@ function performRequest({ method = "GET", url, headers = {}, body = null, limit 
         response.on("data", (chunk) => {
           size += chunk.length;
           if (size > limit) {
-            req.destroy(new Error("Response is too large."));
+            req.destroy(new Error("La respuesta del sensor es demasiado grande. Reduce la búsqueda o el tamaño de página."));
             return;
           }
           chunks.push(chunk);
@@ -722,7 +716,7 @@ function performRequest({ method = "GET", url, headers = {}, body = null, limit 
         response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
         response.on("error", reject);
       });
-      req.on("timeout", () => req.destroy(new Error("Remote backend timed out.")));
+      req.on("timeout", () => req.destroy(new Error("El sensor tardó demasiado en responder. Reintenta o cambia de sensor.")));
       req.on("error", reject);
       if (body !== null && body !== undefined) req.write(body);
       req.end();
@@ -743,7 +737,7 @@ function performRequest({ method = "GET", url, headers = {}, body = null, limit 
     };
     const timer = setTimeout(() => {
       request.abort();
-      finish(new Error("Remote backend timed out."));
+      finish(new Error("El sensor tardó demasiado en responder. Reintenta o cambia de sensor."));
     }, timeoutMs);
     request.on("response", (response) => {
       const chunks = [];
@@ -752,7 +746,7 @@ function performRequest({ method = "GET", url, headers = {}, body = null, limit 
         size += chunk.length;
         if (size > limit) {
           request.abort();
-          finish(new Error("Response is too large."));
+          finish(new Error("La respuesta del sensor es demasiado grande. Reduce la búsqueda o el tamaño de página."));
           return;
         }
         chunks.push(chunk);
@@ -892,7 +886,7 @@ async function requestJson(url, headers = {}, optionsOverride = {}) {
   try {
     return body ? JSON.parse(body) : {};
   } catch {
-    throw new Error("Remote backend did not return JSON.");
+    throw new Error("El sensor devolvió una respuesta no válida.");
   }
 }
 
@@ -916,7 +910,7 @@ async function fetchRemotePublicCa(config) {
     );
   }
   if (!registerTrustedRuntimeCa(config, caPem)) {
-    throw new Error("Remote backend did not return a valid Sniff4Hound CA.");
+    throw new Error("El sensor no devolvió una CA válida de Sniff4Hound.");
   }
   return caPem;
 }
@@ -932,7 +926,7 @@ async function verifyRemoteConnection(config) {
   const payload = await requestJson(sessionUrl, headers, tlsOptions);
   const authRequired = Boolean(payload && payload.require_auth);
   if (authRequired && !(payload && payload.authenticated)) {
-    throw new Error("Invalid or missing security code.");
+    throw new Error("Código de seguridad incorrecto o ausente.");
   }
   return {
     ...config,
@@ -954,12 +948,19 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
+  mainWindowShown = new Promise((resolve) => {
+    mainWindow.once("ready-to-show", () => {
+      mainWindow.show();
+      resolve();
+    });
+  });
+  mainWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  mainWindow.webContents.session.setPermissionCheckHandler(() => false);
   mainWindow.loadFile(path.join(__dirname, "splash.html"));
-  mainWindow.once("ready-to-show", () => mainWindow.show());
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedExternalUrl(url)) shell.openExternal(url);
@@ -1044,7 +1045,13 @@ function registerAppProtocol() {
       return new Response("Not Found", { status: 404 });
     }
     try {
-      const data = fs.readFileSync(filePath);
+      let data = fs.readFileSync(filePath);
+      if (path.extname(filePath) === ".html") {
+        const origin = backendReady && new URL(backendReady.url || backendReady.origin).origin;
+        const websocketOrigin = origin && origin.replace(/^http/, "ws");
+        const connect = origin ? `connect-src 'self' ${origin} ${websocketOrigin}` : "connect-src 'self'";
+        data = Buffer.from(data.toString("utf8").replace("connect-src 'self'", connect));
+      }
       const contentType = DIST_MIME_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream";
       return new Response(data, { status: 200, headers: { "Content-Type": contentType } });
     } catch {
@@ -1137,17 +1144,23 @@ function showBackendFailure(message) {
 
 function stopBackend(options = {}) {
   if (!backendProcess || backendExited) return;
+  const stoppingProcess = backendProcess;
   suppressNextBackendExit = Boolean(options.keepApp);
+  // Polkit execs Python as root, which the operator cannot signal directly.
+  // Closing our pipe asks that runtime to terminate itself, even on a crash
+  // of Electron. Before authorization, pkexec is still signalable by us.
+  stoppingProcess.stdin.end();
+  if (backendReady) return;
   try {
-    backendProcess.kill("SIGINT");
+    stoppingProcess.kill("SIGINT");
   } catch {
     suppressNextBackendExit = false;
     return;
   }
   setTimeout(() => {
-    if (backendProcess && !backendExited) {
+    if (backendProcess === stoppingProcess && !backendExited) {
       try {
-        backendProcess.kill("SIGTERM");
+        stoppingProcess.kill("SIGTERM");
       } catch {
         // process already exited
       }
@@ -1192,6 +1205,8 @@ ipcMain.handle("desktop-window:close", () => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
 });
 
+ipcMain.handle("desktop-window:shutdown", () => shutdownController.start());
+
 ipcMain.handle("desktop-shell:open-external", (_event, url) => {
   // The renderer-facing bridge (preload.js) forwards whatever string the
   // SPA passes, unvalidated - this is the only place left that can refuse
@@ -1203,7 +1218,12 @@ ipcMain.handle("desktop-shell:open-external", (_event, url) => {
 
 ipcMain.handle("desktop-runtime:get-connection-defaults", () => {
   const state = readConnectionState();
+  const requiresPrivileges = process.platform === "linux" && effectiveUid() !== 0;
+  const requestPrivileges = startupPrivilegeRequest && requiresPrivileges && state.mode !== "remote" && !elevation.optedOut(process.env);
+  startupPrivilegeRequest = false;
   return {
+    requiresPrivileges,
+    requestPrivileges,
     localPort: process.env.SNIFF4HOUND_PORT || DEFAULT_PORT,
     mode: state.mode || "local",
     protocol: state.protocol || "http",
@@ -1212,16 +1232,17 @@ ipcMain.handle("desktop-runtime:get-connection-defaults", () => {
   };
 });
 
-ipcMain.handle("desktop-runtime:start-local", () => {
-  startBackend();
-  return { ok: true };
+ipcMain.handle("desktop-runtime:start-local", async () => {
+  await mainWindowShown;
+  if (quitting || shutdownController.isPending() || !mainWindow || mainWindow.isDestroyed()) return { ok: false, error: "The desktop window is closing." };
+  return startBackend();
 });
 
 ipcMain.handle("desktop-runtime:connect-remote", async (_event, payload) => {
   try {
     return await connectRemote(payload || {});
   } catch (error) {
-    const message = error && error.message ? error.message : "Unable to connect to remote backend.";
+    const message = error && error.message ? error.message : "No se pudo conectar al sensor remoto. Revisa la dirección, el código y la CA.";
     sendLauncherStatus(message);
     return { ok: false, error: message };
   }
@@ -1240,9 +1261,7 @@ let preparedRuntime = null;
 let forcedQuicOrigin = "";
 
 function prepareRuntimeNetworking() {
-  // The unprivileged launcher only hands over to the root copy; the root copy
-  // prepares its own Chromium.
-  if (launcherOnly || process.platform !== "linux") return;
+  if (process.platform !== "linux") return;
   const pythonPath = resolvePython();
   preparedRuntime = quicPin.prepareRuntime({
     execFileSync,
@@ -1258,7 +1277,6 @@ function prepareRuntimeNetworking() {
 prepareRuntimeNetworking();
 
 app.whenReady().then(() => {
-  if (launcherOnly) return;
   handBackUserData();
   installRuntimeCertificateTrust();
   registerAppProtocol();
@@ -1275,5 +1293,5 @@ app.on("before-quit", () => {
 });
 
 process.on("exit", () => {
-  if (!launcherOnly) handBackUserData();
+  handBackUserData();
 });
