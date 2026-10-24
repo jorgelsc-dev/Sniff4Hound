@@ -1,10 +1,17 @@
 <template>
+  <v-alert v-if="!online" type="warning" variant="tonal" density="compact" class="mb-3">
+    Sensor desconectado. Los datos anteriores pueden estar obsoletos.
+    <v-btn variant="outlined" size="small" @click="reconnect">Reconectar / Cambiar sensor</v-btn>
+  </v-alert>
   <section v-if="expanded" class="flow-shell">
     <SystemFlowCanvas
       :totals="totals"
       :runtime="runtime"
       :activity="activity"
       :online="online"
+      :loading="loading"
+      :error="loadError"
+      :updated-at="updatedAt"
       @open="open"
     />
     <button type="button" class="flow-shell__toggle" aria-expanded="true" @click="expanded = false">
@@ -51,7 +58,11 @@ export default {
       store,
       expanded: false,
       counts: {},
-      protocolCount: 0,
+      protocolCount: null,
+      loading: false,
+      loadError: false,
+      updatedAt: "",
+      loadPending: false,
       refreshTimer: null,
       unsubscribe: null,
       requestId: 0,
@@ -84,8 +95,9 @@ export default {
       };
     },
     stripMeta() {
+      if (!this.online) return "Sin conexión";
       const rate = Number(this.activity?.total) || 0;
-      return `${rate >= 10 ? Math.round(rate) : rate.toFixed(1)} paq/s`;
+      return `${rate.toLocaleString("es-ES", { maximumFractionDigits: 1 })} paq/s`;
     },
   },
   watch: {
@@ -126,8 +138,15 @@ export default {
     open(node) {
       if (node?.route && node.route !== this.$route.fullPath) this.$router.push(node.route);
     },
+    reconnect() {
+      const desktop = window.sniff4houndDesktop;
+      if (desktop?.showConnectionChooser) return desktop.showConnectionChooser();
+      return this.store.bootstrap();
+    },
     async load() {
-      if (!this.expanded) return;
+      if (!this.expanded || this.loadPending) return;
+      this.loadPending = true;
+      this.loading = true;
       const id = ++this.requestId;
       const params = new URLSearchParams({ compact: "1" });
       if (store.state.timeRange) params.set("since", store.state.timeRange);
@@ -139,7 +158,11 @@ export default {
         store.fetchJsonPromise(`/api/charts/analytics?${params}`),
       ]);
       if (id !== this.requestId) return;
+      this.loadPending = false;
+      this.loading = false;
+      this.loadError = dashboard.status === "rejected" || analytics.status === "rejected";
       if (dashboard.status === "fulfilled") {
+        this.updatedAt = new Date().toISOString();
         this.counts = (dashboard.value && dashboard.value.counts) || {};
       }
       if (analytics.status === "fulfilled") {

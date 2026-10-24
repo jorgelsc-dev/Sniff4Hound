@@ -14,10 +14,10 @@
     />
     <!-- Only once the session can actually reach the API: every entry either
          routes into a guarded view or calls the runtime. -->
-    <CommandPalette v-if="canRenderViews" />
-    <PendingJobsIndicator />
+    <CommandPalette v-if="canRenderViews && !shutdownPending" />
+    <PendingJobsIndicator v-if="!shutdownPending" />
 
-    <v-main class="app-main" :class="{ 'app-main--canvas': $route.meta.canvasOnly && canRenderViews }">
+    <v-main v-if="!shutdownPending" class="app-main" :class="{ 'app-main--canvas': $route.meta.canvasOnly && canRenderViews }">
       <v-container class="app-container" :class="{ 'app-container--full': isFullWidthRoute }" :fluid="isFullWidthRoute">
         <div v-if="canRenderViews">
           <!-- Persistent across every table route: the pipeline is how you
@@ -59,7 +59,17 @@
       </v-container>
     </v-main>
 
-    <v-dialog :model-value="authPromptOpen" persistent max-width="520">
+    <v-dialog :model-value="shutdownPending" persistent max-width="420">
+      <v-card class="shutdown-card" rounded="lg">
+        <v-card-title class="text-h5">Cerrando Sniff4Hound</v-card-title>
+        <v-card-text>
+          <div class="shutdown-countdown" role="status" aria-live="polite" aria-atomic="true">{{ shutdownLabel }}</div>
+          <p>Deteniendo capturas, conexiones y tareas en segundo plano.</p>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
+
+    <v-dialog :model-value="authPromptOpen && !shutdownPending" persistent max-width="520">
       <v-card class="auth-dialog-card" rounded="lg">
         <div class="auth-dialog-topline" />
         <v-card-title class="text-h5 pt-6">Código de seguridad</v-card-title>
@@ -118,10 +128,7 @@ import CommandPalette from "./components/layout/CommandPalette.vue";
 import PendingJobsIndicator from "./components/layout/PendingJobsIndicator.vue";
 import FlowShell from "./components/layout/FlowShell.vue";
 
-// Purely a UX beat: give the operator a moment to see the "shutting down"
-// state (and the backend a moment to actually stop) before the tab closes
-// itself out from under them.
-const SHUTDOWN_TAB_CLOSE_DELAY_MS = 4000;
+const SHUTDOWN_CLOSE_DELAY_MS = 3000;
 
 function readDesktopBackendMode() {
   if (typeof window === "undefined" || !window.location) return "local";
@@ -148,6 +155,9 @@ export default {
       accessTokenInput: "",
       authSubmitting: false,
       shutdownLabel: "",
+      shutdownDeadline: 0,
+      shutdownInterval: null,
+      shutdownCloseTimer: null,
       desktopBackendMode: readDesktopBackendMode(),
     };
   },
@@ -199,6 +209,10 @@ export default {
       },
     },
   },
+  beforeUnmount() {
+    clearInterval(this.shutdownInterval);
+    clearTimeout(this.shutdownCloseTimer);
+  },
   methods: {
     openAuthPrompt() {
       this.accessTokenInput = this.store.state.authToken || this.accessTokenInput || "";
@@ -219,52 +233,50 @@ export default {
     },
     shutdownApplication() {
       if (this.shutdownPending) return;
-      if (this.desktopRemoteBackend) {
-        if (typeof window !== "undefined") {
-          const confirmed = window.confirm("Close Sniff4Hound Desktop?");
-          if (!confirmed) return;
-          const desktopApi = window.sniff4houndDesktop;
-          if (desktopApi && typeof desktopApi.close === "function") {
-            desktopApi.close();
-            return;
-          }
-          if (typeof window.close === "function") {
-            window.close();
-          }
-        }
-        return;
+      const desktopApi = typeof window !== "undefined" ? window.sniff4houndDesktop : null;
+      const nativeShutdown = Boolean(desktopApi && typeof desktopApi.shutdown === "function");
+      let nativeScheduled = false;
+      this.shutdownDeadline = Date.now() + SHUTDOWN_CLOSE_DELAY_MS;
+      this.shutdownLabel = "Cerrando en 3...";
+      // Disconnect client activity now. A desktop shell stops its owned
+      // runtime through the lifetime pipe; remote sensors keep running.
+      this.store.shutdownApplication({ stopRuntime: !this.desktopRemoteBackend && !nativeShutdown }).catch(() => {});
+      if (nativeShutdown) {
+        desktopApi.shutdown().then((result) => {
+          nativeScheduled = true;
+          if (result && result.deadline) this.shutdownDeadline = result.deadline;
+        }).catch(() => {});
       }
-      if (typeof window !== "undefined") {
-        const confirmed = window.confirm(
-          "Stop Sniff4Hound and close the local dashboard process?"
-        );
-        if (!confirmed) return;
-      }
-      this.shutdownLabel = "Apagando...";
-      this.store.shutdownApplication().catch((error) => {
-        // The backend is terminating itself either way - a failed response
-        // here is usually just the connection dropping mid-request, not a
-        // real failure worth alarming over. Still surface it, but the tab
-        // closes on schedule regardless.
-        if (typeof window !== "undefined" && error && error.message) {
-          window.alert(error.message);
-        }
-      });
-      setTimeout(() => {
-        if (typeof window === "undefined" || typeof window.close !== "function") return;
-        this.shutdownLabel = "Cerrando pestaña...";
-        // Browsers silently ignore window.close() on a tab the user
-        // navigated to directly (as opposed to one opened via
-        // window.open()) - there's no client-side way to detect or work
-        // around that, so this is a best-effort close, not a guarantee.
-        window.close();
-      }, SHUTDOWN_TAB_CLOSE_DELAY_MS);
+      this.shutdownInterval = setInterval(() => {
+        const remaining = Math.max(0, Math.ceil((this.shutdownDeadline - Date.now()) / 1000));
+        this.shutdownLabel = remaining ? `Cerrando en ${remaining}...` : "Cerrando...";
+      }, 100);
+      this.shutdownCloseTimer = setTimeout(() => {
+        clearInterval(this.shutdownInterval);
+        this.shutdownLabel = "Cerrando...";
+        if (nativeScheduled || typeof window === "undefined") return;
+        if (desktopApi && typeof desktopApi.close === "function") desktopApi.close();
+        else if (typeof window.close === "function") window.close();
+      }, SHUTDOWN_CLOSE_DELAY_MS);
     },
   },
 };
 </script>
 
 <style scoped>
+.shutdown-card {
+  padding: 20px 16px;
+  border: 1px solid rgba(102, 212, 255, 0.22);
+  background: var(--surface-1);
+}
+
+.shutdown-countdown {
+  margin-bottom: 16px;
+  color: rgb(var(--v-theme-primary));
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
 .app-container {
   max-width: 1560px;
   width: 100%;

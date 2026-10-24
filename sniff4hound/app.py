@@ -44,7 +44,6 @@ from .settings import (
     DB_PATH,
     DEFAULT_DOCS_DESCRIPTION,
     DEFAULT_DOCS_TITLE,
-    HOST,
     PORT,
     TLS_ENABLED,
     TRUST_FORWARDED_HEADERS,
@@ -56,16 +55,13 @@ from .settings import (
 )
 from .tls import public_ca_pem
 from .process_control import process_shutdown_requested, request_process_shutdown
-from .runtime_paths import ensure_data_dir
 from .store import SniffStore
 from .utils import (
     bytes_to_hex_preview,
     clamp_int,
     coerce_bool,
     ip_scope,
-    json_dumps,
     normalize_protocol_name,
-    normalize_text,
     parse_since_window,
     safe_float,
     safe_int,
@@ -241,6 +237,14 @@ def _guarded_send_http_response(conn, response, *, send_body=True, keep_alive=Fa
         print(f"[http] send error {status_code}: {exc}")
 
 
+# Compatibility exports retained for views.py's public star import.
+from . import settings as _settings, runtime_paths as _runtime_paths, utils as _utils
+HOST = _settings.HOST
+ensure_data_dir = _runtime_paths.ensure_data_dir
+json_dumps = _utils.json_dumps
+normalize_text = _utils.normalize_text
+
+
 # wsbuilder re-exports `send_http_response` from several modules, and the call
 # sites resolve it from their own module globals at call time - so every module
 # that binds the name has to be replaced, not just the one that defines it.
@@ -320,7 +324,7 @@ def _install_access_log():
 
 _install_access_log()
 store = SniffStore(DB_PATH)
-log_setup.configure("web", log_setup.default_log_dir(), store.get_log_config())
+log_setup.configure("web", log_setup.default_log_dir(), store.get_log_config(), owner=log_setup.invoking_owner())
 log_setup.start_reload_loop(store.get_log_config)
 
 
@@ -515,6 +519,12 @@ class RuntimeControllerClient:
 
     def set_sniffer_interface(self, interface: str = ""):
         return self._remember_mode(self._ipc_client.call("set_sniffer_interface", interface=interface))
+
+    def honeypot_listener_page(self, **query):
+        return self._ipc_client.call("honeypot_listener_page", **query)
+
+    def set_dashboard_port(self, port):
+        return self._ipc_client.call("set_dashboard_port", port=port)
 
     def list_honeypot_listeners(self):
         return self._ipc_client.call("list_honeypot_listeners")
@@ -711,10 +721,10 @@ ENDPOINTS = [
     {"method": "POST", "path": "/api/whitelist/ip", "desc": "Whitelist one IP and purge everything already captured about it (packets, tags, payloads, flows, domains, paths). Without {\"confirm\": true}, returns how many packets would be deleted instead of doing it."},
     {"method": "GET", "path": "/api/domains/", "desc": "Searchable catalog of domains seen in DNS/HTTP/TLS traffic. Optional ?ip= narrows to one address."},
     {"method": "GET", "path": "/api/paths/", "desc": "Searchable catalog of HTTP request paths. Optional ?ip= narrows to one address."},
-    {"method": "GET", "path": "/api/history/dns/", "desc": "DNS history: one row per distinct (domain, record_type, answer) ever seen, with query/response/error counts, TTL range, last response code, the clients and resolvers involved and first/last seen. Recorded for every DNS, mDNS and LLMNR packet the sniffer sees, whether or not it alerted. ?search= matches domain, answer, record type or peer; ?type=A|AAAA|CNAME|...; ?rcode=NOERROR|NXDOMAIN|...; ?domain= exact; ?ip= answer or peer; ?since=."},
-    {"method": "GET", "path": "/api/history/arp/", "desc": "ARP history: one row per IP-to-MAC binding ever seen, with packet counts (requests, replies, gratuitous, MAC mismatches) and first/last seen. ?search=, ?ip=, ?mac=, ?since=."},
-    {"method": "GET", "path": "/api/history/arp/devices/", "desc": "ARP devices: one row per MAC address with every IP it has claimed (ips), the latest one (current_ip), packet and mismatch totals and first/last seen. ?search=, ?since=."},
-    {"method": "GET", "path": "/api/history/arp/events/", "desc": "ARP changes, newest first: new_device, mac_new_ip (a known device took another address), ip_mac_changed (an address moved to another MAC) and mac_mismatch (the Ethernet source disagrees with the ARP sender). ?kind=, ?search=, ?ip=, ?mac=, ?since=."},
+    {"method": "GET", "path": "/api/history/dns/", "desc": "DNS history: one row per distinct (domain, record_type, answer), enriched with its Public Suffix List base_domain and subdomain. Recorded for every DNS, mDNS and LLMNR packet the sniffer sees. ?search= matches domain, answer, record type or peer; ?type=; ?rcode=; ?domain= exact; ?parent= includes that domain and every subdomain below it; ?ip=; ?since=."},
+    {"method": "GET", "path": "/api/history/arp/", "desc": "ARP history: one row per IP-to-MAC binding ever seen, enriched offline with the IEEE MA-L/MA-M/MA-S/IAB manufacturer assignment, packet counts and first/last seen. ?search=, ?ip=, ?mac=, ?since=."},
+    {"method": "GET", "path": "/api/history/arp/devices/", "desc": "ARP devices: one row per MAC address with its IEEE manufacturer, every IP it has claimed (ips), the latest one (current_ip), packet and mismatch totals and first/last seen. ?search=, ?since=."},
+    {"method": "GET", "path": "/api/history/arp/events/", "desc": "ARP changes, newest first, enriched with current and previous MAC manufacturer assignments: new_device, mac_new_ip, ip_mac_changed and mac_mismatch. ?kind=, ?search=, ?ip=, ?mac=, ?since=."},
     {"method": "GET", "path": "/api/history/config", "desc": "History settings (dns_enabled, arp_enabled, retention_days, max_dns_rows, max_arp_bindings, max_arp_events) and the current row counts."},
     {"method": "POST", "path": "/api/history/config", "desc": "Change any of the history settings; the sniffer applies them within a few seconds. Unknown or out-of-range values reject the whole update."},
     {"method": "POST", "path": "/api/history/clear", "desc": "Delete recorded history: {\"scope\": \"dns\"|\"arp\"|\"all\", \"confirm\": true}. Without confirm it only reports how many rows it would delete."},
@@ -990,11 +1000,10 @@ def _guard_request_origin(request) -> Response | None:
     # builds reported the opaque origin literally as "null") - the one
     # legitimate non-same-origin caller now that this backend never serves a
     # page of its own to navigate to.
-    # Scoped to desktop mode so a plain server/CLI deployment (no Electron
-    # shell in the picture) keeps rejecting a "null" origin exactly as
-    # before - see test_cross_origin_state_change_is_rejected_after_auth,
-    # which must keep failing a real cross-origin caller like
-    # http://evil.example even when correctly authenticated.
+    # This guard runs after authentication. app://shell is a privileged,
+    # non-navigable desktop origin, including when using a remote sensor.
+    if supplied.strip().lower().rstrip("/") == "app://shell" and _authenticate_request(request)[0]:
+        return None
     if _desktop_mode_enabled() and _is_desktop_shell_origin(supplied):
         return None
     actual = _origin_tuple(supplied)
@@ -1005,7 +1014,7 @@ def _guard_request_origin(request) -> Response | None:
         {
             "status": "error",
             "code": "bad_origin",
-            "message": "Cross-origin state-changing requests are not allowed.",
+            "message": "No se permiten cambios desde este origen.",
         },
         status=403,
     )
@@ -1060,7 +1069,7 @@ def _client_address(request) -> str:
     return str(client or "unknown") or "unknown"
 
 
-def _unauthorized_response(message: str = "Security code required") -> Response:
+def _unauthorized_response(message: str = "Código de seguridad requerido") -> Response:
     return Response.json(
         {
             "status": "error",
@@ -1080,7 +1089,7 @@ def _rate_limited_response(retry_after: float) -> Response:
         {
             "status": "error",
             "code": "auth_rate_limited",
-            "message": f"Too many failed authentication attempts. Retry in {seconds}s.",
+            "message": f"Demasiados intentos de autenticación fallidos. Reintenta en {seconds} s.",
             "authenticated": False,
             "require_auth": bool(REQUIRE_AUTH),
             "retry_after": seconds,
@@ -1105,21 +1114,16 @@ def _guard_request_auth(request, *, allow_query: bool = False) -> Response | Non
     if not REQUIRE_AUTH:
         return None
     client = _client_address(request)
-    allowed, retry_after = RATE_LIMITER.check(client)
-    if not allowed:
-        access_log.log_auth_failure(
-            request,
-            client=client,
-            reason="rate_limited",
-            status=429,
-            retry_after=retry_after,
-        )
-        return _rate_limited_response(retry_after)
-
+    # A valid credential remains usable even when another loopback process
+    # has exhausted this address's failure budget.
     is_authenticated, _user_info = _authenticate_request(request, allow_query=allow_query)
     if is_authenticated:
         RATE_LIMITER.register_success(client)
         return None
+    allowed, retry_after = RATE_LIMITER.check(client)
+    if not allowed:
+        access_log.log_auth_failure(request, client=client, reason="rate_limited", status=429, retry_after=retry_after)
+        return _rate_limited_response(retry_after)
 
     lockout = RATE_LIMITER.register_failure(client)
     access_log.log_auth_failure(
@@ -1129,7 +1133,7 @@ def _guard_request_auth(request, *, allow_query: bool = False) -> Response | Non
         status=401,
         retry_after=lockout,
     )
-    return _unauthorized_response("Invalid or missing security code")
+    return _unauthorized_response("Código de seguridad incorrecto o ausente")
 
 
 def _prune_ws_tickets(now: float | None = None):
@@ -1802,7 +1806,7 @@ def protocol_snapshot_api(request):
         interface=str(request.query.get("interface") or "").strip(),
         search=str(request.query.get("search") or "").strip(),
         since=_normalize_since(request),
-        limit=_normalize_limit(request.query.get("limit"), default=250),
+        limit=_normalize_limit(request.query.get("limit"), default=100),
     )
 
 
@@ -2257,14 +2261,12 @@ def auth_session(request):
     # whether a code is needed), which also makes it the only free oracle
     # for "is this code right?" - so it carries the same per-source backoff
     # and security logging as every guarded route.
-    if REQUIRE_AUTH and token:
+    is_authenticated, _user_info = _authenticate_request(request)
+    if REQUIRE_AUTH and token and not is_authenticated:
         allowed, retry_after = RATE_LIMITER.check(client)
         if not allowed:
-            access_log.log_auth_failure(
-                request, client=client, reason="rate_limited", status=429, retry_after=retry_after
-            )
+            access_log.log_auth_failure(request, client=client, reason="rate_limited", status=429, retry_after=retry_after)
             return _rate_limited_response(retry_after)
-    is_authenticated, _user_info = _authenticate_request(request)
     if REQUIRE_AUTH and token:
         if is_authenticated:
             RATE_LIMITER.register_success(client)
@@ -2277,8 +2279,8 @@ def auth_session(request):
         return {
             "require_auth": True,
             "authenticated": False,
-            "message": "Security code required",
-            "security_code_label": "Security code",
+            "message": "Código de seguridad requerido",
+            "security_code_label": "Código de seguridad",
             "security_code_length": 8,
             "ws_auth_close_code": WS_AUTH_CLOSE_CODE,
         }
@@ -2286,16 +2288,16 @@ def auth_session(request):
         return {
             "require_auth": True,
             "authenticated": False,
-            "message": "Invalid security code",
-            "security_code_label": "Security code",
+            "message": "Código de seguridad incorrecto",
+            "security_code_label": "Código de seguridad",
             "security_code_length": 8,
             "ws_auth_close_code": WS_AUTH_CLOSE_CODE,
         }
     return {
         "require_auth": bool(REQUIRE_AUTH),
         "authenticated": bool(is_authenticated or not REQUIRE_AUTH),
-        "message": "Authenticated" if is_authenticated else "Authentication not required",
-        "security_code_label": "Security code",
+        "message": "Autenticado" if is_authenticated else "Autenticación no requerida",
+        "security_code_label": "Código de seguridad",
         "security_code_length": 8,
         "ws_auth_close_code": WS_AUTH_CLOSE_CODE,
     }
@@ -2650,7 +2652,10 @@ def runtime_api(request):
 @app.api("/api/honeypot/listeners/", methods=("GET", "POST"))
 def honeypot_listeners_api(request):
     if request.method.upper() == "GET":
-        return runtime.list_honeypot_listeners()
+        page = runtime.honeypot_listener_page(**_catalog_query(request))
+        if request.query.get("metadata") == "1":
+            return page
+        return _listing_response(page["items"], total=page["total_available"], limit=page["limit"], offset=page["offset"])
     payload = _read_json_body(request)
     proto = str(payload.get("proto") or "").strip().lower()
     port = payload.get("port")
@@ -2795,32 +2800,38 @@ def monitors_stats(request):
     return _MONITOR_STATS_CACHE["value"]
 
 
-# The full catalog is ~30k rows: listing and parsing it costs about a second
-# and tens of megabytes per call, and several views ask for it at once. The
-# list is cached briefly; any write through this process drops the cache.
-_MONITORS_LIST_TTL_SECONDS = 5.0
-_MONITORS_LIST_CACHE: dict = {"at": 0.0, "payload": None}
-_MONITORS_LIST_LOCK = threading.Lock()
-
-
 def _invalidate_monitors_list():
-    with _MONITORS_LIST_LOCK:
-        _MONITORS_LIST_CACHE["payload"] = None
+    _MONITOR_STATS_CACHE["value"] = None
+
+
+def _catalog_query(request) -> dict:
+    raw_enabled = str(request.query.get("enabled") or "").strip().lower()
+    if raw_enabled not in {"", "0", "1", "true", "false"}:
+        raise ValueError("enabled debe ser true o false")
+    return {
+        "limit": _normalize_limit(request.query.get("limit"), default=100, maximum=500),
+        "offset": _normalize_offset(request.query.get("offset")),
+        "q": str(request.query.get("q") or "").strip(),
+        "enabled": None if not raw_enabled else raw_enabled in {"1", "true"},
+    }
 
 
 @app.api("/api/monitors/", methods=("GET", "POST", "PUT", "DELETE"))
 def monitors_collection(request):
     if request.method.upper() == "GET":
-        now = time.monotonic()
-        with _MONITORS_LIST_LOCK:
-            cached = _MONITORS_LIST_CACHE["payload"]
-            if cached is not None and now - _MONITORS_LIST_CACHE["at"] < _MONITORS_LIST_TTL_SECONDS:
-                return cached
-        match_counts = store.monitor_match_counts()
-        payload = [_monitor_row(row, match_counts) for row in store.list_monitors()]
-        with _MONITORS_LIST_LOCK:
-            _MONITORS_LIST_CACHE.update(at=now, payload=payload)
-        return payload
+        monitor_id = str(request.query.get("id") or "").strip()
+        if monitor_id:
+            row = store.get_monitor(monitor_id)
+            if row is None:
+                raise _NotFound("Monitor no encontrado")
+            return _monitor_row(row, store.monitor_match_counts())
+        page = store.monitor_page(**_catalog_query(request))
+        counts = store.monitor_match_counts()
+        for row in page["items"]:
+            row["match_count"] = int(counts.get(str(row["id"]), 0))
+        if request.query.get("metadata") == "1":
+            return page
+        return _listing_response(page["items"], total=page["total_available"], limit=page["limit"], offset=page["offset"])
     payload = _read_json_body(request)
     if request.method.upper() in {"POST", "PUT"}:
         try:
@@ -3092,6 +3103,7 @@ def dns_history_collection(request):
         rcode=_query_text(request, "rcode"),
         ip=_query_text(request, "ip"),
         domain=_query_text(request, "domain"),
+        parent=_query_text(request, "parent"),
     )
 
 
@@ -3215,6 +3227,8 @@ def monitor_matched_packets(request):
     monitor_id = str(request.query.get("monitor_id") or "").strip()
     if not monitor_id:
         raise ValueError("monitor_id is required")
+    if store.get_monitor(monitor_id) is None:
+        raise ValueError("monitor_id no corresponde a un monitor")
     search = str(request.query.get("search") or "").strip()
     limit = _normalize_limit(request.query.get("limit"), default=200)
     offset = _normalize_offset(request.query.get("offset"))
@@ -3714,6 +3728,8 @@ def _snapshot_pusher_loop(stop_event: threading.Event):
         except Exception:
             continue
         for ws, feed, params in due:
+            if stop_event.is_set():
+                return
             try:
                 payload = (
                     _protocol_snapshot_payload(params)
@@ -3904,7 +3920,7 @@ def _make_feed_handler(feed_name: str):
                         "message": (
                             "Too many failed authentication attempts"
                             if status == 429
-                            else "Invalid or missing security code"
+                            else "Código de seguridad incorrecto o ausente"
                         ),
                         "generated_at": utc_now(),
                     }))
@@ -4078,7 +4094,7 @@ def websocket_handler(ws, request=None):
                             "message": (
                                 "Too many failed authentication attempts"
                                 if status == 429
-                                else "Invalid or missing security code"
+                                else "Código de seguridad incorrecto o ausente"
                             ),
                             "generated_at": utc_now(),
                         }
@@ -4251,7 +4267,7 @@ def realtime_stream(request):
         message = (
             "Too many failed authentication attempts"
             if status == 429
-            else "Invalid or missing security code"
+            else "Código de seguridad incorrecto o ausente"
         )
         denied_body = (
             "data: " + _json_text({"type": "auth_required", "status": status, "message": message, "generated_at": utc_now()}) + "\n\n"
@@ -4418,6 +4434,10 @@ def shutdown_capture():
     # an Exception subclass and would otherwise skip closing the store/hub
     # and leave the privileged capture child un-signaled.
     try:
+        _snapshot_pusher_stop.set()
+    except (Exception, KeyboardInterrupt):
+        pass
+    try:
         runtime.stop()
     except (Exception, KeyboardInterrupt):
         pass
@@ -4442,7 +4462,8 @@ def shutdown_capture():
         except (Exception, KeyboardInterrupt):
             pass
     try:
-        _snapshot_pusher_stop.set()
+        if _snapshot_pusher_thread is not None and _snapshot_pusher_thread is not threading.current_thread():
+            _snapshot_pusher_thread.join(timeout=1.0)
     except (Exception, KeyboardInterrupt):
         pass
     try:

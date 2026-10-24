@@ -16,13 +16,13 @@
     </template>
 
     <div v-if="showIntro" class="map-intro">
-      <div class="map-intro__eyebrow">Live telemetry viewport</div>
-      <div class="map-intro__title">{{ isGlobeMode ? "Orbital Telemetry Globe" : "Live Telemetry Map" }}</div>
+      <div class="map-intro__eyebrow">Vista de telemetría en vivo</div>
+      <div class="map-intro__title">{{ isGlobeMode ? "Globo de telemetría" : "Mapa de telemetría en vivo" }}</div>
       <div class="map-intro__description">
         {{
           isGlobeMode
-            ? "Orthographic globe with auto-rotation, front-hemisphere clustering, and animated route traces."
-            : "Only public IPs render on the map. Packet traces enter from outside the frame to keep focus on routable hosts."
+            ? "Globo ortográfico con rotación automática, agrupación de hosts y rutas animadas."
+            : "El mapa sitúa las IPs públicas y los hosts locales cuando se configura la ubicación del sensor."
         }}
       </div>
       <div v-if="statusInfoText || geoipInfoText" class="map-intro__meta">
@@ -36,6 +36,10 @@
       </div>
     </div>
 
+    <v-alert v-if="originPoint && !originPoint.declared && localHostCount" type="info" variant="tonal" density="compact">
+      Configura la ubicación del sensor para situar los {{ localHostCount }} hosts locales.
+      <v-btn to="/settings?section=location" variant="text" size="small">Configurar ubicación</v-btn>
+    </v-alert>
     <div
       class="map-wrapper"
       :class="[
@@ -617,7 +621,7 @@ export default {
         }
       } else {
         const rows = Number(this.geoipStatus.rows) || 0;
-        if (rows > 0) parts.push(`${rows.toLocaleString()} blocks`);
+        if (rows > 0) parts.push(`${rows.toLocaleString("es-ES")} blocks`);
       }
       if (this.geoipStatus.generated_at) parts.push(`seed ${this.geoipStatus.generated_at}`);
       if (this.geoipStatus.partial) parts.push("partial catalog");
@@ -654,7 +658,7 @@ export default {
     },
     projectedOrigin() {
       const origin = this.originPoint;
-      if (!origin) return null;
+      if (!origin || !origin.declared || origin.lat == null || origin.lon == null) return null;
       const lat = Number(origin.lat);
       const lon = Number(origin.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
@@ -1308,8 +1312,8 @@ export default {
     formatBytes(value) {
       const bytes = Number(value) || 0;
       if (bytes < 1024) return `${bytes} B`;
-      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toLocaleString("es-ES", { maximumFractionDigits: 1 })} KB`;
+      return `${(bytes / (1024 * 1024)).toLocaleString("es-ES", { maximumFractionDigits: 1 })} MB`;
     },
     applySnapshot(snapshot) {
       const data = snapshot && snapshot.data ? snapshot.data : snapshot;
@@ -1343,7 +1347,7 @@ export default {
         total_ports: Number(summary.total_ports) || 0,
         total_open_ports: Number(summary.total_open_ports) || 0,
       };
-      this.lastUpdated = new Date().toLocaleTimeString();
+      this.lastUpdated = new Date().toLocaleTimeString("es-ES");
     },
     reloadData() {
       this.loading = true;

@@ -11,11 +11,13 @@ import "vuetify/styles";
 import "@mdi/font/css/materialdesignicons.css";
 import "./styles/app.css";
 import { createVuetify } from "vuetify";
+import { es } from "vuetify/locale";
 import { aliases, mdi } from "vuetify/iconsets/mdi";
 import router from "./router";
 import store from "./state/appStore";
 
 const vuetify = createVuetify({
+  locale: { locale: "es", fallback: "es", messages: { es } },
   icons: {
     defaultSet: "mdi",
     aliases,

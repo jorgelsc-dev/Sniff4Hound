@@ -287,7 +287,7 @@ test("SOC evidence tables bind existing computed rows", () => {
     top_conversations: [{ label: "test flow" }],
     top_ports: [{ port: 443 }],
   };
-  for (const [title, property] of [["Top Hosts", "hostRows"], ["Top Conversations", "conversationRows"], ["Top Ports", "portRows"]]) {
+  for (const [title, property] of [["Hosts destacados", "hostRows"], ["Conversaciones destacadas", "conversationRows"], ["Puertos destacados", "portRows"]]) {
     const binding = source.match(new RegExp(`title="${title}"[\\s\\S]*?:rows="([^"]+)"`));
     assert.equal(binding?.[1], property);
     assert.equal(vm[binding[1]].length, 1);

@@ -176,7 +176,7 @@ export default {
       if (progress.phase === "deleting") {
         const done = Number(progress.rows_done) || 0;
         const total = Number(progress.rows_total) || 0;
-        return total ? `Borrando filas... (${done.toLocaleString()} / ${total.toLocaleString()})` : "Borrando filas...";
+        return total ? `Borrando filas... (${done.toLocaleString("es-ES")} / ${total.toLocaleString("es-ES")})` : "Borrando filas...";
       }
       if (progress.phase === "compacting") {
         return "Compactando base de datos...";
@@ -214,7 +214,7 @@ export default {
             severity: "info",
             title: "Datos almacenados borrados",
             message: deleted
-              ? `Se borraron ${deleted.toLocaleString()} filas. Monitores, listeners y ajustes se conservaron.`
+              ? `Se borraron ${deleted.toLocaleString("es-ES")} filas. Monitores, listeners y ajustes se conservaron.`
               : "No quedaba nada por borrar.",
             groupKey: "data:cleared",
           });

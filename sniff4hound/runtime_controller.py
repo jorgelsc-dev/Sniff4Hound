@@ -247,6 +247,15 @@ class RuntimeController:
         selected = str(interface or "").strip()
         return self.set_sniffer_interfaces([selected] if selected else [])
 
+    def honeypot_listener_page(self, **query):
+        page = self._honeypot.store.honeypot_listener_page(**query)
+        page["items"] = [{**row, **self._honeypot._listener_view(row)} for row in page["items"]]
+        return page
+
+    def set_dashboard_port(self, port):
+        self._sniffer.dashboard_port = int(port)
+        return {"port": int(port)}
+
     def list_honeypot_listeners(self):
         """Listener management is independent of which engine is currently
         active - you can create or toggle a honeypot listener while the

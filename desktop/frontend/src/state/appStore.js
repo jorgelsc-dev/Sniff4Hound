@@ -20,12 +20,12 @@ const STORAGE_KEY_TIME_RANGE = "sniff4hound.timeRange";
 // Relative windows understood by the API's `since` query parameter. The empty
 // value means "no temporal filter" (everything the store still holds).
 const TIME_RANGE_OPTIONS = [
-  { label: "15m", value: "15m", description: "Last 15 minutes" },
-  { label: "1h", value: "1h", description: "Last hour" },
-  { label: "6h", value: "6h", description: "Last 6 hours" },
-  { label: "24h", value: "24h", description: "Last 24 hours" },
-  { label: "7d", value: "7d", description: "Last 7 days" },
-  { label: "All", value: "", description: "No time filter" },
+  { label: "15m", value: "15m", description: "Últimos 15 minutos" },
+  { label: "1h", value: "1h", description: "Última hora" },
+  { label: "6h", value: "6h", description: "Últimas 6 horas" },
+  { label: "24h", value: "24h", description: "Últimas 24 horas" },
+  { label: "7d", value: "7d", description: "Últimos 7 días" },
+  { label: "Todos", value: "", description: "Sin filtro de tiempo" },
 ];
 const TIME_RANGE_VALUES = new Set(TIME_RANGE_OPTIONS.map((option) => option.value));
 const WS_RECONNECT_DELAY_MS = 1800;
@@ -94,6 +94,7 @@ const state = reactive({
 
 const tableRefreshSubscribers = new Set();
 const mapSnapshotSubscribers = new Set();
+const activeDataFeeds = new Set();
 
 let inMemoryAuthToken = "";
 let wsClient = null;
@@ -414,8 +415,8 @@ function setSnifferInterfaces(interfaceNames) {
   });
 }
 
-function listMonitors() {
-  return fetchJsonPromise("/api/monitors/");
+function listMonitors(query = {}) {
+  return fetchJsonPromise(`/api/monitors/?${new URLSearchParams({ metadata: "1", ...query })}`);
 }
 
 function listMonitorTraffic() {
@@ -548,8 +549,8 @@ function executeConsoleCommand(command) {
   });
 }
 
-function listHoneypotListeners() {
-  return fetchJsonPromise("/api/honeypot/listeners/");
+function listHoneypotListeners(query = {}) {
+  return fetchJsonPromise(`/api/honeypot/listeners/?${new URLSearchParams({ metadata: "1", ...query })}`);
 }
 
 function createHoneypotListener(proto, port, label) {
@@ -665,8 +666,8 @@ function listPaths(options) {
 // global time range unless the caller passes one: a history is read "as far
 // back as it goes" by default, and a range left at 1h from another view would
 // look like the history had vanished.
-function listDnsHistory({ search = "", type = "", rcode = "", ip = "", domain = "", since = "", limit = 500, offset = 0 } = {}) {
-  return fetchListPromise("/api/history/dns/", { params: { search, type, rcode, ip, domain }, limit, offset, since });
+function listDnsHistory({ search = "", type = "", rcode = "", ip = "", domain = "", parent = "", since = "", limit = 500, offset = 0 } = {}) {
+  return fetchListPromise("/api/history/dns/", { params: { search, type, rcode, ip, domain, parent }, limit, offset, since });
 }
 
 function listArpHistory({ search = "", ip = "", mac = "", since = "", limit = 500, offset = 0 } = {}) {
@@ -975,6 +976,7 @@ function wsGet(path) {
     }, WS_GET_TIMEOUT_MS);
     pendingWsGets.set(id, {
       timer,
+      cancel: () => reject(shutdownError()),
       settle: (payload) => {
         const status = Number(payload.status || 0);
         if (status === 401) {
@@ -1093,7 +1095,7 @@ function fetchWithMetaUntracked(path, options = {}, config = {}) {
       // read never fails just because the socket did. A status carried back
       // from the server is a real answer, though, and must not be retried.
       return wsGet(path).catch((err) => {
-        if (err && err.status) throw err;
+        if (err && (err.status || err.name === "AbortError")) throw err;
         return httpFetchWithMeta(path, opts, config);
       });
     });
@@ -1102,6 +1104,9 @@ function fetchWithMetaUntracked(path, options = {}, config = {}) {
 }
 
 function httpFetchWithMeta(path, opts, config) {
+  if (state.shutdownPending && String(path).split("?")[0] !== "/api/app/shutdown") {
+    return Promise.reject(shutdownError());
+  }
   return bridgedFetch(apiUrl(path), opts).then((res) =>
     res.text().then((text) => {
       const data = parseJsonSafe(text);
@@ -1138,6 +1143,12 @@ function httpFetchWithMeta(path, opts, config) {
 // it selects what gets invoked.
 const jobWaiters = new Set();
 
+function shutdownError() {
+  const error = new Error("Application is closing.");
+  error.name = "AbortError";
+  return error;
+}
+
 function notifyJobFinished(jobId) {
   const id = String(jobId || "");
   if (!id) return;
@@ -1162,36 +1173,41 @@ function awaitJob(jobId, config = {}) {
   // behind when the poll rejects mid-wait.
   let currentWaiter = null;
 
-  const poll = () => fetchJsonPromise(`/api/jobs/?id=${encodeURIComponent(id)}`, {}, {
-    ...config,
-    preferHttp: true,
-  }).then((job) => {
-    const status = String((job && job.status) || "").toLowerCase();
-    if (status === "done") return job.result;
-    if (status === "error") {
-      const error = new Error(job.error || "La petición falló en el servidor.");
-      error.code = job.error_type || "job_failed";
-      throw error;
+  const poll = () => {
+    if (state.shutdownPending) {
+      return Promise.reject(shutdownError());
     }
-    // Still queued or running: continue on whichever comes first, the
-    // websocket nudge or the next scheduled check.
-    return new Promise((resolve) => {
-      const timer = setTimeout(resolve, jobPollDelay(attempt));
-      currentWaiter = {
-        id,
-        wake: () => {
-          clearTimeout(timer);
-          resolve();
-        },
-      };
-      jobWaiters.add(currentWaiter);
-    }).then(() => {
-      jobWaiters.delete(currentWaiter);
-      currentWaiter = null;
-      attempt += 1;
-      return poll();
+    return fetchJsonPromise(`/api/jobs/?id=${encodeURIComponent(id)}`, {}, {
+      ...config,
+      preferHttp: true,
+    }).then((job) => {
+      const status = String((job && job.status) || "").toLowerCase();
+      if (status === "done") return job.result;
+      if (status === "error") {
+        const error = new Error(job.error || "La petición falló en el servidor.");
+        error.code = job.error_type || "job_failed";
+        throw error;
+      }
+      // Still queued or running: continue on whichever comes first, the
+      // websocket nudge or the next scheduled check.
+      return new Promise((resolve) => {
+        const timer = setTimeout(resolve, jobPollDelay(attempt));
+        currentWaiter = {
+          id,
+          wake: () => {
+            clearTimeout(timer);
+            resolve();
+          },
+        };
+        jobWaiters.add(currentWaiter);
+      }).then(() => {
+        jobWaiters.delete(currentWaiter);
+        currentWaiter = null;
+        attempt += 1;
+        return poll();
+      });
     });
-  });
+  };
 
   return poll().finally(() => {
     if (currentWaiter) jobWaiters.delete(currentWaiter);
@@ -2110,11 +2126,12 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
     return true;
   };
 
-  const ok = connect(params || {});
-  return {
+  const ok = !state.shutdownPending && connect(params || {});
+  const handle = {
     ok,
     update: (next) => connect(next || {}),
     close: () => {
+      activeDataFeeds.delete(handle);
       closedByCaller = true;
       clearFirstFrameTimer();
       clearReconnectTimer();
@@ -2129,6 +2146,8 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
     },
     isOpen: () => Boolean(socket && socket.readyState === RealtimeChannel.OPEN),
   };
+  if (ok) activeDataFeeds.add(handle);
+  return handle;
 }
 
 // Feeds emit the raw payload their HTTP counterpart returns. The list views
@@ -2342,20 +2361,29 @@ function initRealtime() {
   connectRealtime();
 }
 
-function shutdownApplication() {
+function shutdownApplication({ stopRuntime = true } = {}) {
   if (state.shutdownPending) {
     return Promise.resolve({ status: "ok", shutdown_pending: true, shutdown_requested: false });
   }
   state.shutdownPending = true;
+  state.commandPaletteOpen = false;
   clearReconnectTimer();
   destroyRealtime();
+  for (const pending of pendingWsGets.values()) {
+    clearTimeout(pending.timer);
+    pending.cancel();
+  }
+  pendingWsGets.clear();
+  for (const handle of activeDataFeeds) handle.close();
+  for (const waiter of jobWaiters) waiter.wake();
+  if (audioContext) {
+    try { audioContext.close().catch(() => {}); } catch { /* The audio device may already be closed. */ }
+    audioContext = null;
+  }
+  if (!stopRuntime) return Promise.resolve({ status: "ok", shutdown_pending: true });
   return fetchJsonPromise("/api/app/shutdown", {
     method: "POST",
     body: JSON.stringify({ delay: APP_SHUTDOWN_DELAY_SECONDS }),
-  }).catch((error) => {
-    state.shutdownPending = false;
-    reconnectRealtime();
-    throw error;
   });
 }
 

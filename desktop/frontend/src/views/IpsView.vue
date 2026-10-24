@@ -1,7 +1,7 @@
 <template>
   <div>
     <ViewHeader
-      overline="Detection"
+      overline="Detección"
       title="Dispositivos e IPs"
       description="Inventario pasivo de direcciones observadas. El tipo se infiere únicamente de metadatos de red y muestra su nivel de confianza."
       :refresh-loading="loading"
@@ -63,7 +63,7 @@
 
     <EntityTablePanel
       title="IPs"
-      subtitle="One row per distinct IP address seen in stored traffic."
+      subtitle="Una fila por dirección IP observada en el tráfico almacenado."
       class="mt-6"
       v-model:live-enabled="liveRefreshEnabled"
       :live-refresh="true"
@@ -246,7 +246,7 @@ export default {
       return ({ high: "alta confianza", medium: "confianza media", low: "baja confianza" })[value] || "sin clasificar";
     },
     formatCount(value) {
-      return Number(value || 0).toLocaleString();
+      return Number(value || 0).toLocaleString("es-ES");
     },
     isScopeSelected(value) {
       return this.selectedScopes.includes(value);
@@ -300,7 +300,7 @@ export default {
       this.scopeCounts = data.scope_counts || null;
       this.meta = { totalAvailable: null, returned: rows.length, truncated: null };
       this.error = "";
-      this.lastUpdated = new Date().toLocaleTimeString();
+      this.lastUpdated = new Date().toLocaleTimeString("es-ES");
       this.loading = false;
     },
     // Kept as the single-shot fallback for when the stream cannot serve.
@@ -313,7 +313,7 @@ export default {
           this.ips = rows;
           this.scopeCounts = scopeCounts;
           this.meta = meta || { totalAvailable: null, returned: null, truncated: null };
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .catch((err) => {
           this.ips = [];

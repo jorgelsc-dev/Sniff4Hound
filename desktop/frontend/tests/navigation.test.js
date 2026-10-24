@@ -10,7 +10,7 @@ test("every nav destination is reachable from the flattened list", () => {
   // always names its group.
   const summaries = flattened.filter(item => item.label === "Resumen");
   assert.equal(summaries.length, 1);
-  assert.deepEqual(summaries.map(item => item.parent), ["Dashboard"]);
+  assert.deepEqual(summaries.map(item => item.parent), ["Panel principal"]);
 });
 
 test("search ignores accents in both the query and the label", () => {
@@ -22,7 +22,7 @@ test("search ignores accents in both the query and the label", () => {
 
 test("search matches a subsequence, not just a prefix", () => {
   assert.ok(matchesQuery({ label: "Configuración" }, "cnf"));
-  assert.ok(matchesQuery({ label: "Mapa en Vivo", parent: "Dashboard" }, "dashvivo"));
+  assert.ok(!matchesQuery({ label: "Mapa en Vivo", parent: "Panel principal" }, "dashvivo"));
   assert.ok(!matchesQuery({ label: "Sniffer" }, "zz"));
 });
 

@@ -41,7 +41,7 @@ def default_log_dir() -> Path:
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 LOG_DEFAULTS = {
-    "level": "DEBUG",
+    "level": "INFO",
     "max_mb": 20,
     "backups": 5,
     "retention_days": 14,
@@ -115,7 +115,10 @@ class RotatingNDJSONSink:
                 size = 0
             if size >= self.max_bytes:
                 self._rotate()
+                size = 0
             self._log.append(record)
+            if size == 0:
+                self._hand_back()
 
     def _rotated(self, index: int) -> Path:
         return self.path.with_name(f"{self.path.name}.{index}")
@@ -319,3 +322,12 @@ __all__ = [
     "start_reload_loop",
     "tail",
 ]
+
+
+def invoking_owner() -> tuple[int, int] | None:
+    """Ownership to restore when the desktop runtime is elevated."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    uid = os.environ.get("SNIFF4HOUND_INVOKING_UID", "")
+    gid = os.environ.get("SNIFF4HOUND_INVOKING_GID", "")
+    return (int(uid), int(gid)) if uid.isdigit() and gid.isdigit() else None

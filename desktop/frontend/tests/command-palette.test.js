@@ -52,3 +52,13 @@ test("Escape leaves other dialogs alone when the palette is closed", () => {
   vm.handleKeydown({ key: "Escape", preventDefault: () => assert.fail("Escape should not be consumed") });
   assert.deepEqual(focus, []);
 });
+
+test("exact and word-prefix palette hits outrank loose context matches", async () => {
+  const { queryScore, navDestinations } = await import("../src/utils/navigation.js");
+  const arp = navDestinations().filter(item => queryScore(item, "arp") > 0).sort((a, b) => queryScore(b, "arp") - queryScore(a, "arp"));
+  assert.equal(arp[0].label, "ARP");
+  assert.equal(queryScore({ label: "Mapa de Nodos" }, "arp"), 0);
+  assert.equal(queryScore({ label: "Iniciar Sniffer" }, "mapa"), 0);
+  assert.equal(queryScore({ label: "Runtime", parent: "Configuración" }, "mapa"), 0);
+  assert.ok(queryScore({ label: "Mapa en Vivo" }, "mapa") > queryScore({ label: "Ajustes", keywords: "mapa" }, "mapa"));
+});

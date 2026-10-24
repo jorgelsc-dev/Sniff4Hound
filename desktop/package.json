@@ -28,6 +28,7 @@
       "main.js",
       "preload.js",
       "splash.html",
+      "splash.js",
       "assets/**",
       "lib/**",
       "package.json"
@@ -45,7 +46,7 @@
     },
     "deb": {
       "depends": [
-        "policykit-1 | pkexec | sudo"
+        "policykit-1 | pkexec"
       ]
     }
   }

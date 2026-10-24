@@ -11,6 +11,8 @@ import {
   dnsTypeColor,
   formatTtlRange,
   isIpAddress,
+  macVendorHint,
+  macVendorLabel,
 } from "../src/utils/history.js";
 import { NAV_LINKS, navDestinations } from "../src/utils/navigation.js";
 import router from "../src/router/index.js";
@@ -58,6 +60,21 @@ test("a TTL shows as a value, a range, or nothing", () => {
   assert.equal(formatTtlRange(60, null), "60 s");
 });
 
+test("MAC manufacturers and private-address states have useful labels", () => {
+  const assigned = {
+    mac_vendor: "Apple, Inc.",
+    mac_vendor_registry: "MA-L",
+    mac_vendor_prefix: "F0EE7A",
+    mac_vendor_prefix_bits: 24,
+    mac_address_kind: "global",
+  };
+  assert.equal(macVendorLabel(assigned), "Apple, Inc.");
+  assert.equal(macVendorHint(assigned), "MA-L · F0EE7A / 24 bits · IEEE Registration Authority");
+  assert.equal(macVendorLabel({ mac_address_kind: "local" }), "Local / aleatoria");
+  assert.equal(macVendorLabel({ mac_address_kind: "multicast" }), "Multicast");
+  assert.equal(macVendorLabel({ mac_address_kind: "unknown" }), "Fabricante desconocido");
+});
+
 test("every kind of ARP change is described", () => {
   assert.deepEqual([...ARP_EVENT_KINDS].sort(), ["ip_mac_changed", "mac_mismatch", "mac_new_ip", "new_device"]);
   for (const kind of ARP_EVENT_KINDS) {
@@ -84,14 +101,27 @@ test("the summary says what moved from where to where", () => {
   assert.equal(arpEventSummary(null), "undefined (undefined)");
 });
 
-test("the history views are reachable from the navigation and the router", () => {
-  const history = NAV_LINKS.find((link) => link.label === "Historial");
-  assert.ok(history, "a Historial entry");
-  assert.deepEqual(history.children.map((child) => child.to), ["/history/dns", "/history/arp"]);
-  const destinations = navDestinations().map((item) => item.to);
-  assert.ok(destinations.includes("/history/dns") && destinations.includes("/history/arp"));
-  const names = router.getRoutes().map((route) => route.path);
-  for (const path of ["/history/dns", "/history/arp"]) assert.ok(names.includes(path), path);
-  assert.equal(router.resolve("/history").redirectedFrom, undefined);
-  assert.equal(router.resolve("/history").matched.at(-1).redirect, "/history/dns");
+test("ARP and DNS have independent sidebar and command-palette destinations", () => {
+  for (const name of ["ARP", "DNS"]) {
+    const path = `/${name.toLowerCase()}`;
+    const link = NAV_LINKS.find((item) => item.label === name);
+    assert.equal(link?.to, path);
+    assert.equal(link.children, undefined, "one click opens the protocol view");
+    const destination = navDestinations().find((item) => item.to === path);
+    assert.equal(destination?.label, name);
+    assert.equal(destination.parent, undefined);
+    const route = router.resolve(path);
+    assert.equal(route.name, name.toLowerCase());
+    assert.ok(route.matched.at(-1).components.default);
+  }
+  assert.notEqual(router.resolve("/arp").matched.at(-1).components.default, router.resolve("/dns").matched.at(-1).components.default);
+});
+
+test("old history links and route names redirect to the independent views", () => {
+  for (const protocol of ["dns", "arp"]) {
+    const route = router.resolve(`/history/${protocol}`);
+    assert.equal(route.matched.at(-1).redirect, `/${protocol}`);
+    assert.equal(router.resolve({ name: `history-${protocol}` }).matched.at(-1).redirect, `/${protocol}`);
+  }
+  assert.equal(router.resolve("/history").matched.at(-1).redirect, "/dns");
 });

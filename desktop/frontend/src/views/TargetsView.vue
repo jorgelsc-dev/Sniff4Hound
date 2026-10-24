@@ -336,15 +336,15 @@ export default {
       const values = uniqueSorted(
         this.targets.map((item) => String(item.proto || "").trim().toLowerCase())
       );
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: value.toUpperCase(), value }))];
+      return [{ label: "Todos", value: "" }, ...values.map((value) => ({ label: value.toUpperCase(), value }))];
     },
     targetStatusFilterOptions() {
       const values = uniqueSorted(this.targets.map((item) => this.normalizeStatus(item.status)));
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: value, value }))];
+      return [{ label: "Todos", value: "" }, ...values.map((value) => ({ label: value, value }))];
     },
     targetPortModeFilterOptions() {
       const values = uniqueSorted(this.targets.map((item) => this.normalizePortMode(item.port_mode)));
-      return [{ label: "All", value: "" }, ...values.map((value) => ({ label: value, value }))];
+      return [{ label: "Todos", value: "" }, ...values.map((value) => ({ label: value, value }))];
     },
     filteredTargets() {
       const query = String(this.tableFilters.query || "").trim();
@@ -510,7 +510,7 @@ export default {
       this.targets = this.store.feedListResult(payload).rows;
       this.error = "";
       this.syncFilters();
-      this.lastUpdated = new Date().toLocaleTimeString();
+      this.lastUpdated = new Date().toLocaleTimeString("es-ES");
       this.loading = false;
     },
     loadProtocolsOnce() {
@@ -546,7 +546,7 @@ export default {
             this.form.proto = this.protos[0];
           }
           this.syncFilters();
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .catch((err) => {
           this.targets = [];

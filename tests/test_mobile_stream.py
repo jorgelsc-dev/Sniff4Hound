@@ -878,7 +878,8 @@ class MobileStreamListenTests(unittest.TestCase):
         self.assertTrue(state["mdns"]["enabled"])
         self.assertEqual(state["mdns"]["addresses"], ["127.0.0.1"])
         self.assertTrue(state["mdns"]["hostname"].endswith(".local"))
-        self.assertEqual(state["url_base"], f'https://{state["mdns"]["hostname"]}:{port}')
+        self.assertEqual(state["url_base"], f"https://127.0.0.1:{port}")
+        self.assertEqual(state["mdns_url_base"], f'https://{state["mdns"]["hostname"]}:{port}')
         self.assertTrue(state["http3"]["enabled"])
         self.assertEqual(state["http3"]["transport"], "https+h3")
         self.assertIn(f'h3=":{port}"', state["http3"]["alt_svc"])
@@ -904,12 +905,17 @@ class MobileStreamListenTests(unittest.TestCase):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
             udp.bind(("127.0.0.1", port))  # raises if the HTTP/3 listener is still holding it
 
-    def test_failed_mdns_publication_releases_both_listeners(self):
+    def test_failed_mdns_publication_keeps_the_ip_stream_available(self):
         port = _free_tcp_udp_port()
         with patch("sniff4hound.mobile_stream.mdns.publish", side_effect=OSError("multicast unavailable")):
-            with self.assertRaisesRegex(ValueError, "could not publish.*mDNS"):
-                self.service._listen("lo", "127.0.0.1", port)
-        self.assertFalse(self.service.status()["running"])
+            state = self.service._listen("lo", "127.0.0.1", port)
+        self.assertTrue(state["running"])
+        self.assertEqual(state["url_base"], f"https://127.0.0.1:{port}")
+        self.assertFalse(state["mdns"]["enabled"])
+        self.assertIn("multicast unavailable", state["mdns"]["error"])
+        status, _headers, _body = self._https_get(port, "/mobile/ca.pem")
+        self.assertEqual(status, 200)
+        self.service.stop()
         deadline = time.monotonic() + 5
         while not self._port_is_free(port) and time.monotonic() < deadline:
             time.sleep(0.05)

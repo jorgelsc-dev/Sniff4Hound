@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import formatdate
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 from typing import Any
 
 from .utils import (
@@ -32,28 +31,22 @@ from .utils import (
 from .honeypot_ports import (  # noqa: F401 - re-exported, used throughout this module's dispatch below
     AMQP_PORTS,
     AMQPS_PORTS,
-    COMMON_PORTS,
     DNS_TCP_PORTS,
     DNS_UDP_PORTS,
-    DHCP_UDP_PORTS,
     FTP_PORTS,
     FTPS_PORTS,
-    GENERIC_TCP_PORTS,
     HTTP_TCP_PORTS,
     HTTPS_TCP_PORTS,
     IMAP_PORTS,
     IMAPS_PORTS,
-    IPSEC_UDP_PORTS,
     LDAP_PORTS,
     LDAPS_PORTS,
     MDNS_UDP_PORTS,
     MEMCACHED_TCP_PORTS,
-    MEMCACHED_UDP_PORTS,
     MONGODB_PORTS,
     MQTT_PORTS,
     MQTTS_PORTS,
     MYSQL_PORTS,
-    NETBIOS_UDP_PORTS,
     NTP_UDP_PORTS,
     POP3_PORTS,
     POP3S_PORTS,
@@ -61,24 +54,34 @@ from .honeypot_ports import (  # noqa: F401 - re-exported, used throughout this 
     RADIUS_UDP_PORTS,
     RDP_PORTS,
     REDIS_PORTS,
-    RIP_UDP_PORTS,
     RTSP_PORTS,
     SIP_UDP_PORTS,
     SMB_PORTS,
     SMTP_PORTS,
     SMTPS_PORTS,
     SNMP_UDP_PORTS,
-    SSDP_UDP_PORTS,
     SSH_PORTS,
     SYSLOG_UDP_PORTS,
     TELNET_PORTS,
-    TFTP_UDP_PORTS,
     TLS_TCP_PORTS,
     VNC_PORTS,
     listener_port_allowed,
     listener_port_policy_error,
     service_label,
 )
+
+# Public compatibility exports.
+from . import honeypot_ports as _honeypot_ports
+COMMON_PORTS = _honeypot_ports.COMMON_PORTS
+DHCP_UDP_PORTS = _honeypot_ports.DHCP_UDP_PORTS
+GENERIC_TCP_PORTS = _honeypot_ports.GENERIC_TCP_PORTS
+IPSEC_UDP_PORTS = _honeypot_ports.IPSEC_UDP_PORTS
+MEMCACHED_UDP_PORTS = _honeypot_ports.MEMCACHED_UDP_PORTS
+NETBIOS_UDP_PORTS = _honeypot_ports.NETBIOS_UDP_PORTS
+RIP_UDP_PORTS = _honeypot_ports.RIP_UDP_PORTS
+SSDP_UDP_PORTS = _honeypot_ports.SSDP_UDP_PORTS
+TFTP_UDP_PORTS = _honeypot_ports.TFTP_UDP_PORTS
+
 
 from .settings import (
     DATA_DIR, HONEYPOT_EVENT_DB_FILE, HONEYPOT_LOG_FILE,

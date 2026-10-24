@@ -1,20 +1,20 @@
 <template>
   <div>
     <ViewHeader
-      overline="Investigation"
+      overline="Investigación"
       :title="
         mode === 'monitor'
-          ? 'Monitor Investigator'
+          ? 'Investigación de monitor'
           : targetKind === 'domain'
-            ? 'Domain Investigator'
-            : 'Host Investigator'
+            ? 'Investigación de dominio'
+            : 'Investigación de host'
       "
       :description="
         mode === 'monitor'
-          ? 'A static snapshot of everything this monitor has matched - packets, charts, and the source/target IPs, each one click away from its own investigation.'
+          ? 'Instantánea del tráfico detectado por este monitor: paquetes, gráficas e IPs de origen y destino que puedes investigar.'
           : targetKind === 'domain'
-            ? 'Search a domain and pivot through packets, payloads, tags, and list controls.'
-            : 'Search an IP and get a compact, evidence-first view of transport, payloads, tags, and flows.'
+            ? 'Busca un dominio y explora sus paquetes, contenido, etiquetas y controles de acceso.'
+            : 'Busca una IP para revisar las evidencias de servicios, contenido, etiquetas y flujos.'
       "
       :refresh-loading="loading"
       @refresh="refresh"
@@ -27,11 +27,11 @@
           color="primary"
           density="comfortable"
           :loading="loading"
-          aria-label="Refresh"
+          aria-label="Actualizar"
           @click="refresh"
         >
           <v-icon icon="mdi-refresh" />
-          <v-tooltip activator="parent" location="bottom">Refresh</v-tooltip>
+          <v-tooltip activator="parent" location="bottom">Actualizar</v-tooltip>
         </v-btn>
       </template>
     </ViewHeader>
@@ -138,8 +138,8 @@
     <v-row class="mt-4" dense>
       <v-col cols="12" xl="6">
         <DataPanel
-          title="Host Profile"
-          subtitle="Scope, caching, and host profile context."
+          title="Perfil del host"
+          subtitle="Ámbito, caché y contexto del perfil del host."
           :loading="loading"
           :error="''"
           :last-updated="lastUpdated"
@@ -169,8 +169,8 @@
 
       <v-col cols="12" xl="6">
         <DataPanel
-          title="Application"
-          subtitle="Quick application-layer fingerprint."
+          title="Aplicación"
+          subtitle="Identificación rápida de la aplicación."
           :loading="loading"
           :error="''"
           :last-updated="lastUpdated"
@@ -194,8 +194,8 @@
     <v-row class="mt-4" dense>
       <v-col cols="12" xl="7">
         <EntityTablePanel
-          title="Transport Services"
-          subtitle="Services inferred from the host IP."
+          title="Servicios de transporte"
+          subtitle="Servicios inferidos del tráfico del host."
           :rows="transportServices"
           :columns="serviceColumns"
           :loading="loading"
@@ -223,8 +223,8 @@
 
       <v-col cols="12" xl="5">
         <EntityTablePanel
-          title="Captured Responses"
-          subtitle="Decoded payload text and protocol banners tied to this host."
+          title="Respuestas capturadas"
+          subtitle="Contenido decodificado y banners de protocolos asociados a este host."
           :rows="payloadRows"
           :columns="payloadColumns"
           :loading="loading"
@@ -232,7 +232,7 @@
           :last-updated="lastUpdated"
           :live-refresh="false"
           :search-enabled="true"
-          search-label="Search payloads"
+          search-label="Buscar contenido"
           search-placeholder="IP, port, proto, or response"
           :filter-definitions="payloadFilters"
           empty-text="No payload evidence for this host"
@@ -249,8 +249,8 @@
     <v-row class="mt-4" dense>
       <v-col cols="12" xl="7">
         <EntityTablePanel
-          title="Flows"
-          subtitle="Directed conversations tied to the selected host."
+          title="Flujos"
+          subtitle="Conversaciones dirigidas asociadas al host seleccionado."
           :rows="flowRows"
           :columns="flowColumns"
           :loading="loading"
@@ -273,8 +273,8 @@
 
       <v-col cols="12" xl="5">
         <EntityTablePanel
-          title="Tags"
-          subtitle="Rule hits and parsed tags."
+          title="Etiquetas"
+          subtitle="Coincidencias de reglas y etiquetas analizadas."
           :rows="tagRows"
           :columns="tagColumns"
           :loading="loading"
@@ -352,7 +352,7 @@ export default {
         { key: "src_port", label: "S Port" },
         { key: "dst_port", label: "D Port" },
         { key: "state", label: "State" },
-        { key: "packet_count", label: "Packets" },
+        { key: "packet_count", label: "Paquetes" },
         { key: "byte_count", label: "Bytes" },
         { key: "banner_text", label: "Banner" },
       ],
@@ -479,7 +479,7 @@ export default {
       return [
         {
           key: "packets",
-          label: "Packets",
+          label: "Paquetes",
           value: Number(this.summary.packets || 0),
           caption: "Packets tied to this host",
           icon: "mdi-ethernet",
@@ -495,7 +495,7 @@ export default {
         },
         {
           key: "payloads",
-          label: "Payloads",
+          label: "Contenido",
           value: Number(this.summary.payloads || 0),
           caption: "Evidence rows and banners",
           icon: "mdi-message-text",
@@ -695,7 +695,7 @@ export default {
             this.intel = {};
             this.error = (intelRes.reason && intelRes.reason.message) || `Failed to investigate ${ip}`;
           }
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .finally(() => {
           if (sequence === this.loadSequence) this.loading = false;
@@ -760,7 +760,7 @@ export default {
             this.intel = {};
             this.error = (intelRes.reason && intelRes.reason.message) || `Failed to investigate ${domain}`;
           }
-          this.lastUpdated = new Date().toLocaleTimeString();
+          this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .finally(() => {
           if (sequence === this.loadSequence) this.loading = false;

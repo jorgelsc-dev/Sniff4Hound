@@ -37,5 +37,17 @@ Important limits and protections:
    on a host, and their presence does not imply that those owners sponsor, endorse
    or are affiliated with this project.
 
+   sniff4hound/data/mac_vendors.json is generated from the IEEE Registration
+   Authority public MA-L, MA-M, MA-S and IAB listings published at
+   https://standards.ieee.org/products-programs/regauth/. The assignments and
+   organization names are third-party registry data; inclusion identifies the
+   registered address-block assignee and does not imply IEEE or vendor endorsement.
+
+   sniff4hound/data/public_suffix_list.dat is the Public Suffix List published
+   at https://publicsuffix.org/list/public_suffix_list.dat and is used to find
+   registrable-domain boundaries for the DNS history. The list is distributed
+   under the Mozilla Public License 2.0; its license notice is retained in the
+   bundled file.
+
 This notice strengthens repository hygiene and attribution clarity. It is not a
 substitute for jurisdiction-specific legal advice.

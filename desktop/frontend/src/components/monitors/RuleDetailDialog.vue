@@ -145,7 +145,7 @@ export default {
     },
     formatTimestamp(value) {
       const date = new Date(value);
-      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString("es-ES");
     },
   },
 };
