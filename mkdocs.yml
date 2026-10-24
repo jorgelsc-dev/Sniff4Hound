@@ -22,6 +22,14 @@ nav:
       - Auth: reference/auth.md
       - Persistencia SQLite: reference/persistence.md
       - API y WS: reference/api.md
+      - IA opcional: reference/ai.md
+  - QA:
+      - "Auditoría #250": qa/audit-250-resolution.md
+      - Integración IA (2026-10-24): qa/ai-integration-acceptance-2026-10-24.md
+      - Pulido de Electron (2026-10-04): qa/desktop-polish-2026-10-04.md
+      - Estilos de Electron (2026-10-03): qa/desktop-styles-2026-10-03.md
+      - Revisión SOC (2026-09-05): qa/soc-review-2026-09-05.md
+      - Runtime y escritorio: qa/runtime-desktop/README.md
 
 theme:
   name: material

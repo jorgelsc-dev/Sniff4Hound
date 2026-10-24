@@ -1,7 +1,8 @@
 name: CI
 
-# Lint/build plus isolated Electron startup regressions (no app or root) and
-# the Python dependency install. The full unit suites are not run here. The backend suite took 3-5 minutes on every
+# Lint/build plus isolated Electron startup regressions (no app or root), the
+# Python dependency install and the strict docs build. The full unit suites
+# are not run here. The backend suite took 3-5 minutes on every
 # push and pull request, so it lives in tests.yml instead: start it by hand
 # from the Actions tab (Tests -> Run workflow), or run it locally (README,
 # "Checks").
@@ -113,3 +114,20 @@ jobs:
           from wsbuilder.server import HTTPServer  # noqa: F401
           print("wsbuilder", metadata.version("wsbuilder"))
           PY
+
+  # docs-pages.yml only runs on push to main, so a broken link or a page
+  # missing from the nav used to be found after the merge. Same build here.
+  docs-checks:
+    name: Docs strict build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install docs dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-docs.txt
+      - name: Build site (strict)
+        run: mkdocs build --strict
