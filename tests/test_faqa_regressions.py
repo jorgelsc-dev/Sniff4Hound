@@ -197,6 +197,23 @@ class Finding121ExportAlertsScopeTests(StoreRegressionTestCase):
         ips = {(row["src_ip"], row["dst_ip"]) for row in payload["rows"]}
         self.assertEqual(ips, {("192.0.2.1", "192.0.2.2")})
 
+    def test_export_search_matches_exact_domain_or_http_host(self):
+        self._register_alert(src_ip="192.0.2.1", dst_ip="192.0.2.2")
+        self.store.register_packet(
+            _packet(
+                src_ip="198.51.100.1",
+                dst_ip="198.51.100.2",
+                domain="evil.example",
+                http_host="portal.example:443",
+                tags=[{"key": "monitor", "value": "Domain hit", "severity": "high"}],
+            )
+        )
+
+        payload = build_export(self.store, "alerts", search="PORTAL.EXAMPLE.")
+
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["rows"][0]["src_ip"], "198.51.100.1")
+
     def test_export_reports_total_available_and_truncated(self):
         for index in range(3):
             self._register_alert(src_ip="192.0.2.1", dst_ip=f"192.0.2.{10 + index}")
@@ -205,6 +222,42 @@ class Finding121ExportAlertsScopeTests(StoreRegressionTestCase):
         self.assertIn("truncated", payload)
         self.assertGreaterEqual(payload["total_available"], 3)
         self.assertTrue(payload["truncated"])
+
+
+class Finding142ExportCompletenessTests(StoreRegressionTestCase):
+    """1.22 - export aggregation must happen before export pagination."""
+
+    def _register_alert(self, *, src_ip="192.0.2.1", dst_ip="192.0.2.2", severity="high"):
+        return self.store.register_packet(
+            _packet(
+                src_ip=src_ip,
+                dst_ip=dst_ip,
+                tags=[{"key": "monitor", "value": "Repeated probe", "severity": severity}],
+            )
+        )
+
+    def test_group_counts_all_events_even_when_raw_events_cross_page(self):
+        self._register_alert(dst_ip="192.0.2.3")
+        for _ in range(3):
+            self._register_alert()
+
+        payload = build_export(self.store, "alerts", limit=2)
+
+        self.assertEqual(payload["total_available"], 2)
+        self.assertEqual(payload["count"], 2)
+        grouped = next(row for row in payload["rows"] if row["dst_ip"] == "192.0.2.2")
+        self.assertEqual(grouped["hit_count"], 3)
+        self.assertFalse(payload["truncated"])
+
+    def test_endpoint_enrichment_is_not_capped_at_two_thousand_alerts(self):
+        for index in range(2001):
+            self._register_alert(dst_ip=f"198.51.{index // 254}.{index % 254 + 1}")
+
+        payload = build_export(self.store, "endpoints", search="192.0.2.1", limit=10)
+
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["rows"][0]["alert_count"], 2001)
+        self.assertFalse(payload["partial"])
 
 
 class Finding115ListEntryDuplicatesTests(StoreRegressionTestCase):

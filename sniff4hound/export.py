@@ -149,7 +149,18 @@ def _alert_rows(store, *, limit: int, offset: int, since: str, severity: str, se
     Store._alert_filter) - without it, exporting "alerts about this host"
     silently returned alerts for the whole database (finding 1.21).
     """
-    raw = store.list_recent_alerts(limit=limit, offset=offset, since=since, severity=severity, search=search)
+    # Fetch the complete filtered event set before grouping.  Paginating the
+    # raw events first makes a group split at a page boundary look like two
+    # partial groups, and makes its count/first_seen/last_seen dependent on
+    # the requested page.  The export page is cut after this function returns.
+    raw_count = store.count_recent_alerts(since=since, severity=severity, search=search)
+    raw = store.list_recent_alerts(
+        limit=raw_count,
+        offset=0,
+        since=since,
+        severity=severity,
+        search=search,
+    ) if raw_count else []
     grouped: dict[tuple, dict[str, Any]] = {}
     for row in raw:
         key = (
@@ -195,7 +206,18 @@ def _alert_rows(store, *, limit: int, offset: int, since: str, severity: str, se
                 entry["last_seen"] = created_at
     rows = list(grouped.values())
     # Worst first, then most recent - the order an analyst triages in.
-    rows.sort(key=lambda item: (_severity_rank(item["severity"]), item["last_seen"]), reverse=True)
+    rows.sort(
+        key=lambda item: (
+            _severity_rank(item["severity"]),
+            item["last_seen"],
+            item["rule_id"],
+            item["src_ip"],
+            item["dst_ip"],
+            item["dst_port"],
+            item["proto"],
+        ),
+        reverse=True,
+    )
     return rows
 
 
@@ -209,7 +231,8 @@ def _alert_index(store, *, since: str) -> tuple[dict[str, dict[str, Any]], bool]
     instead of silently implying a clean result."""
     index: dict[str, dict[str, Any]] = {}
     try:
-        alerts = store.list_recent_alerts(limit=2000, offset=0, since=since, severity="")
+        total = store.count_recent_alerts(since=since, severity="")
+        alerts = store.list_recent_alerts(limit=total, offset=0, since=since, severity="") if total else []
     except Exception:
         return index, True
     for row in alerts:
@@ -224,10 +247,7 @@ def _alert_index(store, *, since: str) -> tuple[dict[str, dict[str, Any]], bool]
                 entry["max_severity"] = severity
             if rule:
                 entry["rules"].add(rule)
-    # The 2000-row cap above is a real limit, not a coincidence of what
-    # happened to exist - if it was hit, some ip's alert_count/max_severity
-    # here can be an undercount, so that counts as partial too.
-    return index, len(alerts) >= 2000
+    return index, False
 
 
 def _endpoint_rows(store, *, limit: int, offset: int, since: str, search: str) -> tuple[list[dict[str, Any]], bool]:
@@ -314,18 +334,15 @@ def build_export(
     whether this export's `rows` is a subset of that; `partial` says a
     dependent read (alert enrichment) failed or hit its own cap, so the
     numbers above could be an undercount even where `truncated` is false
-    (finding 1.22)."""
+    (finding 1.22). Alerts are grouped over the complete filtered event set
+    before the requested page is cut."""
     name = normalize_dataset(dataset)
     partial = False
     if name == "alerts":
-        # _alert_rows groups a paginated window of raw events - "count=1"
-        # here can mean "1 group from a full page of raw hits", not "this
-        # rule fired once ever". `total_available` is that raw-event total,
-        # so a caller can tell whether the grouped counts might be short.
-        total_available = store.count_recent_alerts(since=since, severity=severity, search=search)
-        rows = _alert_rows(store, limit=limit, offset=offset, since=since, severity=severity, search=search)
-        truncated = total_available > (offset + limit)
-        partial = truncated
+        grouped = _alert_rows(store, limit=limit, offset=offset, since=since, severity=severity, search=search)
+        total_available = len(grouped)
+        rows = grouped[offset : offset + limit]
+        truncated = total_available > (offset + len(rows))
     elif name == "endpoints":
         rows, alerts_partial = _endpoint_rows(store, limit=limit, offset=offset, since=since, search=search)
         total_available = store.count_ip_catalog(search=search, since=since)
