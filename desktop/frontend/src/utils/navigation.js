@@ -16,7 +16,15 @@ export const NAV_LINKS = [
     ],
   },
   { label: "Chat", to: "/chat", icon: "mdi-message-processing-outline", color: "info" },
-  { label: "Configuración", to: "/settings", icon: "mdi-cog-outline", color: "secondary" },
+  {
+    label: "Configuración",
+    to: "/settings",
+    icon: "mdi-cog-outline",
+    color: "secondary",
+    children: [
+      { label: "Exclusiones", to: "/settings?section=exclusions", icon: "mdi-filter-off-outline" },
+    ],
+  },
   { label: "SOC", to: "/soc", icon: "mdi-shield-search", color: "error" },
   { label: "Investigar", to: "/investigate", icon: "mdi-magnify-scan", color: "info" },
   { label: "Monitores", to: "/monitors", icon: "mdi-target-account", color: "success" },

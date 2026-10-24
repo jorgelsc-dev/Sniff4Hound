@@ -1730,7 +1730,7 @@ import ExclusionsPanel from "../components/settings/ExclusionsPanel.vue";
 import HistoryPanel from "../components/settings/HistoryPanel.vue";
 import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 import ConfigGraphNav from "../components/settings/ConfigGraphNav.vue";
-import { SETTINGS_NODES } from "../components/settings/settingsGraph";
+import { normalizeSettingsSection } from "../components/settings/settingsGraph";
 import { formatTimestamp, matchesSearch, uniqueSorted } from "../utils/traffic";
 
 const PROTOCOL_OPTIONS = [
@@ -1754,7 +1754,6 @@ const PROTOCOL_OPTIONS = [
   "llc-osi",
 ];
 const SEVERITY_OPTIONS = ["info", "low", "medium", "high", "critical"];
-const VALID_TABS = new Set(SETTINGS_NODES.map(node => node.section));
 const GROUP_BY_OPTIONS = ["src_ip", "dst_ip", "src_ip+dst_port", "dst_ip+dst_port", "src_ip+dst_ip"];
 const MATCH_REGEX_KEYS = [
   "payload_regex",
@@ -1839,7 +1838,7 @@ export default {
     const requested = String((this.$route && this.$route.query && this.$route.query.section) || "").trim();
     return {
       store,
-      activeTab: VALID_TABS.has(requested) ? requested : "",
+      activeTab: normalizeSettingsSection(requested),
       statusRefreshing: false,
       graphReady: false,
       graphErrors: {},
@@ -2330,7 +2329,7 @@ export default {
     },
     "$route.query.section"(next) {
       const requested = String(next || "").trim();
-      this.activeTab = VALID_TABS.has(requested) ? requested : "";
+      this.activeTab = normalizeSettingsSection(requested);
     },
     activeTab(next) {
       if (String(this.$route.query.section || "") === next) return;
