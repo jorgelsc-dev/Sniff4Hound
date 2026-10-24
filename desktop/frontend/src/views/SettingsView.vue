@@ -22,7 +22,10 @@
           </div>
         </div>
         <v-alert v-if="engineError" type="error" variant="tonal" class="mt-4">{{ engineError }}</v-alert>
-        <AiSettingsPanel class="mt-4" />
+      </v-window-item>
+
+      <v-window-item value="ai">
+        <AiSettingsPanel />
       </v-window-item>
 
       <v-window-item value="capture">
@@ -1872,7 +1875,7 @@ export default {
       logTailError: "",
       pipelineResetting: false,
       graphFresh: {},
-      graphExtras: { blacklist: null, whitelist: null, exclusions: null, retentionDays: null, history: null },
+      graphExtras: { blacklist: null, whitelist: null, exclusions: null, retentionDays: null, history: null, ai: null },
       enginePending: "",
       engineError: "",
       ruleDetailOpen: false,
@@ -2139,6 +2142,19 @@ export default {
             metric("Errores", num(pipeline.errors), pipeline.errors ? "warn" : "ok"),
           ],
         ),
+        ai: (() => {
+          const config = extras.ai;
+          const enabled = Boolean(config && config.enabled);
+          return state(
+            !config ? "Sin datos" : enabled ? "IA activada" : "IA desactivada",
+            online && enabled,
+            [
+              metric("Estado", config ? (enabled ? "Activada" : "Desactivada") : "—", enabled ? "ok" : "warn"),
+              metric("Modo", "Opcional"),
+              metric("Captura", "No bloquea"),
+            ],
+          );
+        })(),
       };
       for (const [key, value] of Object.entries(states)) {
         if (!online || this.graphFresh[key] !== true) {
@@ -2388,6 +2404,7 @@ export default {
         this.store.getHistoryConfig(),
         this.store.getDeclaredLocation(),
         this.store.getDetectionScopes(),
+        this.store.fetchJsonPromise("/api/settings/ai"),
       ]);
       const fresh = (index) => results[index].status === "fulfilled" && results[index].value != null;
       this.graphFresh = {
@@ -2395,7 +2412,7 @@ export default {
         packetcache: fresh(0) && fresh(1), packetjobs: fresh(0) && fresh(1),
         detection: fresh(9), scope: fresh(12), storage: fresh(7), history: fresh(10),
         exclusions: fresh(4), blacklist: fresh(2) && fresh(3), logs: fresh(6), limits: fresh(8),
-        location: fresh(11), notifications: true,
+        location: fresh(11), ai: fresh(13), notifications: true,
       };
       const failed = (index) => results[index].status === "rejected";
       const failureMessage = (index, fallback) => failed(index)
@@ -2409,7 +2426,7 @@ export default {
         packetcache: failed(0) || failed(1), packetjobs: failed(0) || failed(1),
         detection: failed(9), scope: failed(12), storage: failed(7), history: failed(10),
         exclusions: failed(4), blacklist: failed(2) || failed(3), logs: failed(6), limits: failed(8),
-        location: failed(11), notifications: false,
+        location: failed(11), ai: failed(13), notifications: false,
       };
       const value = (index) => (results[index].status === "fulfilled" ? results[index].value : null);
       this.graphExtras = {
@@ -2418,6 +2435,7 @@ export default {
         exclusions: value(4)?.exclusion_filters || null,
         retentionDays: value(5)?.retention_days ?? null,
         history: value(10),
+        ai: value(13),
       };
       if (value(11)) this.applyLocation(value(11));
       if (value(12)) {

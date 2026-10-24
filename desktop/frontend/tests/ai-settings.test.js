@@ -29,7 +29,7 @@ test("the adapter rejects an ambiguous backend response", () => {
 });
 
 test("the Settings UI exposes an accessible optional AI toggle", () => {
-  assert.match(settingsSource, /<AiSettingsPanel class="mt-4" \/>/);
+  assert.match(settingsSource, /<v-window-item value="ai">[\s\S]*<AiSettingsPanel \/>/);
   assert.match(panelSource, /:aria-label="enabled \? 'Desactivar uso de IA' : 'Activar uso de IA'"/);
   assert.match(panelSource, /:loading="saving"/);
   assert.match(panelSource, /:disabled="loading \|\| saving/);

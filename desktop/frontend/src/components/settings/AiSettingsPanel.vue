@@ -42,6 +42,9 @@
     <div id="ai-settings-description" class="text-caption text-medium-emphasis mt-3">
       {{ enabled ? "La IA está disponible para las funciones que la soportan." : "La IA está apagada; el análisis por reglas continúa disponible." }}
     </div>
+    <v-alert type="info" variant="tonal" density="comfortable" class="mt-4" prepend-icon="mdi-help-circle-outline">
+      <strong>Cómo usarla:</strong> activa el interruptor cuando quieras permitir análisis IA sobre métricas agregadas. Puedes apagarla en cualquier momento; la captura y las reglas siguen funcionando.
+    </v-alert>
   </DataPanel>
 </template>
 

@@ -25,6 +25,7 @@ export const SETTINGS_NODES = [
   { id: "sniffer", section: "capture", label: "Sniffer", icon: "mdi-ethernet", lane: 0, column: 1, row: 1, detail: "Interfaces de red" },
   { id: "cache", section: "packetcache", label: "Caché de paquetes", icon: "mdi-cached", lane: 0, column: 2, row: 1, detail: "Retención de paquetes" },
   { id: "jobs", section: "packetjobs", label: "Jobs de procesamiento", icon: "mdi-cog-sync-outline", lane: 0, column: 3, row: 1, detail: "Procesan y persisten" },
+  { id: "ai", section: "ai", label: "IA opcional", icon: "mdi-robot-outline", lane: 1, column: 4, row: 0, detail: "Análisis agregado" },
   { id: "monitors", section: "detection", label: "Monitores", icon: "mdi-radar", lane: 0, column: 4, row: 2, detail: "Reglas y severidad" },
   { id: "store", section: "storage", label: "SniffStore", icon: "mdi-database-outline", lane: 0, column: 5, row: 1, detail: "Historial y retención" },
   { id: "history", section: "history", label: "Historial DNS y ARP", icon: "mdi-history", lane: 0, column: 5, row: 0, detail: "Siempre se guarda" },
@@ -62,6 +63,8 @@ export const SETTINGS_EDGES = [
   { from: "location", to: "sniffer", label: "tráfico" },
   { from: "sniffer", to: "cache", label: "paquetes" },
   { from: "cache", to: "jobs", label: "lotes" },
+  { from: "jobs", to: "ai", label: "analiza" },
+  { from: "ai", to: "store", label: "apoya" },
   { from: "jobs", to: "monitors", label: "alertas" },
   { from: "jobs", to: "store", label: "persiste" },
   // The sniffer feeds the history directly, ahead of detection: it records DNS

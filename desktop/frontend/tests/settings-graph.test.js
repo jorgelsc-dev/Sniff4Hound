@@ -28,7 +28,7 @@ test("the default settings layout keeps every card ordered and non-overlapping",
 
 test("the graph has one complete node for every settings destination", () => {
   const sections = new Set(SETTINGS_NODES.map(node => node.section));
-  assert.equal(SETTINGS_NODES.length, 16);
+  assert.equal(SETTINGS_NODES.length, 17);
   assert.equal(sections.size, SETTINGS_NODES.length);
   for (const node of SETTINGS_NODES) {
     assert.ok(node.label && node.detail && node.icon, `incomplete node: ${node.id}`);
