@@ -215,7 +215,7 @@ def _write_desktop_code_file(port: int, code: str) -> str:
 
 
 def _emit_desktop_ready(host: str, port: int, http3: bool = False, discovery: dict | None = None) -> None:
-    from .auth import REQUIRE_AUTH
+    from .auth import REQUIRE_AUTH, get_security_code
 
     ca_pem = ""
     if TLS_ENABLED:
@@ -246,7 +246,7 @@ def _emit_desktop_ready(host: str, port: int, http3: bool = False, discovery: di
 
 def _print_startup_banner(host: str, port: int):
     """Print the startup banner without exposing the security code."""
-    from .auth import REQUIRE_AUTH, get_security_code
+    from .auth import REQUIRE_AUTH
     from . import __version__
 
     api_url = f"{_runtime_scheme()}://{host}:{port}"
