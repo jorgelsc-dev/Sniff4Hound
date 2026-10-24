@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -110,6 +111,14 @@ class ConfiguredLoggingTests(unittest.TestCase):
         log_setup.configure("web", Path(self._tmp.name), _cfg())
         tagged = [h for h in logging.getLogger("sniff4hound").handlers if getattr(h, log_setup._HANDLER_TAG, False)]
         self.assertEqual(len(tagged), 2)
+
+    def test_reload_loop_stops_when_the_store_directory_is_gone(self):
+        def read_config():
+            raise sqlite3.OperationalError("unable to open database file")
+
+        thread = log_setup.start_reload_loop(read_config, interval=0.01)
+        thread.join(timeout=1)
+        self.assertFalse(thread.is_alive())
 
 
 class StoredLogConfigTests(unittest.TestCase):

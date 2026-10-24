@@ -524,6 +524,14 @@ class CaptureState:
     packets_seen: int = 0
     packets_total_bytes: int = 0
     packets_stored: int = 0
+    # Operational verdict counters. These are deliberately separate from
+    # packets_stored: a clean packet can be evaluated and discarded, while a
+    # muted packet is retained without ever entering detection.
+    detection_evaluated: int = 0
+    detection_alerts: int = 0
+    detection_clean: int = 0
+    detection_muted: int = 0
+    packets_whitelisted: int = 0
     # Frames the parser could not make sense of, in total and per interface.
     # A frame that fails to parse is not just a curiosity: a sudden spike is
     # what deliberate malformed/fuzzed traffic aimed at evading or crashing
@@ -760,6 +768,16 @@ class Sniffer:
             "since": since,
         }
 
+    def _detection_metrics_snapshot(self) -> dict:
+        with self._state_lock:
+            return {
+                "evaluated": int(self.state.detection_evaluated),
+                "alerts": int(self.state.detection_alerts),
+                "clean": int(self.state.detection_clean),
+                "muted": int(self.state.detection_muted),
+                "whitelisted": int(self.state.packets_whitelisted),
+            }
+
     def snapshot(self):
         with self._state_lock:
             selected = list(self._selected_interfaces)
@@ -783,6 +801,7 @@ class Sniffer:
                 "packets_seen": int(self.state.packets_seen),
                 "packets_total_bytes": int(self.state.packets_total_bytes),
                 "packets_stored": int(self.state.packets_stored),
+                "detection_metrics": self._detection_metrics_snapshot(),
                 "packets_unparseable": int(self.state.packets_unparseable),
                 "unparseable_by_interface": dict(self.state.unparseable_by_interface),
                 "last_unparseable_at": self.state.last_unparseable_at,
@@ -805,6 +824,11 @@ class Sniffer:
             self.state.packets_seen = 0
             self.state.packets_total_bytes = 0
             self.state.packets_stored = 0
+            self.state.detection_evaluated = 0
+            self.state.detection_alerts = 0
+            self.state.detection_clean = 0
+            self.state.detection_muted = 0
+            self.state.packets_whitelisted = 0
             self.state.packets_unparseable = 0
             self.state.unparseable_by_interface = {}
             self.state.last_unparseable_at = ""
@@ -895,6 +919,19 @@ class Sniffer:
                 self.state.packets_stored += 1
             self.state.last_packet_at = utc_now()
 
+    def _count_detection_metric(self, name: str) -> None:
+        field_name = {
+            "evaluated": "detection_evaluated",
+            "alerts": "detection_alerts",
+            "clean": "detection_clean",
+            "muted": "detection_muted",
+            "whitelisted": "packets_whitelisted",
+        }.get(name)
+        if field_name is None:
+            return
+        with self._state_lock:
+            setattr(self.state, field_name, getattr(self.state, field_name) + 1)
+
     def _broadcast_packet(self, packet: dict, *, persisted: bool = True):
         event = {
             "type": "packet",
@@ -920,6 +957,7 @@ class Sniffer:
                     "packets_seen": self.state.packets_seen,
                     "packets_total_bytes": self.state.packets_total_bytes,
                     "packets_stored": self.state.packets_stored,
+                    "detection_metrics": self._detection_metrics_snapshot(),
                     "packets_unparseable": self.state.packets_unparseable,
                     "unparseable_by_interface": dict(self.state.unparseable_by_interface),
                 },
@@ -1536,6 +1574,7 @@ class Sniffer:
             return
         self._trace_packet(packet, "received")
         if self._whitelisted(packet):
+            self._count_detection_metric("whitelisted")
             self._trace_packet(packet, "dropped", reason="whitelisted")
             # Whitelisting an IP (from the IP graph's popup, or Settings)
             # is a deliberate "stop tracking this host" action, distinct
@@ -1554,6 +1593,7 @@ class Sniffer:
         self._history.observe(packet)
         monitors, filter_enabled = self._get_monitor_context()
         detection_muted = self._detection_muted(packet) or self._exclusion_filtered(packet)
+        self._count_detection_metric("muted" if detection_muted else "evaluated")
         suppressed_hits: list[dict] = []
         if detection_muted:
             matches = []
@@ -1583,6 +1623,7 @@ class Sniffer:
             if anomaly_hits:
                 monitor_hits = list(monitor_hits) + list(anomaly_hits)
         is_alert = bool(monitor_hits)
+        self._count_detection_metric("alerts" if is_alert else "clean")
         self._trace_packet(packet, "evaluated", muted=detection_muted, filter_enabled=filter_enabled,
                            catalog_monitors=len(monitors), hits=len(monitor_hits),
                            suppressed=len(suppressed_hits))

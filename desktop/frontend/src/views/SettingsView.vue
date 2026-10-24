@@ -656,13 +656,15 @@
         <v-card variant="tonal" class="pa-4 mb-4 filter-card">
           <div class="d-flex align-start justify-space-between flex-wrap ga-3">
             <div>
-              <div class="text-subtitle-2 font-weight-medium">Guardar solo tráfico detectado</div>
+              <div class="text-subtitle-2 font-weight-medium">Persistir solo tráfico con detección</div>
               <div class="text-caption text-medium-emphasis mt-1">
                 Controla si se ejecuta el catálogo de reglas de monitores. Cuando está activo
                 (recomendado), los paquetes se evalúan contra tus monitores: las coincidencias se
                 guardan como alertas y el resto solo se cuenta en vivo, sin escribirse en SQLite.
-                Al desactivarlo no se guarda toda la captura: se omite el catálogo de reglas, así
-                que solo los detectores de anomalías pueden disparar almacenamiento.
+                Activado, el historial conserva solo paquetes con una alerta. Al desactivarlo no se
+                guarda toda la captura: se omite el catálogo de reglas, así que solo los detectores
+                de anomalías pueden disparar almacenamiento. Las exclusiones y ámbitos silenciados
+                conservan metadatos sin detección; la whitelist descarta el paquete.
               </div>
             </div>
             <v-switch
@@ -2026,6 +2028,9 @@ export default {
             metric("Interfaces", num((sniffer.selected_interfaces || []).length)),
             metric("Vistos", num(sniffer.packets_seen)),
             metric("Almacenados", num(sniffer.packets_stored)),
+            metric("Alertas", num(sniffer.detection_metrics?.alerts)),
+            metric("Limpios", num(sniffer.detection_metrics?.clean)),
+            metric("Silenciados", num(sniffer.detection_metrics?.muted)),
             metric("Errores", num(errorCount(sniffer.errors)), errorCount(sniffer.errors) ? "alert" : "ok"),
           ],
         },

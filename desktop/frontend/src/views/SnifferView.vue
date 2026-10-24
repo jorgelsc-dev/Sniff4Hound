@@ -122,6 +122,15 @@
         <v-chip size="small" variant="outlined" color="success" prepend-icon="mdi-database-check">
           Guardados (detectados): {{ runtime.packets_stored || 0 }}
         </v-chip>
+        <v-chip size="small" variant="outlined" color="warning" prepend-icon="mdi-target">
+          Alertas: {{ detectionMetrics.alerts }}
+        </v-chip>
+        <v-chip size="small" variant="outlined" prepend-icon="mdi-filter-outline">
+          Limpios descartados: {{ detectionMetrics.clean }}
+        </v-chip>
+        <v-chip size="small" variant="outlined" color="info" prepend-icon="mdi-volume-off-outline">
+          Detección silenciada: {{ detectionMetrics.muted }}
+        </v-chip>
         <v-chip
           v-if="unparseableCount > 0"
           size="small"
@@ -413,6 +422,16 @@ export default {
         .map((name) => `${name}: ${perInterface[name]}`);
       const detail = parts.length ? ` (${parts.join(", ")})` : "";
       return `Frames the parser could not decode${detail}. A sudden rise can indicate malformed or fuzzed traffic aimed at the sensor.`;
+    },
+    detectionMetrics() {
+      const metrics = this.runtime.detection_metrics;
+      return metrics && typeof metrics === "object"
+        ? {
+            alerts: Number(metrics.alerts || 0),
+            clean: Number(metrics.clean || 0),
+            muted: Number(metrics.muted || 0),
+          }
+        : { alerts: 0, clean: 0, muted: 0 };
     },
     filteredPackets() {
       const query = String(this.filters.query || "").trim().toLowerCase();
