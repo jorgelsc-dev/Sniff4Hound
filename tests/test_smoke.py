@@ -971,14 +971,17 @@ class SmokeTests(unittest.TestCase):
         pusher.join.side_effect = lambda **_kwargs: calls.append("join snapshots")
         store = MagicMock()
         store.close.side_effect = lambda: calls.append("close database")
+        mobile_stream = MagicMock()
+        mobile_stream.stop.side_effect = lambda: calls.append("stop mobile stream")
         namespace = {
             "threading": threading, "runtime": MagicMock(), "job_queue": MagicMock(),
             "ipc_client": None, "embedded_capture": None, "hub": MagicMock(), "store": store,
+            "mobile_stream": mobile_stream,
             "_snapshot_pusher_stop": stop, "_snapshot_pusher_thread": pusher,
         }
         exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
         namespace["shutdown_capture"]()
-        self.assertEqual(calls, ["stop snapshots", "join snapshots", "close database"])
+        self.assertEqual(calls, ["stop snapshots", "stop mobile stream", "join snapshots", "close database"])
         pusher.join.assert_called_once_with(timeout=1.0)
 
     def test_clear_stale_capture_socket_removes_a_leftover_socket_file(self):
