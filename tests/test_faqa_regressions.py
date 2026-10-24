@@ -229,6 +229,21 @@ class Finding115ListEntryDuplicatesTests(StoreRegressionTestCase):
         self.store.create_whitelist_entry("domain", "exact", "10.0.0.5", label="b")  # different category
         self.assertEqual(len(self.store.list_whitelist_entries()), 2)
 
+    def test_normalized_ip_and_domain_duplicates_are_rejected(self):
+        self.store.create_whitelist_entry("ip", "exact", "2001:0DB8:0:0:0:0:0:1", label="IPv6")
+        with self.assertRaises(ValueError):
+            self.store.create_whitelist_entry("ip", "exact", "2001:db8::1")
+
+        self.store.create_whitelist_entry("domain", "exact", "Trusted.Example.", label="DNS")
+        with self.assertRaises(ValueError):
+            self.store.create_whitelist_entry("domain", "exact", "trusted.example")
+
+    def test_valid_whitelist_differences_remain_distinct(self):
+        self.store.create_whitelist_entry("domain", "exact", "api.example.com")
+        self.store.create_whitelist_entry("domain", "exact", "www.example.com")
+        self.store.create_whitelist_entry("domain", "regex", r".*\.example\.com$")
+        self.assertEqual(len(self.store.list_whitelist_entries("domain")), 3)
+
     def test_migration_merges_pre_existing_duplicate_whitelist_entries(self):
         # Simulate a database from before the unique index existed: drop it
         # first (a fresh test store already has it from _create_schema()),
@@ -256,6 +271,30 @@ class Finding115ListEntryDuplicatesTests(StoreRegressionTestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["id"], "whitelist-ip-a")  # earliest created_at kept
         self.assertEqual(rows[0]["label"], "internal scanner")
+
+    def test_migration_merges_equivalent_ip_and_domain_spellings(self):
+        now = "2026-01-01T00:00:00+00:00"
+        later = "2026-01-01T00:05:00+00:00"
+        with self.store._lock:
+            self.store._conn.execute("DROP INDEX IF EXISTS idx_whitelist_unique_entry")
+            self.store._conn.executemany(
+                "INSERT INTO whitelist_entries (id, category, match_type, value, label, enabled, created_at, updated_at) VALUES (?, ?, 'exact', ?, ?, 1, ?, ?)",
+                [
+                    ("whitelist-ip-expanded", "ip", "2001:0db8:0:0:0:0:0:1", "expanded", now, now),
+                    ("whitelist-ip-compressed", "ip", "2001:db8::1", "compressed", later, later),
+                    ("whitelist-domain-dotted", "domain", "Trusted.Example.", "dotted", now, now),
+                    ("whitelist-domain-plain", "domain", "trusted.example", "plain", later, later),
+                ],
+            )
+            self.store._conn.commit()
+
+        self.store._create_schema()
+        rows = self.store.list_whitelist_entries()
+        self.assertEqual({(row["category"], row["value"]) for row in rows}, {
+            ("ip", "2001:db8::1"),
+            ("domain", "trusted.example"),
+        })
+        self.assertEqual({row["label"] for row in rows}, {"expanded; compressed", "dotted; plain"})
 
     def test_unique_index_exists_after_migration(self):
         indexes = {
