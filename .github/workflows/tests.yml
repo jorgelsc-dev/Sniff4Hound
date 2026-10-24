@@ -3,6 +3,8 @@ name: Tests
 # The full test suite, run on demand: Actions -> Tests -> Run workflow, on the
 # branch you want to check. It is not triggered by pushes or pull requests (see
 # ci.yml); the same commands run locally are in the README under "Checks".
+# package.yml also calls it (workflow_call) as the gate before a release is
+# published from main.
 #
 #   backend  - scripts/check_test_shards.py, then the shards of
 #              .github/test-shards.json in parallel
@@ -19,12 +21,20 @@ on:
           - all
           - backend
           - frontend
+  workflow_call:
+    inputs:
+      suite:
+        description: "Which tests to run: all, backend or frontend"
+        type: string
+        default: all
 
 # One group per branch and suite: starting the same suite again replaces the
 # run in progress, but starting the frontend tests no longer cancels a full run
 # on the same branch (it did while the group was only the branch).
+# github.workflow is the caller's name under workflow_call ("Package Debian"),
+# so a manual run on main never cancels the release gate, or vice versa.
 concurrency:
-  group: tests-${{ github.ref }}-${{ inputs.suite || 'all' }}
+  group: tests-${{ github.workflow }}-${{ github.ref }}-${{ inputs.suite || 'all' }}
   cancel-in-progress: true
 
 permissions:
