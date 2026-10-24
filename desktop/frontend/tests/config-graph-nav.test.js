@@ -36,6 +36,7 @@ test("focus indicators and small-screen layout remain explicit", () => {
   assert.match(styles, /\.config-canvas:focus-visible\s*\{[^}]*outline: 2px/);
   assert.match(styles, /\.config-node:focus-visible, \.config-node\.is-selected/);
   assert.match(styles, /@media \(max-width: 700px\)/);
-  assert.match(styles, /\.config-node \{ width: 224px; height: 168px/);
+  assert.match(styles, /Keep the geometry in sync with settingsGraph\.js/);
+  assert.match(template, /markerUnits="userSpaceOnUse"/);
   assert.match(styles, /prefers-reduced-motion: reduce/);
 });

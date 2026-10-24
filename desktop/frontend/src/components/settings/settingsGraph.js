@@ -32,7 +32,7 @@ export const SETTINGS_NODES = [
   // Group 1 - what the operator sets and what reaches them.
   { id: "scope", section: "scope", label: "Alcance", icon: "mdi-select-search", lane: 1, column: 2, row: 2, detail: "Ámbitos de detección" },
   { id: "exclusions", section: "exclusions", label: "Exclusiones", icon: "mdi-filter-off-outline", lane: 1, column: 3, row: 2, detail: "IP, puertos y protocolos" },
-  { id: "blacklist", section: "blacklist", label: "Listas de acceso", icon: "mdi-format-list-checks", lane: 1, column: 6, row: 0, detail: "Bloqueados y permitidos" },
+  { id: "blacklist", section: "blacklist", label: "Listas de acceso", icon: "mdi-format-list-checks", lane: 1, column: 5, row: 2, detail: "Bloqueados y permitidos" },
   { id: "connection", section: "connection", label: "API / WebSocket", icon: "mdi-connection", lane: 1, column: 6, row: 1, detail: "Conexión y autenticación" },
   { id: "notifications", section: "notifications", label: "Notificaciones", icon: "mdi-bell-outline", lane: 1, column: 6, row: 2, detail: "Alertas de este equipo" },
 
@@ -90,9 +90,20 @@ export function graphBounds(nodes) {
 // Midpoint of a routed wire, for its label. Mirrors the bezier endpoints
 // closely enough to sit on the wire without measuring the path.
 export function edgeMidpoint(from, to) {
-  const x = (from.x + to.x) / 2 + GRAPH_CARD.width / 2;
-  const y = (from.y + to.y) / 2 + GRAPH_CARD.height / 2;
-  return { x, y };
+  const sameColumn = Math.abs(to.x - from.x) < GRAPH_CARD.width;
+  if (sameColumn) {
+    // Vertical connectors detour around the left side of both cards. A
+    // geometric midpoint would land inside a card, hiding the label and often
+    // making it look like the connector is broken.
+    return {
+      x: Math.min(from.x, to.x) - 26,
+      y: (from.y + to.y) / 2 + GRAPH_CARD.height / 2,
+    };
+  }
+  return {
+    x: (from.x + to.x) / 2 + GRAPH_CARD.width / 2,
+    y: (from.y + to.y) / 2 + GRAPH_CARD.height / 2,
+  };
 }
 
 export function connectionPath(from, to) {

@@ -45,8 +45,8 @@
           <div ref="world" class="config-world" :style="{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})` }">
             <svg class="config-wires" aria-hidden="true">
               <defs>
-                <marker id="config-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                  <path d="M0,0 L10,5 L0,10 z" fill-opacity="0.9" style="fill: context-stroke" />
+                <marker id="config-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+                  <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" fill-opacity="0.9" />
                 </marker>
               </defs>
               <g v-for="edge in edges" :key="edge.id" :class="{ 'is-active': edge.active, 'is-related': edge.related }">
@@ -444,7 +444,9 @@ onBeforeUnmount(() => {
   .config-overlay__body { padding: 14px; }
   .config-component-count { display: none; }
   .config-canvas-tools { justify-content: center; }
-  .config-node { width: 224px; height: 168px; padding-left: 12px; padding-right: 12px; }
+  /* Keep the geometry in sync with settingsGraph.js. Scaling the card with CSS
+     alone moves ports and arrows away from the positions used by the graph. */
+  .config-node { padding-left: 12px; padding-right: 12px; }
 }
 @media (max-width: 480px) {
   .config-tools { flex: 1 1 100%; }
