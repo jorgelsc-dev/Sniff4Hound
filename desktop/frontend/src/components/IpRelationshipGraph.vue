@@ -222,7 +222,7 @@
             <span v-if="selectedNode.display.detail">· {{ selectedNode.display.detail }}</span>
           </v-card-subtitle>
           <template #append>
-            <v-btn icon="mdi-close" variant="text" size="small" @click="closeInspector" />
+            <v-btn icon="mdi-close" variant="text" size="small" aria-label="Cerrar inspector de nodo" @click="closeInspector" />
           </template>
         </v-card-item>
 

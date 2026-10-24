@@ -1400,7 +1400,7 @@
               <v-list-item-title>{{ session.client || "dispositivo móvil" }}</v-list-item-title>
               <v-list-item-subtitle>{{ session.user_agent || session.token_hint }} · {{ session.event_count || 0 }} eventos</v-list-item-subtitle>
               <template #append>
-                <v-btn icon="mdi-close" variant="text" color="error" :loading="mobileRevoking === session.token" @click="revokeMobileSession(session.token)" />
+                <v-btn icon="mdi-close" variant="text" color="error" aria-label="Revocar dispositivo móvil" :loading="mobileRevoking === session.token" @click="revokeMobileSession(session.token)" />
               </template>
             </v-list-item>
           </v-list>

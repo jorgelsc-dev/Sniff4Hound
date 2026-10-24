@@ -35,10 +35,10 @@
         color="error"
         icon
         @click="clearDialog = true"
-        aria-label="Clear alerts"
+        aria-label="Limpiar alertas"
       >
         <v-icon icon="mdi-delete-sweep-outline" />
-        <v-tooltip activator="parent" location="bottom">Clear alerts</v-tooltip>
+        <v-tooltip activator="parent" location="bottom">Limpiar alertas</v-tooltip>
       </v-btn>
       <v-btn
         size="small"
@@ -46,16 +46,16 @@
         color="primary"
         icon
         to="/settings?section=honeypot"
-        aria-label="Manage listeners"
+        aria-label="Gestionar listeners"
       >
         <v-icon icon="mdi-cog-outline" />
-        <v-tooltip activator="parent" location="bottom">Manage listeners</v-tooltip>
+        <v-tooltip activator="parent" location="bottom">Gestionar listeners</v-tooltip>
       </v-btn>
     </div>
 
     <v-dialog v-model="clearDialog" max-width="420">
       <v-card class="pa-4">
-        <div class="text-h6 mb-3">Clear alerts?</div>
+        <div class="text-h6 mb-3">¿Limpiar alertas?</div>
         <div class="text-caption text-medium-emphasis mb-3">
           Deletes every stored honeypot hit (inbound traffic, responses, and the TLS/DNS event
           detail behind them). Listener definitions and their enabled/disabled state are untouched.

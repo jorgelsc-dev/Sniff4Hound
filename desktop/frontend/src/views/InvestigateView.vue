@@ -39,10 +39,10 @@
     <div v-if="mode === 'monitor'">
       <div class="d-flex align-center flex-wrap ga-2 mb-4">
         <v-btn size="small" variant="text" icon :to="{ path: '/investigate' }"
-          aria-label="Back to host search"
+            aria-label="Volver a buscar hosts"
         >
           <v-icon icon="mdi-arrow-left" />
-          <v-tooltip activator="parent" location="bottom">Back to host search</v-tooltip>
+          <v-tooltip activator="parent" location="bottom">Volver a buscar hosts</v-tooltip>
         </v-btn>
         <v-chip size="small" variant="tonal" :color="severityColor(activeMonitor.action && activeMonitor.action.severity)">
           {{ (activeMonitor.action && activeMonitor.action.severity) || "info" }}

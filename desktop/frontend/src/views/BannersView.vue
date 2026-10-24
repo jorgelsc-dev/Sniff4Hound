@@ -1,15 +1,15 @@
 <template>
   <div>
     <ViewHeader
-      overline="Responses"
-      title="Response Intelligence"
-      description="Review captured service responses and HTTP favicons."
+      overline="Respuestas"
+      title="Inteligencia de respuestas"
+      description="Revisa respuestas de servicios capturadas y favicons HTTP."
       :refresh-loading="loading"
       @refresh="load"
     />
 
     <v-tabs v-model="tab" color="primary" class="mb-4">
-      <v-tab value="banners" :disabled="loading">Responses</v-tab>
+      <v-tab value="banners" :disabled="loading">Respuestas</v-tab>
       <v-tab value="favicons" :disabled="loading">Favicons</v-tab>
     </v-tabs>
 
@@ -17,7 +17,7 @@
       <v-col cols="12" md="6">
         <v-text-field
           v-model.trim="tableFilters.query"
-          label="Search"
+          label="Buscar"
           name="banner_table_search"
           placeholder="IP, port, response, URL..."
           prepend-inner-icon="mdi-magnify"
@@ -30,7 +30,7 @@
         <v-select
           v-model="tableFilters.proto"
           :items="protoFilterOptions"
-          label="Proto"
+          label="Protocolo"
           name="banner_table_proto_filter"
           item-title="label"
           item-value="value"

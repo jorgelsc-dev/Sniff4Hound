@@ -17,7 +17,7 @@
       <v-card class="pa-4 regex-helper-card">
         <div class="d-flex align-center justify-space-between mb-2">
           <div class="text-h6">Ayudante de regex</div>
-          <v-btn icon="mdi-close" size="small" variant="text" @click="dialogOpen = false" />
+          <v-btn icon="mdi-close" size="small" variant="text" aria-label="Cerrar ayudante de regex" @click="dialogOpen = false" />
         </div>
         <div class="text-caption text-medium-emphasis mb-4">
           Construye un patrón con bloques comunes y pruébalo con una muestra antes de usarlo.

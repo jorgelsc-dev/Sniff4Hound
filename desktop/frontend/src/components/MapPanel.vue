@@ -311,7 +311,7 @@
               <template v-if="selectedCountry.registry"> · {{ selectedCountry.registry.toUpperCase() }}</template>
             </div>
           </div>
-          <v-btn icon="mdi-close" size="x-small" variant="text" @click="clearCountry" />
+          <v-btn icon="mdi-close" size="x-small" variant="text" aria-label="Cerrar detalle del país" @click="clearCountry" />
         </div>
         <div class="map-country-popup__stats">
           <div><span>Hosts</span><strong>{{ selectedCountry.hosts }}</strong></div>

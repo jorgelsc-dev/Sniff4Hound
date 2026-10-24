@@ -73,12 +73,12 @@
       :error="error"
       :last-updated="lastUpdated"
       search-enabled
-      search-label="Search IPs"
-      search-placeholder="IP address..."
+      search-label="Buscar IPs"
+      search-placeholder="Dirección IP..."
       :page-size="25"
       :total-available="meta.totalAvailable"
       :truncated="meta.truncated"
-      empty-text="No IPs observed yet"
+      empty-text="Todavía no se han observado IPs"
       @refresh="load"
     >
       <template #cell-ip="{ value }">
