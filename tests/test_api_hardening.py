@@ -757,7 +757,7 @@ class ApiInputCoercionTests(unittest.TestCase):
             finally:
                 replacement_store.close()
 
-    def test_favicon_raw_accepts_query_security_code_for_image_tags(self):
+    def test_favicon_raw_accepts_ephemeral_ticket_for_image_tags(self):
         self.auth, self.app = _reload_app_stack(self, "1")
         self.auth._SESSION_TOKEN = "Ab12Cd34"
         self.auth.RATE_LIMITER.reset()
@@ -770,13 +770,29 @@ class ApiInputCoercionTests(unittest.TestCase):
             try:
                 payload_id = replacement_store.list_payloads(limit=1)[0]["id"]
                 with patch.object(self.app, "store", replacement_store):
+                    ticket = self.app._issue_favicon_ticket(payload_id)
                     response = self.app.app.dispatch(_request(
                         "/favicons/raw/",
-                        query=f"id={payload_id}&security_code=Ab12Cd34",
+                        query=f"id={payload_id}&ticket={ticket}",
                     ))
 
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.body, icon)
+            finally:
+                replacement_store.close()
+
+    def test_favicon_raw_rejects_query_security_code(self):
+        self.auth, self.app = _reload_app_stack(self, "1")
+        self.auth._SESSION_TOKEN = "Ab12Cd34"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            replacement_store, _icon = self._store_with_captured_favicon(tmp_dir)
+            try:
+                payload_id = replacement_store.list_payloads(limit=1)[0]["id"]
+                with patch.object(self.app, "store", replacement_store):
+                    response = self.app.app.dispatch(_request(
+                        "/favicons/raw/", query=f"id={payload_id}&security_code=Ab12Cd34"
+                    ))
+                self.assertIn(response.status, (401, 403))
             finally:
                 replacement_store.close()
 

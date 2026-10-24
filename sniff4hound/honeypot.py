@@ -81,18 +81,19 @@ from .honeypot_ports import (  # noqa: F401 - re-exported, used throughout this 
 )
 
 from .settings import (
-    DATA_DIR,
+    DATA_DIR, HONEYPOT_EVENT_DB_FILE, HONEYPOT_LOG_FILE,
     HONEYPOT_TCP_MAX_CONNECTIONS_PER_LISTENER,
     HONEYPOT_UDP_RESPONSE_RATE_LIMIT,
     HONEYPOT_UDP_RESPONSE_RATE_MAX_CLIENTS,
+    STORE_RAW_PACKET_BYTES,
     HONEYPOT_UDP_RESPONSE_RATE_WINDOW_SECONDS,
     PAYLOAD_TEXT_MAX_CHARS,
 )
 
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
-LOG_FILE = DATA_DIR / "service_listener.log"
-EVENT_DB_FILE = DATA_DIR / "service_events.db"
+LOG_FILE = HONEYPOT_LOG_FILE
+EVENT_DB_FILE = HONEYPOT_EVENT_DB_FILE
 CERT_FILE = DATA_DIR / "service_cert.pem"
 KEY_FILE = DATA_DIR / "service_key.pem"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -121,6 +122,34 @@ def clear_honeypot_events() -> dict:
                 continue  # table not created yet - honeypot mode never ran
             counts[table] = max(0, cursor.rowcount)
         conn.commit()
+    finally:
+        conn.close()
+    return counts
+
+
+def purge_honeypot_events_before(cutoff: str) -> dict:
+    """Apply the main store's temporal retention window to the auxiliary DB."""
+    counts = {table: 0 for table in EVENT_DB_TABLES}
+    if not EVENT_DB_FILE.exists():
+        return counts
+    conn = sqlite3.connect(EVENT_DB_FILE, timeout=5)
+    try:
+        for table in EVENT_DB_TABLES:
+            try:
+                counts[table] = max(0, conn.execute(
+                    f"DELETE FROM {table} WHERE event_time < ?", (str(cutoff),)
+                ).rowcount)
+            except sqlite3.OperationalError:
+                continue
+        conn.commit()
+        try:
+            # TRUNCATE is safe with concurrent SQLite users. If a live
+            # connection prevents it, SQLite reports BUSY and the sidecars
+            # remain intact; never unlink WAL/SHM files manually.
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        except sqlite3.DatabaseError:
+            pass
     finally:
         conn.close()
     return counts
@@ -581,6 +610,7 @@ def _build_rdp_connection_confirm() -> bytes:
 @dataclass
 class HoneypotState:
     running: bool = False
+    status: str = "stopped"
     errors: dict[str, str] = field(default_factory=dict)
     packets_seen: int = 0
     packets_total_bytes: int = 0
@@ -615,6 +645,7 @@ class HoneypotEngine:
         self._listener_lock = threading.RLock()
         self._listener_stop_events: dict[str, threading.Event] = {}
         self._listener_threads: dict[str, threading.Thread] = {}
+        self._listener_bound: set[str] = set()
         self._writer_thread: threading.Thread | None = None
         self._start_thread: threading.Thread | None = None
         self._state = HoneypotState()
@@ -784,7 +815,14 @@ class HoneypotEngine:
                     pass
 
     def _insert_event_row(self, conn: sqlite3.Connection, packet: dict, meta: dict):
+        # The auxiliary database is a separate persistence path from the main
+        # packet store. Apply the same runtime-configured raw-retention policy
+        # before deriving either the hex preview or the BLOB; otherwise a
+        # disabled policy would still retain the original bytes here.
+        get_raw_retention = getattr(self.store, "get_raw_retention_enabled", None)
+        raw_retention_enabled = bool(get_raw_retention()) if callable(get_raw_retention) else bool(STORE_RAW_PACKET_BYTES)
         payload = _normalize_payload(packet.get("raw_packet") or packet.get("payload_text") or b"")
+        stored_payload = payload if raw_retention_enabled else b""
         event_time = str(packet.get("created_at") or utc_now())
         proto = normalize_protocol_name(packet.get("proto"))
         src_ip = str(packet.get("src_ip") or "").strip()
@@ -803,8 +841,8 @@ class HoneypotEngine:
                 src_ip,
                 src_port,
                 safe_int(packet.get("length") or len(payload), 0),
-                bytes_to_hex_preview(payload),
-                sqlite3.Binary(payload),
+                bytes_to_hex_preview(stored_payload),
+                sqlite3.Binary(stored_payload) if raw_retention_enabled else None,
             ),
         )
         tls = meta.get("tls") if isinstance(meta, dict) else None
@@ -829,7 +867,7 @@ class HoneypotEngine:
                     safe_int(tls.get("cipher_bits"), 0),
                     str(tls.get("alpn") or ""),
                     str(tls.get("sni") or ""),
-                    sqlite3.Binary(bytes(peer_cert)),
+                    sqlite3.Binary(bytes(peer_cert)) if raw_retention_enabled else None,
                 ),
             )
         dns = meta.get("dns") if isinstance(meta, dict) else None
@@ -873,6 +911,7 @@ class HoneypotEngine:
         listener_id = str(row.get("id") or "")
         with self._listener_lock:
             thread = self._listener_threads.get(listener_id)
+            bound = listener_id in self._listener_bound
         source = row.get("source") or "builtin"
         return {
             "id": listener_id,
@@ -885,7 +924,7 @@ class HoneypotEngine:
             # privileged or sensitive ports. The catalogue lists the rest too,
             # and turning one on is refused, so say so up front.
             "can_enable": listener_port_allowed(row.get("proto"), row.get("port"), source=source),
-            "running": bool(thread is not None and thread.is_alive()),
+            "running": bool(bound and thread is not None and thread.is_alive()),
         }
 
     def snapshot(self, *, include_listeners: bool = True) -> dict:
@@ -904,10 +943,14 @@ class HoneypotEngine:
                 "custom": sum(1 for item in listeners if item.get("source") == "custom"),
             }
         with self._listener_lock:
-            running_listener_count = sum(1 for thread in self._listener_threads.values() if thread.is_alive())
+            running_listener_count = sum(
+                1 for listener_id, thread in self._listener_threads.items()
+                if listener_id in self._listener_bound and thread.is_alive()
+            )
         with self._state_lock:
             return {
                 "running": bool(self._state.running),
+                "status": self._state.status,
                 "mode": "honeypot",
                 "errors": dict(self._state.errors),
                 "listeners": listeners,
@@ -930,8 +973,13 @@ class HoneypotEngine:
         with self._state_lock:
             if self._state.running:
                 return self.snapshot()
+            retrying_failed = self._state.status == "failed"
+        if retrying_failed and self._writer_thread and self._writer_thread.is_alive():
+            self._writer_thread.join(timeout=1.2)
+        with self._state_lock:
             self._stop_event.clear()
             self._state.running = True
+            self._state.status = "starting"
             self._state.errors = {}
             self._state.packets_seen = 0
             self._state.packets_total_bytes = 0
@@ -939,8 +987,9 @@ class HoneypotEngine:
             self._state.last_event_at = ""
 
         self._session_id()
-        self._writer_thread = threading.Thread(target=self._event_writer, name="sniff4hound-listener-writer", daemon=True)
-        self._writer_thread.start()
+        if self._writer_thread is None or not self._writer_thread.is_alive():
+            self._writer_thread = threading.Thread(target=self._event_writer, name="sniff4hound-listener-writer", daemon=True)
+            self._writer_thread.start()
 
         # Binding every enabled listener (TLS setup + one bind()/thread
         # spawn per port) runs on a background thread so this call - and
@@ -979,11 +1028,32 @@ class HoneypotEngine:
             ):
                 started += 1
 
+        deadline = time.monotonic() + 1.0
+        while started and time.monotonic() < deadline and not self._stop_event.is_set():
+            with self._listener_lock:
+                bound = len(self._listener_bound)
+            if bound:
+                break
+            time.sleep(0.01)
+        with self._listener_lock:
+            bound = len(self._listener_bound)
+        with self._state_lock:
+            if self._stop_event.is_set():
+                return
+            if bound:
+                self._state.status = "degraded" if self._state.errors else "ready"
+            else:
+                self._stop_event.set()
+                self._state.running = False
+                self._state.status = "failed"
+                self._state.errors.setdefault("listeners", "No enabled listener could bind")
+
         LOGGER.info("Motor de listeners activo en %s con %s listeners", self.bind_host, started)
 
     def stop(self):
         self._stop_event.set()
         with self._state_lock:
+            self._state.status = "stopping" if self._state.running else "stopped"
             self._state.running = False
         # start() may still be mid-flight spawning listeners on its own
         # background thread; it checks _stop_event between listeners and
@@ -1010,6 +1080,7 @@ class HoneypotEngine:
             listener_ids = list(self._listener_threads.keys())
             stop_events = [self._listener_stop_events.pop(listener_id, None) for listener_id in listener_ids]
             threads = [self._listener_threads.pop(listener_id, None) for listener_id in listener_ids]
+            self._listener_bound.clear()
         for stop_event in stop_events:
             if stop_event is not None:
                 stop_event.set()
@@ -1020,6 +1091,8 @@ class HoneypotEngine:
             self._writer_thread.join(timeout=1.2)
         self._writer_thread = None
         self._close_event_db()
+        with self._state_lock:
+            self._state.status = "stopped"
         try:
             session_id = int(self._state.session_id or 0)
             if session_id:
@@ -1250,6 +1323,7 @@ class HoneypotEngine:
             return stop_event.is_set() or self._stop_event.is_set()
 
         sock_type = socket.SOCK_DGRAM if udp else socket.SOCK_STREAM
+        listener_id = f"{'udp' if udp else 'tcp'}/{port}"
         hosts = self._resolve_bind_hosts()
         sockets: list[socket.socket] = []
         tcp_slots = threading.BoundedSemaphore(HONEYPOT_TCP_MAX_CONNECTIONS_PER_LISTENER)
@@ -1268,7 +1342,12 @@ class HoneypotEngine:
             sockets.append(sock)
 
         if not sockets:
+            with self._listener_lock:
+                self._listener_bound.discard(listener_id)
             return
+
+        with self._listener_lock:
+            self._listener_bound.add(listener_id)
 
         try:
             if not udp:
@@ -1319,6 +1398,8 @@ class HoneypotEngine:
                         if data:
                             handler(ready_sock, addr, port, data)
         finally:
+            with self._listener_lock:
+                self._listener_bound.discard(listener_id)
             for sock in sockets:
                 try:
                     sock.close()

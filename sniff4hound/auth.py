@@ -30,6 +30,7 @@ from .settings import (
     JWT_MAX_TTL_SECONDS,
     JWT_TTL_SECONDS,
     resolve_jwt_secret,
+    REQUIRE_AUTH,
 )
 
 
@@ -223,7 +224,6 @@ def generate_token(
 
 # Session token (generated at startup, displayed in terminal)
 _SESSION_TOKEN: str | None = None
-REQUIRE_AUTH = os.getenv("SNIFF4HOUND_REQUIRE_AUTH", "1").lower() in {"1", "true", "yes", "on"}
 
 
 def initialize_session_token() -> str:

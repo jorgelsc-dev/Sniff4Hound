@@ -6095,6 +6095,15 @@ class SniffStore(HistoryStoreMixin):
                 result["packets"] += max(0, deleted)
                 result["flows"] += max(0, self._conn.execute("DELETE FROM flows WHERE last_seen < ?", (cutoff,)).rowcount)
                 self._conn.commit()
+            # The honeypot keeps detailed connection/TLS/DNS rows in a small
+            # auxiliary SQLite database, so the normal store sweep must age it
+            # out as well. Import lazily to keep SniffStore construction free
+            # of honeypot side effects.
+            try:
+                from .honeypot import purge_honeypot_events_before
+                result["honeypot_events"] = sum(purge_honeypot_events_before(cutoff).values())
+            except Exception as error:
+                LOGGER.warning("honeypot retention sweep failed: %s", error)
 
         with self._lock:
             result["tags"] += max(
