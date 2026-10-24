@@ -38,22 +38,21 @@
           @keydown.esc="closeInspector"
         >
           <div ref="world" class="config-world" :style="{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})` }">
-            <svg class="config-wires" width="1" height="1" aria-hidden="true">
+            <svg class="config-wires" aria-hidden="true">
               <defs>
                 <marker id="config-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                   <path d="M0,0 L10,5 L0,10 z" fill-opacity="0.9" style="fill: context-stroke" />
                 </marker>
               </defs>
-              <!-- Only wires carrying real traffic are drawn: an idle link shows nothing. -->
-              <g v-for="edge in flowingEdges" :key="edge.id" :class="{ 'is-related': edge.related }">
+              <g v-for="edge in edges" :key="edge.id" :class="{ 'is-active': edge.active, 'is-related': edge.related }">
                 <path :d="edge.path" class="config-wire" :style="{ '--wire-color': edge.color }" marker-end="url(#config-arrow)" />
               </g>
             </svg>
             <span
-              v-for="edge in flowingEdges"
+              v-for="edge in edges"
               :key="'label-' + edge.id"
               class="config-edge-label"
-              :class="{ 'is-related': edge.related }"
+              :class="{ 'is-active': edge.active, 'is-related': edge.related }"
               :style="{ left: edge.mid.x + 'px', top: edge.mid.y + 'px', '--edge-color': edge.color }"
             >{{ edge.label }}</span>
             <button
@@ -171,7 +170,7 @@ const world = ref(null);
 const inspectorBody = ref(null);
 const positions = ref({});
 const hoveredId = ref("");
-const READABLE_MIN_SCALE = 0.6;
+const READABLE_MIN_SCALE = 0.45;
 const transform = ref(zoomIdentity);
 const nodeEls = new Map();
 let selection;
@@ -202,8 +201,6 @@ const edges = computed(() => {
     };
   });
 });
-const flowingEdges = computed(() => edges.value.filter(edge => edge.active));
-
 function setNodeEl(id, el) {
   if (el) nodeEls.set(id, el);
   else nodeEls.delete(id);
@@ -227,8 +224,8 @@ function fitGraph() {
   const bounds = graphBounds(nodes.value);
   const width = viewport.value.clientWidth;
   const height = viewport.value.clientHeight;
-  // Fit the whole graph when it stays readable; below READABLE_MIN_SCALE the
-  // cards become unreadable, so fit at that scale and let the canvas be panned.
+  // Fit the complete graph first. The lower bound keeps the graph usable while
+  // preventing the wide seven-column layout from cutting off cards or arrows.
   const scale = Math.max(READABLE_MIN_SCALE, Math.min(1, (width - 32) / bounds.width, (height - 30) / bounds.height));
   const x = width < bounds.width * scale ? 16 - bounds.x * scale : (width - bounds.width * scale) / 2 - bounds.x * scale;
   const y = Math.max(12, (height - bounds.height * scale) / 2) - bounds.y * scale;
@@ -314,19 +311,21 @@ onBeforeUnmount(() => {
 .config-canvas:active { cursor: grabbing; }
 .config-canvas:focus-visible { outline: 1px solid #b79aeb; outline-offset: -2px; }
 .config-world { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
-.config-wires { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+.config-wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .config-wire {
-  fill: none; stroke: var(--wire-color); stroke-width: 2.4; stroke-linecap: round;
+  fill: none; stroke: var(--wire-color); stroke-width: 2.4; stroke-linecap: round; opacity: 0.42;
   filter: drop-shadow(0 0 4px var(--wire-color));
-  transition: stroke-width 160ms;
+  transition: opacity 160ms, stroke-width 160ms;
 }
+.is-active .config-wire { opacity: 0.92; }
 .is-related .config-wire { stroke-width: 3.4; }
 .config-edge-label {
   position: absolute; transform: translate(-50%, -50%); padding: 2px 7px; border-radius: 999px;
   font-size: 10px; line-height: 14px; white-space: nowrap; color: var(--edge-color); background: var(--surface-0);
   border: 1px solid color-mix(in srgb, var(--edge-color) 40%, transparent); pointer-events: none;
-  transition: opacity 160ms, color 160ms;
+  opacity: 0.62; transition: opacity 160ms, color 160ms;
 }
+.config-edge-label.is-active { opacity: 1; }
 .config-edge-label.is-related { font-weight: 600; box-shadow: 0 0 0 3px var(--surface-0); }
 .config-node { position: absolute; width: 252px; height: 176px; box-sizing: border-box; padding: 12px 14px 0; display: flex; flex-direction: column; border: 1px solid var(--stroke); border-radius: 10px; background: linear-gradient(180deg, color-mix(in srgb, var(--node-color) 8%, transparent), transparent 55%), var(--surface-1); color: var(--text-soft); text-align: left; cursor: grab; box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset; transition: border-color 160ms, background 160ms, box-shadow 160ms; user-select: none; touch-action: none; overflow: hidden; }
 .config-node::before { content: ""; position: absolute; left: 14px; right: 14px; top: 0; height: 2px; border-radius: 0 0 2px 2px; background: var(--node-color); opacity: 0.85; }
