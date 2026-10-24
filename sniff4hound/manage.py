@@ -215,7 +215,7 @@ def _write_desktop_code_file(port: int, code: str) -> str:
 
 
 def _emit_desktop_ready(host: str, port: int, http3: bool = False, discovery: dict | None = None) -> None:
-    from .auth import REQUIRE_AUTH, get_security_code
+    from .auth import REQUIRE_AUTH
 
     ca_pem = ""
     if TLS_ENABLED:
@@ -245,11 +245,10 @@ def _emit_desktop_ready(host: str, port: int, http3: bool = False, discovery: di
 
 
 def _print_startup_banner(host: str, port: int):
-    """Print the startup banner with the active security code."""
+    """Print the startup banner without exposing the security code."""
     from .auth import REQUIRE_AUTH, get_security_code
     from . import __version__
 
-    token = get_security_code()
     api_url = f"{_runtime_scheme()}://{host}:{port}"
     lines = [
         _banner_rule("╔", "═", "╗"),
@@ -265,10 +264,8 @@ def _print_startup_banner(host: str, port: int):
         lines.extend(
             [
                 _banner_line(),
-                # The startup code is intentionally shown only on the local
-                # operator's terminal; it is the documented first-login path.
-                _banner_line(f"  SECURITY CODE: {token}"),  # lgtm[py/clear-text-logging]
-                _banner_line("  Use this code from the Electron app if prompted"),
+                _banner_line("  SECURITY CODE: available in the Electron app prompt"),
+                _banner_line("  The code is transferred through the protected desktop handoff"),
             ]
         )
     lines.extend([
