@@ -90,8 +90,11 @@
       </p>
       <pre class="code"><code>{{ install }}</code></pre>
       <p class="note">
-        La captura con sockets crudos necesita privilegios, pero el proceso web nunca corre como
-        root: el privilegio vive solo en un hijo aislado que habla por IPC. Los detalles estan en
+        El modo local predeterminado ejecuta el runtime Python completo como root: servidor web,
+        base de datos, sniffer y honeypot, con captura embebida. Electron conserva el usuario del
+        operador y solicita autorización mediante Polkit. El despliegue separado con
+        <code>sniff4hound-web</code> permite ejecutar la web sin privilegios y conectar una captura
+        iniciada aparte. Consulta los modos y privilegios en
         <a href="/docs/architecture/">Arquitectura</a>.
       </p>
     </section>

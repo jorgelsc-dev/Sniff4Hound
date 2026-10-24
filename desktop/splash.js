@@ -45,7 +45,7 @@ const api = window.sniff4houndDesktop;
         setBusy(true, "Esperando autorización en el diálogo de autenticación...");
         try {
           const result = await api.startLocal();
-          if (!result || result.ok === false) {
+          if (!result || result.ok !== true) {
             setBusy(false, (result && result.error) || "No se pudo iniciar el sensor local. Vuelve a intentarlo.");
           }
         } catch (error) {
@@ -59,13 +59,17 @@ const api = window.sniff4houndDesktop;
         event.preventDefault();
         if (!api || typeof api.connectRemote !== "function") return;
         setBusy(true, "Comprobando el sensor remoto...");
-        const result = await api.connectRemote({
-          host: remoteHost.value,
-          port: remotePort.value,
-          securityCode: remoteCode.value,
-          caPem: remoteCa.value,
-        });
-        if (!result || result.ok === false) {
-          setBusy(false, (result && result.error) || "No se pudo conectar al sensor remoto. Revisa la dirección, el código y la CA.");
+        try {
+          const result = await api.connectRemote({
+            host: remoteHost.value,
+            port: remotePort.value,
+            securityCode: remoteCode.value,
+            caPem: remoteCa.value,
+          });
+          if (!result || result.ok !== true) {
+            setBusy(false, (result && result.error) || "No se pudo conectar al sensor remoto. Revisa la dirección, el código y la CA.");
+          }
+        } catch (error) {
+          setBusy(false, error.message || "No se pudo conectar al sensor remoto. Vuelve a intentarlo.");
         }
       });

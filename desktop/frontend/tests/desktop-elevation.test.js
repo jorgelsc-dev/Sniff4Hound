@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import test from "node:test";
+import vm from "node:vm";
 
 // The desktop shell's CommonJS elevation helpers. Nothing here elevates: they
 // only build the command the shell would run, from fake lookups.
@@ -237,4 +238,361 @@ test("missing graphical elevation tools fail before starting any unprivileged ba
   const { calls, run } = runtimeRig({ which: which({ sudo: "/usr/bin/sudo" }) });
   assert.throws(run, /Install pkexec/);
   assert.deepEqual(calls, []);
+});
+
+// Evaluate the actual main/preload/splash scripts. Every OS-facing dependency
+// is replaced: no Electron, display, network, user data, process or root access.
+const desktopSource = (name) => fs.readFileSync(new URL(`../../${name}`, import.meta.url), "utf8");
+const PREPARED = { host: "127.0.0.1", port: 45678, mdnsHost: "fixture.local", address: "127.0.0.1", spki: "A".repeat(43) + "=" };
+const ANNOUNCEMENT = { enabled: true, service_name: "fixture._sniff4hound._tcp.local.",
+  service_type: "_sniff4hound._tcp.local.", hostname: PREPARED.mdnsHost, port: PREPARED.port, addresses: [PREPARED.address] };
+const READY = { url: "https://fixture.local:45678/", host: "fixture.local", port: 45678,
+  protocol: "https", mdns: ANNOUNCEMENT, http3: true };
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+async function desktopVm({ debugPort, uid = 1000, launchError = null } = {}) {
+  const children = [], switches = [], discovery = [], loads = [], statuses = [], errors = [], timers = [], writes = [];
+  const handlers = new Map();
+  const proc = Object.assign(new EventEmitter(), {
+    platform: "linux", env: { SNIFF4HOUND_DESKTOP_ELEVATE: "0" }, argv: [],
+    getuid: () => uid, geteuid: () => uid, getgid: () => uid,
+    kill: () => assert.fail("must never signal another process by pid"),
+  });
+  if (debugPort !== undefined) proc.env.SNIFF4HOUND_DESKTOP_DEBUG_PORT = debugPort;
+  const app = Object.assign(new EventEmitter(), {
+    commandLine: { appendSwitch: (...args) => switches.push(args) },
+    disableHardwareAcceleration() {}, getPath: () => "/fixture-user-data", isPackaged: false,
+    whenReady: () => Promise.resolve(), quit: () => { app.emit("before-quit"); },
+  });
+  let window;
+  class Window extends EventEmitter {
+    constructor() {
+      super();
+      window = this;
+      this.webContents = Object.assign(new EventEmitter(), {
+        session: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} },
+        setWindowOpenHandler() {}, send: (_channel, message) => statuses.push(message),
+      });
+    }
+    isDestroyed() { return false; }
+    loadFile(file) { loads.push(file); }
+    loadURL(url) { loads.push(url); }
+    show() {}
+    close() { this.emit("close"); }
+  }
+  const ipcRenderer = Object.assign(new EventEmitter(), {
+    invoke: (channel, ...args) => Promise.resolve().then(() => handlers.get(channel)({}, ...args)),
+  });
+  let api;
+  const electron = {
+    app, BrowserWindow: Window,
+    Menu: { setApplicationMenu() {}, buildFromTemplate: (template) => template },
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    net: { request: () => assert.fail("unexpected network access") }, shell: {},
+    dialog: { showMessageBox: (_window, detail) => errors.push(detail.message) },
+    protocol: { registerSchemesAsPrivileged() {}, handle() {} },
+    session: { defaultSession: { setCertificateVerifyProc() {} } },
+    contextBridge: { exposeInMainWorld: (_name, bridge) => { api = bridge; } }, ipcRenderer,
+  };
+  const dependencies = {
+    electron,
+    "node:child_process": {
+      spawn: () => assert.fail("unexpected spawn"),
+      execFile: (_command, _args, _options, callback) => discovery.push(callback),
+      execFileSync: () => assert.fail("unexpected synchronous process"),
+    },
+    "node:fs": {
+      existsSync: () => false, readFileSync: () => { throw new Error("no fixture file"); },
+      unlinkSync: () => assert.fail("no file should be removed without a supplied path"),
+      mkdirSync() {}, writeFileSync: (file, value) => writes.push([file, value]),
+    },
+    "node:os": { homedir: () => "/fixture-home" },
+    "node:https": { request: () => assert.fail("unexpected HTTPS access") },
+    "./lib/elevation": {
+      ...elevation, findExecutable: () => null,
+      launchRuntime: () => {
+        if (launchError) { const error = launchError; launchError = null; throw error; }
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+        child.stdin = Object.assign(new EventEmitter(), { ends: 0, end() { this.ends += 1; } });
+        child.signals = [];
+        child.kill = (signal) => { child.signals.push(signal); };
+        children.push(child);
+        return child;
+      },
+    },
+    "./lib/session-bus": { startPrivateSessionBus: () => null },
+    "./lib/quic-pin": { ...require("../../lib/quic-pin.js"), prepareRuntime: () => PREPARED },
+  };
+  const context = vm.createContext({
+    require: (name) => {
+      if (Object.hasOwn(dependencies, name)) return dependencies[name];
+      if (["node:crypto", "node:string_decoder", "node:path"].includes(name)) return require(name);
+      if (name.startsWith("./lib/")) return require(`../../${name.slice(2)}`);
+      assert.fail(`unexpected dependency: ${name}`);
+    },
+    __dirname: "/fixture/desktop", process: proc, Buffer, Response,
+    console: { error: (message) => errors.push(message) },
+    setTimeout: (callback, delay) => { timers.push({ callback, delay }); return { unref() {} }; },
+    clearTimeout() {},
+  });
+  vm.runInContext(desktopSource("main.js"), context, { filename: "desktop/main.js" });
+  await tick();
+  window.emit("ready-to-show");
+  vm.runInNewContext(desktopSource("preload.js"), { require: () => electron, process: proc });
+  return {
+    api, app, children, switches, discovery, loads, statuses, errors, timers, writes, window,
+    state: () => vm.runInContext("({ backendProcess, backendReady, backendAttempt, quitting })", context),
+    announce: (child = children.at(-1), payload = READY) => child.stdout.emit("data", Buffer.from(
+      `SNIFF4HOUND_DESKTOP_READY ${typeof payload === "string" ? payload : JSON.stringify(payload)}\n`)),
+    resolveDiscovery: (error = null, changes = {}, at = discovery.length - 1) => discovery[at](error,
+      JSON.stringify({ ...ANNOUNCEMENT, role: "runtime", scheme: "https", ...changes })),
+    // Only the remote transport is stubbed; IPC, target parsing and the session
+    // switch remain the production code, so no remote sensor is contacted.
+    remoteTransport: () => vm.runInContext("verifyRemoteConnection = async (config) => config", context),
+  };
+}
+
+async function splashVm(api) {
+  const elements = new Map();
+  for (const name of ["log", "status-row", "local-start", "remote-form", "remote-connect", "remote-host", "remote-port", "remote-code", "remote-ca"]) {
+    elements.set(name, { disabled: false, value: "", textContent: "", listeners: {},
+      classList: { toggle() {} }, focus() {},
+      addEventListener(type, callback) { this.listeners[type] = callback; } });
+  }
+  vm.runInNewContext(desktopSource("splash.js"), {
+    window: { sniff4houndDesktop: api },
+    document: { getElementById: (name) => elements.get(name), querySelectorAll: () => [] },
+  });
+  await tick();
+  return {
+    element: (name) => elements.get(name),
+    local: () => elements.get("local-start").listeners.click(),
+    remote: () => elements.get("remote-form").listeners.submit({ preventDefault() {} }),
+    busy: () => [elements.get("local-start").disabled, elements.get("remote-connect").disabled],
+  };
+}
+
+test("main VM enables CDP only for an explicit valid non-root loopback port", async () => {
+  for (const debugPort of [undefined, "", "0", "false", " OFF ", "no", "invalid", "1023", "65536", "9223.5", "9223", " 65535 "]) {
+    for (const uid of [1000, 0]) {
+      const rig = await desktopVm({ debugPort, uid });
+      const debug = rig.switches.filter(([name]) => name.startsWith("remote-debugging-"));
+      assert.deepEqual(debug, uid !== 0 && ["9223", " 65535 "].includes(debugPort)
+        ? [["remote-debugging-port", debugPort.trim()], ["remote-debugging-address", "127.0.0.1"]] : []);
+      assert.equal(rig.children.length, 0);
+      assert.equal(rig.loads.length, 1, "the chooser loads even for invalid debug values");
+    }
+  }
+});
+
+test("local IPC and splash wait for discovery, share one attempt and succeed only after verification", async () => {
+  const rig = await desktopVm();
+  const splash = await splashVm(rig.api);
+  let finished = false;
+  const first = splash.local().then(() => { finished = true; });
+  const second = rig.api.startLocal();
+  await tick();
+  assert.equal(rig.children.length, 1);
+  assert.deepEqual(splash.busy(), [true, true]);
+  assert.equal(finished, false);
+  rig.announce();
+  rig.announce();
+  assert.equal(rig.discovery.length, 1, "duplicate READY cannot start a second verifier");
+  assert.equal(rig.state().backendReady, null);
+  assert.equal(finished, false);
+  assert.equal(rig.loads.length, 1);
+  rig.resolveDiscovery();
+  await first;
+  assert.equal((await second).ok, true);
+  assert.equal(rig.state().backendReady.connection, "local");
+  assert.match(rig.loads.at(-1), /^app:\/\/shell\/index.html/);
+  assert.equal(rig.children[0].stdin.ends, 0);
+  assert.equal((await rig.api.startLocal()).ok, true);
+  assert.equal(rig.children.length, 1);
+  rig.window.close();
+  rig.app.emit("before-quit");
+  assert.equal(rig.children[0].stdin.ends, 1, "close is idempotent after success");
+});
+
+test("mDNS failure releases splash, cleans only its child and retries despite late events", async () => {
+  const rig = await desktopVm();
+  const splash = await splashVm(rig.api);
+  const first = splash.local();
+  await tick();
+  const old = rig.children[0];
+  rig.announce();
+  rig.resolveDiscovery(new Error("fixture timeout"));
+  await first;
+  assert.deepEqual(splash.busy(), [false, false]);
+  assert.match(splash.element("log").textContent, /Could not resolve/);
+  assert.equal(old.stdin.ends, 1);
+  assert.equal(rig.state().backendProcess, null);
+  assert.equal(rig.state().backendAttempt, null);
+  assert.equal(rig.state().backendReady, null);
+  const retry = splash.local();
+  await tick();
+  const current = rig.children[1];
+  old.emit("error", Object.assign(new Error("late error"), { code: "EPERM" }));
+  old.emit("exit", 1, null);
+  old.stdout.emit("data", Buffer.from("stale partial output"));
+  old.stderr.emit("data", Buffer.from("stale stderr\n"));
+  rig.announce(current);
+  rig.resolveDiscovery();
+  await retry;
+  assert.equal(current.stdin.ends, 0);
+  assert.equal(rig.state().backendProcess, current);
+  assert.equal(rig.errors.length, 1);
+  assert.equal(rig.loads.length, 2);
+});
+
+test("failed local verification permits a remote connection without touching another session", async () => {
+  const rig = await desktopVm();
+  const splash = await splashVm(rig.api);
+  const first = splash.local();
+  await tick(); rig.announce(); rig.resolveDiscovery(new Error("timeout")); await first;
+  rig.remoteTransport();
+  splash.element("remote-host").value = "sensor.example";
+  await splash.remote();
+  const child = rig.children[0];
+  child.emit("exit", 0, "SIGTERM");
+  child.emit("error", new Error("late local error"));
+  assert.equal(rig.state().backendReady.connection, "remote");
+  assert.equal(rig.state().backendReady.host, "sensor.example");
+  assert.equal(rig.state().quitting, false);
+  assert.equal(child.stdin.ends, 1);
+  rig.window.close();
+  assert.equal(child.stdin.ends, 1, "closing a remote session never signals a local process again");
+  assert.equal(rig.children.length, 1);
+});
+
+test("READY, launch, process and QUIC failures all settle failure and permit a new attempt", async (t) => {
+  const cases = [
+    ["spawn throws", () => {}, /spawn fixture/, new Error("spawn fixture")],
+    ["malformed READY", (rig) => rig.announce(undefined, "{"), /JSON|property/],
+    ["bad READY URL", (rig) => rig.announce(undefined, { ...READY, url: "invalid" }), /URL/],
+    ["missing mDNS", (rig) => rig.announce(undefined, { ...READY, mdns: undefined }), /did not publish/],
+    ["mDNS mismatch", (rig) => { rig.announce(); rig.resolveDiscovery(null, { port: 1 }); }, /different runtime/],
+    ["QUIC missing", (rig) => { rig.announce(undefined, { ...READY, http3: false }); rig.resolveDiscovery(); }, /HTTP\/3/],
+    ["process error", (rig) => rig.children[0].emit("error", new Error("fixture process error")), /fixture process error/],
+    ["early exit", (rig) => rig.children[0].emit("exit", 1, null), /exited/],
+    ["cancel authorization", (rig) => rig.children[0].emit("exit", 126, null), /Authorization cancelled/],
+  ];
+  for (const [name, fail, expected, launchError] of cases) await t.test(name, async () => {
+    const rig = await desktopVm({ launchError });
+    const first = rig.api.startLocal();
+    await tick(); fail(rig);
+    const result = await first;
+    assert.equal(result.ok, false);
+    assert.match(result.error, expected);
+    assert.equal(rig.state().backendReady, null);
+    assert.equal(rig.state().backendProcess, null);
+    const previous = rig.children.at(-1);
+    if (previous) assert.equal(previous.stdin.ends, 1);
+    const retry = rig.api.startLocal();
+    await tick(); rig.announce(); rig.resolveDiscovery();
+    assert.equal((await retry).ok, true);
+    assert.equal(rig.state().backendProcess, rig.children.at(-1));
+  });
+});
+
+test("close and shutdown settle pending startup and ignore late discovery success or failure", async () => {
+  for (const phase of ["before READY", "during verification"]) {
+    for (const close of ["window", "quit", "shutdown"]) {
+      for (const lateError of [null, new Error("late discovery failure")]) {
+        const rig = await desktopVm();
+        const pending = rig.api.startLocal();
+        await tick();
+        if (phase === "during verification") rig.announce();
+        if (close === "window") rig.window.close();
+        else if (close === "quit") rig.app.emit("before-quit");
+        else await rig.api.shutdown();
+        assert.equal((await pending).ok, false);
+        if (phase === "during verification") rig.resolveDiscovery(lateError);
+        else rig.announce();
+        rig.children[0].emit("exit", 0, "SIGTERM");
+        rig.app.emit("before-quit");
+        await tick();
+        assert.equal(rig.children[0].stdin.ends, 1);
+        assert.equal(rig.state().backendReady, null);
+        assert.equal(rig.state().backendProcess, null);
+        assert.equal(rig.errors.length, 0);
+        assert.equal(rig.loads.length, 1);
+        assert.equal((await rig.api.startLocal()).ok, false);
+      }
+    }
+  }
+});
+
+test("verification callbacks and child exit during retry cannot complete the wrong attempt", async () => {
+  for (const lateError of [null, new Error("stale discovery")]) {
+    const rig = await desktopVm();
+    const first = rig.api.startLocal();
+    await tick(); rig.announce();
+    const previous = rig.children[0];
+    previous.emit("error", new Error("first attempt failed"));
+    assert.equal((await first).ok, false);
+    const retry = rig.api.startLocal();
+    await tick();
+    rig.resolveDiscovery(lateError, {}, 0);
+    previous.emit("exit", 1, null);
+    await tick();
+    assert.equal(rig.state().backendReady, null);
+    assert.equal(rig.state().backendProcess, rig.children[1]);
+    rig.announce(); rig.resolveDiscovery();
+    assert.equal((await retry).ok, true);
+    assert.equal(rig.errors.length, 1);
+  }
+});
+
+test("splash releases local and remote controls when IPC rejects or returns no verified success", async () => {
+  for (const result of [undefined, { accepted: true }, { ok: false, error: "fixture failure" }, new Error("IPC rejected")]) {
+    const call = async () => { if (result instanceof Error) throw result; return result; };
+    const splash = await splashVm({ startLocal: call, connectRemote: call });
+    await splash.local();
+    assert.deepEqual(splash.busy(), [false, false]);
+    await splash.remote();
+    assert.deepEqual(splash.busy(), [false, false]);
+    assert.ok(splash.element("log").textContent);
+  }
+});
+
+test("established local runtime errors and crashes return to the chooser and permit retry", async () => {
+  for (const event of ["error", "exit"]) {
+    const rig = await desktopVm();
+    const first = rig.api.startLocal();
+    await tick(); rig.announce(); rig.resolveDiscovery();
+    assert.equal((await first).ok, true);
+    if (event === "error") rig.children[0].emit("error", new Error("runtime failure"));
+    else rig.children[0].emit("exit", 1, null);
+    assert.match(rig.loads.at(-1), /splash.html$/);
+    assert.equal(rig.state().backendReady, null);
+    const retry = rig.api.startLocal();
+    await tick(); rig.announce(); rig.resolveDiscovery();
+    assert.equal((await retry).ok, true);
+    assert.equal(rig.children.length, 2);
+  }
+});
+
+test("early cleanup tolerates denied signals and its fallback targets only the failed child", async () => {
+  const rig = await desktopVm();
+  const first = rig.api.startLocal();
+  await tick();
+  const old = rig.children[0];
+  old.stdout.emit("data", Buffer.from("partial old output"));
+  old.kill = (signal) => { old.signals.push(signal); throw Object.assign(new Error("denied"), { code: "EPERM" }); };
+  old.emit("error", new Error("failed before READY"));
+  assert.equal((await first).ok, false);
+  const retry = rig.api.startLocal();
+  await tick();
+  const current = rig.children[1];
+  for (const { callback } of rig.timers) callback();
+  assert.deepEqual(old.signals, ["SIGINT", "SIGTERM"]);
+  assert.deepEqual(current.signals, []);
+  old.stdin.emit("error", new Error("closed pipe"));
+  assert.equal(old.stdin.ends, 1);
+  rig.announce(); rig.resolveDiscovery();
+  assert.equal((await retry).ok, true, "partial lines from an old attempt cannot corrupt READY");
+  old.emit("exit", 0, "SIGTERM");
+  assert.equal(rig.state().backendProcess, current);
 });
