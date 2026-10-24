@@ -13,6 +13,7 @@ const { startPrivateSessionBus } = require("./lib/session-bus");
 const quicPin = require("./lib/quic-pin");
 const { verifyLocalService } = require("./lib/mdns");
 const { createStreamRegistry, openBridgeStream } = require("./lib/bridge-streams");
+const windowSecurity = require("./lib/window-security");
 
 const READY_PREFIX = "SNIFF4HOUND_DESKTOP_READY ";
 const DEFAULT_PORT = "45678";
@@ -126,6 +127,26 @@ function isAllowedExternalUrl(url) {
   } catch {
     return false;
   }
+}
+
+// The packaged connection chooser. With app://shell it is the only document
+// the window may show (will-navigate) and the only one besides the shell whose
+// frame may call IPC (handleIpc); see lib/window-security.js.
+const SPLASH_PATH = path.join(__dirname, "splash.html");
+const SHELL_ONLY = [windowSecurity.SHELL];
+const SPLASH_ONLY = [windowSecurity.SPLASH];
+const SHELL_OR_SPLASH = [windowSecurity.SHELL, windowSecurity.SPLASH];
+
+// Every ipcMain handler checks the calling frame first: only the main frame
+// of the documents in `allow` reaches the handler. The launcher channels are
+// for the chooser only and the data bridge for the shell only.
+function handleIpc(channel, allow, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!windowSecurity.senderAllowed(event, { splashPath: SPLASH_PATH, allow })) {
+      throw new Error(`Blocked ${channel} from an unexpected frame.`);
+    }
+    return handler(event, ...args);
+  });
 }
 
 let mainWindow = null;
@@ -794,9 +815,9 @@ function bridgeRequestOptions(payload) {
   };
 }
 
-ipcMain.handle("desktop-http:request", (_event, payload) => performRequest(bridgeRequestOptions(payload)));
+handleIpc("desktop-http:request", SHELL_ONLY, (_event, payload) => performRequest(bridgeRequestOptions(payload)));
 
-ipcMain.handle("desktop-http:stream-open", (event, payload) => {
+handleIpc("desktop-http:stream-open", SHELL_ONLY, (event, payload) => {
   const options = bridgeRequestOptions({ ...payload, method: "GET" });
   const contents = event.sender;
   // One 'destroyed' and one navigation listener per webContents: its streams
@@ -815,7 +836,7 @@ ipcMain.handle("desktop-http:stream-open", (event, payload) => {
   });
 });
 
-ipcMain.handle("desktop-http:stream-close", (event, payload) => {
+handleIpc("desktop-http:stream-close", SHELL_ONLY, (event, payload) => {
   const id = String((payload && payload.id) || "");
   const stream = httpStreams.get(id);
   if (stream && stream.ownerId === event.sender.id) {
@@ -903,25 +924,26 @@ function createWindow() {
       resolve();
     });
   });
-  mainWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  mainWindow.webContents.session.setPermissionCheckHandler(() => false);
-  mainWindow.loadFile(path.join(__dirname, "splash.html"));
+  // System notifications for the bundled SPA (monitor alerts, connection
+  // loss, chat) and no other permission for any document.
+  mainWindow.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const requestingUrl = (details && details.requestingUrl) || (contents && contents.getURL ? contents.getURL() : "");
+    callback(windowSecurity.permissionAllowed(permission, requestingUrl));
+  });
+  mainWindow.webContents.session.setPermissionCheckHandler((_contents, permission, requestingOrigin) =>
+    windowSecurity.permissionAllowed(permission, requestingOrigin));
+  mainWindow.loadFile(SPLASH_PATH);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedExternalUrl(url)) shell.openExternal(url);
     return { action: "deny" };
   });
 
+  // Renderer-initiated navigations (links, location changes, a file dropped
+  // on the window) may only reach the chooser or the shell; web links open in
+  // the operator's browser instead, everything else is dropped.
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (!backendReady) return;
-    const allowedOrigin = new URL(backendReady.url).origin;
-    try {
-      const target = new URL(url);
-      if (target.protocol === "file:") return;
-      if (target.origin === allowedOrigin) return;
-    } catch {
-      // fall through to block malformed navigations
-    }
+    if (windowSecurity.navigationAllowed(url, { splashPath: SPLASH_PATH })) return;
     event.preventDefault();
     if (isAllowedExternalUrl(url)) shell.openExternal(url);
   });
@@ -1073,7 +1095,7 @@ function loadBackendWindow() {
 function showConnectionChooser() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   Menu.setApplicationMenu(null);
-  mainWindow.loadFile(path.join(__dirname, "splash.html"));
+  mainWindow.loadFile(SPLASH_PATH);
 }
 
 function showBackendFailure(message) {
@@ -1130,11 +1152,11 @@ async function connectRemote(payload) {
   return { ok: true, target: { ...verified, security_code: "" } };
 }
 
-ipcMain.handle("desktop-window:minimize", () => {
+handleIpc("desktop-window:minimize", SHELL_OR_SPLASH, () => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
 });
 
-ipcMain.handle("desktop-window:maximize", () => {
+handleIpc("desktop-window:maximize", SHELL_OR_SPLASH, () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMaximized()) {
     mainWindow.unmaximize();
@@ -1143,13 +1165,13 @@ ipcMain.handle("desktop-window:maximize", () => {
   }
 });
 
-ipcMain.handle("desktop-window:close", () => {
+handleIpc("desktop-window:close", SHELL_OR_SPLASH, () => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
 });
 
-ipcMain.handle("desktop-window:shutdown", () => shutdownController.start());
+handleIpc("desktop-window:shutdown", SHELL_OR_SPLASH, () => shutdownController.start());
 
-ipcMain.handle("desktop-shell:open-external", (_event, url) => {
+handleIpc("desktop-shell:open-external", SHELL_ONLY, (_event, url) => {
   // The renderer-facing bridge (preload.js) forwards whatever string the
   // SPA passes, unvalidated - this is the only place left that can refuse
   // a `file:`/`javascript:`/other unexpected scheme before it reaches the
@@ -1158,7 +1180,7 @@ ipcMain.handle("desktop-shell:open-external", (_event, url) => {
   shell.openExternal(url);
 });
 
-ipcMain.handle("desktop-runtime:get-connection-defaults", () => {
+handleIpc("desktop-runtime:get-connection-defaults", SPLASH_ONLY, () => {
   const state = readConnectionState();
   const requiresPrivileges = process.platform === "linux" && effectiveUid() !== 0;
   const requestPrivileges = startupPrivilegeRequest && requiresPrivileges && state.mode !== "remote" && !elevation.optedOut(process.env);
@@ -1174,13 +1196,13 @@ ipcMain.handle("desktop-runtime:get-connection-defaults", () => {
   };
 });
 
-ipcMain.handle("desktop-runtime:start-local", async () => {
+handleIpc("desktop-runtime:start-local", SPLASH_ONLY, async () => {
   await mainWindowShown;
   if (quitting || shutdownController.isPending() || !mainWindow || mainWindow.isDestroyed()) return { ok: false, error: "The desktop window is closing." };
   return startBackend();
 });
 
-ipcMain.handle("desktop-runtime:connect-remote", async (_event, payload) => {
+handleIpc("desktop-runtime:connect-remote", SPLASH_ONLY, async (_event, payload) => {
   try {
     return await connectRemote(payload || {});
   } catch (error) {
@@ -1190,7 +1212,7 @@ ipcMain.handle("desktop-runtime:connect-remote", async (_event, payload) => {
   }
 });
 
-ipcMain.handle("desktop-runtime:show-connection-chooser", () => {
+handleIpc("desktop-runtime:show-connection-chooser", SHELL_ONLY, () => {
   showConnectionChooser();
   return { ok: true };
 });

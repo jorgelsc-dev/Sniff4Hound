@@ -1691,9 +1691,11 @@ function playNotificationSound(severity) {
 }
 
 // Best-effort: only matters in a plain browser tab (a user gesture may be
-// required before the prompt is even allowed to show). Electron's default
-// session auto-grants permission requests, so this is a no-op there -
-// Notification.permission already reads "granted" before this ever runs.
+// required before the prompt is even allowed to show). In the desktop shell
+// the session's permission handlers (desktop/main.js, lib/window-security.js)
+// grant "notifications" to the app://shell document and deny every other
+// permission and origin, so Notification.permission already reads "granted"
+// there and this is a no-op.
 function ensureNotificationPermission() {
   if (typeof Notification === "undefined" || notificationPermissionRequested) return;
   notificationPermissionRequested = true;

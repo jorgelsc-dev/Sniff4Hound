@@ -150,7 +150,7 @@ test("dates and numbers use Spanish independently of the operator locale", () =>
   assert.match(source("../src/main.js"), /locale: \{ locale: "es"/);
 });
 
-test("desktop CSP, renderer sandbox and permission denial remain wired", () => {
+test("desktop CSP, renderer sandbox and notifications-only permissions remain wired", () => {
   const index = source("../index.html");
   const splash = source("../../splash.html");
   const main = source("../../main.js");
@@ -160,8 +160,17 @@ test("desktop CSP, renderer sandbox and permission denial remain wired", () => {
     assert.doesNotMatch(html, /<script>(?!<\/script>)/);
   }
   assert.match(main, /sandbox: true/);
-  assert.match(main, /setPermissionRequestHandler\([\s\S]*?callback\(false\)/);
-  assert.match(main, /setPermissionCheckHandler\(\(\) => false\)/);
+  // Both handlers decide through the one tested policy (desktop-window-security.test.js):
+  // "notifications" for app://shell only, every other permission and origin denied.
+  assert.match(main, /setPermissionRequestHandler\([\s\S]*?callback\(windowSecurity\.permissionAllowed\(permission, requestingUrl\)\)/);
+  assert.match(main, /setPermissionCheckHandler\(\(_contents, permission, requestingOrigin\) =>\s*windowSecurity\.permissionAllowed\(permission, requestingOrigin\)\)/);
+  assert.doesNotMatch(main, /setPermission(Request|Check)Handler\([^)]*\) => (true|callback\(true\))/);
+  const { permissionAllowed } = require("../../lib/window-security.js");
+  assert.equal(permissionAllowed("notifications", "app://shell"), true);
+  for (const permission of ["media", "geolocation", "clipboard-read", "openExternal", "fullscreen"]) {
+    assert.equal(permissionAllowed(permission, "app://shell"), false, permission);
+  }
+  assert.equal(permissionAllowed("notifications", "https://sensor.example"), false);
   assert.match(main, /const connect = origin \? `connect-src 'self' \$\{origin\} \$\{websocketOrigin\}`/);
 });
 
