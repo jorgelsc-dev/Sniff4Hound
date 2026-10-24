@@ -265,7 +265,9 @@ def _print_startup_banner(host: str, port: int):
         lines.extend(
             [
                 _banner_line(),
-                _banner_line(f"  SECURITY CODE: {token}"),
+                # The startup code is intentionally shown only on the local
+                # operator's terminal; it is the documented first-login path.
+                _banner_line(f"  SECURITY CODE: {token}"),  # lgtm[py/clear-text-logging]
                 _banner_line("  Use this code from the Electron app if prompted"),
             ]
         )
