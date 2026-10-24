@@ -9,9 +9,9 @@
             :class="{ 'desktop-activity-item--active': isActive(tool.to) }"
             :to="tool.to"
             :aria-label="tool.label"
+            :title="tool.label"
           >
             <v-icon :icon="tool.icon" :color="isActive(tool.to) ? tool.color : undefined" size="22" />
-            <v-tooltip activator="parent" location="right">{{ tool.label }}</v-tooltip>
           </router-link>
 
           <button
@@ -21,10 +21,10 @@
             :class="{ 'desktop-activity-item--active': isGroupActive(tool), 'desktop-activity-item--open': openGroup === tool.to }"
             :aria-label="tool.label"
             :aria-expanded="openGroup === tool.to ? 'true' : 'false'"
+            :title="tool.label"
             @click="toggleGroup(tool, $event)"
           >
             <v-icon :icon="tool.icon" :color="isGroupActive(tool) ? tool.color : undefined" size="22" />
-            <v-tooltip v-if="openGroup !== tool.to" activator="parent" location="right">{{ tool.label }}</v-tooltip>
           </button>
         </div>
       </div>
@@ -72,6 +72,7 @@
           }"
           :style="control.styleVars"
           :aria-label="control.ariaLabel"
+          :title="control.tooltip"
           :aria-pressed="control.active ? 'true' : 'false'"
           :aria-disabled="control.disabled ? 'true' : 'false'"
           @click="toggleQuickControl(control)"
@@ -82,7 +83,6 @@
             :class="{ 'desktop-runtime-button__spin': control.busy }"
           />
           <span class="desktop-runtime-button__state" aria-hidden="true" />
-          <v-tooltip activator="parent" location="right">{{ control.tooltip }}</v-tooltip>
         </button>
 
         <span class="desktop-runtime-divider" aria-hidden="true" />

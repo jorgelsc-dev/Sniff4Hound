@@ -42,12 +42,10 @@
           :loading="shutdownPending"
           :disabled="shutdownPending"
           :aria-label="shutdownPending ? shutdownLabel || 'Stopping...' : stopButtonLabel"
+          :title="shutdownPending ? shutdownLabel || 'Stopping...' : stopButtonLabel"
           @click="$emit('shutdown-app')"
         >
           <v-icon :icon="stopButtonIcon" />
-          <v-tooltip activator="parent" location="bottom">
-            {{ shutdownPending ? (shutdownLabel || "Stopping...") : stopButtonLabel }}
-          </v-tooltip>
         </v-btn>
         <div v-if="desktopMode" class="desktop-window-controls" aria-label="Window controls">
           <v-btn
@@ -57,10 +55,10 @@
             density="compact"
             class="window-control window-control--minimize"
             aria-label="Minimizar"
+            title="Minimizar"
             @click="runDesktopWindowAction('minimize')"
           >
             <v-icon icon="mdi-window-minimize" size="18" />
-            <v-tooltip activator="parent" location="bottom">Minimizar</v-tooltip>
           </v-btn>
           <v-btn
             icon
@@ -69,10 +67,10 @@
             density="compact"
             class="window-control window-control--maximize"
             aria-label="Maximizar"
+            title="Maximizar"
             @click="runDesktopWindowAction('maximize')"
           >
             <v-icon icon="mdi-window-maximize" size="17" />
-            <v-tooltip activator="parent" location="bottom">Maximizar</v-tooltip>
           </v-btn>
           <v-btn
             icon
@@ -81,10 +79,10 @@
             density="compact"
             class="window-control window-control--close"
             aria-label="Cerrar"
+            title="Cerrar"
             @click="runDesktopWindowAction('close')"
           >
             <v-icon icon="mdi-close" size="19" />
-            <v-tooltip activator="parent" location="bottom">Cerrar</v-tooltip>
           </v-btn>
         </div>
       </div>
