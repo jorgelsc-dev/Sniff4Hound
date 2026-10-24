@@ -71,7 +71,7 @@
               :style="{ left: node.x + 'px', top: node.y + 'px', '--node-color': node.color }"
               :aria-label="nodeAccessibleLabel(node)"
               :aria-expanded="modelValue === node.section"
-              :aria-pressed="modelValue === node.section"
+              :aria-current="modelValue === node.section ? 'page' : undefined"
               aria-controls="settings-inspector"
               :title="`${node.label}: ${node.detail}. ${node.state.label || 'Ajustes'}`"
               @click="$emit('update:modelValue', node.section)"
@@ -87,6 +87,7 @@
               <span class="config-node__head">
                 <span class="config-node__icon"><v-icon :icon="node.icon" size="18" /></span>
                 <strong :title="node.label">{{ node.label }}</strong>
+                <span v-if="node.id === 'ai'" class="config-node__badge">Opcional</span>
                 <v-icon icon="mdi-chevron-right" size="16" class="config-node__open" />
               </span>
               <span class="config-node__detail" :title="node.detail">{{ node.detail }}</span>
@@ -227,8 +228,10 @@ function nodeAccessibleLabel(node) {
     .map(metric => `${metric.label}: ${metric.value}`)
     .join("; ");
   const status = node.state.label || "Ajustes";
+  const optional = node.id === "ai" ? "IA opcional; no bloquea la captura ni la detección por reglas" : "";
   return [
     `Configurar ${node.label}`,
+    optional,
     node.detail,
     `Estado: ${status}`,
     metrics,
@@ -399,6 +402,7 @@ onBeforeUnmount(() => {
 .config-node:focus-visible, .config-node.is-selected { outline: 2px solid var(--node-color); outline-offset: 3px; border-color: var(--node-color); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36); }
 .config-node__head { display: flex; align-items: center; gap: 9px; }
 .config-node__head strong { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 0; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.config-node__badge { flex: 0 0 auto; padding: 2px 6px; border: 1px solid color-mix(in srgb, var(--node-color) 58%, var(--stroke-strong)); border-radius: 999px; color: var(--node-color); font-size: 9px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.2; text-transform: uppercase; }
 .config-node__icon { color: var(--node-color); display: flex; }
 .config-node__open { color: #7d7f8c; }
 .config-node__detail { display: block; font-size: 11px; color: #c0c2cc; margin: 4px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

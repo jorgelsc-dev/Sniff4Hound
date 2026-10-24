@@ -13,7 +13,10 @@ test("graph exposes an understandable keyboard and screen-reader contract", () =
   assert.match(template, /role="region"/);
   assert.match(template, /aria-describedby="config-canvas-help"/);
   assert.match(template, /Usa Tab para recorrer los componentes/);
-  assert.match(template, /:aria-pressed="modelValue === node\.section"/);
+  assert.match(template, /:aria-current="modelValue === node\.section \? 'page' : undefined"/);
+  assert.doesNotMatch(template, /aria-pressed/);
+  assert.match(template, /v-if="node\.id === 'ai'" class="config-node__badge">Opcional/);
+  assert.match(script, /IA opcional; no bloquea la captura ni la detección por reglas/);
   assert.match(template, /:title="`\$\{node\.label\}/);
   assert.match(template, /<v-tooltip activator="parent" location="top" open-delay="450">/);
 });
@@ -37,6 +40,7 @@ test("arrow navigation wraps through every graph node", () => {
 test("focus indicators and small-screen layout remain explicit", () => {
   assert.match(styles, /\.config-canvas:focus-visible\s*\{[^}]*outline: 2px/);
   assert.match(styles, /\.config-node:focus-visible, \.config-node\.is-selected/);
+  assert.match(styles, /\.config-node__badge \{[^}]*text-transform: uppercase/);
   assert.match(styles, /@media \(max-width: 700px\)/);
   assert.match(styles, /Keep CSS dimensions aligned with GRAPH_CARD/);
   assert.doesNotMatch(styles, /\.config-node \{ width: 224px; height: 168px/);

@@ -43,3 +43,9 @@ test("the Settings UI exposes an accessible optional AI toggle", () => {
   assert.match(panelSource, /no reemplaza las reglas/);
   assert.match(panelSource, /this\.enabled = previous/);
 });
+
+test("the AI graph node makes its optional behavior clear", () => {
+  assert.match(panelSource, /IA es opcional/);
+  assert.match(settingsSource, /fetchJsonPromise\("\/api\/settings\/ai"\)/);
+  assert.match(settingsSource, /!config \? "Sin datos" : enabled \? "IA activada" : "IA desactivada"/);
+});
