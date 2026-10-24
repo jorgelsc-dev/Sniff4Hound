@@ -24,6 +24,10 @@
         <v-alert v-if="engineError" type="error" variant="tonal" class="mt-4">{{ engineError }}</v-alert>
       </v-window-item>
 
+      <v-window-item value="ai">
+        <AiSettingsPanel />
+      </v-window-item>
+
       <v-window-item value="capture">
         <DataPanel
           title="Interfaces de captura"
@@ -1732,6 +1736,7 @@ import ExclusionsPanel from "../components/settings/ExclusionsPanel.vue";
 import HistoryPanel from "../components/settings/HistoryPanel.vue";
 import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 import ConfigGraphNav from "../components/settings/ConfigGraphNav.vue";
+import AiSettingsPanel from "../components/settings/AiSettingsPanel.vue";
 import { normalizeSettingsSection } from "../components/settings/settingsGraph";
 import { formatTimestamp, matchesSearch, uniqueSorted } from "../utils/traffic";
 
@@ -1835,6 +1840,7 @@ export default {
     LocationPicker,
     RuleDetailDialog,
     ConfigGraphNav,
+    AiSettingsPanel,
   },
   data() {
     const requested = String((this.$route && this.$route.query && this.$route.query.section) || "").trim();
@@ -1869,7 +1875,7 @@ export default {
       logTailError: "",
       pipelineResetting: false,
       graphFresh: {},
-      graphExtras: { blacklist: null, whitelist: null, exclusions: null, retentionDays: null, history: null },
+      graphExtras: { blacklist: null, whitelist: null, exclusions: null, retentionDays: null, history: null, ai: null },
       enginePending: "",
       engineError: "",
       ruleDetailOpen: false,
@@ -2136,6 +2142,22 @@ export default {
             metric("Errores", num(pipeline.errors), pipeline.errors ? "warn" : "ok"),
           ],
         ),
+        ai: (() => {
+          // The saved preference is permission only; the node lights up only
+          // when the backend reports a model that can actually run.
+          const config = extras.ai && typeof extras.ai.enabled === "boolean" ? extras.ai : null;
+          const enabled = Boolean(config && config.enabled);
+          const ready = enabled && config.model_status === "ready";
+          return state(
+            !config ? "Sin datos" : !enabled ? "IA desactivada" : ready ? "IA lista" : "Permitida · sin modelo",
+            online && ready,
+            [
+              metric("Preferencia", config ? (enabled ? "Permitida" : "Desactivada") : "—", enabled ? "ok" : "warn"),
+              metric("Modelo", !config ? "—" : ready ? "Listo" : "No configurado", ready ? "ok" : "warn"),
+              metric("Captura", "No bloquea"),
+            ],
+          );
+        })(),
       };
       for (const [key, value] of Object.entries(states)) {
         if (!online || this.graphFresh[key] !== true) {
@@ -2385,6 +2407,7 @@ export default {
         this.store.getHistoryConfig(),
         this.store.getDeclaredLocation(),
         this.store.getDetectionScopes(),
+        this.store.fetchJsonPromise("/api/settings/ai"),
       ]);
       const fresh = (index) => results[index].status === "fulfilled" && results[index].value != null;
       this.graphFresh = {
@@ -2392,7 +2415,7 @@ export default {
         packetcache: fresh(0) && fresh(1), packetjobs: fresh(0) && fresh(1),
         detection: fresh(9), scope: fresh(12), storage: fresh(7), history: fresh(10),
         exclusions: fresh(4), blacklist: fresh(2) && fresh(3), logs: fresh(6), limits: fresh(8),
-        location: fresh(11), notifications: true,
+        location: fresh(11), ai: fresh(13), notifications: true,
       };
       const failed = (index) => results[index].status === "rejected";
       const failureMessage = (index, fallback) => failed(index)
@@ -2406,7 +2429,7 @@ export default {
         packetcache: failed(0) || failed(1), packetjobs: failed(0) || failed(1),
         detection: failed(9), scope: failed(12), storage: failed(7), history: failed(10),
         exclusions: failed(4), blacklist: failed(2) || failed(3), logs: failed(6), limits: failed(8),
-        location: failed(11), notifications: false,
+        location: failed(11), ai: failed(13), notifications: false,
       };
       const value = (index) => (results[index].status === "fulfilled" ? results[index].value : null);
       this.graphExtras = {
@@ -2415,6 +2438,7 @@ export default {
         exclusions: value(4)?.exclusion_filters || null,
         retentionDays: value(5)?.retention_days ?? null,
         history: value(10),
+        ai: value(13),
       };
       if (value(11)) this.applyLocation(value(11));
       if (value(12)) {
@@ -3447,6 +3471,8 @@ export default {
 .settings-engine h3 { font-size: 15px; }
 .settings-engine span { color: #b1b3be; font-size: 12px; }
 .settings-engine .v-switch { flex: 0 0 auto; }
+.ai-settings-panel__row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.ai-settings-panel__row .v-switch { flex: 0 0 auto; }
 .settings-connection { display: grid; grid-template-columns: auto 1fr; gap: 18px; font-size: 13px; }
 .settings-connection dt { color: #a4a6b1; }
 .settings-connection dd { margin: 0; overflow-wrap: anywhere; }

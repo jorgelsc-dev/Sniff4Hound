@@ -89,7 +89,7 @@ const desktopDebugDisabled = ["0", "false", "off", "no", ""].includes(desktopDeb
 const desktopDebugPort = /^\d+$/.test(desktopDebugPortRaw) ? Number(desktopDebugPortRaw) : NaN;
 const desktopDebugPortValid = Number.isInteger(desktopDebugPort) && desktopDebugPort >= 1024 && desktopDebugPort <= 65535;
 const desktopRunningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
-if (!desktopDebugDisabled && !launcherOnly && desktopDebugPortValid && !desktopRunningAsRoot) {
+if (!desktopDebugDisabled && desktopDebugPortValid && !desktopRunningAsRoot) {
   app.commandLine.appendSwitch("remote-debugging-port", String(desktopDebugPort));
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
 } else if (!desktopDebugDisabled && (!desktopDebugPortValid || desktopRunningAsRoot)) {
@@ -132,11 +132,8 @@ let mainWindow = null;
 let mainWindowShown = Promise.resolve();
 let backendProcess = null;
 let backendReady = null;
-let backendExited = false;
-let suppressNextBackendExit = false;
+let backendAttempt = null;
 let quitting = false;
-let stdoutBuffer = "";
-let stderrBuffer = "";
 const recentBackendLines = [];
 const trustedRuntimeCas = new Map();
 let certificateTrustInstalled = false;
@@ -498,93 +495,92 @@ function backendEnv(pythonPath) {
   return env;
 }
 
-function readLines(chunk, streamName, onLine) {
-  const text = chunk.toString("utf8");
-  if (streamName === "stdout") {
-    stdoutBuffer += text;
-    let index = stdoutBuffer.indexOf("\n");
-    while (index >= 0) {
-      const line = stdoutBuffer.slice(0, index).replace(/\r$/, "");
-      stdoutBuffer = stdoutBuffer.slice(index + 1);
-      onLine(line);
-      index = stdoutBuffer.indexOf("\n");
-    }
-    return;
-  }
-
-  stderrBuffer += text;
-  let index = stderrBuffer.indexOf("\n");
+function readLines(attempt, chunk, streamName, onLine) {
+  attempt[streamName] += chunk.toString("utf8");
+  let index = attempt[streamName].indexOf("\n");
   while (index >= 0) {
-    const line = stderrBuffer.slice(0, index).replace(/\r$/, "");
-    stderrBuffer = stderrBuffer.slice(index + 1);
+    const line = attempt[streamName].slice(0, index).replace(/\r$/, "");
+    attempt[streamName] = attempt[streamName].slice(index + 1);
     onLine(line);
-    index = stderrBuffer.indexOf("\n");
+    index = attempt[streamName].indexOf("\n");
   }
 }
 
 function startBackend() {
-  if (backendProcess) {
-    return { ok: true };
-  }
-  backendExited = false;
+  // Concurrent requests share the same result, which means verified readiness,
+  // not merely a successful spawn or a READY announcement.
+  if (backendAttempt) return backendAttempt.promise;
   backendReady = null;
   recentBackendLines.length = 0;
-  const pythonPath = resolvePython();
-  const env = backendEnv(pythonPath);
-  const cwd = app.isPackaged ? process.resourcesPath : repoRoot();
+  const attempt = { stdout: "", stderr: "", announced: false, exited: false };
+  attempt.promise = new Promise((resolve) => { attempt.finish = resolve; });
+  backendAttempt = attempt;
+  const isCurrent = () => backendAttempt === attempt && !quitting && !shutdownController.isPending();
+  const fail = (message) => {
+    if (!isCurrent()) return;
+    rememberBackendLine(message);
+    const wasReady = Boolean(backendReady);
+    attempt.finish({ ok: false, error: message });
+    stopBackend();
+    if (wasReady) showConnectionChooser();
+    sendLauncherStatus(message);
+    showBackendFailure(message);
+  };
 
   sendLauncherStatus("Autoriza el sensor local en el diálogo de autenticación...");
+  let pythonPath, env, cwd;
   try {
-    backendProcess = elevation.launchRuntime({
+    pythonPath = resolvePython();
+    env = backendEnv(pythonPath);
+    cwd = app.isPackaged ? process.resourcesPath : repoRoot();
+    attempt.process = elevation.launchRuntime({
       spawn, target: pythonPath, args: ["-m", "sniff4hound.desktop_runtime"], cwd, env,
       platform: process.platform, euid: effectiveUid(),
       uid: typeof process.getuid === "function" ? process.getuid() : 0,
       gid: typeof process.getgid === "function" ? process.getgid() : 0,
       home: os.homedir(), which: elevation.findExecutable,
     });
+    backendProcess = attempt.process;
   } catch (error) {
-    backendExited = true;
-    sendLauncherStatus(error.message);
-    return { ok: false, error: error.message };
+    fail(error.message);
+    return attempt.promise;
   }
-  const startedProcess = backendProcess;
-  backendProcess.stdin.on("error", () => {}); // The child may close the lifetime pipe while exiting.
+  const startedProcess = attempt.process;
+  startedProcess.stdin.on("error", () => {}); // The child may close its lifetime pipe while exiting.
 
-  backendProcess.stdout.on("data", (chunk) => {
-    readLines(chunk, "stdout", async (line) => {
+  startedProcess.stdout.on("data", (chunk) => {
+    if (!isCurrent()) return;
+    readLines(attempt, chunk, "stdout", async (line) => {
+      if (!isCurrent()) return;
       if (line.startsWith(READY_PREFIX)) {
+        if (attempt.announced) return;
+        attempt.announced = true;
         try {
-          backendReady = JSON.parse(line.slice(READY_PREFIX.length));
-          backendReady.connection = "local";
-          backendReady.protocol = backendReady.protocol || "http";
-          backendReady.origin = new URL(backendReady.url).origin;
+          const announcedRuntime = JSON.parse(line.slice(READY_PREFIX.length));
+          announcedRuntime.connection = "local";
+          announcedRuntime.protocol = announcedRuntime.protocol || "http";
+          announcedRuntime.origin = new URL(announcedRuntime.url).origin;
           sendLauncherStatus("Comprobando el sensor local...");
-          const announcedRuntime = backendReady;
           await verifyLocalService({ execFile, python: pythonPath, env, cwd, ready: announcedRuntime, prepared: preparedRuntime });
-          if (backendProcess !== startedProcess || backendExited || backendReady !== announcedRuntime || quitting) return;
-          if (quicPin.forcedOriginIsUnserved(forcedQuicOrigin, backendReady)) {
-            // Chromium has no TCP fallback for an origin it was told to reach
-            // over QUIC, so a runtime without its UDP side would just look dead.
-            rememberBackendLine(`HTTP/3 is not listening on udp://${forcedQuicOrigin}.`);
-            showBackendFailure(
+          if (!isCurrent()) return;
+          if (quicPin.forcedOriginIsUnserved(forcedQuicOrigin, announcedRuntime)) {
+            throw new Error(
               "The runtime could not open its HTTP/3 (UDP) listener. " +
                 "Set SNIFF4HOUND_DESKTOP_HTTP3=0 to use HTTPS over TCP only.",
             );
-            return;
           }
-          backendReady.security_code = readDesktopCodeFile(backendReady.security_code_file);
-          delete backendReady.security_code_file;
-          if (backendReady.ca_pem) {
-            registerTrustedRuntimeCa(backendReady, backendReady.ca_pem);
+          announcedRuntime.security_code = readDesktopCodeFile(announcedRuntime.security_code_file);
+          delete announcedRuntime.security_code_file;
+          if (announcedRuntime.ca_pem) {
+            registerTrustedRuntimeCa(announcedRuntime, announcedRuntime.ca_pem);
           }
           installRuntimeVerifyProc();
+          backendReady = announcedRuntime;
           writeConnectionState({ mode: "local" });
           loadBackendWindow();
+          attempt.finish({ ok: true });
         } catch (error) {
-          if (backendProcess === startedProcess && !backendExited && !quitting) {
-            rememberBackendLine(`Invalid ready payload: ${error.message}`);
-            showBackendFailure(error.message);
-          }
+          fail(error.message);
         }
         return;
       }
@@ -593,46 +589,40 @@ function startBackend() {
     });
   });
 
-  backendProcess.stderr.on("data", (chunk) => {
-    readLines(chunk, "stderr", (line) => {
+  startedProcess.stderr.on("data", (chunk) => {
+    if (!isCurrent()) return;
+    readLines(attempt, chunk, "stderr", (line) => {
       rememberBackendLine(line);
       sendLauncherStatus(line);
     });
   });
 
-  backendProcess.on("error", (error) => {
-    // Early shutdown may race with pkexec switching to root. The pipe still
-    // stops the runtime when a fallback signal is denied.
-    if (error.code === "EPERM" && startedProcess.stdin.writableEnded) return;
-    backendProcess = null;
-    backendExited = true;
-    rememberBackendLine(error.message);
-    showConnectionChooser();
-    showBackendFailure("Sniff4Hound could not start the Python runtime.");
+  startedProcess.on("error", (error) => {
+    // A stopped attempt can still emit EPERM as pkexec switches uid. Its pipe
+    // is already closed; it must not clear or fail a newer local/remote session.
+    fail(error.message);
   });
 
-  backendProcess.on("exit", (code, signal) => {
-    backendExited = true;
-    backendProcess = null;
-    if (suppressNextBackendExit) {
-      suppressNextBackendExit = false;
-      return;
-    }
-    if (quitting || shutdownController.isPending()) return;
-    if (backendReady && (code === 0 || signal === "SIGINT" || signal === "SIGTERM")) {
+  startedProcess.on("exit", (code, signal) => {
+    attempt.exited = true;
+    if (!isCurrent()) return;
+    const wasReady = Boolean(backendReady);
+    const refused = !wasReady && !signal && elevation.looksLikeRefusedElevation(code);
+    const message = refused
+      ? "Authorization cancelled. You can retry the local sensor or connect remotely."
+      : `Sniff4Hound backend exited (${signal || code}).`;
+    attempt.finish({ ok: false, error: message });
+    stopBackend();
+    if (wasReady && (code === 0 || signal === "SIGINT" || signal === "SIGTERM")) {
       quitting = true;
       app.quit();
       return;
     }
-    if (!backendReady && !signal && elevation.looksLikeRefusedElevation(code)) {
-      showConnectionChooser();
-      mainWindow.webContents.once("did-finish-load", () => sendLauncherStatus("Authorization cancelled. You can retry the local sensor or connect remotely."));
-      return;
-    }
-    showConnectionChooser();
-    showBackendFailure(`Sniff4Hound backend exited (${signal || code}).`);
+    if (wasReady) showConnectionChooser();
+    sendLauncherStatus(message);
+    if (!refused) showBackendFailure(message);
   });
-  return { ok: true };
+  return attempt.promise;
 }
 
 function parseRemoteTarget(payload) {
@@ -1151,30 +1141,27 @@ function showBackendFailure(message) {
   });
 }
 
-function stopBackend(options = {}) {
-  if (!backendProcess || backendExited) return;
-  const stoppingProcess = backendProcess;
-  suppressNextBackendExit = Boolean(options.keepApp);
+function stopBackend() {
+  const attempt = backendAttempt;
+  if (!attempt) return;
+  // Invalidate before ending the pipe: exit/error/verification callbacks may
+  // run immediately or after a retry has installed a different child.
+  backendAttempt = null;
+  backendProcess = null;
+  backendReady = null;
+  attempt.finish({ ok: false, error: "The local sensor attempt was stopped. You can retry or connect remotely." });
+  const stoppingProcess = attempt.process;
+  if (!stoppingProcess) return;
   // Polkit execs Python as root, which the operator cannot signal directly.
-  // Closing our pipe asks that runtime to terminate itself, even on a crash
-  // of Electron. Before authorization, pkexec is still signalable by us.
-  stoppingProcess.stdin.end();
-  if (backendReady) return;
-  try {
-    stoppingProcess.kill("SIGINT");
-  } catch {
-    suppressNextBackendExit = false;
-    return;
-  }
+  // Closing only this child's pipe asks it to clean up and terminate itself.
+  try { stoppingProcess.stdin.end(); } catch { /* The pipe may already be closed. */ }
+  if (attempt.exited || attempt.announced) return;
+  try { stoppingProcess.kill("SIGINT"); } catch { /* The pipe still stops a root runtime. */ }
   setTimeout(() => {
-    if (backendProcess === stoppingProcess && !backendExited) {
-      try {
-        stoppingProcess.kill("SIGTERM");
-      } catch {
-        // process already exited
-      }
+    if (!attempt.exited) {
+      try { stoppingProcess.kill("SIGTERM"); } catch { /* Already exited or switched uid. */ }
     }
-  }, 5000);
+  }, 5000).unref();
 }
 
 async function connectRemote(payload) {
@@ -1182,11 +1169,11 @@ async function connectRemote(payload) {
   if (!isLoopbackHost(parsed.host)) installRuntimeVerifyProc();
   sendLauncherStatus("Checking remote backend...");
   const verified = await verifyRemoteConnection(parsed);
+  if (quitting || shutdownController.isPending()) return { ok: false, error: "The desktop window is closing." };
   if (backendProcess) {
-    stopBackend({ keepApp: true });
+    stopBackend();
   }
   backendReady = verified;
-  backendExited = false;
   writeConnectionState({
     mode: "remote",
     protocol: verified.protocol,

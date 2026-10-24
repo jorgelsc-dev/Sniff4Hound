@@ -17,8 +17,11 @@ windows and display/library permission failures in private home and Wayland
 sessions. `lib/elevation.js` builds the native authorization command; passwords
 never enter the renderer, application IPC or logs.
 
-Cancelling the native prompt returns to the connection screen, where the
-operator can retry the local sensor or connect remotely. A saved remote
+Local startup reports success only after the READY payload, mDNS endpoint and
+required HTTP/3 listener have been verified. A startup failure closes that
+attempt's lifetime pipe and releases the connection controls for a retry or a
+remote connection; late events from that child cannot replace a newer session.
+Cancelling the native prompt also releases the connection controls. A saved remote
 connection skips the automatic root request. For automation,
 `SNIFF4HOUND_DESKTOP_ELEVATE=0` skips that initial request; explicitly starting a
 local sensor still requires root. It no longer controls Electron's uid.

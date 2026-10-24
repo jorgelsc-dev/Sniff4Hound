@@ -90,6 +90,9 @@ export default {
       paths: [],
       liveRefreshEnabled: true,
       feedHandle: null,
+      feedRevision: 0,
+      loadRevision: 0,
+      disposed: false,
       columns: [
         { key: "method", label: "Method" },
         { key: "path", label: "Path" },
@@ -130,10 +133,22 @@ export default {
       ];
     },
   },
+  watch: {
+    liveRefreshEnabled(value) {
+      if (value) this.openFeed();
+      else {
+        this.closeFeed();
+        this.loading = false;
+      }
+    },
+    "store.state.apiBase"() { this.openFeed(); },
+    "store.state.timeRange"() { this.openFeed(); },
+  },
   mounted() {
     this.openFeed();
   },
   beforeUnmount() {
+    this.disposed = true;
     this.closeFeed();
   },
   methods: {
@@ -141,31 +156,40 @@ export default {
     // /ws/paths carries the same rows the HTTP listing returned, pushed at
     // the interval in its URL. This view used to re-issue the whole read on
     // every websocket "something changed" event.
+    feedContext() {
+      return JSON.stringify([this.store.state.apiBase, this.store.state.timeRange]);
+    },
     openFeed() {
       this.closeFeed();
+      if (this.disposed || !this.liveRefreshEnabled) return;
+      const revision = this.feedRevision;
+      const context = this.feedContext();
+      const current = () => !this.disposed && this.liveRefreshEnabled
+        && revision === this.feedRevision && context === this.feedContext();
       this.loading = true;
       this.feedHandle = this.store.openDataFeed(
         "paths",
-        { limit: FEED_LIMIT, refresh: FEED_REFRESH_MS },
-        (payload) => this.applyFeed(payload),
-        () => {
-          this.load({ silent: true }).catch(() => null);
-        },
+        { limit: FEED_LIMIT, refresh: FEED_REFRESH_MS, since: this.store.state.timeRange },
+        (payload) => { if (current()) this.applyFeed(payload); },
+        () => { if (current()) this.load({ silent: true }); },
       );
     },
     closeFeed() {
-      if (this.feedHandle) {
-        this.feedHandle.close();
-        this.feedHandle = null;
-      }
+      // Invalidate callbacks before close(), including an already pending fallback.
+      this.feedRevision += 1;
+      this.loadRevision += 1;
+      this.feedHandle?.close();
+      this.feedHandle = null;
     },
     applyFeed(payload) {
+      if (this.disposed || !this.liveRefreshEnabled) return;
       if (payload && payload.type === "feed_error") {
         this.error = payload.message || "El flujo de rutas HTTP dejó de actualizarse";
         this.loading = false;
         return;
       }
       if (!payload || payload.type !== "feed_data") return;
+      this.loadRevision += 1;
       this.paths = this.store.feedListResult(payload).rows;
       this.error = "";
       this.lastUpdated = new Date().toLocaleTimeString("es-ES");
@@ -173,20 +197,27 @@ export default {
     },
     // Kept as the single-shot fallback for when the stream cannot serve.
     load(options = {}) {
+      const automatic = Boolean(options.silent);
+      if (this.disposed || (automatic && !this.liveRefreshEnabled)) return Promise.resolve();
+      const revision = ++this.loadRevision;
+      const context = this.feedContext();
+      const current = () => !this.disposed && (!automatic || this.liveRefreshEnabled)
+        && revision === this.loadRevision && context === this.feedContext();
       if (!options.silent) this.loading = true;
       this.error = "";
       return this.store
         .listPaths({ limit: 500 })
         .then((payload) => {
+          if (!current()) return;
           this.paths = this.store.extractArray(payload);
           this.lastUpdated = new Date().toLocaleTimeString("es-ES");
         })
         .catch((err) => {
-          this.paths = [];
+          if (!current()) return;
           this.error = (err && err.message) || "No se pudieron cargar las rutas HTTP";
         })
         .finally(() => {
-          this.loading = false;
+          if (current()) this.loading = false;
         });
     },
   },

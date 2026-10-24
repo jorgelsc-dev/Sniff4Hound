@@ -146,6 +146,64 @@ class RuntimeControllerTests(unittest.TestCase):
         )
         self.assertTrue(self.sniffer.running)
 
+    def test_interfaces_restart_the_live_sniffer_with_either_focus(self):
+        controller = self._controller()
+        for focus in ("sniffer", "honeypot"):
+            for concurrent in (False, True):
+                with self.subTest(focus=focus, concurrent=concurrent):
+                    controller.mode = focus
+                    self.sniffer.running = True
+                    self.honeypot.running = concurrent
+                    self.sniffer.set_interfaces(["fixture-old"])
+                    live = ["fixture-old"]
+
+                    def restart():
+                        live[:] = self.sniffer.selected_interfaces
+
+                    with patch.object(self.sniffer, "restart", side_effect=restart) as restarted:
+                        snapshot = controller.set_sniffer_interfaces(["fixture-new"])
+                        restarted.assert_called_once_with()
+                        self.assertEqual(live, ["fixture-new"])
+                        self.assertEqual(snapshot["sniffer"]["interface_update"]["status"], "applied")
+                        controller.set_sniffer_interfaces(["fixture-new"])
+                        restarted.assert_called_once_with()
+                    self.assertEqual(self.honeypot.running, concurrent)
+
+    def test_stopped_sniffer_only_saves_interfaces(self):
+        controller = self._controller()
+        controller.mode = "honeypot"
+        with patch.object(self.sniffer, "restart") as restarted:
+            snapshot = controller.set_sniffer_interfaces(["fixture-new"])
+            restarted.assert_not_called()
+        self.assertFalse(snapshot["sniffer"]["running"])
+        self.assertEqual(snapshot["sniffer"]["interface_update"]["status"], "saved")
+        self.assertEqual(self.store.get_runtime_config("sniffer_interfaces"), '["fixture-new"]')
+
+    def test_failed_restart_restores_selection_and_broadcasts_failure(self):
+        controller = self._controller()
+        controller.set_sniffer_interfaces(["fixture-old"])
+        controller.start("all")
+        controller.mode = "honeypot"
+        for raises in (True, False):
+            with self.subTest(raises=raises):
+                self.sniffer.running = True
+
+                def fail():
+                    self.sniffer.running = False
+                    if raises:
+                        raise RuntimeError("fixture restart failure")
+
+                with patch.object(self.sniffer, "restart", side_effect=fail):
+                    with self.assertRaises(RuntimeError):
+                        controller.set_sniffer_interfaces(["fixture-new"])
+                snapshot = controller.snapshot()
+                self.assertEqual(snapshot["sniffer"]["selected_interfaces"], ["fixture-old"])
+                self.assertEqual(snapshot["sniffer"]["interface_update"]["status"], "failed")
+                self.assertEqual(snapshot["sniffer"]["interface_update"]["requested_interfaces"], ["fixture-new"])
+                self.assertEqual(self.hub.broadcast.call_args.args[0]["runtime"], snapshot)
+                self.assertEqual(self.store.get_runtime_config("sniffer_interfaces"), '["fixture-old"]')
+                self.assertTrue(self.honeypot.running)
+
 
 class CaptureServiceAdminPolicyTests(unittest.TestCase):
     """Capture always requires root - no bypass, ported from what used to

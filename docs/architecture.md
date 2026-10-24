@@ -11,6 +11,29 @@
 <div class="card"><strong>auth.py</strong><br>Token de sesion y JWT HS256.</div>
 </div>
 
+## Procesos y privilegios
+
+El modo local predeterminado (`sniff4hound`, también usado por el runtime de
+escritorio) requiere root desde el arranque. Ejecuta servidor web, base de datos,
+sniffer y honeypot en un solo proceso Python con captura embebida; no hay una
+separación de privilegios entre la API y los motores en este modo.
+
+Electron y su renderer conservan el usuario y la sesión gráfica del operador.
+El escritorio solicita autorización mediante el agente nativo de Polkit
+(`pkexec`) para iniciar el runtime Python como root. Los motores empiezan en
+pausa. Cerrar su pipe de vida detiene únicamente el runtime iniciado por esa
+instancia. Conectar un sensor remoto no inicia un runtime local ni solicita
+privilegios locales.
+
+`SNIFF4HOUND_CAPTURE_EMBEDDED=0` separa el servidor y el hijo de captura mediante
+IPC, pero el comando combinado sigue ejecutando ambos como root. Para un
+despliegue con web sin privilegios se usa `sniff4hound-web`, que nunca se eleva y
+requiere un `sniff4hound-capture` iniciado aparte y configurado por IPC.
+
+Consulta el [arranque y despliegue](getting-started.md), la
+[referencia del runtime](reference/runtime.md) y el
+[modelo de escritorio](https://github.com/jorgelsc-dev/Sniff4Hound/blob/main/desktop/README.md).
+
 ## Flujo interno
 
 <div class="diagram">

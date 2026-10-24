@@ -893,7 +893,10 @@ export default {
       tagsMeta: { totalAvailable: null, returned: null, truncated: null },
       wsRefreshTimer: null,
       snapshotStreamActive: false,
-      stopSnapshotSubscription: null,
+      snapshotFeed: null,
+      streamRevision: 0,
+      loadRevision: 0,
+      disposed: false,
       stopTableRefreshSubscription: null,
     };
   },
@@ -1322,40 +1325,29 @@ export default {
       this.load();
     },
     liveRefreshEnabled(value) {
-      if (!value && this.wsRefreshTimer) {
-        clearTimeout(this.wsRefreshTimer);
-        this.wsRefreshTimer = null;
+      if (value) this.load();
+      else {
+        this.loadRevision += 1;
+        this.stopSnapshotStream();
+        this.loading = false;
       }
     },
-    "$route.params.proto"() {
-      this.load();
-      // Re-point the stream, which also replaces the previous subscription
-      // server-side rather than leaving it running.
-      this.startSnapshotStream();
-    },
+    "store.state.timeRange"() { this.load(); },
+    "$route.params.proto"() { this.load(); },
   },
   mounted() {
     // The first paint still comes over HTTP: the socket may not be open yet,
     // and a blank table while waiting for the first pushed frame would be a
     // regression against the previous behaviour.
     this.load();
-    this.stopSnapshotSubscription = this.store.subscribeProtocolSnapshot(this.handleSnapshotMessage);
-    this.startSnapshotStream();
     this.stopTableRefreshSubscription = this.store.subscribeTableRefresh(this.handleWsRefresh);
   },
   beforeUnmount() {
     // Leaving the view has to stop the server-side work too; a subscription
     // outliving its view is a query running every interval for nobody.
-    this.store.stopProtocolSnapshotStream();
-    this.snapshotStreamActive = false;
-    if (typeof this.stopSnapshotSubscription === "function") {
-      this.stopSnapshotSubscription();
-      this.stopSnapshotSubscription = null;
-    }
-    if (this.wsRefreshTimer) {
-      clearTimeout(this.wsRefreshTimer);
-      this.wsRefreshTimer = null;
-    }
+    this.disposed = true;
+    this.loadRevision += 1;
+    this.stopSnapshotStream();
     if (typeof this.stopTableRefreshSubscription === "function") {
       this.stopTableRefreshSubscription();
       this.stopTableRefreshSubscription = null;
@@ -1467,45 +1459,72 @@ export default {
         background: chart.fill,
       };
     },
-    // The slice now arrives over the socket that is already open. This used
-    // to schedule a full HTTP GET of /api/protocols/snapshot/ every ten
-    // seconds per tab - a new connection, a re-authenticated request and an
-    // access-log line each time - to fetch data the server could push.
-    // Kept only as the fallback for when the stream is not running.
+    // Use HTTP only when the dedicated snapshot feed is unavailable. The
+    // delayed fallback is bound to the same context and cancelled on recovery,
+    // pause, reconfiguration or unmount.
     handleWsRefresh(event) {
-      if (!this.liveRefreshEnabled) return;
+      if (this.disposed || !this.liveRefreshEnabled) return;
       if (this.snapshotStreamActive) return;
       const eventType = String((event && event.type) || "").trim().toLowerCase();
       if (!REFRESH_EVENT_TYPES.has(eventType)) return;
       if (this.wsRefreshTimer) return;
+      const context = this.requestContext();
       this.wsRefreshTimer = setTimeout(() => {
         this.wsRefreshTimer = null;
+        if (this.disposed || !this.liveRefreshEnabled || this.snapshotStreamActive || context !== this.requestContext()) return;
         this.load({ silent: true }).catch(() => {
           // Keep current slice on transient refresh errors.
         });
       }, 10000);
     },
+    requestContext() {
+      return JSON.stringify([this.apiBase, this.$route?.params?.proto,
+        this.store.state.timeRange, this.packetLimit, this.bannerLimit, this.tagLimit]);
+    },
+    stopSnapshotStream() {
+      this.streamRevision += 1;
+      this.snapshotFeed?.close();
+      this.snapshotFeed = null;
+      this.snapshotStreamActive = false;
+      if (this.wsRefreshTimer) clearTimeout(this.wsRefreshTimer);
+      this.wsRefreshTimer = null;
+    },
     startSnapshotStream() {
-      this.snapshotStreamActive = this.store.startProtocolSnapshotStream({
+      this.stopSnapshotStream();
+      if (this.disposed || !this.liveRefreshEnabled) return false;
+      const revision = this.streamRevision;
+      const context = this.requestContext();
+      const current = () => !this.disposed && this.liveRefreshEnabled
+        && revision === this.streamRevision && context === this.requestContext();
+      // A dedicated feed binds every frame/error to this period and limit.
+      // The legacy shared channel only identifies protocol, so late frames for
+      // the same protocol but an old period cannot be distinguished there.
+      this.snapshotStreamActive = true;
+      this.snapshotFeed = this.store.openDataFeed("protocols", {
         proto: this.selectedProtocol,
+        since: this.store.state.timeRange,
         limit: this.packetLimit,
-        interval: SNAPSHOT_STREAM_INTERVAL_SECONDS,
+        refresh: SNAPSHOT_STREAM_INTERVAL_SECONDS * 1000,
+      }, (payload) => {
+        if (!current()) return;
+        if (payload?.type === "feed_error") {
+          this.snapshotStreamActive = false;
+          this.error = payload.message || "El flujo de protocolos dejó de actualizarse";
+          this.handleWsRefresh({ type: "stats_update" });
+          return;
+        }
+        if (payload?.type !== "feed_data" || !payload.data) return;
+        this.snapshotStreamActive = true;
+        if (this.wsRefreshTimer) clearTimeout(this.wsRefreshTimer);
+        this.wsRefreshTimer = null;
+        this.loadRevision += 1;
+        this.applySnapshot(payload.data);
+      }, () => {
+        if (!current()) return;
+        this.snapshotStreamActive = false;
+        this.handleWsRefresh({ type: "stats_update" });
       });
       return this.snapshotStreamActive;
-    },
-    handleSnapshotMessage(payload) {
-      if (!payload) return;
-      if (payload.type === "protocol_snapshot_error") {
-        this.error = payload.message || "El flujo de protocolos dejó de actualizarse";
-        return;
-      }
-      // A frame for a protocol the view has since navigated away from would
-      // otherwise repaint the table with the previous slice.
-      const expected = String(this.selectedProtocol || "").trim().toLowerCase();
-      const received = String(payload.protocol || "").trim().toLowerCase();
-      if (expected && received && expected !== received) return;
-      if (!payload.snapshot || typeof payload.snapshot !== "object") return;
-      this.applySnapshot(payload.snapshot);
     },
     applySnapshot(snapshot) {
       this.snapshot = snapshot || {};
@@ -1527,9 +1546,16 @@ export default {
       this.packetLimit = Math.min(this.packetLimit + 1000, 20000);
       this.bannerLimit = Math.min(this.bannerLimit + 500, 20000);
       this.tagLimit = Math.min(this.tagLimit + 500, 20000);
-      this.load({ silent: true }).catch(() => null);
+      this.load().catch(() => null);
     },
     async load(options = {}) {
+      const automatic = Boolean(options.silent);
+      if (this.disposed || (automatic && !this.liveRefreshEnabled)) return;
+      const revision = ++this.loadRevision;
+      const context = this.requestContext();
+      const current = () => !this.disposed && (!automatic || this.liveRefreshEnabled)
+        && revision === this.loadRevision && context === this.requestContext();
+      this.stopSnapshotStream();
       if (!options.silent) this.loading = true;
       this.error = "";
       try {
@@ -1537,6 +1563,7 @@ export default {
         // changes the heading after the first fetch but leaves Unknown's rows.
         if (!this.$route?.params?.proto) {
           const overview = await this.store.fetchProtocolSnapshot({ proto: "", limit: 1 });
+          if (!current()) return;
           this.snapshot = { ...this.snapshot, catalog: overview.catalog || [] };
           const busiest = [...(overview.catalog || [])].sort((a, b) => Number(b.count || 0) - Number(a.count || 0))[0];
           this.defaultProtocol = busiest?.count > 0 ? normalizeProtocolKey(busiest.protocol) : "";
@@ -1555,9 +1582,11 @@ export default {
           proto: selectedProto,
           limit: this.packetLimit,
         });
+        if (!current()) return;
         this.applySnapshot(snapshot || {});
         this.startSnapshotStream();
       } catch (err) {
+        if (!current()) return;
         this.protocolCatalog = orderProtocols(FALLBACK_SUPPORTED_PROTOCOLS);
         this.snapshot = {};
         this.packetRows = [];
@@ -1566,7 +1595,7 @@ export default {
         this.lastUpdated = "";
         this.error = (err && err.message) || "No se pudo cargar la vista de protocolos";
       } finally {
-        this.loading = false;
+        if (current()) this.loading = false;
       }
     },
   },

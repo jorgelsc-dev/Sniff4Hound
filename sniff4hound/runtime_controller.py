@@ -74,6 +74,7 @@ class RuntimeController:
         self._hub = hub
         self._capture_auto_start = bool(capture_auto_start)
         self._lock = threading.RLock()
+        self._interface_update = None
         self.mode = configured_runtime_mode()
         self._store.set_runtime_config("runtime_mode", self.mode)
         try:
@@ -111,6 +112,8 @@ class RuntimeController:
 
     def snapshot(self):
         sniffer = self._engine_snapshot("sniffer")
+        if self._interface_update is not None:
+            sniffer = {**sniffer, "interface_update": dict(self._interface_update)}
         honeypot = self._engine_snapshot("honeypot")
         running = [name for name in ENGINE_NAMES if (sniffer if name == "sniffer" else honeypot).get("running")]
         return {
@@ -226,13 +229,32 @@ class RuntimeController:
     def set_sniffer_interfaces(self, interfaces=None):
         selected = normalize_interface_selection(interfaces)
         with self._lock:
-            previous_interfaces = tuple(self._sniffer.snapshot().get("selected_interfaces") or ())
-            was_running = bool(self._sniffer.snapshot().get("running"))
+            before = self._sniffer.snapshot()
+            previous_interfaces = tuple(before.get("selected_interfaces") or ())
+            was_running = bool(before.get("running"))
             self._sniffer.set_interfaces(selected)
+            changed = tuple(selected) != previous_interfaces
+            if was_running and changed:
+                try:
+                    self._sniffer.restart()
+                    applied = self._sniffer.snapshot()
+                    if not applied.get("running") or applied.get("capture_state") == "blocked":
+                        raise RuntimeError("sniffer interface restart failed")
+                except Exception as exc:
+                    self._sniffer.set_interfaces(previous_interfaces)
+                    self._interface_update = {
+                        "status": "failed", "requested_interfaces": selected, "error": str(exc),
+                    }
+                    self._broadcast_snapshot(self.snapshot())
+                    raise
             self._store.set_runtime_config("sniffer_interfaces", json.dumps(selected))
             self._store.set_runtime_config("sniffer_interface", selected[0] if len(selected) == 1 else "")
-            if self.mode == "sniffer" and was_running and tuple(selected) != previous_interfaces:
-                self._sniffer.restart()
+            # An identical retry must not erase an earlier restart failure.
+            if changed or self._interface_update is None:
+                self._interface_update = {
+                    "status": "applied" if was_running else "saved",
+                    "requested_interfaces": selected, "error": "",
+                }
             snapshot = self.snapshot()
             self._hub.broadcast(
                 {

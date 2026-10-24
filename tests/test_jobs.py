@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+import weakref
 from pathlib import Path
 
 from sniff4hound.jobs import STATUS_DONE, STATUS_ERROR, JobQueue
@@ -159,6 +160,7 @@ class JobTimeoutTests(unittest.TestCase):
         release = threading.Event()
         queue = JobQueue(workers=1, timeout=0.2)
         self.addCleanup(queue.shutdown)
+        self.addCleanup(release.set)
 
         def wedged():
             release.wait(timeout=5)
@@ -186,6 +188,7 @@ class JobTimeoutTests(unittest.TestCase):
 class ReadJobsNeverPersistTests(unittest.TestCase):
     def test_slow_read_answers_on_the_request_and_writes_no_job_row(self):
         queue = JobQueue(workers=1, timeout=5)
+        self.addCleanup(queue.shutdown)
         writes = []
         queue._persist = lambda job: writes.append(job.id)
 
@@ -200,9 +203,104 @@ class ReadJobsNeverPersistTests(unittest.TestCase):
 
     def test_slow_write_still_persists_and_returns_a_job_id(self):
         queue = JobQueue(workers=1, timeout=5)
+        self.addCleanup(queue.shutdown)
         writes = []
         queue._persist = lambda job: writes.append(job.id)
 
         finished, job_id = queue.submit("POST /api/example", lambda: time.sleep(0.5) or {"ok": True})
         self.assertFalse(finished)
         self.assertEqual(writes, [job_id])
+
+
+class ReadTimeoutSupervisionTests(unittest.TestCase):
+    def setUp(self):
+        self.queue = JobQueue(workers=1, timeout=0.08)
+        self.releases = []
+        self.addCleanup(self._cleanup)
+        self.writes = []
+        self.queue._persist = lambda job: self.writes.append(job.id)
+
+    def _cleanup(self):
+        for release in self.releases:
+            release.set()
+        self.queue.shutdown()
+
+    def _blocked_read(self):
+        release = threading.Event()
+        self.releases.append(release)
+        entered = threading.Event()
+
+        def blocked():
+            entered.set()
+            release.wait(timeout=5)
+            return "late"
+
+        with self.assertRaises(TimeoutError):
+            self.queue.submit("blocked read", blocked, persist=False)
+        self.assertTrue(entered.is_set())
+        return release
+
+    def test_repeated_read_timeouts_recover_and_retire_only_the_replaced_worker(self):
+        for _ in range(3):
+            release = self._blocked_read()
+            self.queue._abandon_overdue()
+            with self.queue._lock:
+                job = next(iter(self.queue._running.values()))
+                self.assertEqual(self.queue._jobs, {})
+                self.assertTrue(job.abandoned)
+            # Several healthy completions must not consume the retirement
+            # owed by the still-blocked worker.
+            for _ in range(3):
+                self.assertEqual(self.queue.submit("fast read", lambda: "ok", persist=False), (True, "ok"))
+            release.set()
+            self.assertTrue(_wait_until(lambda: len(self.queue._threads) == 1))
+            self.assertIsNone(job.result)
+            self.assertIsInstance(job.exception, TimeoutError)
+            self.assertEqual(self.queue._surplus, 0)
+        self.assertEqual(self.writes, [])
+        self.assertTrue(_wait_until(lambda: not self.queue._running))
+        self.queue.shutdown()
+        self.assertEqual(self.queue._threads, [])
+        self.assertFalse(self.queue._watchdog.is_alive())
+        self.assertFalse(self.queue._reaper.is_alive())
+        self.assertEqual(self.queue._queue.unfinished_tasks, 0)
+
+    def test_stuck_handlers_have_a_bounded_replacement_budget(self):
+        self._blocked_read()
+        self._blocked_read()
+        self.assertEqual(len(self.queue._threads), 2)
+        for _ in range(3):
+            self.queue._abandon_overdue()
+        self.assertEqual(len(self.queue._threads), 2)
+        queued_ran = threading.Event()
+        with self.assertRaises(TimeoutError):
+            self.queue.submit("expired before execution", queued_ran.set, persist=False)
+        self.assertFalse(queued_ran.is_set())
+        self.assertTrue(self.queue._queue.empty(), "expired reads retained queued handlers")
+        handler = lambda: "must be released"
+        reference = weakref.ref(handler)
+        with self.assertRaises(TimeoutError):
+            self.queue.submit("cancelled closure", handler, persist=False)
+        del handler
+        self.assertIsNone(reference(), "expired read retained its handler closure")
+        self.releases[0].set()
+        self.assertTrue(_wait_until(lambda: self.queue._surplus == 0))
+        self.releases[1].set()
+        self.assertTrue(_wait_until(lambda: self.queue._queue.unfinished_tasks == 0))
+        self.assertFalse(queued_ran.is_set(), "an expired queued handler ran later")
+        self.assertEqual(self.queue.submit("recovered", lambda: "ok", persist=False), (True, "ok"))
+        self.assertEqual(self.writes, [])
+
+    def test_shutdown_with_stuck_read_is_bounded_and_retires_after_release(self):
+        release = self._blocked_read()
+        started = time.monotonic()
+        self.queue.shutdown(timeout=0.05)
+        self.assertLess(time.monotonic() - started, 0.5)
+        with self.assertRaises(RuntimeError):
+            self.queue.submit("after shutdown", lambda: "no")
+        release.set()
+        self.assertTrue(_wait_until(lambda: not self.queue._threads))
+        self.assertEqual(self.queue._running, {})
+        self.assertEqual(self.queue._jobs, {})
+        self.assertEqual(self.queue._queue.unfinished_tasks, 0)
+        self.assertEqual(self.writes, [])

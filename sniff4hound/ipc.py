@@ -470,19 +470,31 @@ class IpcClient:
         """Reconnect if the link is down. Raises when it cannot be restored."""
         if self._connected.is_set():
             return
+        self._check_reconnect()
+        # Another caller may have spent the reconnect budget while we were
+        # waiting. Recheck connection, auth, close and cooldown under the
+        # same lock as connect(), without changing explicit startup connect.
+        with self._connect_lock:
+            self._check_reconnect()
+            if not self._connected.is_set():
+                self.connect(timeout=self.RECONNECT_TIMEOUT_SECONDS)
+
+    def _check_reconnect(self) -> None:
+        if self._connected.is_set():
+            return
         if self._stop_event.is_set():
             raise IpcDisconnected("IPC client closed")
-        # Checked before taking `_connect_lock`, so callers that arrive during
-        # the cooldown fail immediately instead of queueing behind whoever is
-        # mid-attempt. Deliberately not applied to an explicit connect() -
-        # startup should use its full budget.
+        if self._auth_failed:
+            raise IpcAuthError("Capture service rejected the IPC token")
+        # Called both before and after taking `_connect_lock`: new callers
+        # fail immediately and waiters revalidate the previous attempt.
+        # Explicit connect() keeps its full startup budget.
         since_failure = time.monotonic() - self._last_connect_failure_at
         if self._last_connect_failure_at and since_failure < self.RECONNECT_COOLDOWN_SECONDS:
             raise IpcDisconnected(
                 "Capture service unreachable (last reconnect attempt failed "
                 f"{since_failure:.1f}s ago)"
             )
-        self.connect(timeout=self.RECONNECT_TIMEOUT_SECONDS)
 
     def _read_loop(self, sock: socket.socket, generation: int) -> None:
         # The socket is passed in rather than read off self._sock: a reconnect

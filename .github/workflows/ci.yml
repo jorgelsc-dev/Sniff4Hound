@@ -1,7 +1,7 @@
 name: CI
 
-# Build checks only: lint and production build of the frontend and the landing.
-# The unit tests are not run here. The backend suite took 3-5 minutes on every
+# Lint/build plus isolated Electron startup regressions (no app or root).
+# The full unit suites are not run here. The backend suite took 3-5 minutes on every
 # push and pull request, so it lives in tests.yml instead: start it by hand
 # from the Actions tab (Tests -> Run workflow), or run it locally (README,
 # "Checks").
@@ -50,6 +50,11 @@ jobs:
         run: npm ci
       - name: Lint
         run: npm run lint
+      - name: Desktop no-undef
+        working-directory: desktop
+        run: frontend/node_modules/.bin/eslint --config eslint.config.cjs main.js preload.js lib/ splash.js --max-warnings=0
+      - name: Desktop simulated startup
+        run: node --test tests/desktop-*.test.js
       - name: Build
         run: npm run build
 
