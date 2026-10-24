@@ -65,7 +65,10 @@ class RuntimeControllerTests(unittest.TestCase):
             "capture_auto_start": False,
         }
         params.update(kwargs)
-        return RuntimeController(**params)
+        controller = RuntimeController(**params)
+        # Keep the post-restart verification window short in tests.
+        controller._interface_verify_seconds = 0.05
+        return controller
 
     def test_defaults_to_sniffer_mode_and_persists_it(self):
         previous = os.environ.pop("SNIFF4HOUND_RUNTIME_MODE", None)
@@ -193,16 +196,91 @@ class RuntimeControllerTests(unittest.TestCase):
                     if raises:
                         raise RuntimeError("fixture restart failure")
 
-                with patch.object(self.sniffer, "restart", side_effect=fail):
+                calls = []
+
+                def restart():
+                    calls.append(list(self.sniffer.selected_interfaces))
+                    if len(calls) == 1:
+                        fail()
+                    else:
+                        self.sniffer.running = True
+
+                with patch.object(self.sniffer, "restart", side_effect=restart):
                     with self.assertRaises(RuntimeError):
                         controller.set_sniffer_interfaces(["fixture-new"])
+                # The rollback restarted capture on the previous selection.
+                self.assertEqual(calls, [["fixture-new"], ["fixture-old"]])
                 snapshot = controller.snapshot()
+                self.assertTrue(snapshot["sniffer"]["running"])
                 self.assertEqual(snapshot["sniffer"]["selected_interfaces"], ["fixture-old"])
-                self.assertEqual(snapshot["sniffer"]["interface_update"]["status"], "failed")
+                self.assertEqual(snapshot["sniffer"]["interface_update"]["status"], "rolled_back")
+                self.assertEqual(snapshot["sniffer"]["interface_update"]["restored_interfaces"], ["fixture-old"])
                 self.assertEqual(snapshot["sniffer"]["interface_update"]["requested_interfaces"], ["fixture-new"])
                 self.assertEqual(self.hub.broadcast.call_args.args[0]["runtime"], snapshot)
                 self.assertEqual(self.store.get_runtime_config("sniffer_interfaces"), '["fixture-old"]')
                 self.assertTrue(self.honeypot.running)
+
+
+    def test_failed_rollback_is_reported_and_broadcast(self):
+        controller = self._controller()
+        controller.set_sniffer_interfaces(["fixture-old"])
+        controller.start("sniffer")
+
+        def fail():
+            self.sniffer.running = False
+            raise RuntimeError("fixture restart failure")
+
+        with patch.object(self.sniffer, "restart", side_effect=fail) as restarted:
+            with self.assertRaises(RuntimeError):
+                controller.set_sniffer_interfaces(["fixture-new"])
+        self.assertEqual(restarted.call_count, 2)
+        snapshot = controller.snapshot()
+        update = snapshot["sniffer"]["interface_update"]
+        self.assertEqual(update["status"], "rollback_failed")
+        self.assertIn("fixture restart failure", update["rollback_error"])
+        self.assertFalse(snapshot["sniffer"]["running"])
+        self.assertEqual(snapshot["sniffer"]["selected_interfaces"], ["fixture-old"])
+        self.assertEqual(self.hub.broadcast.call_args.args[0]["runtime"], snapshot)
+
+    def test_asynchronous_worker_failure_is_not_reported_applied(self):
+        controller = self._controller()
+        controller._interface_verify_seconds = 0.3
+        controller.set_sniffer_interfaces(["fixture-old"])
+        controller.start("sniffer")
+        errors = {}
+        base_snapshot = self.sniffer.snapshot
+
+        def snapshot():
+            state = base_snapshot()
+            if errors:
+                state.update(capture_state="blocked", errors=dict(errors))
+            else:
+                state.update(capture_state="running" if state["running"] else "idle", errors={})
+            return state
+
+        def restart():
+            errors.clear()
+            self.sniffer.running = True
+            if self.sniffer.selected_interfaces == ["fixture-new"]:
+                # start() returned fine; the worker fails a moment later.
+                def worker_fails():
+                    errors["fixture-new"] = "no such device"
+                    self.sniffer.running = False
+
+                threading.Timer(0.05, worker_fails).start()
+
+        with patch.object(self.sniffer, "snapshot", side_effect=snapshot), \
+                patch.object(self.sniffer, "restart", side_effect=restart):
+            with self.assertRaises(RuntimeError) as raised:
+                controller.set_sniffer_interfaces(["fixture-new"])
+            result = controller.snapshot()
+        self.assertIn("no such device", str(raised.exception))
+        update = result["sniffer"]["interface_update"]
+        self.assertNotEqual(update["status"], "applied")
+        self.assertEqual(update["status"], "rolled_back")
+        self.assertTrue(result["sniffer"]["running"])
+        self.assertEqual(result["sniffer"]["selected_interfaces"], ["fixture-old"])
+        self.assertEqual(self.store.get_runtime_config("sniffer_interfaces"), '["fixture-old"]')
 
 
 class CaptureServiceAdminPolicyTests(unittest.TestCase):
