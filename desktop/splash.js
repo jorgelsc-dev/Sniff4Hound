@@ -9,6 +9,14 @@ const api = window.sniff4houndDesktop;
       const remoteCode = document.getElementById("remote-code");
       const remoteCa = document.getElementById("remote-ca");
 
+      // A file dropped on the chooser must not replace it (Chromium's default
+      // is to open the file in the window).
+      if (typeof window.addEventListener === "function") {
+        for (const type of ["dragover", "drop"]) {
+          window.addEventListener(type, (event) => event.preventDefault());
+        }
+      }
+
       function setBusy(isBusy, message) {
         localStart.disabled = isBusy;
         remoteConnect.disabled = isBusy;

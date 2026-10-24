@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import test from "node:test";
 import { parse } from "@vue/compiler-sfc";
 import { describeProtocol, LAYERS } from "../src/utils/protocolCatalog.js";
@@ -9,6 +10,7 @@ import { bridgedFetch, connectionErrorMessage } from "../src/utils/httpBridge.js
 import { formatTimestamp, normalizeProto } from "../src/utils/traffic.js";
 import { SETTINGS_NODES } from "../src/components/settings/settingsGraph.js";
 
+const require = createRequire(import.meta.url);
 const source = path => readFileSync(new URL(path, import.meta.url), "utf8");
 function method(file, name, globals = {}) {
   const { descriptor } = parse(source(file));
@@ -148,7 +150,7 @@ test("dates and numbers use Spanish independently of the operator locale", () =>
   assert.match(source("../src/main.js"), /locale: \{ locale: "es"/);
 });
 
-test("desktop CSP, renderer sandbox and permission denial remain wired", () => {
+test("desktop CSP, renderer sandbox and notifications-only permissions remain wired", () => {
   const index = source("../index.html");
   const splash = source("../../splash.html");
   const main = source("../../main.js");
@@ -158,21 +160,35 @@ test("desktop CSP, renderer sandbox and permission denial remain wired", () => {
     assert.doesNotMatch(html, /<script>(?!<\/script>)/);
   }
   assert.match(main, /sandbox: true/);
-  assert.match(main, /setPermissionRequestHandler\([\s\S]*?callback\(false\)/);
-  assert.match(main, /setPermissionCheckHandler\(\(\) => false\)/);
+  // Both handlers decide through the one tested policy (desktop-window-security.test.js):
+  // "notifications" for app://shell only, every other permission and origin denied.
+  assert.match(main, /setPermissionRequestHandler\([\s\S]*?callback\(windowSecurity\.permissionAllowed\(permission, requestingUrl\)\)/);
+  assert.match(main, /setPermissionCheckHandler\(\(_contents, permission, requestingOrigin\) =>\s*windowSecurity\.permissionAllowed\(permission, requestingOrigin\)\)/);
+  assert.doesNotMatch(main, /setPermission(Request|Check)Handler\([^)]*\) => (true|callback\(true\))/);
+  const { permissionAllowed } = require("../../lib/window-security.js");
+  assert.equal(permissionAllowed("notifications", "app://shell"), true);
+  for (const permission of ["media", "geolocation", "clipboard-read", "openExternal", "fullscreen"]) {
+    assert.equal(permissionAllowed(permission, "app://shell"), false, permission);
+  }
+  assert.equal(permissionAllowed("notifications", "https://sensor.example"), false);
   assert.match(main, /const connect = origin \? `connect-src 'self' \$\{origin\} \$\{websocketOrigin\}`/);
 });
 
 test("desktop realtime bridge renews its timeout when heartbeat data arrives", () => {
   const main = source("../../main.js");
-  const bridgeStart = main.indexOf('ipcMain.handle("desktop-http:stream-open"');
-  const dataStart = main.indexOf('response.on("data", (chunk) => {', bridgeStart);
-  const refresh = main.indexOf("refreshTimeout();", dataStart);
-  const byteCount = main.indexOf("bytes += chunk.length;", dataStart);
-  assert.ok(dataStart > bridgeStart, "the HTTP bridge must handle streamed response chunks");
-  assert.ok(refresh > dataStart && refresh < byteCount, "heartbeats must renew the inactivity timeout");
-  assert.match(main, /const refreshTimeout = \(\) => \{/);
-  assert.match(main, /HTTP_BRIDGE_STREAM_TIMEOUT_MS\);/);
+  assert.match(main, /"desktop-http:stream-open",[\s\S]*?openBridgeStream\(/);
+  const { createStreamRegistry, openBridgeStream } = require("../../lib/bridge-streams.js");
+  const timers = [];
+  const handlers = {};
+  const response = { on: (type, fn) => { handlers[type] = fn; } };
+  openBridgeStream({
+    id: "heartbeat", ownerId: 1, url: "https://sensor.example/realtime/stream", registry: createStreamRegistry(),
+    createRequest: () => ({ setHeader() {}, end() {}, abort() {}, on: (type, fn) => { if (type === "response") fn(response); } }),
+    send() {}, schedule: (fn, delay) => { const timer = { fn, delay }; timers.push(timer); return timer; }, cancel() {},
+  });
+  handlers.data(Buffer.from(": heartbeat\n\n"));
+  assert.equal(timers.length, 2, "every chunk renews the inactivity timeout");
+  assert.equal(timers[1].delay, 30000);
 });
 
 test("connection modes show Spanish status and no remote status for local startup", () => {

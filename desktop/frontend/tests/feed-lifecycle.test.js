@@ -254,3 +254,112 @@ test("protocol view interoperates with the real appStore.openDataFeed transport"
   sources[0].emit(frame("late transport"));
   assert.equal(vm.packetRows[0].id, "transport");
 });
+
+// Ticket-authenticated transport (#273): the real openDataFeed with a stubbed
+// fetch for POST /api/ws/ticket and a stubbed EventSource for the stream.
+async function ticketedFeedRig(t) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { default: appStore } = await import("../src/state/appStore.js");
+  const originals = { window: globalThis.window, EventSource: globalThis.EventSource, fetch: globalThis.fetch };
+  const initial = { apiBase: appStore.state.apiBase, authToken: appStore.state.authToken,
+    shutdownPending: appStore.state.shutdownPending };
+  const sources = [];
+  const tickets = [];
+  class Source {
+    constructor(url) { this.url = url; sources.push(this); }
+    addEventListener() {}
+    close() { this.closed = true; }
+    drop() { this.onerror(); }
+  }
+  globalThis.EventSource = Source;
+  globalThis.window = { location: { origin: "http://fixture.invalid" } };
+  globalThis.fetch = (url, options) => new Promise((resolve, reject) => {
+    tickets.push({ url: String(url), options, resolve: ticket => resolve({
+      ok: true, status: 200, text: async () => JSON.stringify({ ticket }),
+    }), reject: () => reject(new TypeError("fetch failed")) });
+  });
+  Object.assign(appStore.state, { apiBase: "http://fixture.invalid", authToken: "fixture-token", shutdownPending: false });
+  const handles = [];
+  t.after(() => {
+    for (const handle of handles) handle.close();
+    Object.assign(appStore.state, initial);
+    Object.assign(globalThis, originals);
+    t.mock.timers.reset();
+  });
+  const flush = async () => { for (let i = 0; i < 5; i += 1) await new Promise(setImmediate); };
+  const open = (params = {}) => {
+    const calls = { unavailable: 0 };
+    const handle = appStore.openDataFeed("ips", params, () => {}, () => { calls.unavailable += 1; });
+    handles.push(handle);
+    return { handle, calls };
+  };
+  return { sources, tickets, flush, open };
+}
+
+test("a failed WS ticket schedules a reconnect instead of stopping live updates", async t => {
+  const { sources, tickets, flush, open } = await ticketedFeedRig(t);
+  const { calls } = open();
+  assert.match(tickets[0].url, /\/api\/ws\/ticket$/);
+  tickets[0].resolve("ticket-1");
+  await flush();
+  assert.equal(sources.length, 1);
+  assert.equal(new URL(sources[0].url).searchParams.get("ws_ticket"), "ticket-1");
+  // The stream drops (sensor restart); the next ticket request fails once.
+  sources[0].drop();
+  t.mock.timers.tick(1000);
+  assert.equal(tickets.length, 2);
+  tickets[1].reject();
+  await flush();
+  assert.equal(calls.unavailable, 1, "the stream loss and failed ticket fall back once");
+  // The backend recovers: a new ticket and a second channel within the max backoff.
+  t.mock.timers.tick(15000);
+  assert.equal(tickets.length, 3, "a ticket failure must schedule another attempt");
+  tickets[2].resolve("ticket-3");
+  await flush();
+  assert.equal(sources.length, 2);
+  assert.equal(new URL(sources[1].url).searchParams.get("ws_ticket"), "ticket-3");
+});
+
+test("repeated WS ticket failures back off and fall back only once", async t => {
+  const { sources, tickets, flush, open } = await ticketedFeedRig(t);
+  const { calls } = open();
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    assert.equal(tickets.length, attempt);
+    tickets[attempt - 1].reject();
+    await flush();
+    t.mock.timers.tick(Math.min(1000 * attempt, 15000) - 1);
+    assert.equal(tickets.length, attempt, "the retry waits for its backoff");
+    t.mock.timers.tick(1);
+  }
+  assert.equal(calls.unavailable, 1);
+  assert.equal(sources.length, 0);
+});
+
+test("a WS ticket rejected after handle.close() neither falls back nor reconnects", async t => {
+  const { sources, tickets, flush, open } = await ticketedFeedRig(t);
+  const { handle, calls } = open();
+  handle.close();
+  tickets[0].reject();
+  await flush();
+  t.mock.timers.tick(60000);
+  await flush();
+  assert.equal(calls.unavailable, 0);
+  assert.equal(tickets.length, 1);
+  assert.equal(sources.length, 0);
+});
+
+test("a WS ticket rejected after update() does not fire the old attempt's fallback", async t => {
+  const { sources, tickets, flush, open } = await ticketedFeedRig(t);
+  const { handle, calls } = open({ limit: 100 });
+  handle.update({ limit: 500 });
+  assert.equal(tickets.length, 2);
+  tickets[0].reject();
+  await flush();
+  t.mock.timers.tick(60000);
+  assert.equal(calls.unavailable, 0);
+  assert.equal(tickets.length, 2, "the stale failure must not schedule a reconnect");
+  tickets[1].resolve("ticket-new");
+  await flush();
+  assert.equal(sources.length, 1);
+  assert.equal(new URL(sources[0].url).searchParams.get("limit"), "500");
+});

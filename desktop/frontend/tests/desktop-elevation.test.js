@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import vm from "node:vm";
@@ -253,6 +254,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 async function desktopVm({ debugPort, uid = 1000, launchError = null } = {}) {
   const children = [], switches = [], discovery = [], loads = [], statuses = [], errors = [], timers = [], writes = [];
   const handlers = new Map();
+  const permissions = {}, menus = [], sent = [], opened = [];
   const proc = Object.assign(new EventEmitter(), {
     platform: "linux", env: { SNIFF4HOUND_DESKTOP_ELEVATE: "0" }, argv: [],
     getuid: () => uid, geteuid: () => uid, getgid: () => uid,
@@ -270,8 +272,15 @@ async function desktopVm({ debugPort, uid = 1000, launchError = null } = {}) {
       super();
       window = this;
       this.webContents = Object.assign(new EventEmitter(), {
-        session: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} },
-        setWindowOpenHandler() {}, send: (_channel, message) => statuses.push(message),
+        id: 1, session: {
+          setPermissionRequestHandler: (handler) => { permissions.request = handler; },
+          setPermissionCheckHandler: (handler) => { permissions.check = handler; },
+        },
+        setWindowOpenHandler() {},
+        send: (channel, message) => { sent.push([channel, message]); if (channel === "desktop-runtime:status") statuses.push(message); },
+        // What Electron reports for the loadFile()/loadURL() calls recorded below.
+        getURL: () => { const last = loads.at(-1) || ""; return last.startsWith("app:") ? last : pathToFileURL(last).href; },
+        isDestroyed: () => false,
       });
     }
     isDestroyed() { return false; }
@@ -281,14 +290,17 @@ async function desktopVm({ debugPort, uid = 1000, launchError = null } = {}) {
     close() { this.emit("close"); }
   }
   const ipcRenderer = Object.assign(new EventEmitter(), {
-    invoke: (channel, ...args) => Promise.resolve().then(() => handlers.get(channel)({}, ...args)),
+    // The calling frame is the window's main frame showing its current document.
+    invoke: (channel, ...args) => Promise.resolve().then(() => handlers.get(channel)({
+      sender: window.webContents, senderFrame: { url: window.webContents.getURL(), parent: null },
+    }, ...args)),
   });
   let api;
   const electron = {
     app, BrowserWindow: Window,
-    Menu: { setApplicationMenu() {}, buildFromTemplate: (template) => template },
+    Menu: { setApplicationMenu: (menu) => menus.push(menu), buildFromTemplate: (template) => template },
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
-    net: { request: () => assert.fail("unexpected network access") }, shell: {},
+    net: { request: () => assert.fail("unexpected network access") }, shell: { openExternal: (url) => opened.push(url) },
     dialog: { showMessageBox: (_window, detail) => errors.push(detail.message) },
     protocol: { registerSchemesAsPrivileged() {}, handle() {} },
     session: { defaultSession: { setCertificateVerifyProc() {} } },
@@ -342,6 +354,7 @@ async function desktopVm({ debugPort, uid = 1000, launchError = null } = {}) {
   vm.runInNewContext(desktopSource("preload.js"), { require: () => electron, process: proc });
   return {
     api, app, children, switches, discovery, loads, statuses, errors, timers, writes, window,
+    handlers, permissions, menus, sent, opened,
     state: () => vm.runInContext("({ backendProcess, backendReady, backendAttempt, quitting })", context),
     announce: (child = children.at(-1), payload = READY) => child.stdout.emit("data", Buffer.from(
       `SNIFF4HOUND_DESKTOP_READY ${typeof payload === "string" ? payload : JSON.stringify(payload)}\n`)),
@@ -408,7 +421,8 @@ test("local IPC and splash wait for discovery, share one attempt and succeed onl
   assert.equal(rig.state().backendReady.connection, "local");
   assert.match(rig.loads.at(-1), /^app:\/\/shell\/index.html/);
   assert.equal(rig.children[0].stdin.ends, 0);
-  assert.equal((await rig.api.startLocal()).ok, true);
+  await assert.rejects(rig.api.startLocal(), /Blocked desktop-runtime:start-local/,
+    "the launcher channels are for the chooser only");
   assert.equal(rig.children.length, 1);
   rig.window.close();
   rig.app.emit("before-quit");
@@ -595,4 +609,81 @@ test("early cleanup tolerates denied signals and its fallback targets only the f
   assert.equal((await retry).ok, true, "partial lines from an old attempt cannot corrupt READY");
   old.emit("exit", 0, "SIGTERM");
   assert.equal(rig.state().backendProcess, current);
+});
+
+// Window hardening (#276, #277, #278) on the real main.js.
+const menuItem = (rig, label) => rig.menus.at(-1).flatMap((menu) => menu.submenu).find((item) => item.label === label);
+const navigateEvent = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
+
+test("will-navigate keeps the window on the chooser or the shell before and after connecting", async () => {
+  const rig = await desktopVm();
+  const check = (url) => { const event = navigateEvent(); rig.window.webContents.emit("will-navigate", event, url); return event.prevented; };
+  for (const phase of ["before", "after"]) {
+    if (phase === "after") {
+      const started = rig.api.startLocal();
+      await tick(); rig.announce(); rig.resolveDiscovery();
+      assert.equal((await started).ok, true);
+    }
+    assert.equal(check("file:///tmp/x.html"), true, `${phase}: a dropped or local file is blocked`);
+    assert.equal(check("file:///fixture/desktop/other.html"), true, phase);
+    assert.equal(check("data:text/html,x"), true, phase);
+    assert.equal(check("https://sensor.example/"), true, phase);
+    assert.equal(check("file:///fixture/desktop/splash.html"), false, phase);
+    assert.equal(check("app://shell/index.html#/"), false, phase);
+  }
+  assert.deepEqual(rig.opened, ["https://sensor.example/", "https://sensor.example/"], "web links go to the browser");
+});
+
+test("IPC from an unexpected document or frame is refused before any handler runs", async () => {
+  const rig = await desktopVm();
+  const call = (channel, frame, ...args) => Promise.resolve().then(() => rig.handlers.get(channel)({
+    sender: rig.window.webContents, senderFrame: frame }, ...args));
+  const local = { url: "file:///tmp/x.html", parent: null };
+  for (const channel of rig.handlers.keys()) {
+    await assert.rejects(call(channel, local), /Blocked .* from an unexpected frame/, channel);
+    await assert.rejects(call(channel, null), /unexpected frame/, channel);
+    await assert.rejects(call(channel, { url: "app://shell/index.html", parent: {} }), /unexpected frame/, channel);
+  }
+  // The data bridge belongs to the shell, the launcher to the chooser.
+  const splash = { url: "file:///fixture/desktop/splash.html", parent: null };
+  await assert.rejects(call("desktop-http:request", splash, { url: "https://sensor.example/" }), /unexpected frame/);
+  await assert.rejects(call("desktop-shell:open-external", splash, "https://example.com"), /unexpected frame/);
+  const shell = { url: "app://shell/index.html#/", parent: null };
+  for (const channel of ["desktop-runtime:start-local", "desktop-runtime:connect-remote", "desktop-runtime:get-connection-defaults"]) {
+    await assert.rejects(call(channel, shell), /unexpected frame/, channel);
+  }
+  assert.equal(rig.children.length, 0);
+  assert.equal((await call("desktop-runtime:get-connection-defaults", splash)).mode, "local");
+});
+
+test("only app://shell is granted notifications; every other permission is denied", async () => {
+  const rig = await desktopVm();
+  const { request, check } = rig.permissions;
+  const contents = (url) => ({ getURL: () => url });
+  const ask = (permission, url) => new Promise((resolve) => request(contents(url), permission, resolve, { requestingUrl: url }));
+  assert.equal(await ask("notifications", "app://shell/index.html#/"), true);
+  assert.equal(await ask("notifications", "file:///fixture/desktop/splash.html"), false);
+  assert.equal(await ask("media", "app://shell/index.html"), false);
+  assert.equal(await new Promise((resolve) => request(contents("app://shell/index.html"), "notifications", resolve)), true,
+    "without details the webContents URL decides");
+  assert.equal(check(null, "notifications", "app://shell", {}), true);
+  for (const [permission, origin] of [["geolocation", "app://shell"], ["notifications", "file://"], ["notifications", "https://sensor.example"]]) {
+    assert.equal(check(null, permission, origin, {}), false, `${permission} ${origin}`);
+  }
+});
+
+test("menu shortcuts route a loaded shell over IPC and load the shell only when it is not showing", async () => {
+  const rig = await desktopVm();
+  const started = rig.api.startLocal();
+  await tick(); rig.announce(); rig.resolveDiscovery();
+  assert.equal((await started).ok, true);
+  const loads = rig.loads.length;
+  menuItem(rig, "SOC").click();
+  menuItem(rig, "Settings").click();
+  assert.equal(rig.loads.length, loads, "no document reload");
+  assert.deepEqual(rig.sent.filter(([channel]) => channel === "desktop-menu:navigate"), [
+    ["desktop-menu:navigate", "/soc"], ["desktop-menu:navigate", "/settings"]]);
+  rig.window.webContents.isLoadingMainFrame = () => true;
+  menuItem(rig, "Honeypot").click();
+  assert.match(rig.loads.at(-1), /^app:\/\/shell\/index\.html\?.*#\/honeypot$/, "a shell still loading is reloaded at the route");
 });

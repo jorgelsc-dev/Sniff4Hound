@@ -1691,9 +1691,11 @@ function playNotificationSound(severity) {
 }
 
 // Best-effort: only matters in a plain browser tab (a user gesture may be
-// required before the prompt is even allowed to show). Electron's default
-// session auto-grants permission requests, so this is a no-op there -
-// Notification.permission already reads "granted" before this ever runs.
+// required before the prompt is even allowed to show). In the desktop shell
+// the session's permission handlers (desktop/main.js, lib/window-security.js)
+// grant "notifications" to the app://shell document and deny every other
+// permission and origin, so Notification.permission already reads "granted"
+// there and this is a no-op.
 function ensureNotificationPermission() {
   if (typeof Notification === "undefined" || notificationPermissionRequested) return;
   notificationPermissionRequested = true;
@@ -2055,6 +2057,28 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
     }
   };
 
+  // One failed connection - a stream that closed or a ticket request that
+  // failed - counts towards the same backoff: keep retrying so a view that
+  // already fell back to HTTP still recovers once the runtime comes back, but
+  // stop leaving the caller hanging past a few attempts - fall back explicitly
+  // instead. Only the *first* attempt past the threshold calls giveUp():
+  // without the `hasGivenUp` guard, every subsequent failure (the connection
+  // keeps retrying in the background) would re-trigger the caller's fallback
+  // forever instead of once.
+  const scheduleReconnect = () => {
+    reconnectAttempts += 1;
+    if (reconnectAttempts > FEED_MAX_SILENT_RECONNECTS && !hasGivenUp) {
+      hasGivenUp = true;
+      giveUp();
+    }
+    const delay = Math.min(FEED_RECONNECT_BASE_MS * reconnectAttempts, FEED_RECONNECT_MAX_MS);
+    clearReconnectTimer();
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect(currentParams);
+    }, delay);
+  };
+
   const connect = (next) => {
     currentParams = next || {};
     const attempt = ++connectAttempt;
@@ -2098,23 +2122,7 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
         if (!isCurrent()) return;
         clearFirstFrameTimer();
         if (closedByCaller) return;
-        // Keep retrying the connection so a view that already fell back to HTTP
-        // still recovers once the stream comes back, but stop leaving the caller
-        // hanging past a few attempts - fall back explicitly instead. Only the
-        // *first* attempt past the threshold calls giveUp(): without the
-        // `hasGivenUp` guard, every subsequent close (the connection keeps
-        // retrying in the background) would re-trigger the caller's fallback
-        // forever instead of once.
-        reconnectAttempts += 1;
-        if (reconnectAttempts > FEED_MAX_SILENT_RECONNECTS && !hasGivenUp) {
-          hasGivenUp = true;
-          giveUp();
-        }
-        const delay = Math.min(FEED_RECONNECT_BASE_MS * reconnectAttempts, FEED_RECONNECT_MAX_MS);
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          connect(currentParams);
-        }, delay);
+        scheduleReconnect();
       });
       socket.addEventListener("message", (event) => {
         if (!isCurrent()) return;
@@ -2138,7 +2146,19 @@ function openDataFeed(feed, params, onMessage, onUnavailable) {
       });
     };
     if (state.authToken) {
-      requestWsTicket().then(openWithTicket).catch(() => giveUp());
+      requestWsTicket().then(openWithTicket, () => {
+        // A ticket answer for a handle the caller closed or reconfigured since
+        // must not trigger that old attempt's fallback or a reconnect.
+        if (closedByCaller || attempt !== connectAttempt) return;
+        // A failed ticket falls back right away, as before, so the view shows
+        // data over HTTP while the stream is retried with backoff - once, not
+        // on every retry.
+        if (!hasGivenUp) {
+          hasGivenUp = true;
+          giveUp();
+        }
+        scheduleReconnect();
+      });
     } else {
       openWithTicket("");
     }

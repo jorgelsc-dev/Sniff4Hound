@@ -11,6 +11,14 @@ contextBridge.exposeInMainWorld("sniff4houndDesktop", {
     ipcRenderer.removeAllListeners("desktop-runtime:status");
     ipcRenderer.on("desktop-runtime:status", (_event, message) => handler(String(message || "")));
   },
+  // Application menu routes (Ctrl+1..4, Tools) for the loaded SPA to apply in
+  // place; returns a function that stops listening.
+  onMenuNavigate: (handler) => {
+    if (typeof handler !== "function") return () => {};
+    const listener = (_event, route) => handler(String(route || ""));
+    ipcRenderer.on("desktop-menu:navigate", listener);
+    return () => ipcRenderer.removeListener("desktop-menu:navigate", listener);
+  },
   minimize: () => ipcRenderer.invoke("desktop-window:minimize"),
   maximize: () => ipcRenderer.invoke("desktop-window:maximize"),
   close: () => ipcRenderer.invoke("desktop-window:close"),
