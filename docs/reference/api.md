@@ -32,6 +32,10 @@ La superficie publica se expone desde el mismo proceso que sirve la UI. Para ver
 | `GET|POST|PUT|DELETE /api/catalog/banner-rules/` | CRUD de reglas. |
 | `GET|POST|PUT|DELETE /api/catalog/banner-requests/` | CRUD de firmas. |
 | `GET|POST|PUT|DELETE /api/catalog/ip-presets/` | CRUD de presets. |
+| `GET /api/monitors/stats` | Resumen ligero del catálogo de monitores: `total`, `enabled`, `builtin` y `custom`. |
+| `GET /api/monitors/?limit=&offset=&q=&enabled=` | Página de monitores sin los cuerpos completos de coincidencia; el servidor filtra y limita el resultado. |
+| `GET /api/monitors/?id=` | Detalle completo de un monitor, incluido `match` y `action`, bajo demanda. |
+| `GET /api/honeypot/listeners/?limit=&offset=&q=&enabled=` | Página de listeners con estadísticas agregadas. |
 | `GET|POST /api/ws/*` | Acciones sobre clientes WebSocket. |
 | `GET /api/export/` | Datasets, formatos y columnas de export disponibles. |
 | `GET /api/export/{alerts,endpoints,flows,domains}` | Export de indicadores en `csv` o `json`. |
@@ -53,6 +57,16 @@ IOC, reutilizando los mismos listados que consume la UI. Acepta ademas
 
 Las vistas SOC e Investigate ofrecen el mismo export desde el boton "Export"
 de su cabecera.
+
+### Catálogos de Settings
+
+Settings no descarga el catálogo completo al abrirse. Capture y las demás
+secciones usan páginas pequeñas; Detection solicita el resumen de monitores y
+solo carga 25 filas al entrar, con búsqueda, filtro y paginación en servidor.
+Al abrir o editar una regla concreta se solicita su detalle mediante
+`GET /api/monitors/?id=...`. El catálogo completo no forma parte de estas
+rutas: los clientes que necesiten exportarlo deben usar una ruta de exportación
+específica.
 
 ## Flujo de autenticacion
 

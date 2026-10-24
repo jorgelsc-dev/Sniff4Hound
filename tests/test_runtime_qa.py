@@ -221,3 +221,21 @@ class RuntimeQaApiTests(unittest.TestCase):
         self.assertEqual(len(data["items"]), 2)
         self.assertNotIn("match", data["items"][0])
         self.assertEqual(self.request("/api/monitors/", "enabled=maybe").status, 400)
+
+    def test_monitor_stats_is_a_small_summary_for_settings(self):
+        response = self.request("/api/monitors/stats")
+        self.assertEqual(response.status, 200)
+        data = json.loads(response.body)
+        self.assertEqual(set(data), {"total", "enabled", "builtin", "custom"})
+        self.assertGreater(data["total"], 1000)
+        self.assertLess(len(response.body), 1024)
+
+    def test_monitor_list_and_detail_keep_catalog_loading_under_demand(self):
+        page = json.loads(self.request("/api/monitors/", "limit=2&metadata=1").body)
+        self.assertEqual(len(page["items"]), 2)
+        self.assertTrue(all("match" not in row and "match_json" not in row for row in page["items"]))
+        detail = json.loads(self.request(
+            "/api/monitors/", "id=" + page["items"][0]["id"]
+        ).body)
+        self.assertIn("match", detail)
+        self.assertIn("action", detail)
