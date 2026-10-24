@@ -13,7 +13,9 @@
 # the other kind of cleanup.
 #
 # Defaults to a dry run (list only, delete nothing). Pass --yes to actually
-# delete after listing.
+# delete after listing. This script deliberately enumerates directories only;
+# it has no match for runtime files (SQLite, captures, logs, certificates or
+# keys), so it cannot delete runtime data as part of build cleanup.
 #
 #   ./scripts/clean_build_artifacts.sh            # list only (default)
 #   ./scripts/clean_build_artifacts.sh --yes       # list, then delete
@@ -44,6 +46,23 @@ mapfile -t FOUND < <(
         -type d \( -name dist -o -name build -o -name QA -o -name __pycache__ -o -name .pytest_cache -o -name '*.egg-info' \) -print |
         sort
 )
+
+# Defense in depth: refuse a candidate if a caller has configured the runtime
+# data directory inside this checkout under one of the build/cache names.
+# Runtime data is never an acceptable cleanup target.
+RUNTIME_DATA_DIR="${SNIFF4HOUND_DATA_DIR:-}"
+if [ -n "$RUNTIME_DATA_DIR" ] && command -v realpath >/dev/null 2>&1; then
+    RUNTIME_DATA_DIR="$(realpath -m -- "$RUNTIME_DATA_DIR")"
+    SAFE_FOUND=()
+    for path in "${FOUND[@]}"; do
+        ABS_PATH="$(realpath -m -- "$path")"
+        case "$ABS_PATH" in
+            "$RUNTIME_DATA_DIR"|"$RUNTIME_DATA_DIR"/*) ;;
+            *) SAFE_FOUND+=("$path") ;;
+        esac
+    done
+    FOUND=("${SAFE_FOUND[@]}")
+fi
 
 if [ "${#FOUND[@]}" -eq 0 ]; then
     echo "No build/cache artifacts found in $ROOT_DIR"
