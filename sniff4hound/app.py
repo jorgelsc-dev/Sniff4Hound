@@ -660,6 +660,8 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ip/intel/", "desc": "Combined host intel."},
     {"method": "GET", "path": "/api/domain/intel/", "desc": "Structured domain investigation: packets/payloads/tags matched by DNS query name or HTTP Host (never free-text substring). ?mode=exact|subdomain, ?since= applies the shared time window."},
     {"method": "GET", "path": "/api/soc/analysis/", "desc": "Iterative SOC triage analysis."},
+    {"method": "GET", "path": "/api/settings/ai", "desc": "Read the persisted IA activation flag (default OFF)."},
+    {"method": "POST", "path": "/api/settings/ai", "desc": "Persist the IA activation flag: {\"enabled\": true|false}; this does not start a model or alter capture yet."},
     {"method": "POST", "path": "/api/packets/review", "desc": "Label any captured packet benign, malicious or unreviewed."},
     {"method": "GET", "path": "/api/detection/exclusions", "desc": "Shared exclusion filter (IP type, CIDR, port, protocol)."},
     {"method": "POST", "path": "/api/detection/exclusions", "desc": "Set the shared exclusion filter - matching traffic is silenced from Sniffer detection and Monitors (raw capture/storage is unaffected)."},
@@ -2581,6 +2583,17 @@ def soc_analysis(request):
     cycles = clamp_int(request.query.get("cycles"), 1, 4, default=4) or 4
     limit = _normalize_limit(request.query.get("limit"), default=500, maximum=2000)
     return store.soc_analysis_snapshot(cycles=cycles, limit=limit, since=_normalize_since(request))
+
+
+@app.api("/api/settings/ai", methods=("GET", "POST"))
+def ai_config(request):
+    """Read or persist IA activation intent without starting an IA engine."""
+    if request.method.upper() == "GET":
+        return {"enabled": store.get_ai_enabled()}
+    payload = _read_json_body(request)
+    if set(payload) != {"enabled"}:
+        raise ValueError("enabled is required and must be the only field")
+    return {"enabled": store.set_ai_enabled(payload["enabled"])}
 
 
 @app.api("/api/packets/review", methods=("POST",))

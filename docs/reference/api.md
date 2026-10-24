@@ -97,4 +97,6 @@ un limitador por IP; superado el umbral la API responde `429` con `Retry-After`
 
 - `GET /api/hello` devuelve version y modo activo.
 - `GET /api/soc/analysis/` resume la triage SOC sobre datos recientes.
+- `GET /api/settings/ai` devuelve la activación persistente de IA (`{"enabled": false}` por defecto).
+- `POST /api/settings/ai` guarda `{"enabled": true|false}` con un booleano JSON estricto; solo persiste la intención y todavía no conecta un modelo al camino de captura.
 - el runtime emite eventos `packet`, `stats_update`, `runtime_mode` y mensajes de chat por WebSocket.

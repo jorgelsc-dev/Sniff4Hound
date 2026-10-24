@@ -174,9 +174,11 @@ def snapshot_features(snapshot: Mapping[str, Any] | None, *, limit: int = MAX_FE
 def _load_api() -> tuple[Any, Any, Any]:
     """Import optional IA symbols only when scoring is explicitly requested."""
 
-    from wsbuilder import NeuralNetwork, Predictor, evaluate_errors
+    # The installed wsbuilder API exposes NeuralNetwork/evaluate_errors; model
+    # instances are accepted by duck typing and there is no Predictor class.
+    from wsbuilder import NeuralNetwork, evaluate_errors
 
-    return NeuralNetwork, Predictor, evaluate_errors
+    return NeuralNetwork, None, evaluate_errors
 
 
 def _bounded_score(value: Any) -> float:

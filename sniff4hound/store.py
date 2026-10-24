@@ -3828,6 +3828,17 @@ class SniffStore(HistoryStoreMixin):
         self.set_runtime_config("raw_retention_enabled", "1" if value else "0")
         return self.get_raw_retention_enabled()
 
+    def get_ai_enabled(self) -> bool:
+        """Return the persisted IA activation flag, failing closed."""
+        return self.get_runtime_config("ai_enabled", "0") == "1"
+
+    def set_ai_enabled(self, value: bool) -> bool:
+        """Persist the IA activation flag after strict type validation."""
+        if not isinstance(value, bool):
+            raise ValueError("enabled must be a boolean")
+        self.set_runtime_config("ai_enabled", "1" if value else "0")
+        return self.get_ai_enabled()
+
     def get_packet_pipeline_config(self) -> dict:
         """Packet cache limit, processing job count and persist mode.
 

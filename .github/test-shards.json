@@ -71,7 +71,8 @@
       "tests.test_network_history",
       "tests.test_domain_names",
       "tests.test_mac_vendor",
-      "tests.test_documented_routes"
+      "tests.test_documented_routes",
+      "tests.test_ai_activation"
     ]
   ]
 }
