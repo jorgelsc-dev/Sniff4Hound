@@ -380,15 +380,18 @@ def _domain_match_clause(domain: str, mode: str, *, domain_column: str, host_col
     compared with any `:port` suffix stripped first. `mode="subdomain"` also
     matches `*.domain`; `mode="exact"` (default) does not."""
     normalized = _normalize_domain_query(domain)
-    host_only = f"SUBSTR({host_column}, 1, INSTR({host_column} || ':', ':') - 1)"
+    # RTRIM also makes rows written by older versions (which retained a DNS
+    # root dot) participate in the same normalized identity match.
+    domain_value = f"RTRIM(LOWER({domain_column}), '.')"
+    host_only = f"RTRIM(LOWER(SUBSTR({host_column}, 1, INSTR({host_column} || ':', ':') - 1)), '.')"
     if mode == "subdomain":
         clause = (
-            f"(LOWER({domain_column}) = ? OR LOWER({domain_column}) LIKE ? OR "
-            f"LOWER({host_only}) = ? OR LOWER({host_only}) LIKE ?)"
+            f"({domain_value} = ? OR {domain_value} LIKE ? OR "
+            f"{host_only} = ? OR {host_only} LIKE ?)"
         )
         params = [normalized, f"%.{normalized}", normalized, f"%.{normalized}"]
     else:
-        clause = f"(LOWER({domain_column}) = ? OR LOWER({host_only}) = ?)"
+        clause = f"({domain_value} = ? OR {host_only} = ?)"
         params = [normalized, normalized]
     return clause, params
 
@@ -2364,7 +2367,7 @@ class SniffStore(HistoryStoreMixin):
         )
         raw_retention_enabled = self.get_raw_retention_enabled()
         rows = [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
-        return self._attach_review_labels(rows)
+        return self._attach_flow_ids(self._attach_review_labels(rows))
 
     def _attach_review_labels(self, rows):
         # Operator benign/malign review lives in the generic key/value `tags`
@@ -2382,6 +2385,21 @@ class SniffStore(HistoryStoreMixin):
         labels = {row["packet_id"]: row["value"] for row in tag_rows}
         for row in rows:
             row["review_label"] = labels.get(row.get("id"), "")
+        return rows
+
+    def _attach_flow_ids(self, rows):
+        """Expose the stable flow id alongside structured evidence rows."""
+        keys = sorted({str(row.get("flow_key") or "") for row in rows if row.get("flow_key")})
+        if not keys:
+            return rows
+        placeholders = ",".join("?" * len(keys))
+        flow_rows = self._fetchall(
+            f"SELECT id, flow_key FROM flows WHERE flow_key IN ({placeholders})", tuple(keys)
+        )
+        flow_ids = {row["flow_key"]: row["id"] for row in flow_rows}
+        for row in rows:
+            if row.get("flow_key") in flow_ids:
+                row["flow_id"] = flow_ids[row["flow_key"]]
         return rows
 
     def save_packet_review(self, packet_id, label):
@@ -2550,7 +2568,7 @@ class SniffStore(HistoryStoreMixin):
         else:
             for row in rows:
                 row["matched_value"] = ""
-        return self._attach_review_labels(rows)
+        return self._attach_flow_ids(self._attach_review_labels(rows))
 
     def count_packets_by_monitor(self, monitor_id: str, *, since=""):
         clauses = ["tags.key = 'monitor_id'", "tags.value = ?"]
@@ -2785,10 +2803,10 @@ class SniffStore(HistoryStoreMixin):
             """,
             tuple(params),
         )
-        return [
+        return self._attach_flow_ids([
             _sanitize_payload_forensic_fields(row, raw_retention_enabled=self.get_raw_retention_enabled())
             for row in rows
-        ]
+        ])
 
     def get_payload_with_packet(self, payload_id: int):
         return _sanitize_payload_forensic_fields(self._fetchone(
@@ -5346,10 +5364,10 @@ class SniffStore(HistoryStoreMixin):
             """,
             tuple(params),
         )
-        return [
+        return self._attach_flow_ids([
             _sanitize_payload_forensic_fields(row, raw_retention_enabled=self.get_raw_retention_enabled())
             for row in rows
-        ]
+        ])
 
     def count_tags_for_entity_ip(self, ip: str, *, since="") -> int:
         variants = _ip_entity_variants(ip)
@@ -5375,7 +5393,7 @@ class SniffStore(HistoryStoreMixin):
         where = f"WHERE {' AND '.join(clauses)}"
         params = list(params)
         params.extend([int(limit), int(offset)])
-        return self._fetchall(
+        return self._attach_flow_ids(self._fetchall(
             f"""
             SELECT tags.* FROM tags
             LEFT JOIN packets AS p ON p.id = tags.packet_id
@@ -5383,7 +5401,7 @@ class SniffStore(HistoryStoreMixin):
             ORDER BY tags.id DESC LIMIT ? OFFSET ?
             """,
             tuple(params),
-        )
+        ))
 
     # -- Exact-entity evidence lookups: domain --------------------------
     # Mirrors the IP entity lookups above, but matches the structured
@@ -5418,7 +5436,7 @@ class SniffStore(HistoryStoreMixin):
         )
         raw_retention_enabled = self.get_raw_retention_enabled()
         rows = [_sanitize_packet_forensic_fields(row, raw_retention_enabled=raw_retention_enabled) for row in rows]
-        return self._attach_review_labels(rows)
+        return self._attach_flow_ids(self._attach_review_labels(rows))
 
     def count_payloads_for_domain(self, domain: str, *, mode: str = "exact", since: str = "") -> int:
         clause, params = _domain_match_clause(domain, mode, domain_column="p.domain", host_column="p.http_host")
@@ -5468,10 +5486,10 @@ class SniffStore(HistoryStoreMixin):
             """,
             tuple(params),
         )
-        return [
+        return self._attach_flow_ids([
             _sanitize_payload_forensic_fields(row, raw_retention_enabled=self.get_raw_retention_enabled())
             for row in rows
-        ]
+        ])
 
     def count_tags_for_domain(self, domain: str, *, mode: str = "exact", since: str = "") -> int:
         clause, params = _domain_match_clause(domain, mode, domain_column="p.domain", host_column="p.http_host")
@@ -5495,7 +5513,7 @@ class SniffStore(HistoryStoreMixin):
         where = f"WHERE {' AND '.join(clauses)}"
         params = list(params)
         params.extend([int(limit), int(offset)])
-        return self._fetchall(
+        return self._attach_flow_ids(self._fetchall(
             f"""
             SELECT tags.* FROM tags
             LEFT JOIN packets AS p ON p.id = tags.packet_id
@@ -5503,7 +5521,7 @@ class SniffStore(HistoryStoreMixin):
             ORDER BY tags.id DESC LIMIT ? OFFSET ?
             """,
             tuple(params),
-        )
+        ))
 
     def domain_intel(self, domain: str, *, mode: str = "exact", since: str = "") -> dict:
         domain = str(domain or "").strip()
@@ -5519,10 +5537,37 @@ class SniffStore(HistoryStoreMixin):
         related_packets = self.list_packets_for_domain(domain, mode=mode, limit=250, since=since)
         related_payloads = self.list_payloads_for_domain(domain, mode=mode, limit=250, since=since)
         related_tags = self.list_tags_for_domain(domain, mode=mode, limit=400, since=since)
+        source_clause, source_params = _domain_match_clause(
+            domain, mode, domain_column="packets.domain", host_column="packets.http_host"
+        )
+        source_where = [source_clause]
+        if since:
+            source_where.append("packets.created_at >= ?")
+            source_params.append(str(since))
+        source_rows = self._fetchall(
+            """
+            SELECT CASE
+                     WHEN LOWER(packets.domain_source) IN ('dns', 'mdns', 'llmnr')
+                       THEN LOWER(packets.domain_source)
+                     WHEN LOWER(packets.domain_source) IN ('http', 'http_host') OR packets.http_host != ''
+                       THEN 'http_host'
+                     WHEN LOWER(packets.domain_source) IN ('tls', 'tls_sni')
+                       THEN 'tls_sni'
+                     ELSE 'unknown'
+                   END AS source,
+                   COUNT(DISTINCT packets.id) AS packets,
+                   COUNT(DISTINCT flows.id) AS flows
+            FROM packets
+            LEFT JOIN flows ON flows.flow_key = packets.flow_key
+            WHERE """ + " AND ".join(source_where) + "\n"
+            "GROUP BY source ORDER BY source ASC",
+            tuple(source_params),
+        )
 
         return {
             "domain": domain,
             "mode": mode,
+            "sources": {row["source"]: {"packets": int(row["packets"]), "flows": int(row["flows"])} for row in source_rows},
             "summary": {
                 "packets": total_packets,
                 "payloads": total_payloads,
@@ -5697,6 +5742,25 @@ class SniffStore(HistoryStoreMixin):
             packet.get("dst_ip", ""),
             packet.get("dst_port", 0),
         )).strip()
+        domain_value = str(packet.get("domain") or "").strip().lower().rstrip(".")
+        try:
+            domain_value = _normalize_domain_query(domain_value)
+        except ValueError:
+            # Capture must remain lossless for malformed observed data; the
+            # structured investigator simply will not treat it as a domain.
+            pass
+        http_host_value = str(packet.get("http_host") or "").strip().lower()
+        host_port = ""
+        if http_host_value.count(":") == 1:
+            host_name, possible_port = http_host_value.rsplit(":", 1)
+            if possible_port.isdigit():
+                http_host_value, host_port = host_name, f":{possible_port}"
+        http_host_value = http_host_value.rstrip(".")
+        try:
+            http_host_value = _normalize_domain_query(http_host_value) + host_port
+        except ValueError:
+            pass
+
         packet_row = (
             flow_key,
             str(packet.get("interface") or "").strip(),
@@ -5725,11 +5789,11 @@ class SniffStore(HistoryStoreMixin):
             payload_text,
             payload_hex,
             banner_text,
-            str(packet.get("domain") or "").strip().lower(),
+            domain_value,
             str(packet.get("domain_source") or "").strip(),
             str(packet.get("http_method") or "").strip().upper(),
             str(packet.get("http_path") or "").strip(),
-            str(packet.get("http_host") or "").strip().lower(),
+            http_host_value,
             json_dumps(extract_details(packet)),
             json_dumps(tags),
             json_dumps(rule_hits),
