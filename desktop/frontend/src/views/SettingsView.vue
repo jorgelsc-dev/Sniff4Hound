@@ -2039,7 +2039,7 @@ export default {
             metric("Errores", num(errorCount(honeypot.errors)), errorCount(honeypot.errors) ? "alert" : "ok"),
           ],
         },
-        location: state(this.locationConfigured ? this.locationSummary : "Sin ubicación", true, [
+        location: state(this.locationConfigured ? this.locationSummary : "Sin ubicación", this.locationConfigured, [
           metric("Latitud", configured && Number.isFinite(saved.lat) ? Number(saved.lat).toLocaleString("es-ES", { maximumFractionDigits: 4 }) : "—"),
           metric("Longitud", configured && Number.isFinite(saved.lon) ? Number(saved.lon).toLocaleString("es-ES", { maximumFractionDigits: 4 }) : "—"),
           metric("Estado", configured ? "Configurada" : "Pendiente", configured ? "ok" : "warn"),
@@ -2051,7 +2051,7 @@ export default {
           metric("Info generada", this.suppressGeneratedInfo ? "Silenciada" : "Visible"),
           metric("Ámbitos", num(this.detectionScopes.length), this.detectionScopes.length ? "warn" : ""),
         ]),
-        scope: state(this.detectionScopes.length ? `${this.detectionScopes.length} ámbitos silenciados` : "Todo el tráfico", true, [
+        scope: state(this.detectionScopes.length ? `${this.detectionScopes.length} ámbitos silenciados` : "Todo el tráfico", this.detectionScopes.length > 0, [
           metric("Silenciados", num(this.detectionScopes.length), this.detectionScopes.length ? "warn" : "ok"),
           metric("Disponibles", num(this.detectionScopeOptions.length)),
         ]),
@@ -2074,7 +2074,7 @@ export default {
             metric("Retención", config ? (config.retention_days ? `${config.retention_days} días` : "Sin límite") : "—"),
           ]);
         })(),
-        exclusions: state("Filtros compartidos", true, [
+        exclusions: state("Filtros compartidos", ipCount > 0 || (exclusions.cidrs || []).length > 0 || (exclusions.ports || []).length > 0 || (exclusions.protocols || []).length > 0, [
           metric("Tipos IP", num(ipCount)),
           metric("CIDR", num((exclusions.cidrs || []).length)),
           metric("Puertos", num((exclusions.ports || []).length)),
@@ -2346,10 +2346,7 @@ export default {
     this.refreshGraph();
     this.graphStatusTimer = setInterval(this.refreshGraph, 10000);
     this.loadListeners();
-    this.loadDetectionScopes();
-    this.loadLocation();
     this.loadMobileStream();
-    this.loadStorageStats();
     this.loadRetentionConfig();
     // Opened straight on the detection tab (deep link): the watcher will not fire on mount.
     if (this.activeTab === "detection") this.load({ silent: true });
@@ -2368,6 +2365,8 @@ export default {
     async refreshGraph() {
       if (this.statusRefreshing) return;
       this.statusRefreshing = true;
+      this.storageLoading = true;
+      this.storageError = "";
       const results = await Promise.allSettled([
         this.store.initRuntime(),
         this.store.fetchJsonPromise("/api/pipeline/config"),
@@ -2380,22 +2379,30 @@ export default {
         this.store.fetchJsonPromise("/api/limits"),
         this.store.fetchJsonPromise("/api/monitors/stats"),
         this.store.getHistoryConfig(),
+        this.store.getDeclaredLocation(),
+        this.store.getDetectionScopes(),
       ]);
       const fresh = (index) => results[index].status === "fulfilled" && results[index].value != null;
       this.graphFresh = {
         runtime: fresh(0), capture: fresh(0), honeypot: fresh(0), connection: fresh(0),
         packetcache: fresh(0) && fresh(1), packetjobs: fresh(0) && fresh(1),
-        detection: fresh(9), scope: fresh(9), storage: fresh(7), history: fresh(10),
+        detection: fresh(9), scope: fresh(12), storage: fresh(7), history: fresh(10),
         exclusions: fresh(4), blacklist: fresh(2) && fresh(3), logs: fresh(6), limits: fresh(8),
-        location: !this.locationError, notifications: true,
+        location: fresh(11), notifications: true,
       };
       const failed = (index) => results[index].status === "rejected";
+      const failureMessage = (index, fallback) => failed(index)
+        ? (results[index].reason?.message || fallback)
+        : "";
+      this.locationError = failureMessage(11, "No se pudo cargar la ubicación del sensor");
+      this.detectionScopesError = failureMessage(12, "No se pudo cargar el filtro de alcance de detección");
+      this.storageError = failureMessage(7, "No se pudieron cargar las estadísticas de almacenamiento.");
       this.graphErrors = {
         runtime: failed(0), capture: failed(0), honeypot: failed(0), connection: failed(0),
         packetcache: failed(0) || failed(1), packetjobs: failed(0) || failed(1),
-        detection: failed(9), scope: failed(9), storage: failed(7), history: failed(10),
+        detection: failed(9), scope: failed(12), storage: failed(7), history: failed(10),
         exclusions: failed(4), blacklist: failed(2) || failed(3), logs: failed(6), limits: failed(8),
-        location: Boolean(this.locationError), notifications: false,
+        location: failed(11), notifications: false,
       };
       const value = (index) => (results[index].status === "fulfilled" ? results[index].value : null);
       this.graphExtras = {
@@ -2405,7 +2412,17 @@ export default {
         retentionDays: value(5)?.retention_days ?? null,
         history: value(10),
       };
-      // Indices follow the request list above: logs is 6, storage is 7.
+      if (value(11)) this.applyLocation(value(11));
+      if (value(12)) {
+        this.detectionScopeCatalog = Array.isArray(value(12).available_scopes)
+          ? value(12).available_scopes
+          : [];
+        this.detectionScopes = Array.isArray(value(12).exclude_scopes)
+          ? value(12).exclude_scopes
+          : [];
+      }
+      // Indices follow the request list above: logs is 6, storage is 7,
+      // location is 11 and detection scopes is 12.
       if (value(7)) this.storageStats = value(7);
       if (value(9)) this.monitorStats = value(9);
       if (value(8)) {
@@ -2424,6 +2441,7 @@ export default {
       }
       this.graphReady = true;
       this.statusRefreshing = false;
+      this.storageLoading = false;
     },
     async saveLimits() {
       if (this.limitSaving || !this.limitDraft) return;
@@ -2670,6 +2688,7 @@ export default {
     },
     applyLocation(payload) {
       const row = payload && typeof payload === "object" ? payload : {};
+      this.locationError = "";
       const lat = Number.isFinite(row.lat) ? row.lat : null;
       const lon = Number.isFinite(row.lon) ? row.lon : null;
       this.locationSaved = { lat, lon, label: row.label || "", configured: Boolean(row.configured) };
@@ -2707,6 +2726,7 @@ export default {
       this.store
         .getDetectionScopes()
         .then((payload) => {
+          this.detectionScopesError = "";
           this.detectionScopeCatalog = Array.isArray(payload && payload.available_scopes)
             ? payload.available_scopes
             : [];
