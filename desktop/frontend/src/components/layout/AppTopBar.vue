@@ -19,13 +19,13 @@
       <button
         type="button"
         class="command-trigger"
-        aria-label="Buscar vistas, ajustes y acciones"
+        aria-label="Buscar... vistas, ajustes y acciones"
         aria-keyshortcuts="Control+K Meta+K"
         @click="store.state.commandPaletteOpen = true"
       >
         <v-icon icon="mdi-magnify" size="15" />
         <span>Buscar...</span>
-        <kbd>{{ commandShortcut }}</kbd>
+        <kbd aria-hidden="true">{{ commandShortcut }}</kbd>
       </button>
 
       <v-spacer />

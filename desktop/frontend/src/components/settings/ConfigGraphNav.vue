@@ -12,8 +12,8 @@
           :items="SETTINGS_NODES"
           item-title="label"
           item-value="section"
-          placeholder="Componentes"
-          aria-label="Seleccionar componente"
+          id="config-component-select"
+          label="Componentes"
           prepend-inner-icon="mdi-cube-outline"
           variant="outlined"
           density="compact"
@@ -23,7 +23,7 @@
         />
         <v-btn icon="mdi-refresh" size="small" variant="text" :loading="refreshing" aria-label="Actualizar estados" @click="$emit('refresh')">
           <v-icon icon="mdi-refresh" />
-          <v-tooltip activator="parent">Actualizar estados</v-tooltip>
+          <v-tooltip activator="parent" aria-label="Actualizar estados">Actualizar estados</v-tooltip>
         </v-btn>
       </div>
     </header>
@@ -39,6 +39,7 @@
           aria-describedby="config-canvas-help"
           @keydown.esc="closeInspector"
         >
+          <p id="config-ai-help" class="sr-only">IA opcional; no bloquea la captura ni la detección por reglas.</p>
           <p id="config-canvas-help" class="sr-only">
             Usa Tab para recorrer los componentes, Enter para abrir su configuración y las flechas para moverte entre componentes. Arrastra el fondo para desplazar el grafo.
           </p>
@@ -69,7 +70,7 @@
               :class="{ 'is-selected': modelValue === node.section, 'is-running': node.state.active }"
               :data-node="node.id"
               :style="{ left: node.x + 'px', top: node.y + 'px', '--node-color': node.color }"
-              :aria-label="nodeAccessibleLabel(node)"
+              :aria-describedby="node.id === 'ai' ? 'config-ai-help' : undefined"
               :aria-expanded="modelValue === node.section"
               :aria-current="modelValue === node.section ? 'page' : undefined"
               aria-controls="settings-inspector"
@@ -108,7 +109,7 @@
               </span>
               <span class="config-node__port config-node__port--in" />
               <span class="config-node__port config-node__port--out" />
-              <v-tooltip activator="parent" location="top" open-delay="450">
+              <v-tooltip activator="parent" location="top" open-delay="450" :aria-label="`${node.label}: ${node.detail}. ${node.state.label || 'Ajustes'}`">
                 {{ node.label }}: {{ node.detail }}. {{ node.state.label || "Ajustes" }}
               </v-tooltip>
             </button>
@@ -118,18 +119,18 @@
           <span class="config-component-count">{{ nodes.length }} componentes</span>
           <div class="config-zoom">
             <v-btn icon="mdi-minus" size="x-small" variant="text" :disabled="transform.k <= READABLE_MIN_SCALE" aria-label="Alejar" @click="zoomBy(0.8)">
-              <v-icon icon="mdi-minus" /><v-tooltip activator="parent">Alejar</v-tooltip>
+              <v-icon icon="mdi-minus" /><v-tooltip activator="parent" aria-label="Alejar">Alejar</v-tooltip>
             </v-btn>
             <output aria-label="Zoom">{{ Math.round(transform.k * 100) }}%</output>
             <v-btn icon="mdi-plus" size="x-small" variant="text" :disabled="transform.k >= 1.8" aria-label="Acercar" @click="zoomBy(1.25)">
-              <v-icon icon="mdi-plus" /><v-tooltip activator="parent">Acercar</v-tooltip>
+              <v-icon icon="mdi-plus" /><v-tooltip activator="parent" aria-label="Acercar">Acercar</v-tooltip>
             </v-btn>
             <span class="config-tool-divider" />
             <v-btn icon="mdi-fit-to-screen-outline" size="x-small" variant="text" aria-label="Ajustar grafo" @click="fitGraph">
-              <v-icon icon="mdi-fit-to-screen-outline" /><v-tooltip activator="parent">Ajustar grafo</v-tooltip>
+              <v-icon icon="mdi-fit-to-screen-outline" /><v-tooltip activator="parent" aria-label="Ajustar grafo">Ajustar grafo</v-tooltip>
             </v-btn>
             <v-btn icon="mdi-auto-fix" size="x-small" variant="text" aria-label="Restablecer posiciones" @click="resetLayout">
-              <v-icon icon="mdi-auto-fix" /><v-tooltip activator="parent">Restablecer posiciones</v-tooltip>
+              <v-icon icon="mdi-auto-fix" /><v-tooltip activator="parent" aria-label="Restablecer posiciones">Restablecer posiciones</v-tooltip>
             </v-btn>
           </div>
         </div>
@@ -157,7 +158,7 @@
                 <h2 id="config-inspector-title">{{ selected?.label }}</h2>
               </div>
               <v-btn ref="closeButton" icon="mdi-close" size="small" variant="text" aria-label="Cerrar configuración" @click="closeInspector">
-                <v-icon icon="mdi-close" /><v-tooltip activator="parent">Cerrar configuración</v-tooltip>
+                <v-icon icon="mdi-close" /><v-tooltip activator="parent" aria-label="Cerrar configuración">Cerrar configuración</v-tooltip>
               </v-btn>
             </header>
             <p id="config-inspector-help" class="sr-only">Panel de configuración de {{ selected?.label }}. Pulsa Escape para cerrar.</p>
@@ -223,20 +224,6 @@ const edges = computed(() => {
     };
   });
 });
-function nodeAccessibleLabel(node) {
-  const metrics = (node.state.metrics || [])
-    .map(metric => `${metric.label}: ${metric.value}`)
-    .join("; ");
-  const status = node.state.label || "Ajustes";
-  const optional = node.id === "ai" ? "IA opcional; no bloquea la captura ni la detección por reglas" : "";
-  return [
-    `Configurar ${node.label}`,
-    optional,
-    node.detail,
-    `Estado: ${status}`,
-    metrics,
-  ].filter(Boolean).join(". ");
-}
 function setNodeEl(id, el) {
   if (el) nodeEls.set(id, el);
   else nodeEls.delete(id);
@@ -261,9 +248,18 @@ function focusCloseButton() {
 }
 function handleInspectorKeydown(event) {
   if (event.key !== "Tab") return;
+  if (!inspector.value) return;
   const focusable = [...inspector.value.querySelectorAll(
-    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-  )];
+    'button, [href], input, select, textarea, [tabindex]',
+  )].filter(element => {
+    if (element.tabIndex < 0 || element.matches(":disabled, [aria-disabled='true']")) return false;
+    if (element.closest("[inert], [hidden], [aria-hidden='true']")) return false;
+    if (!element.getClientRects().length) return false;
+    // visibility can be inherited, whereas display:none on any ancestor
+    // removes layout boxes. Both occur in retained v-window panels.
+    const style = getComputedStyle(element);
+    return style.visibility !== "hidden" && style.visibility !== "collapse";
+  });
   if (!focusable.length) {
     event.preventDefault();
     inspector.value.focus();
@@ -271,10 +267,11 @@ function handleInspectorKeydown(event) {
   }
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
-  if (event.shiftKey && document.activeElement === first) {
+  const outside = !focusable.includes(document.activeElement);
+  if (event.shiftKey && (document.activeElement === first || outside)) {
     event.preventDefault();
     last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
+  } else if (!event.shiftKey && (document.activeElement === last || outside)) {
     event.preventDefault();
     first.focus();
   }

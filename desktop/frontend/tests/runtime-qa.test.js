@@ -118,6 +118,7 @@ test("protocol landing fetches the busiest slice after obtaining period counts",
       calls.push(query.proto);
       return { catalog: [{ protocol: "unknown", count: 0 }, { protocol: "arp", count: 2 }, { protocol: "dns", count: 20 }], packets: query.proto === "dns" ? [{ proto: "dns" }] : [] };
     } },
+    liveRefreshEnabled: true, loadRevision: 0, requestContext: () => "fixture", stopSnapshotStream() {},
     packetLimit: 100, applySnapshot(snapshot) { this.snapshot = snapshot; this.packetRows = snapshot.packets; }, startSnapshotStream() {},
   };
   Object.defineProperty(vm, "protocolCountMap", { get() { return Object.fromEntries((this.snapshot.catalog || []).map(row => [row.protocol, row.count])); } });
@@ -257,7 +258,7 @@ test("settings graph refresh owns location and scope freshness", () => {
 
 test("settings graph cards expose truncated content through their accessible name", () => {
   const template = parse(source("../src/components/settings/ConfigGraphNav.vue")).descriptor.template.content;
-  assert.match(template, /:aria-label="nodeAccessibleLabel\(node\)"/);
+  assert.doesNotMatch(template, /:aria-label="nodeAccessibleLabel\(node\)"/);
   assert.match(template, /:title="node.detail"/);
   assert.match(template, /:title="metric.label"/);
   assert.match(template, /:title="node.state.label \|\| 'Ajustes'"/);

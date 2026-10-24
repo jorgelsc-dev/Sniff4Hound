@@ -16,9 +16,9 @@ test("graph exposes an understandable keyboard and screen-reader contract", () =
   assert.match(template, /:aria-current="modelValue === node\.section \? 'page' : undefined"/);
   assert.doesNotMatch(template, /aria-pressed/);
   assert.match(template, /v-if="node\.id === 'ai'" class="config-node__badge">Opcional/);
-  assert.match(script, /IA opcional; no bloquea la captura ni la detección por reglas/);
+  assert.match(template, /IA opcional; no bloquea la captura ni la detección por reglas/);
   assert.match(template, /:title="`\$\{node\.label\}/);
-  assert.match(template, /<v-tooltip activator="parent" location="top" open-delay="450">/);
+  assert.match(template, /<v-tooltip activator="parent" location="top" open-delay="450"/);
 });
 
 test("inspector manages focus and keeps keyboard navigation inside the dialog", () => {
@@ -26,7 +26,7 @@ test("inspector manages focus and keeps keyboard navigation inside the dialog", 
   assert.match(template, /ref="closeButton"/);
   assert.match(template, /@keydown="handleInspectorKeydown"/);
   assert.match(script, /function handleInspectorKeydown\(event\)/);
-  assert.match(script, /if \(event\.shiftKey && document\.activeElement === first\)/);
+  assert.match(script, /document\.activeElement === first \|\| outside/);
   assert.match(script, /if \(value && value !== previous\) nextTick\(focusCloseButton\)/);
   assert.match(script, /\}, \{ immediate: true \}\);/);
 });
