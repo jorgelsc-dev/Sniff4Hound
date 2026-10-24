@@ -328,6 +328,17 @@ log_setup.configure("web", log_setup.default_log_dir(), store.get_log_config(), 
 log_setup.start_reload_loop(store.get_log_config)
 
 
+def _close_dropped_client(ws) -> None:
+    """Close a client the hub stopped sending to, so its stream ends and the
+    other side reconnects instead of waiting on a connection nobody feeds."""
+    if ws is None:
+        return
+    try:
+        ws.close(1013, "dropped")
+    except Exception:
+        pass
+
+
 class WebSocketHub:
     def __init__(self):
         self._lock = threading.RLock()
@@ -398,6 +409,7 @@ class WebSocketHub:
             ws.send_text(_json_text(payload))
         except Exception:
             self.unregister(ws)
+            _close_dropped_client(ws)
             return False
         with self._lock:
             client = self._clients.get(id(ws))
@@ -442,8 +454,11 @@ class WebSocketHub:
                     client["last_seen"] = utc_now()
                 except Exception:
                     dead.append(client_id)
-            for client_id in dead:
-                self._clients.pop(client_id, None)
+            dropped = [self._clients.pop(client_id, None) for client_id in dead]
+        # Close outside the lock: a websocket close may block on its socket.
+        for client in dropped:
+            if client is not None:
+                _close_dropped_client(client.get("ws"))
 
     def ping(self, payload: bytes = b""):
         dead = []
@@ -4205,6 +4220,9 @@ def websocket_handler(ws, request=None):
 
 REALTIME_QUEUE_LIMIT = 1000
 REALTIME_HEARTBEAT_SECONDS = 15.0
+# RFC 6455 "try again later": the client was dropped for not keeping up and
+# should reconnect.
+WS_SLOW_CONSUMER_CLOSE_CODE = 1013
 _REALTIME_SESSIONS: dict[str, "RealtimeSession"] = {}
 _REALTIME_LOCK = threading.Lock()
 
@@ -4220,33 +4238,47 @@ class RealtimeSession:
         self.client = client_address
         self.closed = False
         self.close_code = 1000
-        self._events = queue.Queue(maxsize=REALTIME_QUEUE_LIMIT)
+        self._lock = threading.Lock()
+        # The queue itself is unbounded so the final close event always fits;
+        # REALTIME_QUEUE_LIMIT is enforced on data and pings in _put().
+        self._events = queue.Queue()
+
+    def _put(self, item) -> bool:
+        with self._lock:
+            if self.closed:
+                return False
+            if self._events.qsize() >= REALTIME_QUEUE_LIMIT:
+                # A client that stops reading is dropped, the same as a
+                # websocket whose send buffer stops draining. The session is
+                # closed here (not just forgotten by the hub) so the stream
+                # delivers a close event and its generator ends instead of
+                # sending keep-alives forever.
+                self._close_locked(WS_SLOW_CONSUMER_CLOSE_CODE, "slow consumer")
+                return False
+            self._events.put_nowait(item)
+            return True
 
     def send_text(self, text: str) -> None:
         if self.closed:
             raise ConnectionError("realtime session is closed")
-        try:
-            self._events.put_nowait(("data", str(text)))
-        except queue.Full:
-            # A client that stops reading is dropped, the same as a websocket
-            # whose send buffer stops draining. The hub removes it on error.
-            raise ConnectionError("realtime client is too slow")
+        if not self._put(("data", str(text))):
+            if self.close_code == WS_SLOW_CONSUMER_CLOSE_CODE:
+                raise ConnectionError("realtime client is too slow")
+            raise ConnectionError("realtime session is closed")
 
     def send_ping(self, payload: bytes = b"") -> None:
-        try:
-            self._events.put_nowait(("ping", ""))
-        except queue.Full:
-            pass
+        self._put(("ping", ""))
 
-    def close(self, code: int = 1000, reason: str = "") -> None:
+    def _close_locked(self, code: int, reason: str) -> None:
         if self.closed:
             return
         self.closed = True
         self.close_code = int(code or 1000)
-        try:
-            self._events.put_nowait(("close", {"code": self.close_code, "reason": str(reason or "")}))
-        except queue.Full:
-            pass
+        self._events.put_nowait(("close", {"code": self.close_code, "reason": str(reason or "")}))
+
+    def close(self, code: int = 1000, reason: str = "") -> None:
+        with self._lock:
+            self._close_locked(code, reason)
 
     def next_event(self, timeout: float):
         try:
@@ -4315,24 +4347,34 @@ def realtime_stream(request):
             # The session id goes out first and directly, so the client can
             # send its first command as soon as the stream is open.
             yield "data: " + _json_text({"type": "session", "session": session.id, "generated_at": utc_now()}) + "\n\n"
-            if feed_name:
-                # Same contract as /ws/<feed>: the subscription is what the URL
-                # asked for, and the reply says what the server accepted.
-                params = _normalize_feed_params(request)
-                interval = _normalize_refresh(request)
-                hub.subscribe_snapshot(session, params, interval, feed=feed_name)
-                _ensure_snapshot_pusher()
-                session.send_text(_json_text({
-                    "type": "feed_subscribed",
-                    "feed": feed_name,
-                    "params": params,
-                    "refresh_ms": int(interval * 1000),
-                    "generated_at": utc_now(),
-                }))
-            else:
-                session.send_text(_json_text({"type": "welcome", "message": "Sniff4Hound websocket connected", "generated_at": utc_now()}))
+            try:
+                if feed_name:
+                    # Same contract as /ws/<feed>: the subscription is what the
+                    # URL asked for, and the reply says what the server accepted.
+                    params = _normalize_feed_params(request)
+                    interval = _normalize_refresh(request)
+                    hub.subscribe_snapshot(session, params, interval, feed=feed_name)
+                    _ensure_snapshot_pusher()
+                    session.send_text(_json_text({
+                        "type": "feed_subscribed",
+                        "feed": feed_name,
+                        "params": params,
+                        "refresh_ms": int(interval * 1000),
+                        "generated_at": utc_now(),
+                    }))
+                else:
+                    session.send_text(_json_text({"type": "welcome", "message": "Sniff4Hound websocket connected", "generated_at": utc_now()}))
+            except ConnectionError:
+                # Already closed (e.g. dropped as a slow consumer): the queued
+                # close event below still reaches the client.
+                pass
             while True:
                 item = session.next_event(REALTIME_HEARTBEAT_SECONDS)
+                if item is None and session.closed:
+                    # The close event is always queued, so this only guards
+                    # against a stream idling on keep-alives after a close.
+                    yield "event: close\ndata: " + _json_text({"code": session.close_code, "reason": ""}) + "\n\n"
+                    break
                 if item is None:
                     # An SSE comment keeps proxies and the client's idle timer
                     # from giving up on a quiet but healthy stream.

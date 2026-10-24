@@ -168,6 +168,78 @@ class RealtimeSseTests(unittest.TestCase):
         with self.assertRaises(ConnectionError):
             session.send_text("{}")
 
+    def test_an_overflowed_session_is_closed_and_ends_with_a_close_event(self):
+        session = self.app.RealtimeSession("203.0.113.10")
+        for _ in range(self.app.REALTIME_QUEUE_LIMIT):
+            session.send_text("{}")
+        with self.assertRaises(ConnectionError):
+            session.send_text("{}")
+        self.assertTrue(session.closed)
+        self.assertEqual(session.close_code, self.app.WS_SLOW_CONSUMER_CLOSE_CODE)
+        drained = 0
+        while True:
+            item = session.next_event(0.1)
+            self.assertIsNotNone(item, "the queue must end with a close event, not idle")
+            kind, value = item
+            if kind == "close":
+                break
+            self.assertEqual(kind, "data")
+            drained += 1
+        self.assertEqual(drained, self.app.REALTIME_QUEUE_LIMIT)
+        self.assertEqual(value["code"], self.app.WS_SLOW_CONSUMER_CLOSE_CODE)
+        self.assertIsNone(session.next_event(0.01))
+
+    def test_hub_closes_a_client_it_drops_on_broadcast(self):
+        hub = self.app.WebSocketHub()
+        session = self.app.RealtimeSession("203.0.113.10")
+        hub.register(session)
+        for _ in range(self.app.REALTIME_QUEUE_LIMIT + 1):
+            hub.broadcast({"type": "tick"})
+        self.assertEqual(hub.list_clients(), [])
+        self.assertTrue(session.closed)
+
+    def test_hub_closes_a_client_it_drops_on_send_to(self):
+        class BrokenSocket:
+            closed_with = None
+
+            def send_text(self, text):
+                raise OSError("gone")
+
+            def close(self, code=1000, reason=""):
+                self.closed_with = (code, reason)
+
+        hub = self.app.WebSocketHub()
+        ws = BrokenSocket()
+        hub.register(ws)
+        self.assertFalse(hub.send_to(ws, {"type": "tick"}))
+        self.assertEqual(hub.list_clients(), [])
+        self.assertIsNotNone(ws.closed_with)
+
+    def test_stream_generator_ends_after_its_session_overflows(self):
+        response = self.app.app.dispatch(
+            _request(
+                "/realtime/stream",
+                headers={
+                    "x-security-code": "Ab12Cd34",
+                    "host": "127.0.0.1:45678",
+                    "origin": "app://shell",
+                },
+            )
+        )
+        self.assertEqual(response.status, 200)
+        stream = response.stream
+        self.addCleanup(stream.close)
+        first = json.loads(next(stream)[len("data: "):])
+        self.assertEqual(first["type"], "session")
+        session = self.app._REALTIME_SESSIONS[first["session"]]
+        for _ in range(self.app.REALTIME_QUEUE_LIMIT + 1):
+            self.app.hub.broadcast({"type": "tick"})
+        self.assertTrue(session.closed)
+        chunks = list(stream)  # must terminate rather than keep-alive forever
+        self.assertTrue(chunks[-1].startswith("event: close\n"))
+        self.assertIn('"code": 1013', chunks[-1])
+        self.assertNotIn(first["session"], self.app._REALTIME_SESSIONS)
+
     def test_a_closed_session_refuses_further_messages(self):
         session = self.app.RealtimeSession("203.0.113.10")
         session.close(1000, "bye")
