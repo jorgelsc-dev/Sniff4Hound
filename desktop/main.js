@@ -829,16 +829,25 @@ ipcMain.handle("desktop-http:stream-open", (event, payload) => {
     if (httpStreams.get(id)?.ownerId === ownerId) httpStreams.delete(id);
     return true;
   };
+  const refreshTimeout = () => {
+    if (finished) return;
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      if (!cleanup()) return;
+      request.abort();
+      send({ type: "error", message: "Stream timed out." });
+    }, HTTP_BRIDGE_STREAM_TIMEOUT_MS);
+  };
   request = net.request({ method: "GET", url: options.url, redirect: "error" });
   for (const [name, value] of Object.entries(options.headers)) request.setHeader(name, value);
   httpStreams.set(id, { request, ownerId, cleanup });
-  timeout = setTimeout(() => {
-    if (!cleanup()) return;
-    request.abort();
-    send({ type: "error", message: "Stream timed out." });
-  }, HTTP_BRIDGE_STREAM_TIMEOUT_MS);
+  refreshTimeout();
   request.on("response", (response) => {
     response.on("data", (chunk) => {
+      // This is an inactivity timeout. The realtime endpoint emits a heartbeat
+      // every 15 seconds, so a healthy long-lived stream must renew it for
+      // every received chunk instead of being closed after 30 seconds.
+      refreshTimeout();
       bytes += chunk.length;
       if (bytes > HTTP_BRIDGE_STREAM_LIMIT) {
         if (!cleanup()) return;

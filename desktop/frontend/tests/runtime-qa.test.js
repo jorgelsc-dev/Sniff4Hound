@@ -148,6 +148,18 @@ test("desktop CSP, renderer sandbox and permission denial remain wired", () => {
   assert.match(main, /const connect = origin \? `connect-src 'self' \$\{origin\} \$\{websocketOrigin\}`/);
 });
 
+test("desktop realtime bridge renews its timeout when heartbeat data arrives", () => {
+  const main = source("../../main.js");
+  const bridgeStart = main.indexOf('ipcMain.handle("desktop-http:stream-open"');
+  const dataStart = main.indexOf('response.on("data", (chunk) => {', bridgeStart);
+  const refresh = main.indexOf("refreshTimeout();", dataStart);
+  const byteCount = main.indexOf("bytes += chunk.length;", dataStart);
+  assert.ok(dataStart > bridgeStart, "the HTTP bridge must handle streamed response chunks");
+  assert.ok(refresh > dataStart && refresh < byteCount, "heartbeats must renew the inactivity timeout");
+  assert.match(main, /const refreshTimeout = \(\) => \{/);
+  assert.match(main, /HTTP_BRIDGE_STREAM_TIMEOUT_MS\);/);
+});
+
 test("connection modes show Spanish status and no remote status for local startup", () => {
   const splash = source("../../splash.html");
   const script = source("../../splash.js");
