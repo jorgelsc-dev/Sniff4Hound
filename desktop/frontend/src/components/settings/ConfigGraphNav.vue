@@ -46,7 +46,7 @@
             <svg class="config-wires" aria-hidden="true">
               <defs>
                 <marker id="config-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
-                  <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" fill-opacity="0.9" />
+                  <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" fill-opacity="0.95" />
                 </marker>
               </defs>
               <g v-for="edge in edges" :key="edge.id" :class="{ 'is-active': edge.active, 'is-related': edge.related }">
@@ -107,6 +107,9 @@
               </span>
               <span class="config-node__port config-node__port--in" />
               <span class="config-node__port config-node__port--out" />
+              <v-tooltip activator="parent" location="top" open-delay="450">
+                {{ node.label }}: {{ node.detail }}. {{ node.state.label || "Ajustes" }}
+              </v-tooltip>
             </button>
           </div>
         </div>
@@ -312,7 +315,7 @@ function revealNode(node) {
 watch(() => props.modelValue, (value, previous) => {
   if (inspectorBody.value) inspectorBody.value.scrollTop = 0;
   if (value && value !== previous) nextTick(focusCloseButton);
-});
+}, { immediate: true });
 onMounted(() => {
   try { positions.value = validPositions(JSON.parse(localStorage.getItem(GRAPH_STORAGE_KEY))); } catch { /* Use the default layout. */ }
   selection = select(viewport.value).call(zoomBehavior).on("dblclick.zoom", null);
@@ -375,7 +378,7 @@ onBeforeUnmount(() => {
 .config-world { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
 .config-wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .config-wire {
-  fill: none; stroke: var(--wire-color); stroke-width: 2.4; stroke-linecap: round; opacity: 0.42;
+  fill: none; stroke: var(--wire-color); stroke-width: 3; stroke-linecap: round; opacity: 0.7;
   filter: drop-shadow(0 0 4px var(--wire-color));
   transition: opacity 160ms, stroke-width 160ms;
 }
@@ -383,9 +386,9 @@ onBeforeUnmount(() => {
 .is-related .config-wire { stroke-width: 3.4; }
 .config-edge-label {
   position: absolute; transform: translate(-50%, -50%); padding: 2px 7px; border-radius: 999px;
-  font-size: 10px; line-height: 14px; white-space: nowrap; color: var(--edge-color); background: var(--surface-0);
-  border: 1px solid color-mix(in srgb, var(--edge-color) 40%, transparent); pointer-events: none;
-  opacity: 0.62; transition: opacity 160ms, color 160ms;
+  font-size: 10px; line-height: 14px; white-space: nowrap; color: var(--edge-color); background: var(--surface-1);
+  border: 1px solid color-mix(in srgb, var(--edge-color) 55%, var(--stroke-strong)); pointer-events: none;
+  opacity: 0.88; transition: opacity 160ms, color 160ms;
 }
 .config-edge-label.is-active { opacity: 1; }
 .config-edge-label.is-related { font-weight: 600; box-shadow: 0 0 0 3px var(--surface-0); }
@@ -444,8 +447,8 @@ onBeforeUnmount(() => {
   .config-overlay__body { padding: 14px; }
   .config-component-count { display: none; }
   .config-canvas-tools { justify-content: center; }
-  /* Keep the geometry in sync with settingsGraph.js. Scaling the card with CSS
-     alone moves ports and arrows away from the positions used by the graph. */
+  /* Keep CSS dimensions aligned with GRAPH_CARD. The graph zooms to fit on
+     narrow screens; changing only the card CSS makes wire endpoints drift. */
   .config-node { padding-left: 12px; padding-right: 12px; }
 }
 @media (max-width: 480px) {
