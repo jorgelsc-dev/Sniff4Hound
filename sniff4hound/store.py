@@ -385,11 +385,17 @@ def _domain_match_clause(domain: str, mode: str, *, domain_column: str, host_col
     domain_value = f"RTRIM(LOWER({domain_column}), '.')"
     host_only = f"RTRIM(LOWER(SUBSTR({host_column}, 1, INSTR({host_column} || ':', ':') - 1)), '.')"
     if mode == "subdomain":
+        # Suffix comparison with substr, not LIKE: domain labels may contain
+        # "_" (SRV/DNS-SD names such as _ipp._tcp.local), which LIKE would
+        # treat as a wildcard. The leading '.' enforces a label boundary.
+        def suffix(column_expr: str) -> str:
+            return f"substr({column_expr}, -(length(?) + 1)) = '.' || ?"
+
         clause = (
-            f"({domain_value} = ? OR {domain_value} LIKE ? OR "
-            f"{host_only} = ? OR {host_only} LIKE ?)"
+            f"({domain_value} = ? OR {suffix(domain_value)} OR "
+            f"{host_only} = ? OR {suffix(host_only)})"
         )
-        params = [normalized, f"%.{normalized}", normalized, f"%.{normalized}"]
+        params = [normalized, normalized, normalized, normalized, normalized, normalized]
     else:
         clause = f"({domain_value} = ? OR {host_only} = ?)"
         params = [normalized, normalized]
