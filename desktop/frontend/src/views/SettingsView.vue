@@ -22,6 +22,7 @@
           </div>
         </div>
         <v-alert v-if="engineError" type="error" variant="tonal" class="mt-4">{{ engineError }}</v-alert>
+        <AiSettingsPanel class="mt-4" />
       </v-window-item>
 
       <v-window-item value="capture">
@@ -1732,6 +1733,7 @@ import ExclusionsPanel from "../components/settings/ExclusionsPanel.vue";
 import HistoryPanel from "../components/settings/HistoryPanel.vue";
 import RuleDetailDialog from "../components/monitors/RuleDetailDialog.vue";
 import ConfigGraphNav from "../components/settings/ConfigGraphNav.vue";
+import AiSettingsPanel from "../components/settings/AiSettingsPanel.vue";
 import { normalizeSettingsSection } from "../components/settings/settingsGraph";
 import { formatTimestamp, matchesSearch, uniqueSorted } from "../utils/traffic";
 
@@ -1835,6 +1837,7 @@ export default {
     LocationPicker,
     RuleDetailDialog,
     ConfigGraphNav,
+    AiSettingsPanel,
   },
   data() {
     const requested = String((this.$route && this.$route.query && this.$route.query.section) || "").trim();
@@ -3447,6 +3450,8 @@ export default {
 .settings-engine h3 { font-size: 15px; }
 .settings-engine span { color: #b1b3be; font-size: 12px; }
 .settings-engine .v-switch { flex: 0 0 auto; }
+.ai-settings-panel__row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.ai-settings-panel__row .v-switch { flex: 0 0 auto; }
 .settings-connection { display: grid; grid-template-columns: auto 1fr; gap: 18px; font-size: 13px; }
 .settings-connection dt { color: #a4a6b1; }
 .settings-connection dd { margin: 0; overflow-wrap: anywhere; }
