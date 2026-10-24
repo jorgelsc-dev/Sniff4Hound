@@ -30,6 +30,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
+from .logger import get_logger
+
+LOGGER = get_logger("sniff4hound.ipc")
+
 _LEN_STRUCT = struct.Struct("!I")
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 
@@ -154,8 +158,28 @@ class IpcServer:
     # token before its session thread gives up.
     HANDSHAKE_TIMEOUT_SECONDS = 10.0
 
-    def __init__(self, socket_path: str, token: str, *, methods: dict[str, Callable[..., Any]] | None = None):
+    # A dispatch that runs longer than this is logged, and reported to
+    # `on_slow_dispatch`. Kept below the client's default call timeout (10 s)
+    # so a call the client is about to give up on is already on record.
+    SLOW_DISPATCH_SECONDS = 5.0
+
+    def __init__(
+        self,
+        socket_path: str,
+        token: str,
+        *,
+        methods: dict[str, Callable[..., Any]] | None = None,
+        slow_dispatch_seconds: float | None = None,
+        on_slow_dispatch: Callable[[str, float], None] | None = None,
+    ):
         self.methods: dict[str, Callable[..., Any]] = dict(methods or {})
+        self.slow_dispatch_seconds = float(
+            self.SLOW_DISPATCH_SECONDS if slow_dispatch_seconds is None else slow_dispatch_seconds
+        )
+        # Called as on_slow_dispatch(method, elapsed_seconds) once a slow
+        # handler has returned (or raised). The caller may have timed out by
+        # then, so this is where the owner re-publishes the real state.
+        self.on_slow_dispatch = on_slow_dispatch
         self._token = token
         self._socket_path = prepare_socket_path(socket_path)
         self._server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -276,6 +300,7 @@ class IpcServer:
         request_id = message.get("id")
         method_name = str(message.get("method") or "")
         args = message.get("args") or {}
+        started = time.monotonic()
         try:
             handler = self.methods.get(method_name)
             if handler is None:
@@ -288,6 +313,23 @@ class IpcServer:
                 {"kind": "response", "id": request_id, "ok": False, "error": str(exc), "error_type": type(exc).__name__},
                 self._write_lock,
             )
+        finally:
+            self._note_slow_dispatch(method_name, time.monotonic() - started)
+
+    def _note_slow_dispatch(self, method_name: str, elapsed: float) -> None:
+        if elapsed < self.slow_dispatch_seconds:
+            return
+        LOGGER.warning(
+            "slow IPC dispatch",
+            extra={"extra_fields": {"method": method_name, "elapsed_s": round(elapsed, 2)}},
+        )
+        hook = self.on_slow_dispatch
+        if hook is None:
+            return
+        try:
+            hook(method_name, elapsed)
+        except Exception:  # noqa: BLE001 - a reporting hook must not kill the worker
+            LOGGER.exception("slow IPC dispatch hook failed")
 
     def publish(self, payload: dict) -> None:
         with self._client_lock:
@@ -592,7 +634,14 @@ class IpcClient:
                     raise IpcDisconnected(str(exc)) from exc
         else:
             raise IpcDisconnected("Not connected to the capture service")
-        message = pending.wait(self._call_timeout)
+        try:
+            message = pending.wait(self._call_timeout)
+        finally:
+            # On a timeout nothing else would ever remove the entry; a late
+            # response for it is simply dropped by _resolve().
+            with self._pending_lock:
+                if self._pending.get(request_id) is pending:
+                    self._pending.pop(request_id, None)
         if not message.get("ok"):
             error = str(message.get("error") or "IPC call failed")
             remote_type = message.get("error_type")

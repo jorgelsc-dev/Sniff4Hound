@@ -153,6 +153,13 @@ class RuntimeController:
             }
         )
 
+    def broadcast_state(self) -> dict:
+        """Push the current runtime snapshot to every client, e.g. after a
+        mutation finished too late for its caller to see the answer."""
+        snapshot = self.snapshot()
+        self._broadcast_snapshot(snapshot)
+        return snapshot
+
     def start(self, engine=None):
         """Start one engine, or the focused one when none is named.
 

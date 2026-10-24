@@ -341,6 +341,79 @@ class IpcReconnectTests(unittest.TestCase):
             slow_thread.join(timeout=10)
         self.assertEqual(slow_result, {"slow": True})
 
+    def test_timed_out_calls_do_not_stay_pending(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        def hang():
+            release.wait(timeout=10)
+            return {"late": True}
+
+        server = IpcServer(self.socket_path, self.token, methods={"hang": hang})
+        server.start()
+        self.addCleanup(server.stop)
+        client = IpcClient(self.socket_path, self.token, connect_timeout=2, call_timeout=0.1)
+        client.connect()
+        self.addCleanup(client.close)
+
+        for _ in range(5):
+            with self.assertRaisesRegex(IpcError, "timed out"):
+                client.call("hang")
+        self.assertEqual(len(client._pending), 0)
+        # The late answers arrive for ids nobody waits on and are dropped.
+        release.set()
+        client._call_timeout = 2
+        self.assertEqual(client.call("hang"), {"late": True})
+        self.assertEqual(len(client._pending), 0)
+
+    def test_a_late_mutation_republishes_state_after_the_caller_timed_out(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        state = {"running": False}
+        slow_calls = []
+
+        def mutate():
+            release.wait(timeout=10)
+            state["running"] = True
+            return dict(state)
+
+        server = IpcServer(self.socket_path, self.token, methods={"mutate": mutate},
+                           slow_dispatch_seconds=0.05)
+        sink = IpcEventSink(server)
+
+        def resync(method, elapsed):
+            slow_calls.append((method, elapsed))
+            sink.broadcast({"type": "runtime_mode", "runtime": dict(state)})
+
+        server.on_slow_dispatch = resync
+        server.start()
+        self.addCleanup(server.stop)
+        events = []
+        client = IpcClient(self.socket_path, self.token, on_event=events.append,
+                           connect_timeout=2, call_timeout=0.1)
+        client.connect()
+        self.addCleanup(client.close)
+
+        with self.assertLogs("sniff4hound.ipc", level="WARNING") as logs:
+            with self.assertRaisesRegex(IpcError, "timed out"):
+                client.call("mutate")
+            release.set()
+            self.assertTrue(_wait_until(lambda: events, timeout=3))
+        self.assertEqual(events[0], {"type": "runtime_mode", "runtime": {"running": True}})
+        self.assertEqual(slow_calls[0][0], "mutate")
+        self.assertTrue(any("slow IPC dispatch" in line for line in logs.output))
+
+    def test_a_fast_dispatch_does_not_trigger_the_slow_hook(self):
+        hook_calls = []
+        server = IpcServer(self.socket_path, self.token, methods={"fast": lambda: 1},
+                           on_slow_dispatch=lambda *args: hook_calls.append(args))
+        server.start()
+        self.addCleanup(server.stop)
+        client = IpcClient(self.socket_path, self.token, connect_timeout=2, call_timeout=2)
+        client.connect()
+        self.addCleanup(client.close)
+        self.assertEqual(client.call("fast"), 1)
+        self.assertEqual(hook_calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()
