@@ -1,7 +1,6 @@
 const { app, BrowserWindow, Menu, ipcMain, net, shell, dialog, protocol, session } = require("electron");
 const { spawn, execFile, execFileSync } = require("node:child_process");
 const crypto = require("node:crypto");
-const { StringDecoder } = require("node:string_decoder");
 const https = require("node:https");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -13,6 +12,7 @@ const { createShutdownController } = require("./lib/shutdown");
 const { startPrivateSessionBus } = require("./lib/session-bus");
 const quicPin = require("./lib/quic-pin");
 const { verifyLocalService } = require("./lib/mdns");
+const { createStreamRegistry, openBridgeStream } = require("./lib/bridge-streams");
 
 const READY_PREFIX = "SNIFF4HOUND_DESKTOP_READY ";
 const DEFAULT_PORT = "45678";
@@ -143,10 +143,7 @@ const shutdownController = createShutdownController({
     try {
       stopBackend();
     } finally {
-      for (const request of httpStreams.values()) {
-        try { request.abort(); } catch { /* The stream may already be closed. */ }
-      }
-      httpStreams.clear();
+      httpStreams.abortAll();
     }
   },
   close: () => {
@@ -774,9 +771,10 @@ function requestText(url, headers = {}) {
 // open proxy from the renderer.
 
 const HTTP_BRIDGE_BODY_LIMIT = 32 * 1024 * 1024;
-const HTTP_BRIDGE_STREAM_LIMIT = 8 * 1024 * 1024;
-const HTTP_BRIDGE_STREAM_TIMEOUT_MS = 30000;
-const httpStreams = new Map();
+// Streams are limited by what is pending (one unterminated event), not by
+// their lifetime total, and closed after a period without data - see
+// lib/bridge-streams.js.
+const httpStreams = createStreamRegistry();
 
 function bridgeTargetAllowed(rawUrl) {
   const origin = normalizeOrigin(rawUrl);
@@ -800,73 +798,21 @@ ipcMain.handle("desktop-http:request", (_event, payload) => performRequest(bridg
 
 ipcMain.handle("desktop-http:stream-open", (event, payload) => {
   const options = bridgeRequestOptions({ ...payload, method: "GET" });
-  const id = String(payload.id || "");
-  if (!id || httpStreams.has(id)) throw new Error("Invalid stream id.");
-  const ownerId = event.sender.id;
-  const decoder = new StringDecoder("utf8");
-  let bytes = 0;
-  let finished = false;
-  let timeout = null;
-  let request = null;
-  const send = (message) => {
-    if (!event.sender.isDestroyed()) event.sender.send("desktop-http:stream", { id, ...message });
-  };
-  const cleanup = () => {
-    if (finished) return false;
-    finished = true;
-    if (timeout) clearTimeout(timeout);
-    timeout = null;
-    if (httpStreams.get(id)?.ownerId === ownerId) httpStreams.delete(id);
-    return true;
-  };
-  const refreshTimeout = () => {
-    if (finished) return;
-    if (timeout) clearTimeout(timeout);
-    timeout = setTimeout(() => {
-      if (!cleanup()) return;
-      request.abort();
-      send({ type: "error", message: "Stream timed out." });
-    }, HTTP_BRIDGE_STREAM_TIMEOUT_MS);
-  };
-  request = net.request({ method: "GET", url: options.url, redirect: "error" });
-  for (const [name, value] of Object.entries(options.headers)) request.setHeader(name, value);
-  httpStreams.set(id, { request, ownerId, cleanup });
-  refreshTimeout();
-  request.on("response", (response) => {
-    response.on("data", (chunk) => {
-      // This is an inactivity timeout. The realtime endpoint emits a heartbeat
-      // every 15 seconds, so a healthy long-lived stream must renew it for
-      // every received chunk instead of being closed after 30 seconds.
-      refreshTimeout();
-      bytes += chunk.length;
-      if (bytes > HTTP_BRIDGE_STREAM_LIMIT) {
-        if (!cleanup()) return;
-        request.abort();
-        send({ type: "error", message: "Stream is too large." });
-        return;
-      }
-      send({ type: "data", chunk: decoder.write(chunk) });
-    });
-    response.on("end", () => {
-      if (!cleanup()) return;
-      send({ type: "end", status: response.statusCode });
-    });
-    response.on("error", (error) => {
-      if (!cleanup()) return;
-      send({ type: "error", message: error.message });
-    });
+  const contents = event.sender;
+  // One 'destroyed' and one navigation listener per webContents: its streams
+  // end with the document that opened them (reload, sensor switch, chooser).
+  httpStreams.watch(contents);
+  return openBridgeStream({
+    id: String(payload.id || ""),
+    ownerId: contents.id,
+    url: options.url,
+    headers: options.headers,
+    createRequest: (requestOptions) => net.request(requestOptions),
+    registry: httpStreams,
+    send: (message) => {
+      if (!contents.isDestroyed()) contents.send("desktop-http:stream", { id: String(payload.id), ...message });
+    },
   });
-  request.on("error", (error) => {
-    if (!cleanup()) return;
-    send({ type: "error", message: error.message });
-  });
-  event.sender.once("destroyed", () => {
-    const stream = httpStreams.get(id);
-    if (stream?.ownerId !== ownerId || !stream.cleanup()) return;
-    stream.request.abort();
-  });
-  request.end();
-  return { id };
 });
 
 ipcMain.handle("desktop-http:stream-close", (event, payload) => {

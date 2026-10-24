@@ -18,7 +18,27 @@ const CLOSED = 3;
 // Close code the realtime protocol uses for "the security code was rejected".
 const AUTH_CLOSE_CODE = 4401;
 
+// Stream ids name a bridged stream in the main process and on the shared
+// "desktop-http:stream" channel. A sequence alone restarts at 1 in every
+// document, so after a reload the previous document's stream (still being
+// torn down) could deliver chunks to a new channel with the same id; the
+// per-document nonce keeps ids unique across documents.
+const DOCUMENT_NONCE = documentNonce();
 let streamSequence = 0;
+
+function documentNonce() {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi && typeof cryptoApi.randomUUID === "function") return cryptoApi.randomUUID();
+  if (cryptoApi && typeof cryptoApi.getRandomValues === "function") {
+    return Array.from(cryptoApi.getRandomValues(new Uint32Array(4)), (part) => part.toString(36)).join("");
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+}
+
+export function nextStreamId() {
+  streamSequence += 1;
+  return `realtime-${DOCUMENT_NONCE}-${streamSequence}`;
+}
 
 function parseJson(text) {
   try {
@@ -49,7 +69,7 @@ export class RealtimeChannel {
     const bridge = bridgeFor(url);
     if (bridge && String(url).startsWith("https://")) {
       this.bridge = bridge;
-      this.streamId = `realtime-${++streamSequence}`;
+      this.streamId = nextStreamId();
       this.stopListening = bridge.onHttpStream((message) => this.handleStreamMessage(message));
       bridge.httpStreamOpen({ id: this.streamId, url, headers: this.headersFor() }).catch(() => {
         this.finish(1006, "connection lost");

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import test from "node:test";
 import { parse } from "@vue/compiler-sfc";
 import { describeProtocol, LAYERS } from "../src/utils/protocolCatalog.js";
@@ -9,6 +10,7 @@ import { bridgedFetch, connectionErrorMessage } from "../src/utils/httpBridge.js
 import { formatTimestamp, normalizeProto } from "../src/utils/traffic.js";
 import { SETTINGS_NODES } from "../src/components/settings/settingsGraph.js";
 
+const require = createRequire(import.meta.url);
 const source = path => readFileSync(new URL(path, import.meta.url), "utf8");
 function method(file, name, globals = {}) {
   const { descriptor } = parse(source(file));
@@ -165,14 +167,19 @@ test("desktop CSP, renderer sandbox and permission denial remain wired", () => {
 
 test("desktop realtime bridge renews its timeout when heartbeat data arrives", () => {
   const main = source("../../main.js");
-  const bridgeStart = main.indexOf('ipcMain.handle("desktop-http:stream-open"');
-  const dataStart = main.indexOf('response.on("data", (chunk) => {', bridgeStart);
-  const refresh = main.indexOf("refreshTimeout();", dataStart);
-  const byteCount = main.indexOf("bytes += chunk.length;", dataStart);
-  assert.ok(dataStart > bridgeStart, "the HTTP bridge must handle streamed response chunks");
-  assert.ok(refresh > dataStart && refresh < byteCount, "heartbeats must renew the inactivity timeout");
-  assert.match(main, /const refreshTimeout = \(\) => \{/);
-  assert.match(main, /HTTP_BRIDGE_STREAM_TIMEOUT_MS\);/);
+  assert.match(main, /"desktop-http:stream-open",[\s\S]*?openBridgeStream\(/);
+  const { createStreamRegistry, openBridgeStream } = require("../../lib/bridge-streams.js");
+  const timers = [];
+  const handlers = {};
+  const response = { on: (type, fn) => { handlers[type] = fn; } };
+  openBridgeStream({
+    id: "heartbeat", ownerId: 1, url: "https://sensor.example/realtime/stream", registry: createStreamRegistry(),
+    createRequest: () => ({ setHeader() {}, end() {}, abort() {}, on: (type, fn) => { if (type === "response") fn(response); } }),
+    send() {}, schedule: (fn, delay) => { const timer = { fn, delay }; timers.push(timer); return timer; }, cancel() {},
+  });
+  handlers.data(Buffer.from(": heartbeat\n\n"));
+  assert.equal(timers.length, 2, "every chunk renews the inactivity timeout");
+  assert.equal(timers[1].delay, 30000);
 });
 
 test("connection modes show Spanish status and no remote status for local startup", () => {
