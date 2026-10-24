@@ -76,6 +76,19 @@ test("monitor settings send search, enabled, page size and offset to the server"
   assert.equal(vm.monitors[0].id, "result");
 });
 
+test("settings only loads the monitor catalog when Detection is opened", () => {
+  const settings = source("../src/views/SettingsView.vue");
+  const mounted = settings.match(/mounted\(\) \{([\s\S]*?)\n\x20{2}\},\n\x20{2}beforeUnmount/);
+  assert.ok(mounted, "settings mounted hook");
+  assert.match(mounted[1], /this\.loadListeners\(\);/);
+  assert.match(mounted[1], /if \(this\.activeTab === "detection"\) this\.load\(\{ silent: true \}\);/);
+  assert.doesNotMatch(mounted[1].replace(/if \(this\.activeTab === "detection"\)[\s\S]*$/, ""), /this\.load\(/);
+
+  const watcher = settings.match(/activeTab\(next\) \{([\s\S]*?)\n\x20{4}\},\n\x20{2}\},\n\x20{2}mounted/);
+  assert.ok(watcher, "activeTab watcher");
+  assert.match(watcher[1], /next === "detection" && !this\.loading\) this\.load\(\{ silent: true \}\)/);
+});
+
 test("lightweight monitor rows fetch full details before opening the editor", async () => {
   const requests = [];
   const vm = { store: { fetchJsonPromise: async path => { requests.push(path); return { id: "a/b", match: { ports: [53] } }; } } };
