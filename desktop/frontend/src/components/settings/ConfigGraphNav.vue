@@ -34,9 +34,14 @@
           ref="viewport"
           class="config-canvas"
           tabindex="0"
+          role="region"
           aria-label="Grafo de configuración"
+          aria-describedby="config-canvas-help"
           @keydown.esc="closeInspector"
         >
+          <p id="config-canvas-help" class="sr-only">
+            Usa Tab para recorrer los componentes, Enter para abrir su configuración y las flechas para moverte entre componentes. Arrastra el fondo para desplazar el grafo.
+          </p>
           <div ref="world" class="config-world" :style="{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})` }">
             <svg class="config-wires" aria-hidden="true">
               <defs>
@@ -64,21 +69,27 @@
               :class="{ 'is-selected': modelValue === node.section, 'is-running': node.state.active }"
               :data-node="node.id"
               :style="{ left: node.x + 'px', top: node.y + 'px', '--node-color': node.color }"
-              :aria-label="'Configurar ' + node.label"
+              :aria-label="nodeAccessibleLabel(node)"
               :aria-expanded="modelValue === node.section"
+              :aria-pressed="modelValue === node.section"
               aria-controls="settings-inspector"
+              :title="`${node.label}: ${node.detail}. ${node.state.label || 'Ajustes'}`"
               @click="$emit('update:modelValue', node.section)"
               @mouseenter="hoveredId = node.id"
               @mouseleave="hoveredId = ''"
               @focus="revealNode(node)"
               @keydown.esc.stop="closeInspector"
+              @keydown.arrow-down.prevent="moveToNode(node, 1)"
+              @keydown.arrow-right.prevent="moveToNode(node, 1)"
+              @keydown.arrow-up.prevent="moveToNode(node, -1)"
+              @keydown.arrow-left.prevent="moveToNode(node, -1)"
             >
               <span class="config-node__head">
                 <span class="config-node__icon"><v-icon :icon="node.icon" size="18" /></span>
-                <strong>{{ node.label }}</strong>
+                <strong :title="node.label">{{ node.label }}</strong>
                 <v-icon icon="mdi-chevron-right" size="16" class="config-node__open" />
               </span>
-              <span class="config-node__detail">{{ node.detail }}</span>
+              <span class="config-node__detail" :title="node.detail">{{ node.detail }}</span>
               <span v-if="node.state.metrics?.length" class="config-node__metrics">
                 <span
                   v-for="metric in node.state.metrics"
@@ -86,13 +97,13 @@
                   class="config-node__metric"
                   :class="metric.tone ? 'is-' + metric.tone : ''"
                 >
-                  <small>{{ metric.label }}</small>
+                  <small :title="metric.label">{{ metric.label }}</small>
                   <strong :title="String(metric.value)">{{ metric.value }}</strong>
                 </span>
               </span>
               <span class="config-node__status" :class="{ 'is-unknown': node.state.unknown }">
                 <span class="config-node__dot" />
-                <span>{{ node.state.label || "Ajustes" }}</span>
+                <span :title="node.state.label || 'Ajustes'">{{ node.state.label || "Ajustes" }}</span>
               </span>
               <span class="config-node__port config-node__port--in" />
               <span class="config-node__port config-node__port--out" />
@@ -123,13 +134,17 @@
       <Transition name="config-overlay">
         <div v-show="selected" class="config-overlay" @click.self="closeInspector">
           <div
+            ref="inspector"
             id="settings-inspector"
             class="config-overlay__card"
             role="dialog"
             aria-modal="true"
             aria-labelledby="config-inspector-title"
+            aria-describedby="config-inspector-help"
+            tabindex="-1"
             :style="{ '--node-color': selected?.color }"
             @keydown.esc="closeInspector"
+            @keydown="handleInspectorKeydown"
           >
             <header class="config-overlay__header">
               <span class="config-overlay__icon"><v-icon :icon="selected?.icon || 'mdi-cog-outline'" /></span>
@@ -137,10 +152,11 @@
                 <span>{{ selected?.detail }}</span>
                 <h2 id="config-inspector-title">{{ selected?.label }}</h2>
               </div>
-              <v-btn icon="mdi-close" size="small" variant="text" aria-label="Cerrar configuración" @click="closeInspector">
+              <v-btn ref="closeButton" icon="mdi-close" size="small" variant="text" aria-label="Cerrar configuración" @click="closeInspector">
                 <v-icon icon="mdi-close" /><v-tooltip activator="parent">Cerrar configuración</v-tooltip>
               </v-btn>
             </header>
+            <p id="config-inspector-help" class="sr-only">Panel de configuración de {{ selected?.label }}. Pulsa Escape para cerrar.</p>
             <div ref="inspectorBody" class="config-overlay__body">
               <slot />
             </div>
@@ -167,6 +183,8 @@ const props = defineProps({
 const emit = defineEmits(["update:modelValue", "refresh"]);
 const viewport = ref(null);
 const world = ref(null);
+const inspector = ref(null);
+const closeButton = ref(null);
 const inspectorBody = ref(null);
 const positions = ref({});
 const hoveredId = ref("");
@@ -201,6 +219,18 @@ const edges = computed(() => {
     };
   });
 });
+function nodeAccessibleLabel(node) {
+  const metrics = (node.state.metrics || [])
+    .map(metric => `${metric.label}: ${metric.value}`)
+    .join("; ");
+  const status = node.state.label || "Ajustes";
+  return [
+    `Configurar ${node.label}`,
+    node.detail,
+    `Estado: ${status}`,
+    metrics,
+  ].filter(Boolean).join(". ");
+}
 function setNodeEl(id, el) {
   if (el) nodeEls.set(id, el);
   else nodeEls.delete(id);
@@ -212,6 +242,36 @@ function closeInspector() {
   const id = selected.value?.id;
   emit("update:modelValue", "");
   nextTick(() => nodeEls.get(id)?.focus({ preventScroll: true }));
+}
+function moveToNode(node, direction) {
+  const index = SETTINGS_NODES.findIndex(item => item.id === node.id);
+  const next = SETTINGS_NODES[(index + direction + SETTINGS_NODES.length) % SETTINGS_NODES.length];
+  emit("update:modelValue", next.section);
+  nextTick(() => nodeEls.get(next.id)?.focus({ preventScroll: true }));
+}
+function focusCloseButton() {
+  const element = closeButton.value?.$el || closeButton.value;
+  element?.focus?.({ preventScroll: true });
+}
+function handleInspectorKeydown(event) {
+  if (event.key !== "Tab") return;
+  const focusable = [...inspector.value.querySelectorAll(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )];
+  if (!focusable.length) {
+    event.preventDefault();
+    inspector.value.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 const zoomBehavior = zoom()
   .scaleExtent([READABLE_MIN_SCALE, 1.8])
@@ -249,8 +309,9 @@ function revealNode(node) {
   }
 }
 
-watch(() => props.modelValue, () => {
+watch(() => props.modelValue, (value, previous) => {
   if (inspectorBody.value) inspectorBody.value.scrollTop = 0;
+  if (value && value !== previous) nextTick(focusCloseButton);
 });
 onMounted(() => {
   try { positions.value = validPositions(JSON.parse(localStorage.getItem(GRAPH_STORAGE_KEY))); } catch { /* Use the default layout. */ }
@@ -309,7 +370,8 @@ onBeforeUnmount(() => {
 .config-canvas-shell { flex: 1; min-width: 0; position: relative; overflow: hidden; }
 .config-canvas { position: absolute; inset: 0 0 54px; overflow: hidden; outline: none; cursor: grab; touch-action: none; background-color: var(--surface-0); background-image: radial-gradient(rgba(255, 255, 255, 0.07) 0.8px, transparent 0.8px); background-size: 22px 22px; }
 .config-canvas:active { cursor: grabbing; }
-.config-canvas:focus-visible { outline: 1px solid #b79aeb; outline-offset: -2px; }
+.config-canvas:focus-visible { outline: 2px solid #cbb3ff; outline-offset: -3px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .config-world { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
 .config-wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .config-wire {
@@ -327,24 +389,24 @@ onBeforeUnmount(() => {
 }
 .config-edge-label.is-active { opacity: 1; }
 .config-edge-label.is-related { font-weight: 600; box-shadow: 0 0 0 3px var(--surface-0); }
-.config-node { position: absolute; width: 252px; height: 176px; box-sizing: border-box; padding: 12px 14px 0; display: flex; flex-direction: column; border: 1px solid var(--stroke); border-radius: 10px; background: linear-gradient(180deg, color-mix(in srgb, var(--node-color) 8%, transparent), transparent 55%), var(--surface-1); color: var(--text-soft); text-align: left; cursor: grab; box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset; transition: border-color 160ms, background 160ms, box-shadow 160ms; user-select: none; touch-action: none; overflow: hidden; }
+.config-node { position: absolute; width: 252px; height: 176px; box-sizing: border-box; padding: 12px 14px 0; display: flex; flex-direction: column; border: 1px solid color-mix(in srgb, var(--text-soft) 22%, var(--stroke)); border-radius: 14px; background: linear-gradient(145deg, color-mix(in srgb, var(--node-color) 12%, transparent), transparent 60%), var(--surface-1); color: var(--text-soft); text-align: left; cursor: grab; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18), 0 1px 0 rgba(255, 255, 255, 0.05) inset; transition: border-color 160ms, background 160ms, box-shadow 160ms, transform 160ms; user-select: none; touch-action: none; overflow: hidden; }
 .config-node::before { content: ""; position: absolute; left: 14px; right: 14px; top: 0; height: 2px; border-radius: 0 0 2px 2px; background: var(--node-color); opacity: 0.85; }
-.config-node:hover { background: var(--surface-2); border-color: var(--node-color); }
+.config-node:hover { background: var(--surface-2); border-color: var(--node-color); transform: translateY(-1px); }
 .config-node:active { cursor: grabbing; }
 .config-node:focus-visible, .config-node.is-selected { outline: 2px solid var(--node-color); outline-offset: 3px; border-color: var(--node-color); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36); }
 .config-node__head { display: flex; align-items: center; gap: 9px; }
 .config-node__head strong { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 0; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .config-node__icon { color: var(--node-color); display: flex; }
 .config-node__open { color: #7d7f8c; }
-.config-node__detail { display: block; font-size: 11px; color: var(--text-dim); margin: 4px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.config-node__detail { display: block; font-size: 11px; color: #c0c2cc; margin: 4px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .config-node__metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
 .config-node__metric { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 5px 8px; border-radius: 6px; background: rgba(255, 255, 255, 0.035); border: 1px solid rgba(255, 255, 255, 0.045); }
-.config-node__metric small { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.config-node__metric small { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: #b9bbc6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .config-node__metric strong { font-size: 12.5px; font-weight: 600; color: var(--text-soft); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .config-node__metric.is-ok strong { color: #69c798; }
 .config-node__metric.is-warn strong { color: #e4b96c; }
 .config-node__metric.is-alert strong { color: #ef7a7a; }
-.config-node__status { margin: auto -14px 0; padding: 0 14px; height: 30px; border-top: 1px solid var(--stroke); display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--text-dim); background: rgba(255, 255, 255, 0.025); }
+.config-node__status { margin: auto -14px 0; padding: 0 14px; height: 30px; border-top: 1px solid var(--stroke); display: flex; align-items: center; gap: 7px; font-size: 10px; color: #b9bbc6; background: rgba(255, 255, 255, 0.035); }
 .config-node__status > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .config-node__dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #81838e; }
 .is-running .config-node__dot { background: #69c798; }
@@ -357,12 +419,12 @@ onBeforeUnmount(() => {
 .config-zoom { display: flex; align-items: center; gap: 3px; }
 .config-zoom output { width: 42px; text-align: center; font-size: 11px; color: #b2b4bf; font-variant-numeric: tabular-nums; }
 .config-tool-divider { height: 18px; width: 1px; background: #3b3c43; margin: 0 5px; }
-.config-overlay { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: 32px; background: rgba(5, 8, 12, 0.84); backdrop-filter: blur(8px); }
-.config-overlay__card { display: flex; flex-direction: column; width: min(980px, 100%); max-height: 100%; background: var(--config-panel); border: 1px solid var(--stroke-strong); border-top: 3px solid var(--node-color, #b79aeb); border-radius: 8px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.62); overflow: hidden; }
+.config-overlay { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: 32px; background: rgba(5, 8, 12, 0.86); backdrop-filter: blur(10px); }
+.config-overlay__card { display: flex; flex-direction: column; width: min(980px, 100%); max-height: 100%; background: var(--config-panel); border: 1px solid var(--stroke-strong); border-top: 3px solid var(--node-color, #b79aeb); border-radius: 14px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.62), 0 1px 0 rgba(255, 255, 255, 0.06) inset; overflow: hidden; }
 .config-overlay__header { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--stroke); flex: 0 0 auto; }
 .config-overlay__icon { display: flex; color: var(--node-color, #b79aeb); }
 .config-overlay__title { flex: 1; min-width: 0; }
-.config-overlay__title span { font-size: 11px; color: #aaaeba; }
+.config-overlay__title span { font-size: 11px; color: #c1c3ce; }
 .config-overlay__title h2 { font-size: 19px; font-weight: 600; letter-spacing: 0; overflow-wrap: break-word; }
 .config-overlay__body { overflow: auto; flex: 1; padding: 22px; min-height: 0; scrollbar-gutter: stable; }
 .config-overlay-enter-active, .config-overlay-leave-active { transition: opacity 180ms ease; }
@@ -382,6 +444,7 @@ onBeforeUnmount(() => {
   .config-overlay__body { padding: 14px; }
   .config-component-count { display: none; }
   .config-canvas-tools { justify-content: center; }
+  .config-node { width: 224px; height: 168px; padding-left: 12px; padding-right: 12px; }
 }
 @media (max-width: 480px) {
   .config-tools { flex: 1 1 100%; }
@@ -390,5 +453,6 @@ onBeforeUnmount(() => {
 }
 @media (prefers-reduced-motion: reduce) {
     .config-node, .config-overlay-enter-active, .config-overlay-leave-active { transition: none; }
+    .config-node:hover { transform: none; }
 }
 </style>

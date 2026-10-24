@@ -192,3 +192,29 @@ test("settings use aggregate listener counts rather than the current catalog pag
   assert.equal(states.honeypot.label, "290 listeners habilitados");
   assert.equal(states.detection.metrics[0].value, "18.032/29.465");
 });
+
+test("settings graph distinguishes initial loading from a failed refresh", () => {
+  const vm = {
+    store: { state: { wsStatus: "online", notifySoundEnabled: false } },
+    runtime: { sniffer: {}, honeypot: {} },
+    pipelineConfig: null, pipelineLive: null, graphFresh: {}, graphErrors: {}, graphReady: false,
+    statusRefreshing: false, graphExtras: {}, storageStats: null, locationConfigured: false,
+    locationSaved: {}, locationSummary: "", locationError: "", monitorStats: null, monitors: [],
+    error: "", monitorMinSeverity: "info", suppressGeneratedInfo: true, detectionScopes: [],
+    detectionScopeOptions: [], logConfig: null, limitsData: null,
+    formatDbBytes: value => `${value} B`,
+  };
+  const graphStates = method("../src/views/SettingsView.vue", "graphStates");
+  assert.equal(graphStates.call(vm).runtime.label, "Cargando");
+  vm.graphReady = true;
+  vm.graphErrors = { runtime: true };
+  assert.equal(graphStates.call(vm).runtime.label, "Error al actualizar");
+});
+
+test("settings graph cards expose truncated content through their accessible name", () => {
+  const template = parse(source("../src/components/settings/ConfigGraphNav.vue")).descriptor.template.content;
+  assert.match(template, /:aria-label="nodeAccessibleLabel\(node\)"/);
+  assert.match(template, /:title="node.detail"/);
+  assert.match(template, /:title="metric.label"/);
+  assert.match(template, /:title="node.state.label \|\| 'Ajustes'"/);
+});
