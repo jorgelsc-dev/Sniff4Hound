@@ -51,20 +51,24 @@ def _reload_app_stack(test_case, require_auth: str = "1"):
             os.environ.pop("SNIFF4HOUND_REQUIRE_AUTH", None)
         else:
             os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = previous
+        import sniff4hound.settings as settings_module
         import sniff4hound.app as app_module
         import sniff4hound.auth as auth_module
 
         _close_app_store(sys.modules.get("sniff4hound.app"))
+        importlib.reload(settings_module)
         importlib.reload(auth_module)
         importlib.reload(app_module)
 
     test_case.addCleanup(_restore)
 
     os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = require_auth
+    import sniff4hound.settings as settings_module
     import sniff4hound.app as app_module
     import sniff4hound.auth as auth_module
 
     _close_app_store(sys.modules.get("sniff4hound.app"))
+    importlib.reload(settings_module)
     auth_module = importlib.reload(auth_module)
     app_module = importlib.reload(app_module)
     return auth_module, app_module

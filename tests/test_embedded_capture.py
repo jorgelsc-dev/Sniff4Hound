@@ -168,6 +168,8 @@ def _reload_app(test_case, *, embedded: bool):
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
+        import sniff4hound.settings as settings_module
+        importlib.reload(settings_module)
         importlib.reload(sys.modules["sniff4hound.auth"])
         importlib.reload(sys.modules["sniff4hound.app"])
 
@@ -179,8 +181,10 @@ def _reload_app(test_case, *, embedded: bool):
         os.environ.pop("SNIFF4HOUND_CAPTURE_EMBEDDED", None)
     import sniff4hound.app as app_module
     import sniff4hound.auth as auth_module
+    import sniff4hound.settings as settings_module
 
     _close(sys.modules.get("sniff4hound.app"))
+    importlib.reload(settings_module)
     importlib.reload(auth_module)
     return importlib.reload(app_module)
 

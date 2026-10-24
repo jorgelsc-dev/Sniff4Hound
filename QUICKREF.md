@@ -108,6 +108,19 @@ tokens emitidos anteriormente.
 
 ## Export de indicadores (IOC)
 
+## Métricas operativas de detección
+
+`GET /api/runtime/` y los eventos `stats_update` incluyen `sniffer.detection_metrics`:
+
+- `evaluated`: paquetes que entraron en reglas, monitores y anomalías.
+- `alerts`: paquetes con al menos una detección activa.
+- `clean`: paquetes evaluados sin detección; se descartan cuando la política es `alerts`.
+- `muted`: paquetes conservados sin detección por exclusión o ámbito silenciado.
+- `whitelisted`: paquetes descartados por una entrada explícita de whitelist.
+
+Estos contadores son operativos, no una métrica de calidad predictiva: describen el
+camino de captura y la decisión de persistencia del runtime actual.
+
 ```bash
 curl -H "X-Security-Code: TOKEN" \
   "http://127.0.0.1:45678/api/export/alerts?format=csv&since=24h" -o alerts.csv

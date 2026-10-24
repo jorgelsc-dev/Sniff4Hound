@@ -34,10 +34,12 @@ def _reload_auth_stack(require_auth: str = "1"):
     previous = os.environ.get("SNIFF4HOUND_REQUIRE_AUTH")
     os.environ["SNIFF4HOUND_REQUIRE_AUTH"] = require_auth
     try:
+        import sniff4hound.settings as settings_module
         import sniff4hound.auth as auth_module
         import sniff4hound.app as app_module
 
         _close_app_store(sys.modules.get("sniff4hound.app"))
+        importlib.reload(settings_module)
         auth_module = importlib.reload(auth_module)
         app_module = importlib.reload(app_module)
         return auth_module, app_module

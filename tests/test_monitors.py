@@ -773,6 +773,21 @@ class TestSnifferGatedPersistence(unittest.TestCase):
         self.assertEqual(self.store.list_count("packets"), 1)
         self.assertEqual(self.sniffer.state.packets_stored, 1)
 
+    def test_detection_metrics_distinguish_alerts_clean_muted_and_whitelisted(self):
+        self.sniffer._store_packet(self._base_packet())
+        self.sniffer._store_packet(self._base_packet(dst_port=3389))
+        self.store.set_exclusion_filters({"ports": [8081]})
+        self.sniffer._exclusion_filters = self.store.get_exclusion_filters()
+        self.sniffer._store_packet(self._base_packet(dst_port=8081))
+        self.store.create_whitelist_entry("ip", "exact", "10.0.0.5")
+        self.sniffer._whitelist_cache = self.store.list_whitelist_entries()
+        self.sniffer._store_packet(self._base_packet(dst_port=443))
+
+        self.assertEqual(
+            self.sniffer.snapshot()["detection_metrics"],
+            {"evaluated": 2, "alerts": 1, "clean": 2, "muted": 1, "whitelisted": 1},
+        )
+
     def test_own_dashboard_traffic_is_ignored(self):
         # Regression: a live dashboard tab's own polling/WebSocket traffic
         # to this app's web port, captured right back by this same sniffer,

@@ -73,7 +73,7 @@ export default {
         {
           kind: "whitelist",
           title: "Lista permitida",
-          description: "Las coincidencias permanecen en captura, pero no disparan detecciones.",
+          description: "Las coincidencias se descartan y no aparecen en el historial ni disparan detecciones.",
           icon: "mdi-shield-check-outline",
           color: "success",
         },

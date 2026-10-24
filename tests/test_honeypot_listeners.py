@@ -413,25 +413,40 @@ class TestHoneypotEnginePerListenerControl(unittest.TestCase):
             self.engine.stop()
 
     def test_create_listener_while_running_starts_immediately(self):
+        base_port = _free_high_port()
+        self.engine.create_listener("tcp", base_port)
         self.engine.start()
         try:
             port = _free_high_port()
             snapshot = self.engine.create_listener("tcp", port)
-            time.sleep(0.1)
             listener_id = f"tcp/{port}"
-            listeners = {item["id"]: item for item in snapshot["listeners"]}
+            self.assertTrue(_wait_until(
+                lambda: next(
+                    item["running"] for item in self.engine.snapshot()["listeners"]
+                    if item["id"] == listener_id
+                ),
+                timeout=3,
+            ))
+            listeners = {item["id"]: item for item in self.engine.snapshot()["listeners"]}
             self.assertTrue(listeners[listener_id]["running"])
         finally:
             self.engine.stop()
 
     def test_stopping_one_listener_leaves_another_running(self):
+        port_a = _free_high_port()
+        port_b = _free_high_port()
+        self.engine.create_listener("tcp", port_a)
+        self.engine.create_listener("tcp", port_b)
         self.engine.start()
         try:
-            port_a = _free_high_port()
-            port_b = _free_high_port()
-            self.engine.create_listener("tcp", port_a)
-            self.engine.create_listener("tcp", port_b)
-            time.sleep(0.1)
+            self.assertTrue(_wait_until(
+                lambda: all(
+                    item["running"]
+                    for item in self.engine.snapshot()["listeners"]
+                    if item["id"] in {f"tcp/{port_a}", f"tcp/{port_b}"}
+                ),
+                timeout=3,
+            ))
 
             snapshot = self.engine.set_listener_enabled(f"tcp/{port_a}", False)
             listeners = {item["id"]: item for item in snapshot["listeners"]}
@@ -480,11 +495,20 @@ class TestHoneypotEnginePerListenerControl(unittest.TestCase):
             self.engine.stop()
 
     def test_failed_start_is_not_running_and_can_be_retried(self):
+        self.engine.bind_host = "127.0.0.1"
+        blocked_port = _free_high_port()
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        blocker.bind(("127.0.0.1", blocked_port))
+        blocker.listen(1)
+        self.addCleanup(blocker.close)
+        self.store.create_honeypot_listener("tcp", blocked_port, label="blocked")
         first = self.engine.start()
         self.assertEqual(first["status"], "starting")
         self.assertTrue(_wait_until(lambda: self.engine.snapshot()["status"] == "failed", timeout=3))
         self.assertFalse(self.engine.snapshot()["running"])
 
+        blocker.close()
         port = _free_high_port()
         self.engine.create_listener("tcp", port)
         self.engine.start()

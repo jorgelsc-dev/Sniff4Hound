@@ -57,7 +57,15 @@ LOG_BOUNDS = {
 SQL_DEBUG_MS = 50
 
 _LEVEL_RANK = {name: index for index, name in enumerate(LOG_LEVELS)}
-_STATE = {"sink": None, "process": "", "slow_ms": LOG_DEFAULTS["slow_ms"], "owner": None, "log_dir": None}
+_STATE = {
+    "sink": None,
+    "process": "",
+    "slow_ms": LOG_DEFAULTS["slow_ms"],
+    "owner": None,
+    "log_dir": None,
+    "reload_stop": None,
+    "reload_thread": None,
+}
 _HANDLER_TAG = "_sniff4hound_handler"
 
 
@@ -286,9 +294,14 @@ def note_statement(sql: str, elapsed_ms: float) -> None:
 def start_reload_loop(read_config, *, interval: float = 10.0) -> threading.Thread:
     """Re-reads the stored log config periodically so changes apply to this process."""
 
+    previous_stop = _STATE.get("reload_stop")
+    if previous_stop is not None:
+        previous_stop.set()
+    stop = threading.Event()
+    _STATE["reload_stop"] = stop
+
     def loop():
-        while True:
-            time.sleep(interval)
+        while not stop.wait(interval):
             try:
                 apply_config(read_config())
                 sink = _STATE["sink"]
@@ -300,10 +313,22 @@ def start_reload_loop(read_config, *, interval: float = 10.0) -> threading.Threa
                 if "closed" in str(exc).lower():
                     return
                 logging.getLogger("sniff4hound.logs").debug("log config reload skipped: %s", exc)
+            except sqlite3.OperationalError as exc:
+                # Closing a temporary store also removes its parent directory
+                # in some test teardowns. Store recovery then reports "unable
+                # to open database file" rather than the original closed
+                # connection. Treat that as the same terminal lifecycle event
+                # so a daemon thread cannot keep probing a dead store and
+                # spamming the test output during the next case.
+                message = str(exc).lower()
+                if "unable to open database file" in message or "no such table" in message:
+                    return
+                logging.getLogger("sniff4hound.logs").debug("log config reload skipped: %s", exc)
             except Exception:  # noqa: BLE001 - a bad read must not stop the loop
                 logging.getLogger("sniff4hound.logs").exception("log config reload failed")
 
     thread = threading.Thread(target=loop, name="sniff4hound-log-config", daemon=True)
+    _STATE["reload_thread"] = thread
     thread.start()
     return thread
 
