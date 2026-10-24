@@ -7,6 +7,7 @@ import { protocolText } from "../src/utils/protocolText.js";
 import { stageReading } from "../src/utils/flowGraph.js";
 import { bridgedFetch, connectionErrorMessage } from "../src/utils/httpBridge.js";
 import { formatTimestamp, normalizeProto } from "../src/utils/traffic.js";
+import { SETTINGS_NODES } from "../src/components/settings/settingsGraph.js";
 
 const source = path => readFileSync(new URL(path, import.meta.url), "utf8");
 function method(file, name, globals = {}) {
@@ -209,6 +210,36 @@ test("settings graph distinguishes initial loading from a failed refresh", () =>
   vm.graphReady = true;
   vm.graphErrors = { runtime: true };
   assert.equal(graphStates.call(vm).runtime.label, "Error al actualizar");
+});
+
+test("settings graph covers every real settings section and only marks configured filters active", () => {
+  const template = parse(source("../src/views/SettingsView.vue")).descriptor.template.content;
+  const renderedSections = [...template.matchAll(/<v-window-item value="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(renderedSections.sort(), SETTINGS_NODES.map(node => node.section).sort());
+
+  const vm = {
+    store: { state: { wsStatus: "online", notifySoundEnabled: false } },
+    runtime: { sniffer: {}, honeypot: {} }, pipelineConfig: {}, pipelineLive: null,
+    graphFresh: Object.fromEntries(SETTINGS_NODES.map(node => [node.section, true])),
+    graphErrors: {}, graphReady: true, statusRefreshing: false, graphExtras: {},
+    storageStats: null, locationConfigured: false, locationSaved: {}, locationSummary: "",
+    locationError: "", monitorStats: null, monitors: [], error: "", monitorMinSeverity: "info",
+    suppressGeneratedInfo: true, detectionScopes: [], detectionScopeOptions: [], logConfig: null,
+    limitsData: null, formatDbBytes: value => `${value} B`,
+  };
+  const states = method("../src/views/SettingsView.vue", "graphStates").call(vm);
+  assert.equal(states.location.active, false);
+  assert.equal(states.scope.active, false);
+  assert.equal(states.exclusions.active, false);
+});
+
+test("settings graph refresh owns location and scope freshness", () => {
+  const view = source("../src/views/SettingsView.vue");
+  assert.match(view, /this\.store\.getDeclaredLocation\(\),\s*this\.store\.getDetectionScopes\(\),/);
+  assert.match(view, /scope: fresh\(12\)/);
+  assert.match(view, /location: fresh\(11\)/);
+  assert.match(view, /if \(value\(11\)\) this\.applyLocation\(value\(11\)\)/);
+  assert.match(view, /if \(value\(12\)\) \{/);
 });
 
 test("settings graph cards expose truncated content through their accessible name", () => {
