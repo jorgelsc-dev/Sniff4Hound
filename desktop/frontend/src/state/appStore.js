@@ -1103,11 +1103,23 @@ function fetchWithMetaUntracked(path, options = {}, config = {}) {
   return httpFetchWithMeta(path, opts, config);
 }
 
-function httpFetchWithMeta(path, opts, config) {
+function httpFetchWithMeta(path, opts, config = {}) {
   if (state.shutdownPending && String(path).split("?")[0] !== "/api/app/shutdown") {
     return Promise.reject(shutdownError());
   }
-  return bridgedFetch(apiUrl(path), opts).then((res) =>
+  const requestOpts = { ...(opts || {}) };
+  const timeoutMs = Number(config.timeoutMs || 15000);
+  const timeoutController = typeof AbortController === "function" ? new AbortController() : null;
+  let timeoutId = null;
+  if (timeoutController && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+    if (requestOpts.signal && typeof AbortSignal !== "undefined" && AbortSignal.any) {
+      requestOpts.signal = AbortSignal.any([requestOpts.signal, timeoutController.signal]);
+    } else if (!requestOpts.signal) {
+      requestOpts.signal = timeoutController.signal;
+    }
+  }
+  return bridgedFetch(apiUrl(path), requestOpts).then((res) =>
     res.text().then((text) => {
       const data = parseJsonSafe(text);
       if (!res.ok) {
@@ -1128,7 +1140,9 @@ function httpFetchWithMeta(path, opts, config) {
       }
       return { data, response: res };
     })
-  );
+  ).finally(() => {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+  });
 }
 
 // --- deferred jobs ---------------------------------------------------------
@@ -1376,7 +1390,12 @@ function readListMeta(payload, response, rows) {
 
 function fetchListPromise(path, options = {}) {
   const query = buildListQuery(options);
-  return fetchWithMeta(`${path}${query}`).then(({ data, response }) => {
+  const requestOptions = { ...options };
+  delete requestOptions.params;
+  delete requestOptions.limit;
+  delete requestOptions.offset;
+  delete requestOptions.since;
+  return fetchWithMeta(`${path}${query}`, requestOptions).then(({ data, response }) => {
     const rows = extractArray(data);
     return { rows, meta: readListMeta(data, response, rows), payload: data };
   });

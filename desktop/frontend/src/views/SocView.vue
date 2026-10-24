@@ -49,7 +49,7 @@
 
     <v-alert v-if="!hasEvidence && !loading && !error" type="info" variant="tonal" class="mt-4">
       No hay evidencias de paquetes en este período. Revisa la captura, los filtros de monitores y el rango de tiempo.
-      <v-btn to="/sniffer" size="small" variant="text">Open Sniffer</v-btn>
+      <v-btn to="/sniffer" size="small" variant="text">Abrir Sniffer</v-btn>
     </v-alert>
     <v-alert v-if="error" type="error" variant="tonal" class="mt-4" role="alert">
       {{ error }} Las evidencias anteriores, si se muestran, están obsoletas. Actualiza para reintentar.
@@ -61,7 +61,7 @@
     <section class="soc-hero mt-4" :style="heroStyle">
       <v-row dense class="align-center">
         <v-col cols="12" lg="8">
-          <div class="text-overline">Current assessment</div>
+          <div class="text-overline">Evaluación actual</div>
           <h2 class="soc-hero__title">{{ verdictTitle }}</h2>
           <p class="soc-hero__copy">
             {{ verdictCopy }}
@@ -69,28 +69,28 @@
 
           <div class="soc-hero__chips">
             <v-chip size="small" color="primary" variant="tonal">
-              Risk: {{ riskLabel }}
+              Riesgo: {{ riskLabel }}
             </v-chip>
             <v-chip size="small" :color="verdictColor" variant="tonal">
-              Verdict: {{ verdictLabel }}
+              Veredicto: {{ verdictLabel }}
             </v-chip>
             <v-chip size="small" color="info" variant="tonal">
-              Priority: {{ priorityLabel }}
+              Prioridad: {{ priorityLabel }}
             </v-chip>
             <v-chip size="small" color="success" variant="tonal">
-              Cycles: {{ cycles.length }}
+              Ciclos: {{ cycles.length }}
             </v-chip>
             <v-chip size="small" color="warning" variant="tonal">
-              Questions: {{ questions.length }}
+              Preguntas: {{ questions.length }}
             </v-chip>
             <v-chip size="small" variant="outlined">
-              Updated: {{ lastUpdated || "pending" }}
+              Actualizado: {{ lastUpdated || "pendiente" }}
             </v-chip>
           </div>
 
           <div class="soc-hero__progress">
             <div class="soc-hero__progress-label">
-              <span>Risk score</span>
+                <span>Puntuación de riesgo</span>
               <strong>{{ riskLabel }}</strong>
             </div>
             <v-progress-linear
@@ -106,7 +106,7 @@
 
         <v-col cols="12" lg="4">
           <div class="soc-hero__panel">
-            <div class="soc-hero__panel-kicker">Run depth</div>
+            <div class="soc-hero__panel-kicker">Profundidad del análisis</div>
             <v-btn-toggle
               v-model="cyclesRequested"
               class="soc-cycle-toggle mt-3"
@@ -137,19 +137,19 @@
 
             <div class="soc-hero__stats">
               <div class="soc-hero__stat">
-                <span>Sampled packets</span>
+                <span>Paquetes muestreados</span>
                 <strong>{{ formatNumber(summary.sampled_packets) }}</strong>
               </div>
               <div class="soc-hero__stat">
-                <span>Sampled payloads</span>
+                <span>Cargas muestreadas</span>
                 <strong>{{ formatNumber(summary.sampled_payloads) }}</strong>
               </div>
               <div class="soc-hero__stat">
-                <span>Sampled tags</span>
+                <span>Etiquetas muestreadas</span>
                 <strong>{{ formatNumber(summary.sampled_tags) }}</strong>
               </div>
               <div class="soc-hero__stat">
-                <span>Sampled flows</span>
+                <span>Flujos muestreados</span>
                 <strong>{{ formatNumber(summary.sampled_flows) }}</strong>
               </div>
             </div>
@@ -159,27 +159,27 @@
     </section>
 
     <v-card variant="outlined" class="pa-4 mt-4">
-      <div class="text-subtitle-2">Evidence coverage · {{ store.timeRangeLabel() || "all retained traffic" }}</div>
+      <div class="text-subtitle-2">Cobertura de evidencia · {{ store.timeRangeLabel() || "todo el tráfico retenido" }}</div>
       <div class="d-flex flex-wrap ga-2 my-2">
-        <v-chip size="small">{{ formatNumber(summary.sampled_packets) }} sampled / {{ formatNumber(analysisContext.available_packets) }} retained packets</v-chip>
-        <v-chip size="small">Limit: {{ formatNumber(analysisContext.sample_limit || 2000) }}</v-chip>
-        <v-chip v-if="analysisContext.sample_truncated" color="warning" size="small">Sample truncated</v-chip>
+        <v-chip size="small">{{ formatNumber(summary.sampled_packets) }} muestreados / {{ formatNumber(analysisContext.available_packets) }} paquetes retenidos</v-chip>
+        <v-chip size="small">Límite: {{ formatNumber(analysisContext.sample_limit || 2000) }}</v-chip>
+        <v-chip v-if="analysisContext.sample_truncated" color="warning" size="small">Muestra truncada</v-chip>
       </div>
       <div class="text-body-2 text-medium-emphasis">
-        Heuristic assessment of retained traffic. Risk and confidence are not calibrated attack probabilities.
-        Rules, exclusions and sampling affect visibility. Flow counters are lifetime totals for flows active in this window.
-        A low score does not establish that traffic is benign.
+        Evaluación heurística del tráfico retenido. El riesgo y la confianza no son probabilidades de ataque calibradas.
+        Las reglas, exclusiones y el muestreo afectan la visibilidad. Los contadores de flujos son totales de vida para flujos activos en esta ventana.
+        Una puntuación baja no demuestra que el tráfico sea benigno.
       </div>
-      <div v-if="analysisContext.since" class="text-caption mt-2">Cutoff (UTC): {{ analysisContext.since }}</div>
+      <div v-if="analysisContext.since" class="text-caption mt-2">Corte (UTC): {{ analysisContext.since }}</div>
     </v-card>
 
     <v-tabs v-if="cycles.length" v-model="activeCycleId" color="primary" class="mt-6 soc-tabs">
       <v-tab v-for="cycle in cycles" :key="cycle.id" :value="cycle.id" :disabled="loading">
         <div class="soc-tab">
-          <span class="soc-tab__kicker">Pass {{ cycle.id }}</span>
+          <span class="soc-tab__kicker">Ciclo {{ cycle.id }}</span>
           <span class="soc-tab__title">{{ cycle.title }}</span>
           <v-chip size="x-small" variant="tonal" color="info">
-            {{ cycleFindingCount(cycle) }} findings
+            {{ cycleFindingCount(cycle) }} hallazgos
           </v-chip>
         </div>
       </v-tab>
@@ -244,10 +244,10 @@
             >
               <div class="d-flex flex-wrap ga-2 mb-4">
                 <v-chip size="small" color="info" variant="tonal">
-                  Findings: {{ cycleFindingCount(cycle) }}
+                  Hallazgos: {{ cycleFindingCount(cycle) }}
                 </v-chip>
                 <v-chip size="small" :color="cycleSeverityColor(cycle)" variant="tonal">
-                  Highest: {{ cycleHighestSeverity(cycle) }}
+                  Máxima: {{ cycleHighestSeverity(cycle) }}
                 </v-chip>
               </div>
 
@@ -365,7 +365,7 @@
           </template>
           <template #row-expanded="{ item }">
             <div class="soc-expanded">
-              <div class="soc-expanded__label">Evidence</div>
+              <div class="soc-expanded__label">Evidencia</div>
               <div class="d-flex flex-wrap ga-2 mt-2">
                 <v-chip
                   v-for="(evidence, index) in item.evidence || []"
@@ -381,7 +381,7 @@
                 </span>
               </div>
 
-              <div class="soc-expanded__label mt-4">Recommendation</div>
+                <div class="soc-expanded__label mt-4">Recomendación</div>
               <div class="text-body-2 text-medium-emphasis mt-1">
                 {{ item.recommendation || "-" }}
               </div>
@@ -401,7 +401,7 @@
         >
           <div class="d-flex flex-wrap ga-2 mb-4">
             <v-chip size="small" color="info" variant="tonal">
-              Questions: {{ questions.length }}
+              Preguntas: {{ questions.length }}
             </v-chip>
             <v-chip size="small" color="success" variant="tonal">
               Public rows: {{ formatNumber(summary.public_rows) }}
@@ -440,7 +440,7 @@
           row-key="row_key"
           :search-enabled="true"
           search-label="Buscar hosts"
-          search-placeholder="IP, scope, protocols, ports, or note"
+          search-placeholder="IP, ámbito, protocolos, puertos o nota"
           :search-fields="hostSearchFields"
           :filter-definitions="hostFilterDefinitions"
           :loading="loading"
@@ -523,7 +523,7 @@
           row-key="row_key"
           :search-enabled="true"
           search-label="Buscar puertos"
-          search-placeholder="Port, protocols, scope, or note"
+          search-placeholder="Puerto, protocolos, ámbito o nota"
           :search-fields="portSearchFields"
           :filter-definitions="portFilterDefinitions"
           :loading="loading"
@@ -563,7 +563,7 @@
           row-key="row_key"
           :search-enabled="true"
           search-label="Buscar contenido"
-          search-placeholder="Label, note, or example"
+          search-placeholder="Etiqueta, nota o ejemplo"
           :search-fields="payloadSearchFields"
           :loading="loading"
           :error="''"
@@ -668,35 +668,35 @@ export default {
       feedSequence: 0,
       feedHandle: null,
       cycleOptions: [
-        { value: 1, label: "1 pass" },
-        { value: 2, label: "2 passes" },
-        { value: 3, label: "3 passes" },
-        { value: 4, label: "4 passes" },
+        { value: 1, label: "1 ciclo" },
+        { value: 2, label: "2 ciclos" },
+        { value: 3, label: "3 ciclos" },
+        { value: 4, label: "4 ciclos" },
       ],
       findingColumns: [
-        { key: "cycle", label: "Cycle" },
-        { key: "severity", label: "Severity" },
-        { key: "category", label: "Category" },
-        { key: "title", label: "Title" },
-        { key: "confidence", label: "Confidence" },
-        { key: "evidence_count", label: "Evidence" },
-        { key: "recommendation", label: "Recommendation", sortable: false },
+        { key: "cycle", label: "Ciclo" },
+        { key: "severity", label: "Severidad" },
+        { key: "category", label: "Categoría" },
+        { key: "title", label: "Título" },
+        { key: "confidence", label: "Confianza" },
+        { key: "evidence_count", label: "Evidencia" },
+        { key: "recommendation", label: "Recomendación", sortable: false },
       ],
       hostColumns: [
         { key: "ip", label: "IP" },
-        { key: "scope", label: "Scope" },
-        { key: "value", label: "Hits" },
-        { key: "protocols", label: "Protocols" },
+        { key: "scope", label: "Ámbito" },
+        { key: "value", label: "Coincidencias" },
+        { key: "protocols", label: "Protocolos" },
         { key: "ports", label: "Puertos" },
-        { key: "note", label: "Note", sortable: false },
+        { key: "note", label: "Nota", sortable: false },
       ],
       conversationColumns: [
-        { key: "label", label: "Conversation" },
-        { key: "proto", label: "Proto" },
+        { key: "label", label: "Conversación" },
+        { key: "proto", label: "Protocolo" },
         { key: "ports", label: "Puertos" },
-        { key: "scope", label: "Scope" },
-        { key: "value", label: "Hits" },
-        { key: "note", label: "Note", sortable: false },
+        { key: "scope", label: "Ámbito" },
+        { key: "value", label: "Coincidencias" },
+        { key: "note", label: "Nota", sortable: false },
       ],
       portColumns: [
         { key: "port", label: "Port" },
@@ -724,7 +724,7 @@ export default {
       return Number(this.summary.sampled_packets || 0) > 0;
     },
     riskLabel() {
-      return this.hasEvidence ? `${this.formatNumber(this.riskScore)}/100` : "Not assessed";
+      return this.hasEvidence ? `${this.formatNumber(this.riskScore)}/100` : "Sin evaluar";
     },
     timeRange() {
       return this.store.state.timeRange;
@@ -749,7 +749,7 @@ export default {
       return String(this.summary.verdict || "observe").trim() || "observe";
     },
     priorityLabel() {
-      return this.hasEvidence ? String(this.summary.priority || this.verdictLabel) : "collect evidence";
+      return this.hasEvidence ? String(this.summary.priority || this.verdictLabel) : "recopilar evidencia";
     },
     riskScore() {
       const numeric = Number(this.summary.risk_score || 0);
@@ -785,16 +785,16 @@ export default {
       return "rgba(140, 156, 176, 0.16)";
     },
     verdictTitle() {
-      if (this.error) return "Assessment unavailable · last evidence may be stale";
-      if (!this.hasEvidence) return this.loading ? "Loading evidence" : "Insufficient evidence to assess risk";
+      if (this.error) return "Evaluación no disponible · la última evidencia puede estar obsoleta";
+      if (!this.hasEvidence) return this.loading ? "Cargando evidencia" : "Evidencia insuficiente para evaluar el riesgo";
       const verdict = this.verdictLabel.toLowerCase();
-      if (verdict === "investigate") return "Immediate investigation recommended";
-      if (verdict === "review") return "Review this slice before promoting it";
-      if (verdict === "monitor") return "Monitor the slice and keep validating";
+      if (verdict === "investigate") return "Se recomienda investigar de inmediato";
+      if (verdict === "review") return "Revisa esta muestra antes de promoverla";
+      if (verdict === "monitor") return "Supervisa la muestra y continúa validando";
       return "Esta muestra no alcanzó el umbral de escalamiento";
     },
     verdictCopy() {
-      if (!this.hasEvidence) return "Capture and retain packet evidence before drawing a security conclusion.";
+      if (!this.hasEvidence) return "Captura y conserva evidencia de paquetes antes de extraer una conclusión de seguridad.";
       return "Revisa los hallazgos y sus evidencias, valida los responsables y los servicios esperados y registra las decisiones de seguimiento. La puntuación resume solo esta muestra.";
     },
     metricCards() {
@@ -803,47 +803,47 @@ export default {
           key: "packets",
           label: "Paquetes",
           value: this.formatNumber(this.summary.sampled_packets),
-          caption: "Rows sampled by the SOC loop.",
+          caption: "Filas muestreadas por el ciclo SOC.",
           icon: "mdi-ethernet",
           colorClass: "text-primary",
         },
         {
           key: "findings",
-          label: "Findings",
+          label: "Hallazgos",
           value: this.formatNumber(this.summary.findings_total),
-          caption: "Findings that survived the selected cycles.",
+          caption: "Hallazgos que sobrevivieron a los ciclos seleccionados.",
           icon: "mdi-clipboard-alert-outline",
           colorClass: "text-warning",
         },
         {
           key: "risk",
-          label: "Risk",
+          label: "Riesgo",
           value: this.hasEvidence ? this.formatNumber(this.riskScore) : "—",
-          caption: "Aggregate risk score for the selected cycle depth.",
+          caption: "Puntuación de riesgo agregada para la profundidad elegida.",
           icon: "mdi-shield-alert-outline",
           colorClass: `text-${this.verdictColor}`,
         },
         {
           key: "cross-scope",
-          label: "Cross-scope",
+          label: "Entre ámbitos",
           value: this.formatNumber(this.summary.cross_scope_rows),
-          caption: "Rows crossing public and private scope.",
+          caption: "Filas que cruzan ámbitos público y privado.",
           icon: "mdi-transit-connection-variant",
           colorClass: "text-secondary",
         },
         {
           key: "public",
-          label: "Public",
+          label: "Público",
           value: this.formatNumber(this.summary.public_rows),
-          caption: "Public-side rows in the sample.",
+          caption: "Filas del lado público en la muestra.",
           icon: "mdi-web",
           colorClass: "text-success",
         },
         {
           key: "gaps",
-          label: "Direction gaps",
+          label: "Direcciones faltantes",
           value: this.formatNumber(this.summary.direction_unknown_rows),
-          caption: "Rows that still need direction metadata.",
+          caption: "Filas que aún necesitan metadatos de dirección.",
           icon: "mdi-swap-horizontal",
           colorClass: "text-info",
         },
@@ -906,7 +906,7 @@ export default {
         {
           key: "payloads",
           title: "Payload patterns",
-          subtitle: "How the payloads split between structured, text, and noisy evidence.",
+        subtitle: "Cómo se dividen las cargas entre evidencia estructurada, textual y ruidosa.",
           color: "secondary",
           fill: "linear-gradient(90deg, rgba(161, 138, 255, 0.9), rgba(255, 159, 67, 0.72))",
           series: seriesFrom(this.payloadPatternRows, 6),
@@ -918,8 +918,8 @@ export default {
     },
     findingFilterDefinitions() {
       return [
-        { key: "severity", label: "Severity", field: "severity" },
-        { key: "category", label: "Category", field: "category" },
+        { key: "severity", label: "Severidad", field: "severity" },
+        { key: "category", label: "Categoría", field: "category" },
       ];
     },
     hostSearchFields() {
