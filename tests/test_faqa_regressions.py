@@ -165,6 +165,24 @@ class Finding129DomainStructuredMatchTests(StoreRegressionTestCase):
         result = self.store.domain_intel("needle.example")
         self.assertEqual(result["summary"]["packets"], 1)
 
+    def test_separates_dns_http_and_tls_sources_and_links_flow(self):
+        dns = self.store.register_packet(
+            _packet(domain="Needle.Example.", domain_source="dns", flow_key="dns-flow")
+        )
+        http = self.store.register_packet(
+            _packet(http_host="NEEDLE.EXAMPLE:8080", domain_source="http_host", flow_key="http-flow")
+        )
+        tls = self.store.register_packet(
+            _packet(domain="needle.example", domain_source="tls_sni", flow_key="tls-flow")
+        )
+        result = self.store.domain_intel("needle.example")
+        self.assertEqual(result["summary"]["packets"], 3)
+        self.assertEqual(result["sources"]["dns"]["packets"], 1)
+        self.assertEqual(result["sources"]["http_host"]["packets"], 1)
+        self.assertEqual(result["sources"]["tls_sni"]["packets"], 1)
+        self.assertEqual({row["id"] for row in result["packets"]}, {dns["id"], http["id"], tls["id"]})
+        self.assertTrue(all(row.get("flow_id") for row in result["packets"]))
+
     def test_rejects_empty_domain(self):
         with self.assertRaises(ValueError):
             self.store.domain_intel("")
