@@ -25,8 +25,11 @@ export function loadAiSettings(store) {
 }
 
 export function setAiEnabled(store, enabled) {
+  if (typeof enabled !== "boolean") {
+    throw new TypeError("La configuración de IA requiere un booleano.");
+  }
   return store.fetchJsonPromise(AI_SETTINGS_PATH, {
     method: "POST",
-    body: JSON.stringify({ enabled: Boolean(enabled) }),
+    body: JSON.stringify({ enabled }),
   }).then(normalizeAiSettings);
 }

@@ -28,6 +28,12 @@ test("the adapter rejects an ambiguous backend response", () => {
   assert.throws(() => normalizeAiSettings(null), /no es válida/);
 });
 
+test("the adapter rejects non-boolean writes instead of coercing them", () => {
+  const store = { fetchJsonPromise() { throw new Error("the request must not be sent"); } };
+  assert.throws(() => setAiEnabled(store, "false"), /requiere un booleano/);
+  assert.throws(() => setAiEnabled(store, 1), /requiere un booleano/);
+});
+
 test("the Settings UI exposes an accessible optional AI toggle", () => {
   assert.match(settingsSource, /<v-window-item value="ai">[\s\S]*<AiSettingsPanel \/>/);
   assert.match(panelSource, /:aria-label="enabled \? 'Desactivar uso de IA' : 'Activar uso de IA'"/);
