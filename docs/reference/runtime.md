@@ -33,6 +33,25 @@ existe ninguna variable de entorno para saltarse esto: si no corre como root,
 intenta relanzarse con `sudo` y, si no puede, termina sin arrancar el
 servidor e imprime el motivo por stderr.
 
+## TLS del runtime
+
+El runtime genera y gestiona su propia CA local; no acepta certificados
+externos ni mTLS de cliente, y no hay variables para indicar un certificado o
+una clave propios.
+
+| Variable | Default | Uso |
+| --- | --- | --- |
+| `SNIFF4HOUND_TLS` | `1` | Sirve la API y el WebSocket por HTTPS/WSS. `0` vuelve a HTTP plano. |
+| `SNIFF4HOUND_TLS_CERT_DAYS` | `1` | Validez del certificado de servidor, que se reemite en cada arranque. |
+| `SNIFF4HOUND_TLS_CA_DAYS` | `365` | Validez de la CA local. Se reutiliza entre arranques y se renueva cuando le quedan menos de 30 días. |
+
+Los ficheros viven en `<SNIFF4HOUND_DATA_DIR>/tls/`: `sniff4hound-ca.pem`/`.key`
+(CA del runtime), `sniff4hound-server.pem`/`.key` (certificado de servidor
+para el host de escucha y `SNIFF4HOUND_MDNS_HOST`) y la pareja
+`sniff4hound-mobile-*` para el stream móvil. El cliente confía en la CA
+pública (`sniff4hound-ca.pem`); las claves privadas nunca salen de ese
+directorio.
+
 ## Modos de activacion (Sniffer / Honeypot / Monitors)
 
 - **Sniffer** y **Honeypot** son procesos de captura que se encienden y apagan
