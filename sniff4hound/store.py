@@ -1315,7 +1315,23 @@ class SniffStore(HistoryStoreMixin):
         ties broken by id), its label becomes the union of every duplicate's
         non-empty label, and every merge is logged (never silently) instead
         of just deleted."""
+        # Canonicalizing existing rows can itself create a collision, so the
+        # old unique indexes must be absent before values are rewritten.
         for table in ("whitelist_entries", "blacklist_entries"):
+            index_name = "idx_whitelist_unique_entry" if table == "whitelist_entries" else "idx_blacklist_unique_entry"
+            self._conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+            rows = self._fetchall(
+                f"SELECT id, category, match_type, value FROM {table} WHERE match_type = 'exact'"
+            )
+            for row in rows:
+                if row["category"] not in ("ip", "domain"):
+                    continue
+                normalized = self._normalize_list_value(row["category"], row["value"], exact=True)
+                if normalized != row["value"]:
+                    self._conn.execute(
+                        f"UPDATE {table} SET value = ?, updated_at = ? WHERE id = ?",
+                        (normalized, utc_now(), row["id"]),
+                    )
             groups = self._fetchall(
                 f"""
                 SELECT category, match_type, value, COUNT(*) AS dupes
@@ -3494,6 +3510,24 @@ class SniffStore(HistoryStoreMixin):
         value = str(value or "").strip()
         if not value:
             raise ValueError("value is required")
+        if exact and category == "ip":
+            # Store one canonical spelling for equivalent IPv4/IPv6 values;
+            # otherwise the UNIQUE index treats expanded/compressed IPv6 (or
+            # differently-cased IPv6) as different whitelist entries.
+            try:
+                return ipaddress.ip_address(value).compressed.lower()
+            except ValueError:
+                return value
+        if exact and category == "domain":
+            # DNS names are case-insensitive and a terminal root dot does not
+            # change their identity. IDNA gives Unicode and its ASCII wire
+            # spelling the same key while leaving unusual-but-accepted local
+            # names untouched if a label cannot be encoded.
+            normalized = value.rstrip(".").lower()
+            try:
+                return ".".join(label.encode("idna").decode("ascii") for label in normalized.split("."))
+            except UnicodeError:
+                return normalized
         if category == "port" and exact:
             port = safe_int(value, 0)
             if port < 1 or port > 65535 or str(port) != value:
