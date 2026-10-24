@@ -15,6 +15,7 @@ test("graph exposes an understandable keyboard and screen-reader contract", () =
   assert.match(template, /Usa Tab para recorrer los componentes/);
   assert.match(template, /:aria-pressed="modelValue === node\.section"/);
   assert.match(template, /:title="`\$\{node\.label\}/);
+  assert.match(template, /<v-tooltip activator="parent" location="top" open-delay="450">/);
 });
 
 test("inspector manages focus and keeps keyboard navigation inside the dialog", () => {
@@ -24,6 +25,7 @@ test("inspector manages focus and keeps keyboard navigation inside the dialog", 
   assert.match(script, /function handleInspectorKeydown\(event\)/);
   assert.match(script, /if \(event\.shiftKey && document\.activeElement === first\)/);
   assert.match(script, /if \(value && value !== previous\) nextTick\(focusCloseButton\)/);
+  assert.match(script, /\}, \{ immediate: true \}\);/);
 });
 
 test("arrow navigation wraps through every graph node", () => {
@@ -36,7 +38,15 @@ test("focus indicators and small-screen layout remain explicit", () => {
   assert.match(styles, /\.config-canvas:focus-visible\s*\{[^}]*outline: 2px/);
   assert.match(styles, /\.config-node:focus-visible, \.config-node\.is-selected/);
   assert.match(styles, /@media \(max-width: 700px\)/);
-  assert.match(styles, /Keep the geometry in sync with settingsGraph\.js/);
-  assert.match(template, /markerUnits="userSpaceOnUse"/);
+  assert.match(styles, /Keep CSS dimensions aligned with GRAPH_CARD/);
+  assert.doesNotMatch(styles, /\.config-node \{ width: 224px; height: 168px/);
   assert.match(styles, /prefers-reduced-motion: reduce/);
+});
+
+test("connectors keep readable arrowheads and labels at fitted scale", () => {
+  assert.match(template, /markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse"/);
+  assert.match(template, /fill="context-stroke" fill-opacity="0\.95"/);
+  assert.match(styles, /stroke-width: 3; stroke-linecap: round; opacity: 0\.7/);
+  assert.match(styles, /background: var\(--surface-1\)/);
+  assert.match(styles, /opacity: 0\.88; transition: opacity/);
 });
