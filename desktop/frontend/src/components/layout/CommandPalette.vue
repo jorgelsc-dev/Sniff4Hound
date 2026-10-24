@@ -66,7 +66,7 @@
 <script>
 import store from "../../state/appStore";
 import { queryScore, navDestinations } from "../../utils/navigation";
-import { SETTINGS_NODES } from "../settings/settingsGraph";
+import { SETTINGS_NODES, settingsRoute } from "../settings/settingsGraph";
 
 export default {
   name: "CommandPalette",
@@ -111,7 +111,7 @@ export default {
           parent: "Configuración",
           icon: node.icon,
           keywords: `${node.detail} ajustes configuracion`,
-          run: () => this.$router.push({ path: "/settings", query: { section: node.section } }),
+          run: () => this.$router.push(settingsRoute(node.section)),
         })),
       ];
     },

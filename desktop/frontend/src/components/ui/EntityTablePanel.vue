@@ -1249,6 +1249,19 @@ export default {
   opacity: 1;
 }
 
+/* Touch users should not have to discover hover-only actions. */
+@media (max-width: 600px), (pointer: coarse) {
+  .cell-filter-wrap__actions {
+    opacity: 1;
+    gap: 6px;
+  }
+
+  .cell-filter-btn {
+    width: 30px;
+    height: 30px;
+  }
+}
+
 .cell-filter-btn {
   display: inline-flex;
   align-items: center;

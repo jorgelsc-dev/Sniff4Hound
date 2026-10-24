@@ -41,6 +41,20 @@ export const SETTINGS_NODES = [
   { id: "limits", section: "limits", label: "Límites de recursos", icon: "mdi-speedometer", lane: 2, column: 0, row: 2, detail: "CPU, RAM y almacenamiento" },
 ];
 
+// Keep every Settings entry point on the same URL vocabulary. In particular,
+// Exclusions is a real section even though it is rendered by the graph shell.
+export const VALID_TABS = new Set(SETTINGS_NODES.map(node => node.section));
+
+export function normalizeSettingsSection(section) {
+  const requested = String(section || "").trim();
+  return VALID_TABS.has(requested) ? requested : "";
+}
+
+export function settingsRoute(section) {
+  const normalized = normalizeSettingsSection(section);
+  return { path: "/settings", query: normalized ? { section: normalized } : {} };
+}
+
 // [from, to, label] - the label says what travels along the wire.
 export const SETTINGS_EDGES = [
   { from: "runtime", to: "sniffer", label: "inicia" },

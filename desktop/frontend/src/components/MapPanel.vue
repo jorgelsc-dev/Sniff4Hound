@@ -411,7 +411,7 @@
           <th>IP</th>
           <th>Scope</th>
           <th>Region</th>
-          <th>Active services</th>
+          <th>Open-port packets</th>
           <th>Protocols</th>
         </tr>
       </thead>
