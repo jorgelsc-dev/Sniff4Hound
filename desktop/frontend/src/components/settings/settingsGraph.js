@@ -63,8 +63,10 @@ export const SETTINGS_EDGES = [
   { from: "location", to: "sniffer", label: "tráfico" },
   { from: "sniffer", to: "cache", label: "paquetes" },
   { from: "cache", to: "jobs", label: "lotes" },
-  { from: "jobs", to: "ai", label: "analiza" },
-  { from: "ai", to: "store", label: "apoya" },
+  // Planned: no runtime consumer feeds the optional AI yet, so these wires
+  // are drawn dashed and never light up, whatever the saved preference.
+  { from: "jobs", to: "ai", label: "analiza (planificado)", planned: true },
+  { from: "ai", to: "store", label: "apoya (planificado)", planned: true },
   { from: "jobs", to: "monitors", label: "alertas" },
   { from: "jobs", to: "store", label: "persiste" },
   // The sniffer feeds the history directly, ahead of detection: it records DNS

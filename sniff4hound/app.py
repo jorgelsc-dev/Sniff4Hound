@@ -660,7 +660,7 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ip/intel/", "desc": "Combined host intel."},
     {"method": "GET", "path": "/api/domain/intel/", "desc": "Structured domain investigation: packets/payloads/tags matched by DNS query name or HTTP Host (never free-text substring). ?mode=exact|subdomain, ?since= applies the shared time window."},
     {"method": "GET", "path": "/api/soc/analysis/", "desc": "Iterative SOC triage analysis."},
-    {"method": "GET", "path": "/api/settings/ai", "desc": "Read the persisted IA activation flag (default OFF)."},
+    {"method": "GET", "path": "/api/settings/ai", "desc": "Read the persisted IA activation flag (default OFF) and model_status; no model is configured yet."},
     {"method": "POST", "path": "/api/settings/ai", "desc": "Persist the IA activation flag: {\"enabled\": true|false}; this does not start a model or alter capture yet."},
     {"method": "POST", "path": "/api/packets/review", "desc": "Label any captured packet benign, malicious or unreviewed."},
     {"method": "GET", "path": "/api/detection/exclusions", "desc": "Shared exclusion filter (IP type, CIDR, port, protocol)."},
@@ -2585,15 +2585,24 @@ def soc_analysis(request):
     return store.soc_analysis_snapshot(cycles=cycles, limit=limit, since=_normalize_since(request))
 
 
+# No model provider is wired into the runtime; see docs/reference/ai.md.
+AI_MODEL_STATUS = "not_configured"
+
+
 @app.api("/api/settings/ai", methods=("GET", "POST"))
 def ai_config(request):
-    """Read or persist IA activation intent without starting an IA engine."""
+    """Read or persist IA activation intent without starting an IA engine.
+
+    ``model_status`` reports the operational side separately from the
+    preference: no runtime consumer loads a model yet, so a saved ``enabled``
+    is permission only and never an announcement of active inference.
+    """
     if request.method.upper() == "GET":
-        return {"enabled": store.get_ai_enabled()}
+        return {"enabled": store.get_ai_enabled(), "model_status": AI_MODEL_STATUS}
     payload = _read_json_body(request)
     if set(payload) != {"enabled"}:
         raise ValueError("enabled is required and must be the only field")
-    return {"enabled": store.set_ai_enabled(payload["enabled"])}
+    return {"enabled": store.set_ai_enabled(payload["enabled"]), "model_status": AI_MODEL_STATUS}
 
 
 @app.api("/api/packets/review", methods=("POST",))

@@ -2143,14 +2143,17 @@ export default {
           ],
         ),
         ai: (() => {
-          const config = extras.ai;
+          // The saved preference is permission only; the node lights up only
+          // when the backend reports a model that can actually run.
+          const config = extras.ai && typeof extras.ai.enabled === "boolean" ? extras.ai : null;
           const enabled = Boolean(config && config.enabled);
+          const ready = enabled && config.model_status === "ready";
           return state(
-            !config ? "Sin datos" : enabled ? "IA activada" : "IA desactivada",
-            online && enabled,
+            !config ? "Sin datos" : !enabled ? "IA desactivada" : ready ? "IA lista" : "Permitida · sin modelo",
+            online && ready,
             [
-              metric("Estado", config ? (enabled ? "Activada" : "Desactivada") : "—", enabled ? "ok" : "warn"),
-              metric("Modo", "Opcional"),
+              metric("Preferencia", config ? (enabled ? "Permitida" : "Desactivada") : "—", enabled ? "ok" : "warn"),
+              metric("Modelo", !config ? "—" : ready ? "Listo" : "No configurado", ready ? "ok" : "warn"),
               metric("Captura", "No bloquea"),
             ],
           );

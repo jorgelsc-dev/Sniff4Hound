@@ -103,21 +103,40 @@ class ScoreResult:
 def _safe_number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, Real):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except (ArithmeticError, TypeError, ValueError):
+        # float(10**400) raises OverflowError; a value that cannot be
+        # represented is dropped rather than clamped to a guessed bound.
+        return None
     if not math.isfinite(number):
         return None
     return max(-MAX_FEATURE_VALUE, min(MAX_FEATURE_VALUE, number))
 
 
-def _key_allowed(key: str) -> bool:
-    normalized = key.lower().replace("-", "_")
-    parts = {part for part in normalized.split("_") if part}
-    return (normalized in _SAFE_KEY_PARTS or bool(parts & _SAFE_KEY_PARTS)) and not parts & _SENSITIVE_KEY_PARTS
+# Snapshot containers whose aggregate leaves may cross the boundary.  This is
+# a positive schema: any other mapping (``payloads``, ``hosts``, aliases or
+# unknown nesting) is never traversed, whatever its leaves are called.
+_SNAPSHOT_CONTAINERS = frozenset({"soc_summary", "summary", "pipeline", "stats", "counts", "totals"})
+
+
+def _key_parts(key: str) -> set[str]:
+    parts = {part for part in key.lower().replace("-", "_").split("_") if part}
+    # Plurals and simple suffixed forms (payloads, hosts, ips) are the same
+    # sensitive concept as their singular token.
+    return parts | {part[:-1] for part in parts if part.endswith("s") and len(part) > 2}
 
 
 def _key_sensitive(key: str) -> bool:
-    parts = {part for part in key.lower().replace("-", "_").split("_") if part}
-    return bool(parts & _SENSITIVE_KEY_PARTS)
+    return bool(_key_parts(key) & _SENSITIVE_KEY_PARTS)
+
+
+def _key_allowed(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if _key_sensitive(normalized):
+        return False
+    parts = {part for part in normalized.split("_") if part}
+    return normalized in _SAFE_KEY_PARTS or bool(parts & _SAFE_KEY_PARTS)
 
 
 def sanitize_features(features: Mapping[str, Any] | None, *, limit: int = MAX_FEATURES) -> dict[str, float]:
@@ -140,34 +159,36 @@ def sanitize_features(features: Mapping[str, Any] | None, *, limit: int = MAX_FE
 
 
 def snapshot_features(snapshot: Mapping[str, Any] | None, *, limit: int = MAX_FEATURES) -> dict[str, float]:
-    """Extract aggregate numeric leaves without traversing sensitive content.
+    """Extract aggregate numeric leaves from an explicit container schema.
 
-    Only mappings are traversed, to a small fixed depth.  Lists of rows are
-    intentionally ignored: callers can aggregate them upstream and pass the
-    resulting feature map explicitly.
+    Only top-level allowed leaves and the leaves of the containers named in
+    ``_SNAPSHOT_CONTAINERS`` (one level deep) are read.  Lists of rows and any
+    other mapping are ignored: callers can aggregate them upstream and pass
+    the resulting feature map explicitly.  A top-level leaf wins over a
+    container leaf of the same name; containers are read in sorted order.
     """
 
     if not isinstance(snapshot, Mapping):
         return {}
+    limit = max(1, min(int(limit), MAX_FEATURES))
     found: dict[str, float] = {}
 
-    def visit(value: Mapping[str, Any], depth: int) -> None:
-        if depth > 2 or len(found) >= limit:
-            return
+    def take(value: Mapping[str, Any]) -> None:
         for raw_key in sorted(value, key=lambda item: str(item)):
-            key = str(raw_key).strip()
-            if not key:
-                continue
-            child = value[raw_key]
-            number = _safe_number(child)
-            if number is not None and _key_allowed(key):
-                found[key] = number
-            elif isinstance(child, Mapping) and not _key_allowed(key) and not _key_sensitive(key):
-                visit(child, depth + 1)
             if len(found) >= limit:
                 return
+            key = str(raw_key).strip()
+            if not key or key in found or not _key_allowed(key):
+                continue
+            number = _safe_number(value[raw_key])
+            if number is not None:
+                found[key] = number
 
-    visit(snapshot, 0)
+    take(snapshot)
+    for raw_key in sorted(snapshot, key=lambda item: str(item)):
+        child = snapshot[raw_key]
+        if str(raw_key).strip().lower() in _SNAPSHOT_CONTAINERS and isinstance(child, Mapping):
+            take(child)
     return found
 
 
@@ -209,10 +230,14 @@ class WsbuilderIAScorer:
         expected: Any = None,
         permissible_error: float | None = None,
     ) -> ScoreResult:
-        safe_features = sanitize_features(features) if features is not None else snapshot_features(snapshot)
-        fallback_score = safe_features.get("risk_score")
         if not self.enabled:
-            return ScoreResult(None, "disabled", "none", len(safe_features), reason="model disabled by default")
+            # OFF never inspects its input, so no input can make it fail.
+            return ScoreResult(None, "disabled", "none", 0, reason="model disabled by default")
+        try:
+            safe_features = sanitize_features(features) if features is not None else snapshot_features(snapshot)
+        except Exception as exc:  # adversarial mappings must not reach the caller
+            return ScoreResult(None, "unavailable", "none", 0, reason=f"invalid input: {type(exc).__name__}")
+        fallback_score = safe_features.get("risk_score")
 
         if self.model is None:
             return self._fallback(safe_features, fallback_score, "no fitted model")

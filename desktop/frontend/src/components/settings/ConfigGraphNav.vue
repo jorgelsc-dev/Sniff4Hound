@@ -50,7 +50,7 @@
                   <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" fill-opacity="0.95" />
                 </marker>
               </defs>
-              <g v-for="edge in edges" :key="edge.id" :class="{ 'is-active': edge.active, 'is-related': edge.related }">
+              <g v-for="edge in edges" :key="edge.id" :class="{ 'is-active': edge.active, 'is-related': edge.related, 'is-planned': edge.planned }">
                 <path :d="edge.path" class="config-wire" :style="{ '--wire-color': edge.color }" marker-end="url(#config-arrow)" />
               </g>
             </svg>
@@ -58,7 +58,7 @@
               v-for="edge in edges"
               :key="'label-' + edge.id"
               class="config-edge-label"
-              :class="{ 'is-active': edge.active, 'is-related': edge.related }"
+              :class="{ 'is-active': edge.active, 'is-related': edge.related, 'is-planned': edge.planned }"
               :style="{ left: edge.mid.x + 'px', top: edge.mid.y + 'px', '--edge-color': edge.color }"
             >{{ edge.label }}</span>
             <button
@@ -219,7 +219,8 @@ const edges = computed(() => {
       path: connectionPath(from, to),
       mid: edgeMidpoint(from, to),
       color: from.color,
-      active: Boolean(from.state.active && to.state.active),
+      active: !edge.planned && Boolean(from.state.active && to.state.active),
+      planned: Boolean(edge.planned),
       related: Boolean(focus) && ends.includes(focus),
     };
   });
@@ -384,6 +385,8 @@ onBeforeUnmount(() => {
 }
 .is-active .config-wire { opacity: 0.92; }
 .is-related .config-wire { stroke-width: 3.4; }
+.is-planned .config-wire { stroke-dasharray: 6 6; opacity: 0.45; filter: none; }
+.config-edge-label.is-planned { font-style: italic; opacity: 0.7; }
 .config-edge-label {
   position: absolute; transform: translate(-50%, -50%); padding: 2px 7px; border-radius: 999px;
   font-size: 10px; line-height: 14px; white-space: nowrap; color: var(--edge-color); background: var(--surface-1);

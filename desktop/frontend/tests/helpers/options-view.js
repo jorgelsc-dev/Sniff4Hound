@@ -3,8 +3,8 @@ import { babelParse, parse } from "@vue/compiler-sfc";
 
 // Evaluate the complete production Options API definition, with only the store
 // and child SFCs substituted. Methods, computed state and lifecycle stay real.
-export async function optionsView(name, store) {
-  const url = new URL(`../../src/views/${name}.vue`, import.meta.url);
+export async function optionsView(name, store, dir = "views") {
+  const url = new URL(`../../src/${dir}/${name}.vue`, import.meta.url);
   let code = parse(readFileSync(url, "utf8")).descriptor.script.content;
   const ast = babelParse(code, { sourceType: "module" });
   const bindings = {};

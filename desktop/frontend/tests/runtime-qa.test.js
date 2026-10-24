@@ -245,6 +245,14 @@ test("settings graph covers every real settings section and only marks configure
   assert.equal(states.location.active, false);
   assert.equal(states.scope.active, false);
   assert.equal(states.exclusions.active, false);
+  // A saved AI preference without a model must not light the node or wires.
+  assert.equal(states.ai.active, false);
+  vm.graphExtras = { ai: { enabled: true, model_status: "not_configured" } };
+  const permitted = method("../src/views/SettingsView.vue", "graphStates").call(vm).ai;
+  assert.equal(permitted.active, false);
+  assert.equal(permitted.label, "Permitida · sin modelo");
+  vm.graphExtras = { ai: { enabled: true, model_status: "ready" } };
+  assert.equal(method("../src/views/SettingsView.vue", "graphStates").call(vm).ai.active, true);
 });
 
 test("settings graph refresh owns location and scope freshness", () => {

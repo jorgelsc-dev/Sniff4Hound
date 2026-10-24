@@ -56,12 +56,12 @@ class AiConfigApiTests(unittest.TestCase):
             self.app.store.set_runtime_config("ai_enabled", self.previous)
 
     def test_get_post_and_get_round_trip(self):
-        self.assertEqual(self.app.ai_config(self.Request("GET")), {"enabled": False})
-        self.assertEqual(self.app.ai_config(self.Request("POST", {"enabled": True})), {"enabled": True})
-        self.assertEqual(self.app.ai_config(self.Request("GET")), {"enabled": True})
+        self.assertEqual(self.app.ai_config(self.Request("GET")), {"enabled": False, "model_status": "not_configured"})
+        self.assertEqual(self.app.ai_config(self.Request("POST", {"enabled": True})), {"enabled": True, "model_status": "not_configured"})
+        self.assertEqual(self.app.ai_config(self.Request("GET")), {"enabled": True, "model_status": "not_configured"})
 
     def test_invalid_payload_is_rejected_and_does_not_change_state(self):
         for payload in ({}, {"enabled": "true"}, {"enabled": True, "extra": 1}):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 self.app.ai_config(self.Request("POST", payload))
-        self.assertEqual(self.app.ai_config(self.Request("GET")), {"enabled": False})
+        self.assertEqual(self.app.ai_config(self.Request("GET")), {"enabled": False, "model_status": "not_configured"})
