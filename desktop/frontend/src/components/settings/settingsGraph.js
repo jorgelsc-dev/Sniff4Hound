@@ -2,7 +2,7 @@ import {
   connectionPath as routeConnection,
   graphBounds as boundsOf,
   validPositions as keepValidPositions,
-} from "../../utils/flowGraph";
+} from "../../utils/flowGraph.js";
 
 export const GRAPH_CARD = { width: 252, height: 176 };
 // v2: the lane layout replaced the four-column one. Positions saved under v1
@@ -81,7 +81,10 @@ export function validPositions(value) {
 }
 
 export function graphBounds(nodes) {
-  return boundsOf(nodes, GRAPH_CARD);
+  // Leave room for side-routed connectors, arrowheads and edge labels. This
+  // padding is part of the fit calculation, so those visual elements cannot
+  // be clipped when the graph is centered in the viewport.
+  return boundsOf(nodes, GRAPH_CARD, { x: 58, top: 58, bottom: 58 });
 }
 
 // Midpoint of a routed wire, for its label. Mirrors the bezier endpoints
