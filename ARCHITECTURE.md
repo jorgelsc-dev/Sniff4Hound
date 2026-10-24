@@ -190,9 +190,12 @@ Entradas aceptadas:
   (**solo** en el handshake de `WS /ws/`, no en HTTP plano)
 
 El banner de arranque tambien imprime `/?code=<token>` para la SPA. Ese
-parametro lo consume el frontend, lo conserva solo en memoria del tab actual
-(nunca en `localStorage`; ver README.md "Copiar el token de sesion") y lo
-retira de la barra de direcciones; no autentica rutas HTTP directamente.
+parametro lo consume el frontend y lo conserva solo en memoria del tab actual:
+no se persiste en `localStorage` ni `sessionStorage`. Al iniciar, la UI elimina
+una sola vez las claves de auth actuales y legacy que pudiera haber dejado una
+version anterior (`sniff4hound.securityCode` y `sniff4hound.sessionToken`),
+y retira el codigo de la barra de direcciones; no autentica rutas HTTP
+directamente.
 
 Firma de los JWT:
 

@@ -114,6 +114,11 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e .
 ```
 
+El editable instala la dependencia exacta que usa el runtime: `wsbuilder[tls,mdns]`
+desde Git en el commit `e626249d80958464e6b114e60cbf700e22eec1f5`, fijado en
+`pyproject.toml`. No basta con instalar el `wsbuilder` publicado en PyPI: el
+soporte QUIC/HTTP3 requerido todavía vive en `main` de ese repositorio.
+
 ### Build local del paquete Debian
 
 El repositorio incluye un builder reproducible para generar el `.deb` localmente.
@@ -404,12 +409,32 @@ npm run dev
 Checks:
 
 ```bash
-# Requiere el entorno del proyecto (venv con `pip install -e .`), no el
-# Python global del sistema - de lo contrario falla en collection con
-# `ModuleNotFoundError: No module named 'wsbuilder'` antes de correr nada.
+# Requiere el entorno aislado del proyecto y la instalación editable.
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e .
 .venv/bin/python -m unittest discover -t . -s tests -q
 .venv/bin/python -m pytest tests/ -q
 ```
+
+### Limpiar artefactos locales sin tocar datos del runtime
+
+Para revisar y limpiar únicamente resultados generados de build, QA y caches,
+usa el script separado. Es dry-run por defecto y solo reconoce directorios con
+nombres de artefactos (`dist/`, `build/`, `QA/`, `__pycache__/`,
+`.pytest_cache/` y `*.egg-info/`):
+
+```bash
+./scripts/clean_build_artifacts.sh --dry-run
+./scripts/clean_build_artifacts.sh --yes
+```
+
+El primer comando solo lista; el segundo borra exclusivamente los directorios
+listados por ese detector. Este flujo nunca busca ni elimina bases SQLite,
+capturas, logs, certificados o claves del runtime. Para esos archivos existe
+`scripts/clean_artifacts.sh`, que es un flujo independiente y siempre muestra
+los candidatos antes de pedir confirmación.
 
 Frontend:
 

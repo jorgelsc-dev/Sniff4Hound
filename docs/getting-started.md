@@ -61,6 +61,11 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e .
 ```
 
+La instalación editable resuelve `wsbuilder[tls,mdns]` desde Git en el commit
+`e626249d80958464e6b114e60cbf700e22eec1f5`, que es la revisión exacta fijada
+por `pyproject.toml`. La versión publicada en PyPI no es suficiente para el
+stack QUIC/HTTP3 actual.
+
 ### Build local del paquete Debian
 
 Construye la SPA y luego genera el artefacto:
@@ -73,6 +78,20 @@ cd ../..
 ./scripts/build_deb.sh
 sudo apt install ./dist/sniff4hound_<version>_<arch>.deb
 ```
+
+## Limpiar artefactos locales
+
+La limpieza de build/cache está separada de la limpieza de datos. El script es
+dry-run por defecto y nunca apunta a bases de datos, capturas, logs,
+certificados ni claves del runtime:
+
+```bash
+./scripts/clean_build_artifacts.sh --dry-run
+./scripts/clean_build_artifacts.sh --yes
+```
+
+`--dry-run` solo lista `dist/`, `build/`, `QA/`, `__pycache__/`,
+`.pytest_cache/` y `*.egg-info/`; `--yes` elimina únicamente esos directorios.
 
 ## Arranque rapido
 
