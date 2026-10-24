@@ -64,7 +64,7 @@
               :class="{ 'is-selected': modelValue === node.section, 'is-running': node.state.active }"
               :data-node="node.id"
               :style="{ left: node.x + 'px', top: node.y + 'px', '--node-color': node.color }"
-              :aria-label="'Configurar ' + node.label"
+              :aria-label="nodeAccessibleLabel(node)"
               :aria-expanded="modelValue === node.section"
               aria-controls="settings-inspector"
               @click="$emit('update:modelValue', node.section)"
@@ -75,10 +75,10 @@
             >
               <span class="config-node__head">
                 <span class="config-node__icon"><v-icon :icon="node.icon" size="18" /></span>
-                <strong>{{ node.label }}</strong>
+                <strong :title="node.label">{{ node.label }}</strong>
                 <v-icon icon="mdi-chevron-right" size="16" class="config-node__open" />
               </span>
-              <span class="config-node__detail">{{ node.detail }}</span>
+              <span class="config-node__detail" :title="node.detail">{{ node.detail }}</span>
               <span v-if="node.state.metrics?.length" class="config-node__metrics">
                 <span
                   v-for="metric in node.state.metrics"
@@ -86,13 +86,13 @@
                   class="config-node__metric"
                   :class="metric.tone ? 'is-' + metric.tone : ''"
                 >
-                  <small>{{ metric.label }}</small>
+                  <small :title="metric.label">{{ metric.label }}</small>
                   <strong :title="String(metric.value)">{{ metric.value }}</strong>
                 </span>
               </span>
               <span class="config-node__status" :class="{ 'is-unknown': node.state.unknown }">
                 <span class="config-node__dot" />
-                <span>{{ node.state.label || "Ajustes" }}</span>
+                <span :title="node.state.label || 'Ajustes'">{{ node.state.label || "Ajustes" }}</span>
               </span>
               <span class="config-node__port config-node__port--in" />
               <span class="config-node__port config-node__port--out" />
@@ -201,6 +201,18 @@ const edges = computed(() => {
     };
   });
 });
+function nodeAccessibleLabel(node) {
+  const metrics = (node.state.metrics || [])
+    .map(metric => `${metric.label}: ${metric.value}`)
+    .join("; ");
+  const status = node.state.label || "Ajustes";
+  return [
+    `Configurar ${node.label}`,
+    node.detail,
+    `Estado: ${status}`,
+    metrics,
+  ].filter(Boolean).join(". ");
+}
 function setNodeEl(id, el) {
   if (el) nodeEls.set(id, el);
   else nodeEls.delete(id);

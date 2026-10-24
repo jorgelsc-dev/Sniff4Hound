@@ -1841,6 +1841,8 @@ export default {
       store,
       activeTab: VALID_TABS.has(requested) ? requested : "",
       statusRefreshing: false,
+      graphReady: false,
+      graphErrors: {},
       graphStatusTimer: null,
       mobilePairingTimer: null,
       pipelineConfig: null,
@@ -2133,7 +2135,13 @@ export default {
       };
       for (const [key, value] of Object.entries(states)) {
         if (!online || this.graphFresh[key] !== true) {
-          value.label = !online ? "Datos obsoletos · sin conexión" : this.statusRefreshing ? "Cargando" : "Sin datos actualizados";
+          value.label = !online
+            ? "Datos obsoletos · sin conexión"
+            : !this.graphReady || this.statusRefreshing
+              ? "Cargando"
+              : this.graphErrors[key]
+                ? "Error al actualizar"
+                : "Sin datos actualizados";
           value.active = false;
           value.unknown = true;
           value.metrics = value.metrics.map(item => ({ ...item, value: "—", tone: "" }));
@@ -2381,6 +2389,14 @@ export default {
         exclusions: fresh(4), blacklist: fresh(2) && fresh(3), logs: fresh(6), limits: fresh(8),
         location: !this.locationError, notifications: true,
       };
+      const failed = (index) => results[index].status === "rejected";
+      this.graphErrors = {
+        runtime: failed(0), capture: failed(0), honeypot: failed(0), connection: failed(0),
+        packetcache: failed(0) || failed(1), packetjobs: failed(0) || failed(1),
+        detection: failed(9), scope: failed(9), storage: failed(7), history: failed(10),
+        exclusions: failed(4), blacklist: failed(2) || failed(3), logs: failed(6), limits: failed(8),
+        location: Boolean(this.locationError), notifications: false,
+      };
       const value = (index) => (results[index].status === "fulfilled" ? results[index].value : null);
       this.graphExtras = {
         blacklist: value(2),
@@ -2406,6 +2422,7 @@ export default {
         if (!this.pipelineConfig) this.pipelineDraft = { ...results[1].value };
         this.pipelineConfig = results[1].value;
       }
+      this.graphReady = true;
       this.statusRefreshing = false;
     },
     async saveLimits() {
