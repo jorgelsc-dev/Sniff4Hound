@@ -492,7 +492,7 @@ const PROTOCOL_PROFILES = {
     tableHint: "Tramas de red con límite de saltos y versión.",
   },
   unknown: {
-    label: "Unknown",
+    label: "Desconocido",
     description: "Group traffic without a clear classification using generic metrics and columns.",
     focusTitle: "Interfaces destacadas",
     signalLabel: "Genérica",

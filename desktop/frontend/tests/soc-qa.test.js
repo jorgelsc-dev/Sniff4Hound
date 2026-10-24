@@ -187,9 +187,9 @@ test("empty SOC never implies observation is sufficient", () => {
   const { vm } = view("SocView", { state: {} });
   vm.analysis = evidence(0);
   assert.equal(vm.hasEvidence, false);
-  assert.equal(vm.riskLabel, "Not assessed");
+  assert.equal(vm.riskLabel, "Sin evaluar");
   assert.equal(vm.verdictLabel, "insufficient-evidence");
-  assert.match(vm.verdictTitle, /Insufficient evidence/);
+  assert.match(vm.verdictTitle, /Evidencia insuficiente/);
 });
 
 test("SOC pause survives changing depth and time range", async () => {

@@ -109,16 +109,16 @@ export default {
       packetLimit: 12,
       packetsMeta: { totalAvailable: null, returned: null, truncated: null },
       packetColumns: [
-        { key: "updated_at", label: "Seen" },
-        { key: "interface", label: "Interface" },
-        { key: "proto", label: "Proto" },
-        { key: "state", label: "State" },
-        { key: "src_ip", label: "Src IP" },
-        { key: "src_port", label: "Src Port" },
-        { key: "dst_ip", label: "Dst IP" },
-        { key: "dst_port", label: "Dst Port" },
-        { key: "size", label: "Size" },
-        { key: "summary", label: "Summary" },
+        { key: "updated_at", label: "Visto" },
+        { key: "interface", label: "Interfaz" },
+        { key: "proto", label: "Protocolo" },
+        { key: "state", label: "Estado" },
+        { key: "src_ip", label: "IP origen" },
+        { key: "src_port", label: "Puerto origen" },
+        { key: "dst_ip", label: "IP destino" },
+        { key: "dst_port", label: "Puerto destino" },
+        { key: "size", label: "Tamaño" },
+        { key: "summary", label: "Resumen" },
       ],
       packetSearchFields: [
         "updated_at",
@@ -159,6 +159,8 @@ export default {
       ],
       wsRefreshTimer: null,
       stopTableRefreshSubscription: null,
+      loadRevision: 0,
+      loadController: null,
     };
   },
   computed: {
@@ -199,9 +201,9 @@ export default {
       return [
         {
           key: "tags",
-          label: "Tags",
+          label: "Etiquetas",
           value: Number(this.counts.count_tags || 0),
-          caption: "Rule hits and parsed metadata",
+          caption: "Coincidencias de reglas y metadatos analizados",
           icon: "mdi-tag-multiple",
           colorClass: "text-primary",
         },
@@ -209,15 +211,15 @@ export default {
           key: "packets",
           label: "Paquetes",
           value: Number(this.counts.count_ports || 0),
-          caption: "Frames written into packet telemetry",
+          caption: "Tramas escritas en la telemetría de paquetes",
           icon: "mdi-ethernet",
           colorClass: "text-success",
         },
         {
           key: "responses",
-          label: "Responses",
+          label: "Respuestas",
           value: Number(this.counts.count_banners || 0),
-          caption: "Decoded payload and banner artifacts",
+          caption: "Cargas y banners decodificados",
           icon: "mdi-server-network",
           colorClass: "text-info",
         },
@@ -225,23 +227,23 @@ export default {
           key: "hosts",
           label: "Hosts únicos",
           value: Number(analyticsSummary.unique_hosts || 0),
-          caption: "Distinct IPs seen across the capture set",
+          caption: "IPs distintas observadas en la captura",
           icon: "mdi-lan-connect",
           colorClass: "text-warning",
         },
         {
           key: "protocols",
-          label: "Protocols",
+          label: "Protocolos",
           value: this.protocolCount,
-          caption: "Observed protocol families",
+          caption: "Familias de protocolos observadas",
           icon: "mdi-source-branch",
           colorClass: "text-secondary",
         },
         {
           key: "honeypot",
-          label: "Honeypot Hits",
+          label: "Eventos del honeypot",
           value: this.honeypotPacketsSeen,
-          caption: "Inbound events recorded by honeypot listeners",
+          caption: "Eventos entrantes registrados por los listeners",
           icon: "mdi-server-security",
           colorClass: "text-warning",
         },
@@ -388,6 +390,8 @@ export default {
     this.stopTableRefreshSubscription = this.store.subscribeTableRefresh(this.handleWsRefresh);
   },
   beforeUnmount() {
+    this.loadRevision += 1;
+    if (this.loadController) this.loadController.abort();
     if (this.wsRefreshTimer) {
       clearTimeout(this.wsRefreshTimer);
       this.wsRefreshTimer = null;
@@ -463,41 +467,49 @@ export default {
       return `?${params.toString()}`;
     },
     load(options = {}) {
+      const revision = ++this.loadRevision;
+      if (this.loadController) this.loadController.abort();
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      this.loadController = controller;
       if (!options.silent) this.loading = true;
       this.error = "";
       const dashboardQuery = this.dashboardQuery();
+      const requestOptions = controller ? { signal: controller.signal } : {};
       return Promise.allSettled([
-        this.store.fetchJsonPromise(`/api/dashboard/${dashboardQuery}`),
-        this.store.fetchJsonPromise(`/api/charts/analytics${dashboardQuery}`),
-        this.store.fetchListPromise("/ports/", { limit: this.packetLimit }),
+        this.store.fetchJsonPromise(`/api/dashboard/${dashboardQuery}`, requestOptions),
+        this.store.fetchJsonPromise(`/api/charts/analytics${dashboardQuery}`, requestOptions),
+        this.store.fetchListPromise("/ports/", { limit: this.packetLimit, ...requestOptions }),
       ])
         .then(([dashboardRes, analyticsRes, packetsRes]) => {
+          // A slower response from an earlier period must never overwrite the
+          // slice selected by the operator later. This also covers navigation
+          // followed by a refresh on the same component instance.
+          if (revision !== this.loadRevision) return;
           const errors = [];
           if (dashboardRes.status === "fulfilled") {
             this.dashboard = dashboardRes.value || {};
           } else {
-            this.dashboard = {};
             errors.push((dashboardRes.reason && dashboardRes.reason.message) || "No se pudo cargar el resumen");
           }
           if (analyticsRes.status === "fulfilled") {
             this.analytics = analyticsRes.value || {};
           } else {
-            this.analytics = {};
             errors.push((analyticsRes.reason && analyticsRes.reason.message) || "No se pudieron cargar las estadísticas");
           }
           if (packetsRes.status === "fulfilled") {
             this.packets = packetsRes.value.rows;
             this.packetsMeta = packetsRes.value.meta;
           } else {
-            this.packets = [];
-            this.packetsMeta = { totalAvailable: null, returned: null, truncated: null };
             errors.push((packetsRes.reason && packetsRes.reason.message) || "No se pudieron cargar los paquetes");
           }
           this.lastUpdated = new Date().toLocaleTimeString("es-ES");
           this.error = errors.join(" | ");
         })
         .finally(() => {
-          this.loading = false;
+          if (revision === this.loadRevision) {
+            this.loading = false;
+            if (this.loadController === controller) this.loadController = null;
+          }
         });
     },
   },
