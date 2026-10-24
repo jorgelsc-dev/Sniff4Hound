@@ -1,8 +1,8 @@
 name: CI
 
 # Lint/build plus isolated Electron startup regressions (no app or root), the
-# Python dependency install and the strict docs build. The full unit suites
-# are not run here. The backend suite took 3-5 minutes on every
+# Python dependency install, the strict docs build and the lockfile registry
+# check. The full unit suites are not run here. The backend suite took 3-5 minutes on every
 # push and pull request, so it lives in tests.yml instead: start it by hand
 # from the Actions tab (Tests -> Run workflow), or run it locally (README,
 # "Checks").
@@ -131,3 +131,13 @@ jobs:
           python -m pip install -r requirements-docs.txt
       - name: Build site (strict)
         run: mkdocs build --strict
+
+  # Every npm lockfile must resolve from the official registry; a lockfile
+  # regenerated behind a mirror ties `npm ci` (and the .deb build) to it.
+  lockfile-registries:
+    name: Lockfile registries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject non-npmjs registry hosts
+        run: python3 scripts/check_lockfile_registries.py
