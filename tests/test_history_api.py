@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from wsbuilder import Request
 
@@ -177,6 +178,44 @@ class HistoryApiTests(unittest.TestCase):
         self.assertEqual(self.store.count_dns_history(), 3)
         self._call("/api/history/clear", method="POST", body={"confirm": True})
         self.assertEqual(self.store.history_totals()["dns_history"], 0)
+
+    def test_clear_rejects_non_boolean_confirmation_without_mutation(self):
+        self._seed()
+        before = self.store.history_totals()
+        with patch.object(self.store, "clear_history", wraps=self.store.clear_history) as clear:
+            for confirm in ("false", "true", "", 0, 1, -1, 1.0, None, [], [True], {}, {"yes": True}):
+                with self.subTest(confirm=confirm):
+                    response = self._call("/api/history/clear", method="POST",
+                                          body={"scope": "all", "confirm": confirm})
+                    self.assertEqual(response.status, 400)
+                    self.assertEqual(self.store.history_totals(), before)
+            clear.assert_not_called()
+
+    def test_false_and_missing_confirmation_only_preview(self):
+        self._seed()
+        before = self.store.history_totals()
+        with patch.object(self.store, "clear_history", wraps=self.store.clear_history) as clear:
+            for body in ({"scope": "dns"}, {"scope": "dns", "confirm": False}):
+                response = self._call("/api/history/clear", method="POST", body=body)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(self._json(response), {"status": "confirm_required", "scope": "dns", "rows": 3})
+                self.assertEqual(self.store.history_totals(), before)
+            clear.assert_not_called()
+
+    def test_true_clears_only_dns_and_bad_scope_never_clears(self):
+        self._seed()
+        with patch.object(self.store, "clear_history", wraps=self.store.clear_history) as clear:
+            for scope in ("invalid", "", None, False, 0, [], {}):
+                response = self._call("/api/history/clear", method="POST", body={"scope": scope, "confirm": True})
+                self.assertEqual(response.status, 400)
+            clear.assert_not_called()
+            response = self._call("/api/history/clear", method="POST", body={"scope": "dns", "confirm": True})
+            self.assertEqual(response.status, 200)
+            self.assertEqual(self._json(response)["deleted"], {"dns_history": 3})
+            clear.assert_called_once_with("dns")
+        self.assertEqual(self.store.count_dns_history(), 0)
+        self.assertEqual(self.store.count_arp_bindings(), 2)
+        self.assertEqual(self.store.count_arp_events(), 2)
 
     def test_an_unknown_scope_is_a_400(self):
         self.assertEqual(self._call("/api/history/clear", method="POST", body={"scope": "tcp", "confirm": True}).status, 400)

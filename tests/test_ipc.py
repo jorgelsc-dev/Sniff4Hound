@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sniff4hound.ipc import (
     IpcAuthError,
@@ -240,6 +241,65 @@ class IpcReconnectTests(unittest.TestCase):
             _wait_until(lambda: _succeeds(client, "snapshot"), timeout=10),
             msg="client never reconnected after the capture service returned",
         )
+
+    def test_concurrent_reconnects_share_failure_cooldown_then_recover(self):
+        client = IpcClient(self.socket_path, self.token, connect_timeout=0.01)
+        self.addCleanup(client.close)
+        client.RECONNECT_TIMEOUT_SECONDS = 0.01
+        client.RECONNECT_COOLDOWN_SECONDS = 10
+        gate = threading.Barrier(4)
+        errors = []
+        checked = threading.Barrier(4)
+        check = client._check_reconnect
+        calls = threading.local()
+
+        def check_together():
+            check()
+            # Force every caller past the optimistic check before any of
+            # them can attempt a connection. The second check is under lock.
+            if not getattr(calls, "checked", False):
+                calls.checked = True
+                checked.wait(timeout=2)
+
+        def call():
+            try:
+                gate.wait(timeout=2)
+                client.call("snapshot")
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(client, "_check_reconnect", side_effect=check_together), patch.object(
+            client, "connect", wraps=client.connect
+        ) as reconnect:
+            threads = [threading.Thread(target=call) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=3)
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            self.assertEqual(len(errors), 4)
+            self.assertTrue(all(isinstance(exc, IpcError) for exc in errors), errors)
+            self.assertEqual(reconnect.call_count, 1)
+
+        self._start_server()
+        with self.assertRaises(IpcError):
+            client.call("snapshot")
+        # Simulate the cooldown elapsing, without a slow wall-clock sleep.
+        client._last_connect_failure_at -= 11
+        self.assertEqual(client.call("snapshot"), {"mode": "sniffer"})
+        self.assertEqual(client._generation, 1)
+        self.assertEqual(client.call("snapshot"), {"mode": "sniffer"})
+
+    def test_explicit_startup_connect_bypasses_reconnect_cooldown(self):
+        client = IpcClient(self.socket_path, self.token, connect_timeout=0.01)
+        self.addCleanup(client.close)
+        with self.assertRaises(IpcError):
+            client.connect()
+        client.RECONNECT_COOLDOWN_SECONDS = 10
+        self._start_server()
+        client.connect(timeout=2)
+        self.assertTrue(client.connected)
+        self.assertEqual(client.call("snapshot"), {"mode": "sniffer"})
 
     def test_a_slow_call_does_not_block_another_call(self):
         """Requests used to run inline on the connection's read loop, so the

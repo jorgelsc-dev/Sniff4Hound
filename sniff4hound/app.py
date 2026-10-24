@@ -3170,10 +3170,14 @@ def history_clear_api(request):
     """Delete the recorded history. Irreversible, so a request without
     {"confirm": true} only reports what it would remove."""
     payload = _read_json_body(request)
-    scope = str(payload.get("scope") or "all").strip().lower()
-    if scope not in ("dns", "arp", "all"):
+    scope = payload.get("scope", "all")
+    if not isinstance(scope, str) or scope.strip().lower() not in ("dns", "arp", "all"):
         raise ValueError("scope must be dns, arp or all")
-    if not bool(payload.get("confirm")):
+    scope = scope.strip().lower()
+    confirm = payload.get("confirm", False)
+    if not isinstance(confirm, bool):
+        raise ValueError("confirm must be a boolean")
+    if not confirm:
         totals = store.history_totals()
         pending = {"dns": totals["dns_history"], "arp": totals["arp_bindings"] + totals["arp_events"]}
         pending["all"] = pending["dns"] + pending["arp"]

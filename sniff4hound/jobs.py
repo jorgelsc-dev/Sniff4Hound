@@ -62,7 +62,7 @@ STATUS_ERROR = "error"
 class Job:
     __slots__ = (
         "id", "kind", "status", "result", "error", "error_type", "exception",
-        "created_at", "finished_at", "done", "persisted", "lock", "started_mono",
+        "created_at", "finished_at", "done", "persisted", "lock", "started_mono", "abandoned",
     )
 
     def __init__(self, job_id: str, kind: str):
@@ -84,6 +84,7 @@ class Job:
         self.persisted = False
         self.lock = threading.Lock()
         self.started_mono = 0.0
+        self.abandoned = False
 
     def snapshot(self) -> dict:
         return {
@@ -98,14 +99,32 @@ class Job:
         }
 
 
+class _PendingJobs(queue.Queue):
+    def discard(self, job: Job):
+        # Queue has no public cancellation API. Use its own mutex so a read
+        # that expires before dispatch releases its handler even when every
+        # worker is stuck. Preserve the task accounting used by shutdown.
+        with self.mutex:
+            for item in self.queue:
+                if item is not None and item[0] is job:
+                    self.queue.remove(item)
+                    self.unfinished_tasks -= 1
+                    if not self.unfinished_tasks:
+                        self.all_tasks_done.notify_all()
+                    self.not_full.notify()
+                    return
+
+
 class JobQueue:
     def __init__(self, store=None, broadcast: Callable[[dict], None] | None = None,
                  workers: int = DEFAULT_WORKERS, timeout: float = JOB_TIMEOUT_SECONDS):
         self._store = store
         self._broadcast = broadcast
         self._timeout = float(timeout)
-        self._queue: queue.Queue = queue.Queue()
+        self._queue = _PendingJobs()
         self._jobs: dict[str, Job] = {}
+        # Handler lifetime is independent of the request/result registry.
+        self._running: dict[str, Job] = {}
         self._lock = threading.Lock()
         self._threads = []
         self._stopping = threading.Event()
@@ -114,7 +133,8 @@ class JobQueue:
         # pool, so the pool size stays where it was configured.
         self._surplus = 0
         self._worker_seq = 0
-        for _ in range(max(1, int(workers))):
+        self._worker_limit = max(1, int(workers))
+        for _ in range(self._worker_limit):
             self._start_worker()
         self._reaper = threading.Thread(
             target=self._reap_loop, name="sniff4hound-job-reaper", daemon=True
@@ -149,11 +169,18 @@ class JobQueue:
         """
         job = Job(uuid.uuid4().hex, kind)
         with self._lock:
+            if self._stopping.is_set():
+                raise RuntimeError("job queue is shut down")
             self._jobs[job.id] = job
-        self._queue.put((job, fn))
+            self._queue.put((job, fn))
 
         if not persist:
             if not job.done.wait(timeout=self._timeout):
+                # Settle before dropping the response record: a late result
+                # must never win, even if the watchdog has not ticked yet.
+                self._settle(job, None, TimeoutError(f"la lectura tardó más de {self._timeout:.0f}s"),
+                             timed_out=True)
+                self._queue.discard(job)
                 with self._lock:
                     self._jobs.pop(job.id, None)
                 raise TimeoutError(f"la lectura tardó más de {self._timeout:.0f}s")
@@ -204,15 +231,31 @@ class JobQueue:
     # -- internals ----------------------------------------------------------
 
     def _worker(self):
+        try:
+            self._work_loop()
+        finally:
+            with self._lock:
+                self._threads.remove(threading.current_thread())
+
+    def _work_loop(self):
         while not self._stopping.is_set():
             item = self._queue.get()
             if item is None:
                 self._queue.task_done()
                 return
             job, fn = item
+            if self._stopping.is_set():
+                self._settle(job, None, RuntimeError("job queue is shut down"))
             with job.lock:
+                if job.done.is_set():
+                    # A queued read can expire before any worker gets to it.
+                    self._queue.task_done()
+                    del item, job, fn
+                    continue
                 job.status = STATUS_RUNNING
                 job.started_mono = time.monotonic()
+                with self._lock:
+                    self._running[job.id] = job
             LOGGER.debug("job started", extra={"extra_fields": {"job": job.id, "kind": job.kind}})
             result = None
             error = None
@@ -231,15 +274,31 @@ class JobQueue:
                 LOGGER.warning("job finished after its timeout; result discarded",
                                extra={"extra_fields": {"job": job.id, "kind": job.kind}})
             self._queue.task_done()
-            if self._retire_if_surplus():
+            with self._lock:
+                self._running.pop(job.id, None)
+                if job.abandoned:
+                    self._surplus -= 1
+            # Only the worker actually replaced may retire. Retiring an
+            # unrelated healthy worker would strand the pool again.
+            if job.abandoned:
                 return
+            del item, job, fn, result, error
 
-    def _settle(self, job: Job, result, error):
+    def _settle(self, job: Job, result, error, *, timed_out=False):
         """Records a job's outcome once. Returns False if it was already settled
         (the watchdog got there first)."""
         with job.lock:
             if job.done.is_set():
                 return False
+            if timed_out and job.started_mono:
+                with self._lock:
+                    # Python cannot kill a handler thread. Bound outstanding
+                    # replacements to one extra pool, then fail requests at
+                    # their deadline until those handlers return.
+                    if not self._stopping.is_set() and self._surplus < self._worker_limit:
+                        job.abandoned = True
+                        self._surplus += 1
+                        self._start_worker()
             job.finished_at = utc_now()
             if error is None:
                 job.result = result
@@ -260,13 +319,6 @@ class JobQueue:
             self._finish(job)
         return True
 
-    def _retire_if_surplus(self) -> bool:
-        with self._lock:
-            if self._surplus > 0:
-                self._surplus -= 1
-                return True
-        return False
-
     def _watch_loop(self):
         while not self._stopping.wait(WATCHDOG_INTERVAL_SECONDS):
             try:
@@ -278,20 +330,18 @@ class JobQueue:
         now = time.monotonic()
         with self._lock:
             overdue = [
-                job for job in self._jobs.values()
+                job for job in self._running.values()
                 if job.status == STATUS_RUNNING and not job.done.is_set()
                 and job.started_mono and now - job.started_mono > self._timeout
             ]
         for job in overdue:
             elapsed = now - job.started_mono
-            if not self._settle(job, None, TimeoutError(f"job exceeded {self._timeout:.0f}s")):
+            if not self._settle(job, None, TimeoutError(f"job exceeded {self._timeout:.0f}s"),
+                                timed_out=True):
                 continue
-            LOGGER.warning("job exceeded its timeout; abandoned and worker replaced",
+            LOGGER.warning("job exceeded its timeout",
                            extra={"extra_fields": {"job": job.id, "kind": job.kind,
                                                    "elapsed_s": round(elapsed, 1)}})
-            with self._lock:
-                self._surplus += 1
-            self._start_worker()
 
     def _persist(self, job: Job):
         if self._store is None:
@@ -364,12 +414,31 @@ class JobQueue:
         the work a moment to land first. Bounded, because shutdown must not
         hang on a job that is genuinely stuck.
         """
-        self._stopping.set()
-        for _ in self._threads:
+        with self._lock:
+            self._stopping.set()
+            threads = list(self._threads)
+        # Cancel queued handlers and release their closures. In-flight work
+        # gets the bounded join below; no replacement can start after stop.
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is not None:
+                self._settle(item[0], None, RuntimeError("job queue is shut down"))
+            self._queue.task_done()
+        for _ in threads:
             self._queue.put(None)
         deadline = time.monotonic() + max(0.0, float(timeout))
-        for thread in self._threads:
+        for thread in [*threads, self._watchdog, self._reaper]:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             thread.join(timeout=remaining)
+        # Abandoned workers may have retired without consuming a sentinel.
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+            self._queue.task_done()
