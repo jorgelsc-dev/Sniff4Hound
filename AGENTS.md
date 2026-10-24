@@ -23,6 +23,38 @@ Tests are `unittest.TestCase` classes with `test_*` methods. Add backend coverag
 ## Commit & Pull Request Guidelines
 History is short and mostly uses concise imperative messages, with Conventional Commit style for dependency bumps, for example `chore(deps): bump ...`. Keep commit subjects brief and specific. PRs should explain the behavior change, list validation commands run, and include screenshots for UI updates. Update docs when API, UI, or schema behavior changes.
 
+## Agent Findings and Repository Cards
+Every agent finding is tracked as a repository card or GitHub issue, including findings that are fixed during the same task. Create or update the card before handing off work. The card must include:
+
+- **Owner:** the person or agent responsible for the next action.
+- **Severity:** `blocker`, `high`, `medium`, or `low`, with a short rationale when it is not obvious.
+- **Evidence:** reproducible commands, test output, file/symbol links, screenshots, logs, or other concrete observations. Do not include secrets or sensitive runtime data.
+- **Acceptance criteria:** observable conditions that close the finding.
+- **PR/commit:** the pull request URL while work is under review, or the commit link once committed; use `N/A` only for an explicitly accepted, deferred, or duplicate finding.
+- **Status:** one of `new`, `claimed`, `in progress`, `blocked`, `ready for review`, `verified`, `accepted`, or `closed`.
+
+Use the repository's normal issue tracker and follow [docs/BRANCHING.md](docs/BRANCHING.md) for branch and review rules. If an issue cannot be created, record the same fields in the task/PR description and link that record from the handoff; do not silently omit the finding.
+
+An agent that fixes a finding must claim the card by naming itself or its human owner, update the status, link the PR or commit, and add the validation commands and results. A fixing agent must not close the card until the acceptance criteria are met and the evidence is recorded. Review or verification agents update the same card rather than creating a duplicate, and identify any remaining risk or follow-up owner.
+
+For a quick, consistent card, use this shape:
+
+```text
+Title: [severity] concise finding
+Owner: @name-or-agent
+Severity: medium — rationale
+Evidence:
+- command/output or file/symbol link
+Acceptance criteria:
+- observable condition 1
+- observable condition 2
+PR/commit: URL or N/A with reason
+Status: new
+Validation (when fixed): command — result
+```
+
+This workflow records findings; it does not replace the repository's existing test, security, branching, commit, or pull-request requirements.
+
 ## Security & Configuration Tips
 Do not commit local databases, logs, or other runtime artifacts. Capture mode may require Linux `AF_PACKET` access and elevated privileges or `CAP_NET_RAW`. Prefer configuration through `SNIFF4HOUND_*` environment variables rather than hardcoding secrets or paths.
 
