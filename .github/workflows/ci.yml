@@ -108,7 +108,7 @@ jobs:
         run: |
           python - <<'PY'
           import importlib.metadata as metadata
-          from wsbuilder import App, LocalMDNSServer, Request, Response, parse_close_payload  # noqa: F401
+          from wsbuilder import App, LocalMDNSServer, NeuralNetwork, Request, Response, evaluate_errors, parse_close_payload  # noqa: F401
           from wsbuilder.http3_server import Http3Server, alt_svc_header  # noqa: F401
           from wsbuilder.logs import NDJSONLog  # noqa: F401
           from wsbuilder.server import HTTPServer  # noqa: F401

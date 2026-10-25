@@ -1,7 +1,7 @@
 name: Tests
 
 # The full test suite, run on demand: Actions -> Tests -> Run workflow, on the
-# branch you want to check. It is not triggered by pushes or pull requests (see
+# branch you want to check. It has no direct push or pull-request trigger (see
 # ci.yml); the same commands run locally are in the README under "Checks".
 # package.yml also calls it (workflow_call) as the gate before a release is
 # published from main.

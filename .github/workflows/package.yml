@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   # Release gate: the same suites as the manual Tests workflow (backend shards
-  # on the installed package, frontend lint + unit tests). A commit that breaks
+  # with resolved dependencies, frontend lint + unit tests). A commit that breaks
   # a test still builds its .deb artifact, but the publish job never runs, so
   # /releases/latest keeps serving the previous verified build.
   tests:
@@ -108,6 +108,30 @@ jobs:
           echo "deb_file=${DEB_FILE}" >> "${GITHUB_OUTPUT}"
           echo "release_tag=v${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "release_name=Sniff4Hound ${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Smoke test bundled Python runtime
+        env:
+          PACKAGE_FILE: dist/${{ steps.artifact_meta.outputs.deb_file }}
+          PACKAGE_VERSION: ${{ steps.artifact_meta.outputs.version }}
+          PACKAGE_SMOKE_ROOT: ${{ runner.temp }}/sniff4hound-package-smoke
+          SNIFF4HOUND_DATA_DIR: ${{ runner.temp }}/sniff4hound-package-smoke-data
+        run: |
+          dpkg-deb --extract "$PACKAGE_FILE" "$PACKAGE_SMOKE_ROOT"
+          cd "$RUNNER_TEMP"
+          python -I - <<'PY'
+          import importlib.metadata as metadata
+          import os
+          import sys
+          from pathlib import Path
+
+          vendor = Path(os.environ["PACKAGE_SMOKE_ROOT"]) / "usr/lib/sniff4hound/vendor"
+          sys.path.insert(0, str(vendor))
+          from sniff4hound import http3_listener, manage, mobile_stream  # noqa: F401
+          from wsbuilder import LocalMDNSServer, NeuralNetwork, evaluate_errors  # noqa: F401
+          from wsbuilder.logs import NDJSONLog  # noqa: F401
+          assert metadata.version("sniff4hound") == os.environ["PACKAGE_VERSION"]
+          print("Bundled runtime imports passed; wsbuilder", metadata.version("wsbuilder"))
+          PY
 
       - name: Upload Debian artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
