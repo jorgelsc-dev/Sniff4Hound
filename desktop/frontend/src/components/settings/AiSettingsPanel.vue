@@ -46,6 +46,30 @@
     <div class="ai-settings-panel__section mt-5">
       <div class="ai-settings-panel__section-heading">
         <div>
+          <div class="text-body-2 font-weight-medium">Modelo y ejecución</div>
+          <div class="text-caption text-medium-emphasis mt-1">
+            Esta ficha separa el permiso guardado del modelo que realmente podría ejecutar inferencias.
+          </div>
+        </div>
+        <v-chip size="x-small" variant="tonal" :color="ready ? 'success' : 'warning'" prepend-icon="mdi-robot-outline">
+          {{ modelSummary.status }}
+        </v-chip>
+      </div>
+      <div class="ai-settings-panel__model-grid mt-3">
+        <div v-for="item in modelSummary.items" :key="item.label" class="ai-settings-panel__model-item">
+          <span class="text-caption text-medium-emphasis">{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+          <span class="text-caption text-medium-emphasis">{{ item.detail }}</span>
+        </div>
+      </div>
+      <v-alert type="info" variant="tonal" density="compact" class="mt-3" prepend-icon="mdi-information-outline">
+        <strong>Qué hace hoy:</strong> guarda tu preferencia y prepara métricas agregadas. No carga un modelo, no ejecuta
+        inferencias y no envía datos fuera del sensor. El adaptador de IA permanece aislado del camino de captura.
+      </v-alert>
+    </div>
+    <div class="ai-settings-panel__section mt-5">
+      <div class="ai-settings-panel__section-heading">
+        <div>
           <div class="text-body-2 font-weight-medium">Resumen operativo</div>
           <div class="text-caption text-medium-emphasis mt-1">
             Contexto agregado del sensor para saber qué podría analizar la IA. No es telemetría enviada a un modelo.
@@ -77,6 +101,29 @@
           </div>
           <v-chip size="x-small" variant="tonal" :color="option.color">{{ option.status }}</v-chip>
         </div>
+      </div>
+    </div>
+    <div class="ai-settings-panel__section mt-5">
+      <div class="ai-settings-panel__section-heading">
+        <div>
+          <div class="text-body-2 font-weight-medium">Gráfico de actividad agregada</div>
+          <div class="text-caption text-medium-emphasis mt-1">
+            Muestra el contexto disponible para una futura IA; no representa predicciones ni puntuaciones del modelo.
+          </div>
+        </div>
+        <v-chip size="x-small" variant="outlined" color="secondary">{{ activityPeak }} paq/s pico</v-chip>
+      </div>
+      <div class="ai-settings-panel__chart mt-3" role="img" :aria-label="activityChartLabel">
+        <svg viewBox="0 0 360 108" preserveAspectRatio="none" aria-hidden="true">
+          <line v-for="line in chartGrid" :key="line" x1="0" :y1="line" x2="360" :y2="line" class="ai-settings-panel__chart-grid" />
+          <polyline :points="activityChartPoints" class="ai-settings-panel__chart-line" />
+          <circle v-for="point in activityChartDots" :key="point.key" :cx="point.x" :cy="point.y" r="2.5" class="ai-settings-panel__chart-dot" />
+        </svg>
+        <div class="ai-settings-panel__chart-empty" v-if="!hasActivity">Aún no hay actividad agregada disponible.</div>
+      </div>
+      <div class="ai-settings-panel__chart-footer text-caption text-medium-emphasis">
+        <span>Promedio: {{ activityAverage }} paq/s</span>
+        <span>{{ activitySamples.length }} muestras recientes</span>
       </div>
     </div>
     <div v-if="!confirmed && !loading" class="mt-3">
@@ -117,11 +164,25 @@ export default {
       loading: true,
       saving: false,
       error: "",
+      activitySamples: [Number(store.state.liveActivity?.total) || 0],
+      lastActivitySample: null,
     };
   },
   computed: {
     ready() {
       return aiModelReady({ enabled: this.enabled, modelStatus: this.modelStatus });
+    },
+    modelSummary() {
+      const status = this.loading ? "Consultando" : this.ready ? "Modelo listo" : "Sin modelo";
+      return {
+        status,
+        items: [
+          { label: "Proveedor", value: this.ready ? "Configurado" : "Ninguno", detail: this.ready ? "conectado" : "sin conexión" },
+          { label: "Modelo", value: this.ready ? "Disponible" : "No configurado", detail: this.ready ? "operativo" : "0 inferencias" },
+          { label: "Ejecuciones", value: "0", detail: "nunca ejecutado" },
+          { label: "Última ejecución", value: "Nunca", detail: "sin historial" },
+        ],
+      };
     },
     contextMetrics() {
       const activity = this.store.state.liveActivity || {};
@@ -163,6 +224,36 @@ export default {
         { icon: "mdi-lightbulb-outline", title: "Triage asistido", description: "Se habilitará al configurar un modelo", status: "Próximamente", color: "secondary" },
       ];
     },
+    hasActivity() {
+      return this.activitySamples.some(value => Number(value) > 0);
+    },
+    activityPeak() {
+      return Math.max(0, ...this.activitySamples.map(value => Number(value) || 0)).toLocaleString("es-ES");
+    },
+    activityAverage() {
+      if (!this.activitySamples.length) return "0";
+      const average = this.activitySamples.reduce((sum, value) => sum + (Number(value) || 0), 0) / this.activitySamples.length;
+      return average.toLocaleString("es-ES", { maximumFractionDigits: 1 });
+    },
+    chartGrid() {
+      return [20, 54, 88];
+    },
+    activityChartPoints() {
+      return this.activityChartDots.map(point => `${point.x},${point.y}`).join(" ");
+    },
+    activityChartDots() {
+      const samples = this.activitySamples.length ? this.activitySamples : [0];
+      const max = Math.max(1, ...samples.map(value => Number(value) || 0));
+      const denominator = Math.max(1, samples.length - 1);
+      return samples.map((value, index) => ({
+        key: `${index}-${value}`,
+        x: (index / denominator) * 360,
+        y: 94 - ((Number(value) || 0) / max) * 76,
+      }));
+    },
+    activityChartLabel() {
+      return `Actividad agregada del sensor: pico ${this.activityPeak} paquetes por segundo, promedio ${this.activityAverage} paquetes por segundo`;
+    },
     chip() {
       if (this.loading) return { label: "Cargando", color: "secondary", icon: "mdi-progress-clock" };
       if (!this.confirmed) return { label: "Estado desconocido", color: "warning", icon: "mdi-help-circle-outline" };
@@ -185,8 +276,20 @@ export default {
     "store.state.wsStatus"(status, previous) {
       if (status === "online" && previous !== "online" && !this.saving) this.load();
     },
+    "store.state.liveActivity": {
+      deep: true,
+      handler(value) {
+        if (this.store.state.wsStatus !== "online") return;
+        const sample = Number(value?.total) || 0;
+        if (sample === this.lastActivitySample) return;
+        this.lastActivitySample = sample;
+        this.activitySamples = [...this.activitySamples, sample].slice(-24);
+      },
+    },
   },
   mounted() {
+    this.lastActivitySample = Number(this.store.state.liveActivity?.total) || 0;
+    this.activitySamples = [this.lastActivitySample];
     this.load();
   },
   methods: {
@@ -236,12 +339,22 @@ export default {
 .ai-settings-panel__metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
 .ai-settings-panel__metric { display: flex; flex-direction: column; gap: 3px; min-height: 76px; padding: 11px 12px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; background: rgba(255, 255, 255, 0.025); }
 .ai-settings-panel__metric strong { font-size: 18px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.ai-settings-panel__model-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ai-settings-panel__model-item { display: flex; flex-direction: column; gap: 3px; min-height: 70px; padding: 10px 12px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; background: rgba(255, 255, 255, 0.025); }
+.ai-settings-panel__model-item strong { font-size: 15px; line-height: 1.15; overflow-wrap: anywhere; }
 .ai-settings-panel__options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .ai-settings-panel__option { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 11px 12px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; background: rgba(255, 255, 255, 0.025); }
 .ai-settings-panel__option-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
 .ai-settings-panel__option-copy span { overflow-wrap: anywhere; }
+.ai-settings-panel__chart { position: relative; height: 128px; padding: 10px 0; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; background: rgba(255, 255, 255, 0.025); overflow: hidden; }
+.ai-settings-panel__chart svg { display: block; width: 100%; height: 100%; }
+.ai-settings-panel__chart-grid { stroke: rgba(255, 255, 255, 0.1); stroke-dasharray: 3 5; }
+.ai-settings-panel__chart-line { fill: none; stroke: rgb(var(--v-theme-primary)); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.ai-settings-panel__chart-dot { fill: rgb(var(--v-theme-primary)); }
+.ai-settings-panel__chart-empty { position: absolute; inset: 0; display: grid; place-items: center; color: rgba(255, 255, 255, 0.48); font-size: 12px; }
+.ai-settings-panel__chart-footer { display: flex; justify-content: space-between; gap: 12px; margin-top: 7px; }
 @media (max-width: 700px) {
-  .ai-settings-panel__metrics, .ai-settings-panel__options { grid-template-columns: 1fr 1fr; }
+  .ai-settings-panel__metrics, .ai-settings-panel__model-grid, .ai-settings-panel__options { grid-template-columns: 1fr 1fr; }
   .ai-settings-panel__section-heading { align-items: flex-start; }
 }
 </style>
