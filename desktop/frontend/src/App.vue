@@ -28,7 +28,13 @@
           <div class="app-view">
             <router-view v-slot="{ Component }">
               <transition name="view-fade" mode="out-in">
-                <component :is="Component" />
+                <!-- Settings holds unsaved drafts: keep it cached (matched by
+                     component name) so a menu shortcut (Ctrl+1..4, Tools)
+                     does not discard them. A cached view must pause its
+                     polling in `deactivated` and ignore other routes. -->
+                <keep-alive include="SettingsView">
+                  <component :is="Component" />
+                </keep-alive>
               </transition>
             </router-view>
           </div>

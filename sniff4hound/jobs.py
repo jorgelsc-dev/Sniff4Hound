@@ -134,6 +134,7 @@ class JobQueue:
         self._surplus = 0
         self._worker_seq = 0
         self._worker_limit = max(1, int(workers))
+        self._fail_orphaned_jobs()
         for _ in range(self._worker_limit):
             self._start_worker()
         self._reaper = threading.Thread(
@@ -144,6 +145,23 @@ class JobQueue:
             target=self._watch_loop, name="sniff4hound-job-watchdog", daemon=True
         )
         self._watchdog.start()
+
+    def _fail_orphaned_jobs(self):
+        """A deferred job is persisted as running before it finishes. If the
+        previous backend stopped first, nothing will ever settle that row, and
+        a client polling it would wait for the TTL. This queue has accepted no
+        work yet, so any unfinished row belongs to a process that is gone."""
+        fail = getattr(self._store, "fail_orphaned_jobs", None)
+        if not callable(fail):
+            return
+        try:
+            interrupted = fail()
+        except Exception:  # noqa: BLE001 - startup must not fail on this
+            traceback.print_exc()
+            return
+        if interrupted:
+            LOGGER.warning("marked jobs interrupted by a restart as failed",
+                           extra={"extra_fields": {"jobs": interrupted}})
 
     def _start_worker(self):
         self._worker_seq += 1

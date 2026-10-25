@@ -109,6 +109,31 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(recovered["status"], STATUS_DONE)
         self.assertEqual(recovered["result"], {"ok": 3})
 
+    def test_a_job_running_across_a_restart_is_reported_interrupted(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        _, done_id = self.queue.submit(
+            "slow", lambda: time.sleep(0.1) or {"ok": 4}, inline_window=0.01
+        )
+        self.assertTrue(_wait_until(lambda: self.queue.get(done_id)["status"] == STATUS_DONE))
+        _, running_id = self.queue.submit("stuck", release.wait, inline_window=0.01)
+        self.assertEqual(self.store.get_job(running_id)["status"], "running")
+        self.store.upsert_job({"id": "never-started", "kind": "k", "status": "queued"})
+
+        # The backend comes back up: a fresh queue on the same database.
+        restarted = JobQueue(store=self.store, broadcast=None, workers=1)
+        self.addCleanup(restarted.shutdown)
+
+        interrupted = restarted.get(running_id)
+        self.assertEqual(interrupted["status"], STATUS_ERROR)
+        self.assertEqual(interrupted["error_type"], "Interrupted")
+        self.assertTrue(interrupted["finished_at"])
+        self.assertEqual(restarted.get("never-started")["error_type"], "Interrupted")
+        finished = restarted.get(done_id)
+        self.assertEqual(finished["status"], STATUS_DONE)
+        self.assertEqual(finished["result"], {"ok": 4})
+        self.assertEqual(finished["error_type"], "")
+
     def test_unknown_id_returns_none(self):
         self.assertIsNone(self.queue.get("does-not-exist"))
         self.assertIsNone(self.queue.get(""))
