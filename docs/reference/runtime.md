@@ -12,7 +12,7 @@
 | `SNIFF4HOUND_DB_PATH` | `Sniff4Hound.db` | Ruta de SQLite. |
 | `SNIFF4HOUND_RUNTIME_MODE` | `sniffer` | Motor inicial. |
 | `SNIFF4HOUND_MODE` | `sniffer` | Alias legado de `SNIFF4HOUND_RUNTIME_MODE`. |
-| `SNIFF4HOUND_CAPTURE_AUTO_START` | `1` | Arranque automatico del motor. |
+| `SNIFF4HOUND_CAPTURE_AUTO_START` | `0` | Arranque automatico del motor. |
 | `SNIFF4HOUND_CAPTURE_INTERFACES` | vacio | Interfaces activas para `sniffer`. |
 | `SNIFF4HOUND_INTERFACE_VERIFY_SECONDS` | `0.5` | Ventana de observación, en segundos, tras reiniciar el sniffer por un cambio de interfaces. Se limita a `0`–`5`; valores inválidos, `NaN` e infinitos usan `0.5`. `0` omite la espera temporal y conserva el chequeo inmediato del estado y de las interfaces listas. Si el reinicio falla, se intenta restaurar la selección y la captura anteriores. |
 | `SNIFF4HOUND_PROMISCUOUS` | `1` | Modo promiscuo en captura raw. |

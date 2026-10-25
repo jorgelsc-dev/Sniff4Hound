@@ -2770,26 +2770,26 @@ def catalog_requests(request):
     if request.method.upper() == "GET":
         return store.read_catalog_file(filename)
     payload = _read_json_body(request)
-    rows = store.read_catalog_file(filename)
     if request.method.upper() in {"POST", "PUT"}:
         row = dict(payload)
-        row_id = str(row.get("id") or row.get("name") or "").strip() or f"request-{len(rows) + 1}"
-        row["id"] = row_id
-        updated = False
-        for index, existing in enumerate(rows):
-            existing_id = str(existing.get("id") or existing.get("name") or "").strip()
-            if existing_id == row_id:
-                rows[index] = row
-                updated = True
-                break
-        if not updated:
+        result = {}
+        def update(rows):
+            nonlocal result
+            row_id = str(row.get("id") or row.get("name") or "").strip() or f"request-{len(rows) + 1}"
+            row["id"] = row_id
+            for index, existing in enumerate(rows):
+                if str(existing.get("id") or existing.get("name") or "").strip() == row_id:
+                    rows[index] = row
+                    result = row
+                    return rows
             rows.append(row)
-        store.write_catalog_file(filename, rows)
-        return row
+            result = row
+            return rows
+        store.update_catalog_file(filename, update)
+        return result
     if request.method.upper() == "DELETE":
         row_id = str(payload.get("id") or "").strip()
-        rows = [row for row in rows if str(row.get("id") or row.get("name") or "").strip() != row_id]
-        store.write_catalog_file(filename, rows)
+        store.update_catalog_file(filename, lambda current: [row for row in current if str(row.get("id") or row.get("name") or "").strip() != row_id])
         return {"status": "ok"}
     raise ValueError("Unsupported method")
 
@@ -2800,26 +2800,26 @@ def catalog_presets(request):
     if request.method.upper() == "GET":
         return store.read_catalog_file(filename)
     payload = _read_json_body(request)
-    rows = store.read_catalog_file(filename)
     if request.method.upper() in {"POST", "PUT"}:
         row = dict(payload)
-        row_id = str(row.get("id") or row.get("name") or "").strip() or f"preset-{len(rows) + 1}"
-        row["id"] = row_id
-        updated = False
-        for index, existing in enumerate(rows):
-            existing_id = str(existing.get("id") or existing.get("name") or "").strip()
-            if existing_id == row_id:
-                rows[index] = row
-                updated = True
-                break
-        if not updated:
+        result = {}
+        def update(rows):
+            nonlocal result
+            row_id = str(row.get("id") or row.get("name") or "").strip() or f"preset-{len(rows) + 1}"
+            row["id"] = row_id
+            for index, existing in enumerate(rows):
+                if str(existing.get("id") or existing.get("name") or "").strip() == row_id:
+                    rows[index] = row
+                    result = row
+                    return rows
             rows.append(row)
-        store.write_catalog_file(filename, rows)
-        return row
+            result = row
+            return rows
+        store.update_catalog_file(filename, update)
+        return result
     if request.method.upper() == "DELETE":
         row_id = str(payload.get("id") or "").strip()
-        rows = [row for row in rows if str(row.get("id") or row.get("name") or "").strip() != row_id]
-        store.write_catalog_file(filename, rows)
+        store.update_catalog_file(filename, lambda current: [row for row in current if str(row.get("id") or row.get("name") or "").strip() != row_id])
         return {"status": "ok"}
     raise ValueError("Unsupported method")
 
