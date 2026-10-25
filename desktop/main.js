@@ -584,7 +584,7 @@ function startBackend() {
           if (quicPin.forcedOriginIsUnserved(forcedQuicOrigin, announcedRuntime)) {
             throw new Error(
               "The runtime could not open its HTTP/3 (UDP) listener. " +
-                "Set SNIFF4HOUND_DESKTOP_HTTP3=0 to use HTTPS over TCP only.",
+                "Leave SNIFF4HOUND_DESKTOP_HTTP3 unset or set it to 0 to use HTTPS over TCP only.",
             );
           }
           announcedRuntime.security_code = readDesktopCodeFile(announcedRuntime.security_code_file);

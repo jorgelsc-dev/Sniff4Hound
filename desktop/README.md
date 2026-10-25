@@ -76,13 +76,17 @@ LAN IP so it also works in browsers without `.local` resolution; the separately
 shown mDNS URL remains available for systems that support it. Both names are
 present in the stream certificate.
 
-Chromium is told to trust the runtime's server key and use QUIC for that one
-origin (`lib/quic-pin.js`). The key and the
+Chromium can be told to trust the runtime's server key and use QUIC for that one
+origin (`lib/quic-pin.js`), but desktop HTTP/3 is opt-in because the pinned
+`wsbuilder` release can combine lost QUIC frames into an oversized datagram and
+has no TCP fallback after the connection stalls. Set
+`SNIFF4HOUND_DESKTOP_HTTP3=1` only when that risk is acceptable. The key and the
 CA that signs for it are kept between launches (`SNIFF4HOUND_DATA_DIR/tls`, mode
 0600) - that is what makes the pin stable; only the certificate is new each time.
 A forced QUIC origin has no TCP fallback, so if the runtime reports it has no
-UDP listener the shell says so instead of showing a dead window. A remote sensor
-is unaffected and stays on HTTPS over TCP. `SNIFF4HOUND_DESKTOP_HTTP3=0` turns it
+UDP listener the shell says so instead of showing a dead window. The default
+desktop path stays on HTTPS over TCP; a remote sensor is also unaffected and
+stays on HTTPS over TCP. `SNIFF4HOUND_DESKTOP_HTTP3=0` explicitly keeps QUIC
 off.
 
 When installed from the project's `.deb` (`scripts/build_deb.sh`), this app

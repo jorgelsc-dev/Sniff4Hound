@@ -64,6 +64,9 @@ python -m pip install -e .
 La instalación editable resuelve `wsbuilder[tls,mdns]==1.3.0` desde PyPI, la
 versión exacta fijada por `pyproject.toml`. Esa release publicada incluye el
 stack QUIC/HTTP3, TLS (`[tls]`) y mDNS/DNS-SD (`[mdns]`) que usa el runtime.
+La consola Electron usa HTTPS/TCP por defecto: el HTTP/3 de escritorio se
+activa de forma explícita con `SNIFF4HOUND_DESKTOP_HTTP3=1` hasta que
+`wsbuilder` publique una corrección para retransmisiones QUIC.
 
 ### Build local del paquete Debian
 

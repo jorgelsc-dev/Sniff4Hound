@@ -32,8 +32,8 @@ test("only a valid local name can enter Chromium resolver rules", () => {
   }
 });
 
-test("the local mDNS origin retains QUIC and maps only its own bound address", () => {
-  assert.deepEqual(quic.quicSwitches({ prepared, env: {} }), [
+test("the local mDNS origin opts into QUIC and maps only its own bound address", () => {
+  assert.deepEqual(quic.quicSwitches({ prepared, env: { SNIFF4HOUND_DESKTOP_HTTP3: "1" } }), [
     ["ignore-certificate-errors-spki-list", PIN], ["origin-to-force-quic-on", "runtime-test.local:45678"],
   ]);
   assert.deepEqual(quic.resolverSwitches(prepared), [["host-resolver-rules", "MAP runtime-test.local 127.0.0.1"]]);

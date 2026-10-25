@@ -44,6 +44,7 @@ una clave propios.
 | `SNIFF4HOUND_TLS` | `1` | Sirve la API y el WebSocket por HTTPS/WSS. `0` vuelve a HTTP plano. |
 | `SNIFF4HOUND_TLS_CERT_DAYS` | `1` | Validez del certificado de servidor, que se reemite en cada arranque. |
 | `SNIFF4HOUND_TLS_CA_DAYS` | `365` | Validez de la CA local. Se reutiliza entre arranques y se renueva cuando le quedan menos de 30 días. |
+| `SNIFF4HOUND_DESKTOP_HTTP3` | sin definir | `1` activa HTTP/3/QUIC para el runtime local de Electron. Por defecto la consola usa HTTPS/TCP hasta que `wsbuilder` publique una corrección para retransmisiones QUIC sobredimensionadas. |
 
 Los ficheros viven en `<SNIFF4HOUND_DATA_DIR>/tls/`: `sniff4hound-ca.pem`/`.key`
 (CA del runtime), `sniff4hound-server.pem`/`.key` (certificado de servidor
