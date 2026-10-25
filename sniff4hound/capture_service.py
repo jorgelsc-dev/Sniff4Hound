@@ -48,11 +48,20 @@ def _is_running_as_admin() -> bool:
     return False
 
 
+# IPC methods that only read state; a slow one needs no resync broadcast.
+IPC_READ_ONLY_METHODS = frozenset({"snapshot", "list_honeypot_listeners", "honeypot_listener_page", "shutdown"})
+
 # Never forwarded on the `sudo env ...` command line: /proc/<pid>/cmdline is
 # world-readable, so a secret passed as an argument is readable by every
 # local user. An operator-supplied SNIFF4HOUND_IPC_TOKEN is spilled to a 0600
 # file first and only its path is forwarded (see _relaunch_env_assignments).
 ADMIN_RELAUNCH_ENV_DENYLIST = frozenset({"SNIFF4HOUND_IPC_TOKEN", "SNIFF4HOUND_JWT_SECRET"})
+
+
+def _resync_after_slow_mutation(runtime, method: str, _elapsed: float) -> None:
+    # The web side may have timed out; publish the state actually left behind.
+    if method not in IPC_READ_ONLY_METHODS:
+        runtime.broadcast_state()
 
 
 def _spill_ipc_token_to_file(token: str) -> str:
@@ -190,6 +199,7 @@ def main() -> int:
     resource_guard = ResourceGuard(store, sniffer, log_dir=log_setup.default_log_dir())
     resource_guard.start()
 
+    server.on_slow_dispatch = lambda method, elapsed: _resync_after_slow_mutation(runtime, method, elapsed)
     server.methods.update(
         {
             "start": runtime.start,

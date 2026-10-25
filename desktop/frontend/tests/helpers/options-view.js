@@ -3,7 +3,8 @@ import { babelParse, parse } from "@vue/compiler-sfc";
 
 // Evaluate the complete production Options API definition, with only the store
 // and child SFCs substituted. Methods, computed state and lifecycle stay real.
-export async function optionsView(name, store, dir = "views") {
+// `modules` substitutes bare package imports (e.g. "qrcode") by specifier.
+export async function optionsView(name, store, dir = "views", modules = {}) {
   const url = new URL(`../../src/${dir}/${name}.vue`, import.meta.url);
   let code = parse(readFileSync(url, "utf8")).descriptor.script.content;
   const ast = babelParse(code, { sourceType: "module" });
@@ -12,7 +13,8 @@ export async function optionsView(name, store, dir = "views") {
     if (entry.type === "ImportDeclaration") {
       const source = entry.source.value;
       let module;
-      if (source.endsWith(".vue")) module = { default: {} };
+      if (Object.hasOwn(modules, source)) module = modules[source];
+      else if (source.endsWith(".vue")) module = { default: {} };
       else if (source.endsWith("/appStore")) module = { default: store };
       else module = await import(new URL(source.endsWith(".js") ? source : `${source}.js`, url));
       for (const spec of entry.specifiers) {

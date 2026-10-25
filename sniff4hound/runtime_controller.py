@@ -10,13 +10,34 @@ process talks to this over IPC via `app.RuntimeControllerClient` instead.
 from __future__ import annotations
 
 import json
+import math
+import os
 import threading
+import time
 
 from .settings import RUNTIME_MODE
 from .utils import coerce_bool, utc_now
 
 
 ENGINE_NAMES = ("sniffer", "honeypot")
+
+# How long an interface change watches the restarted sniffer before calling it
+# applied. Sniffer.start() returns once its workers are spawned; a worker that
+# cannot open its interface fails a moment later on its own thread, so an
+# immediate snapshot would still read "running". Bounded and short: the
+# controller lock is held meanwhile.
+def _configured_interface_verify_seconds() -> float:
+    try:
+        value = float(os.environ.get("SNIFF4HOUND_INTERFACE_VERIFY_SECONDS", "0.5"))
+    except (TypeError, ValueError):
+        return 0.5
+    # Never let a malformed override fail import or hold the controller lock
+    # indefinitely. Zero disables the observation window, not state checks.
+    return min(5.0, max(0.0, value)) if math.isfinite(value) else 0.5
+
+
+INTERFACE_VERIFY_SECONDS = _configured_interface_verify_seconds()
+INTERFACE_VERIFY_POLL_SECONDS = 0.05
 
 
 def normalize_runtime_mode(value: str) -> str:
@@ -75,6 +96,7 @@ class RuntimeController:
         self._capture_auto_start = bool(capture_auto_start)
         self._lock = threading.RLock()
         self._interface_update = None
+        self._interface_verify_seconds = INTERFACE_VERIFY_SECONDS
         self.mode = configured_runtime_mode()
         self._store.set_runtime_config("runtime_mode", self.mode)
         try:
@@ -139,6 +161,13 @@ class RuntimeController:
                 "generated_at": utc_now(),
             }
         )
+
+    def broadcast_state(self) -> dict:
+        """Push the current runtime snapshot to every client, e.g. after a
+        mutation finished too late for its caller to see the answer."""
+        snapshot = self.snapshot()
+        self._broadcast_snapshot(snapshot)
+        return snapshot
 
     def start(self, engine=None):
         """Start one engine, or the focused one when none is named.
@@ -226,6 +255,45 @@ class RuntimeController:
         self._broadcast_snapshot(snapshot)
         return snapshot
 
+    @staticmethod
+    def _sniffer_failure(snapshot: dict) -> str:
+        """Why a sniffer snapshot does not count as capturing, or ""."""
+        # Optional promiscuous-mode warnings and old receive errors do not
+        # mean bind failed. New sniffers report startup failures separately.
+        errors = snapshot.get("startup_errors", snapshot.get("errors")) or {}
+        if errors:
+            return "; ".join(f"{name}: {message}" for name, message in sorted(errors.items()))
+        if not snapshot.get("running"):
+            return "sniffer is not running"
+        if snapshot.get("active_threads", 1) < 1:
+            return "sniffer has no live capture worker"
+        state = snapshot.get("capture_state")
+        if state is not None and state != "running":
+            return f"sniffer capture is {state}"
+        return ""
+
+    def _restart_sniffer_verified(self):
+        """Restart the sniffer and watch it for a short, bounded window.
+
+        Raises RuntimeError when it is not capturing at any point in the
+        window, including worker failures that surface after start()."""
+        self._sniffer.restart()
+        deadline = time.monotonic() + self._interface_verify_seconds
+        while True:
+            snapshot = self._sniffer.snapshot()
+            failure = self._sniffer_failure(snapshot)
+            if failure:
+                raise RuntimeError(f"sniffer interface restart failed: {failure}")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if "ready_interfaces" in snapshot and (
+                    not snapshot["ready_interfaces"]
+                    or set(snapshot.get("interfaces") or ()) != set(snapshot["ready_interfaces"])
+                ):
+                    raise RuntimeError("sniffer interface startup did not finish before the deadline")
+                return
+            time.sleep(min(INTERFACE_VERIFY_POLL_SECONDS, remaining))
+
     def set_sniffer_interfaces(self, interfaces=None):
         selected = normalize_interface_selection(interfaces)
         with self._lock:
@@ -236,15 +304,28 @@ class RuntimeController:
             changed = tuple(selected) != previous_interfaces
             if was_running and changed:
                 try:
-                    self._sniffer.restart()
-                    applied = self._sniffer.snapshot()
-                    if not applied.get("running") or applied.get("capture_state") == "blocked":
-                        raise RuntimeError("sniffer interface restart failed")
+                    self._restart_sniffer_verified()
                 except Exception as exc:
-                    self._sniffer.set_interfaces(previous_interfaces)
-                    self._interface_update = {
-                        "status": "failed", "requested_interfaces": selected, "error": str(exc),
+                    # Put back what was capturing before the attempt, and the
+                    # capture itself: a failed change must not leave the
+                    # operator with a stopped sniffer and a selection that
+                    # looks as if nothing happened.
+                    update = {
+                        "status": "rolled_back",
+                        "requested_interfaces": selected,
+                        "previous_interfaces": list(previous_interfaces),
+                        "restored_interfaces": [],
+                        "error": str(exc),
+                        "rollback_error": "",
                     }
+                    try:
+                        self._sniffer.set_interfaces(list(previous_interfaces))
+                        update["restored_interfaces"] = list(previous_interfaces)
+                        self._restart_sniffer_verified()
+                    except Exception as rollback_exc:  # noqa: BLE001 - reported below
+                        update["status"] = "rollback_failed"
+                        update["rollback_error"] = str(rollback_exc)
+                    self._interface_update = update
                     self._broadcast_snapshot(self.snapshot())
                     raise
             self._store.set_runtime_config("sniffer_interfaces", json.dumps(selected))

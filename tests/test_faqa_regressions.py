@@ -158,6 +158,26 @@ class Finding129DomainStructuredMatchTests(StoreRegressionTestCase):
         result = self.store.domain_intel("needle.example", mode="subdomain")
         self.assertEqual(result["summary"]["packets"], 1)
 
+    def test_subdomain_mode_treats_underscore_literally(self):
+        self.store.register_packet(_packet(domain="printer._ipp._tcp.local", domain_source="dns"))
+        self.store.register_packet(_packet(domain="evil.xipp.ytcp.local", domain_source="dns"))
+        self.store.register_packet(_packet(domain="a.b_c.example", domain_source="dns"))
+        self.store.register_packet(_packet(domain="a.bxc.example", domain_source="dns"))
+        self.store.register_packet(_packet(http_host="a.bxc.example:8080", domain=""))
+        self.store.register_packet(_packet(http_host="x.b_c.example:8080", domain=""))
+
+        srv = self.store.domain_intel("_ipp._tcp.local", mode="subdomain")
+        self.assertEqual({row["domain"] for row in srv["packets"]}, {"printer._ipp._tcp.local"})
+        scoped = self.store.domain_intel("b_c.example", mode="subdomain")
+        self.assertEqual(scoped["summary"]["packets"], 2)
+        self.assertEqual(
+            {row.get("domain") or row.get("http_host") for row in scoped["packets"]},
+            {"a.b_c.example", "x.b_c.example:8080"},
+        )
+        # Exact mode is unchanged: only the name itself.
+        self.assertEqual(self.store.domain_intel("b_c.example")["summary"]["packets"], 0)
+        self.assertEqual(self.store.domain_intel("a.b_c.example")["summary"]["packets"], 1)
+
     def test_matches_http_host_ignoring_port(self):
         self.store.register_packet(
             _packet(http_host="needle.example:8080", http_method="get", http_path="/", domain="")

@@ -2355,10 +2355,14 @@ export default {
       this.listenerSearchTimer = setTimeout(() => { this.listenerPage = 1; this.loadListeners(); }, 250);
     },
     "$route.query.section"(next) {
+      // Kept alive (App.vue): leaving for another route must not reset the
+      // tab or rewrite that route's query.
+      if (!this.onSettingsRoute()) return;
       const requested = String(next || "").trim();
       this.activeTab = normalizeSettingsSection(requested);
     },
     activeTab(next) {
+      if (!this.onSettingsRoute()) return;
       if (String(this.$route.query.section || "") === next) return;
       // The full catalog is tens of megabytes: fetch it only when its tab opens.
       if (next === "detection" && !this.loading) this.load({ silent: true });
@@ -2377,6 +2381,25 @@ export default {
     // Opened straight on the detection tab (deep link): the watcher will not fire on mount.
     if (this.activeTab === "detection") this.load({ silent: true });
   },
+  // App.vue keeps this view alive so unsaved drafts survive navigation:
+  // poll only while it is on screen. `activated` also runs right after
+  // `mounted`, when the timer already exists.
+  activated() {
+    if (!this.graphStatusTimer) {
+      this.refreshGraph();
+      this.graphStatusTimer = setInterval(this.refreshGraph, 10000);
+    }
+    if (!this.mobilePairingTimer && this.mobilePairingPending()) {
+      this.refreshMobilePairing();
+      this.mobilePairingTimer = setInterval(this.refreshMobilePairing, 1500);
+    }
+  },
+  deactivated() {
+    clearInterval(this.graphStatusTimer);
+    clearInterval(this.mobilePairingTimer);
+    this.graphStatusTimer = null;
+    this.mobilePairingTimer = null;
+  },
   beforeUnmount() {
     clearTimeout(this.catalogSearchTimer);
     clearTimeout(this.listenerSearchTimer);
@@ -2384,6 +2407,14 @@ export default {
     clearInterval(this.mobilePairingTimer);
   },
   methods: {
+    onSettingsRoute() {
+      return this.$route?.name === "settings";
+    },
+    mobilePairingPending() {
+      if (!this.mobilePairing?.id) return false;
+      const status = String(this.mobilePairing.status || "");
+      return !["paired", "closed", "expired"].includes(status) && Number(this.mobilePairing.expires_in || 0) > 0;
+    },
     scheduleMonitorSearch() {
       clearTimeout(this.catalogSearchTimer);
       this.catalogSearchTimer = setTimeout(() => { this.monitorPage = 1; this.load(); }, 250);
