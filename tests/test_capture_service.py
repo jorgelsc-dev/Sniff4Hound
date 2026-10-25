@@ -371,6 +371,37 @@ class RuntimeControllerTests(unittest.TestCase):
             finally:
                 sniffer.stop()
 
+    def test_stale_worker_exiting_after_restart_keeps_new_worker_ready(self):
+        from sniff4hound.sniffer import Sniffer
+
+        sniffer = Sniffer(self.store, self.hub, interfaces=("fixture-old",))
+        bound = threading.Event()
+        release = threading.Event()
+
+        def bind_then_wait():
+            # Stands in for the new worker after its bind succeeded.
+            with sniffer._state_lock:
+                sniffer._capture_ready["fixture-old"] = threading.current_thread()
+            bound.set()
+            release.wait(3)
+            sniffer._mark_capture_worker_stopped("fixture-old")
+
+        new_worker = threading.Thread(target=bind_then_wait, daemon=True)
+        new_worker.start()
+        try:
+            self.assertTrue(bound.wait(3))
+            # A worker from before the restart, on the same interface, exits
+            # late: it must not erase the new worker's readiness.
+            stale = threading.Thread(target=sniffer._mark_capture_worker_stopped, args=("fixture-old",))
+            stale.start()
+            stale.join(3)
+            self.assertEqual(sniffer.snapshot()["ready_interfaces"], ["fixture-old"])
+        finally:
+            release.set()
+            new_worker.join(3)
+        # The owning worker still clears its own readiness when it stops.
+        self.assertEqual(sniffer.snapshot()["ready_interfaces"], [])
+
     def test_live_worker_that_never_binds_is_not_reported_applied(self):
         controller = self._controller()
         controller.start("sniffer")

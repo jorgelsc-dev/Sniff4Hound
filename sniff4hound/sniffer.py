@@ -640,7 +640,10 @@ class Sniffer:
         # applies them only once the batch has committed.
         self._pipeline_tls = threading.local()
         self._threads: list[threading.Thread] = []
-        self._capture_ready: set[str] = set()
+        # Interface -> the worker thread that bound it. Keyed by thread so a
+        # worker left over from before a restart, exiting late, cannot clear
+        # the readiness of the new worker on the same interface.
+        self._capture_ready: dict[str, threading.Thread] = {}
         self._capture_startup_errors: dict[str, str] = {}
         self._state_lock = threading.RLock()
         self.state = CaptureState()
@@ -906,11 +909,12 @@ class Sniffer:
             self.state.errors[str(interface)] = str(message)
 
     def _mark_capture_worker_stopped(self, interface: str):
+        current = threading.current_thread()
         with self._state_lock:
-            self._capture_ready.discard(interface)
+            if self._capture_ready.get(interface) is current:
+                self._capture_ready.pop(interface, None)
         if self._stop_event.is_set():
             return
-        current = threading.current_thread()
         with self._state_lock:
             if not self.state.running:
                 return
@@ -1269,7 +1273,7 @@ class Sniffer:
             return
 
         with self._state_lock:
-            self._capture_ready.add(interface)
+            self._capture_ready[interface] = threading.current_thread()
         try:
             consecutive_socket_errors = 0
             reopens = 0
