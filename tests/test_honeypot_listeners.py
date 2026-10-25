@@ -35,7 +35,11 @@ def _free_high_port() -> int:
 def _port_is_bound(port: int) -> bool:
     """True while something still holds `port`, i.e. a listener has not let
     go of it yet. SO_REUSEADDR means a successful bind is the reliable signal
-    here, not a connect attempt."""
+    here, not a connect attempt.
+
+    Never poll it while a listener may still be binding `port`: the probe
+    itself (no SO_REUSEADDR) holds the port for a moment, and a concurrent
+    bind() then fails with EADDRINUSE (#293)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         try:
             probe.bind(("127.0.0.1", port))
@@ -262,7 +266,19 @@ class TestListenerHonoursEngineStopEvent(unittest.TestCase):
         # nor wants to be listening on.
         self.engine = HoneypotEngine(self.store, MagicMock(), bind_host="127.0.0.1")
 
+    def _listener_is_bound(self, port: int) -> bool:
+        """The engine's own "bound" signal: `_listen` adds the id only after
+        bind()+listen() succeeded, so it is the sync point to wait on."""
+        with self.engine._listener_lock:
+            return f"tcp/{port}" in self.engine._listener_bound
+
     def test_listener_winds_down_on_the_engine_stop_event_alone(self):
+        # Wait on the engine's bound signal, never on a bind() probe: the probe
+        # socket has no SO_REUSEADDR, so while it briefly holds the port the
+        # listener's own bind() fails with EADDRINUSE (measured ~1 in 5 starts)
+        # and the thread exits. Five unlucky starts in a row failed CI (#293).
+        # The retry only covers the port being taken by someone else between
+        # _free_high_port() closing it and the listener binding it.
         port = None
         thread = None
         own_stop = None
@@ -282,14 +298,14 @@ class TestListenerHonoursEngineStopEvent(unittest.TestCase):
                 daemon=True,
             )
             candidate_thread.start()
-            if _wait_until(
-                lambda: (
-                    candidate_thread.is_alive()
-                    and _port_is_bound(candidate_port)
-                )
-                or not candidate_thread.is_alive(),
+            _wait_until(
+                lambda: self._listener_is_bound(candidate_port) or not candidate_thread.is_alive(),
                 timeout=10,
-            ) and candidate_thread.is_alive() and _port_is_bound(candidate_port):
+            )
+            if candidate_thread.is_alive() and self._listener_is_bound(candidate_port):
+                # Safe now: a LISTEN socket refuses the probe's bind() and the
+                # probe cannot disturb a socket that is already bound.
+                self.assertTrue(_port_is_bound(candidate_port), "engine reports bound but the port is free")
                 port = candidate_port
                 thread = candidate_thread
                 own_stop = candidate_stop
