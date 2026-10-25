@@ -50,7 +50,7 @@ jobs:
       - name: Install docs dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-docs.txt
+          python -m pip install --require-hashes -r requirements-docs.txt
 
       # Runs unconditionally, publishing or not: --strict turns a broken link
       # or a page missing from the nav into a failure, and that check is worth

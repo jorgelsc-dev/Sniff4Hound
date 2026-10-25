@@ -218,6 +218,13 @@ function trustedCaForOrigin(origin) {
   return trustedRuntimeCas.get(normalizeOrigin(origin));
 }
 
+function clearTrustedRuntimeCas(keepOrigin = "") {
+  const keep = normalizeOrigin(keepOrigin);
+  for (const origin of trustedRuntimeCas.keys()) {
+    if (!keep || origin !== keep) trustedRuntimeCas.delete(origin);
+  }
+}
+
 function isLoopbackHost(hostname) {
   const host = String(hostname || "").toLowerCase();
   return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
@@ -528,6 +535,8 @@ function startBackend() {
   // Concurrent requests share the same result, which means verified readiness,
   // not merely a successful spawn or a READY announcement.
   if (backendAttempt) return backendAttempt.promise;
+  httpStreams.abortAll();
+  clearTrustedRuntimeCas();
   backendReady = null;
   recentBackendLines.length = 0;
   const attempt = { stdout: "", stderr: "", announced: false, exited: false };
@@ -1126,6 +1135,7 @@ function stopBackend() {
   backendAttempt = null;
   backendProcess = null;
   backendReady = null;
+  clearTrustedRuntimeCas();
   attempt.finish({ ok: false, error: "The local sensor attempt was stopped. You can retry or connect remotely." });
   const stoppingProcess = attempt.process;
   if (!stoppingProcess) return;
@@ -1147,9 +1157,17 @@ async function connectRemote(payload) {
   sendLauncherStatus("Checking remote backend...");
   const verified = await verifyRemoteConnection(parsed);
   if (quitting || shutdownController.isPending()) return { ok: false, error: "The desktop window is closing." };
+  // A renderer may retain the bridge object across reconnects. Once the
+  // operator switches sensors, old CA pins and streams must not keep the
+  // previous backend reachable through the IPC bridge.
+  httpStreams.abortAll();
   if (backendProcess) {
     stopBackend();
   }
+  clearTrustedRuntimeCas(verified.origin);
+  // stopBackend clears all pins, including the newly verified remote one, so
+  // install the selected sensor's CA again after the old runtime is stopped.
+  if (verified.ca_pem) registerTrustedRuntimeCa(verified, verified.ca_pem);
   backendReady = verified;
   writeConnectionState({
     mode: "remote",
