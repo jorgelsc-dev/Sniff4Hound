@@ -266,10 +266,12 @@ async function ticketedFeedRig(t) {
   const sources = [];
   const tickets = [];
   class Source {
-    constructor(url) { this.url = url; sources.push(this); }
-    addEventListener() {}
+    constructor(url) { this.url = url; this.listeners = {}; sources.push(this); }
+    addEventListener(name, listener) { this.listeners[name] = listener; }
     close() { this.closed = true; }
     drop() { this.onerror(); }
+    emit(payload) { this.onmessage({ data: JSON.stringify(payload) }); }
+    serverClose(code, reason) { this.listeners.close({ data: JSON.stringify({ code, reason }) }); }
   }
   globalThis.EventSource = Source;
   globalThis.window = { location: { origin: "http://fixture.invalid" } };
@@ -288,13 +290,39 @@ async function ticketedFeedRig(t) {
   });
   const flush = async () => { for (let i = 0; i < 5; i += 1) await new Promise(setImmediate); };
   const open = (params = {}) => {
-    const calls = { unavailable: 0 };
-    const handle = appStore.openDataFeed("ips", params, () => {}, () => { calls.unavailable += 1; });
+    const calls = { unavailable: 0, messages: [] };
+    const handle = appStore.openDataFeed("ips", params, message => calls.messages.push(message), () => { calls.unavailable += 1; });
     handles.push(handle);
     return { handle, calls };
   };
   return { sources, tickets, flush, open };
 }
+
+test("an SSE slow-consumer close obtains a fresh ticket and resumes feed data", async t => {
+  const { sources, tickets, flush, open } = await ticketedFeedRig(t);
+  const { calls } = open();
+  tickets[0].resolve("ticket-before-overflow");
+  await flush();
+  sources[0].emit({ type: "session", session: "session-before" });
+  sources[0].emit(frame("before-overflow"));
+  assert.equal(calls.messages.at(-1).data.packets[0].id, "before-overflow");
+
+  // The backend emits this named SSE event when its bounded queue overflows.
+  sources[0].serverClose(1013, "slow consumer");
+  assert.equal(sources[0].closed, true);
+  assert.equal(calls.unavailable, 0, "one transient close retries before falling back");
+  t.mock.timers.tick(1000);
+  assert.equal(tickets.length, 2, "never reuse a consumed stream ticket");
+  tickets[1].resolve("ticket-after-overflow");
+  await flush();
+  assert.equal(sources.length, 2);
+  assert.equal(new URL(sources[1].url).searchParams.get("ws_ticket"), "ticket-after-overflow");
+  sources[1].emit({ type: "session", session: "session-after" });
+  sources[1].emit(frame("after-overflow"));
+  assert.equal(calls.messages.at(-1).data.packets[0].id, "after-overflow");
+  sources[0].emit(frame("stale-overflow-stream"));
+  assert.equal(calls.messages.at(-1).data.packets[0].id, "after-overflow");
+});
 
 test("a failed WS ticket schedules a reconnect instead of stopping live updates", async t => {
   const { sources, tickets, flush, open } = await ticketedFeedRig(t);

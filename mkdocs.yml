@@ -24,6 +24,7 @@ nav:
       - API y WS: reference/api.md
       - IA opcional: reference/ai.md
   - QA:
+      - "Auditoría #284": qa/audit-284-resolution.md
       - "Auditoría #250": qa/audit-250-resolution.md
       - Integración IA (2026-10-24): qa/ai-integration-acceptance-2026-10-24.md
       - Pulido de Electron (2026-10-04): qa/desktop-polish-2026-10-04.md
