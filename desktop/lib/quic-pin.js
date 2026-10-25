@@ -20,13 +20,14 @@
 // starting anything.
 
 const OFF_VALUES = new Set(["0", "false", "off", "no"]);
+const ON_VALUES = new Set(["1", "true", "on", "yes"]);
 const SPKI_RE = /^[A-Za-z0-9+/]{43}=$/;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const { isIP } = require("node:net");
 const { validHostname } = require("./mdns");
 
 function http3Disabled(env) {
-  return OFF_VALUES.has(String(env.SNIFF4HOUND_DESKTOP_HTTP3 ?? "").trim().toLowerCase());
+  return !ON_VALUES.has(String(env.SNIFF4HOUND_DESKTOP_HTTP3 ?? "").trim().toLowerCase());
 }
 
 function tlsDisabled(env) {

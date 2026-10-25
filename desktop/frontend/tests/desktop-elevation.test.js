@@ -256,7 +256,7 @@ async function desktopVm({ debugPort, uid = 1000, launchError = null } = {}) {
   const handlers = new Map();
   const permissions = {}, menus = [], sent = [], opened = [];
   const proc = Object.assign(new EventEmitter(), {
-    platform: "linux", env: { SNIFF4HOUND_DESKTOP_ELEVATE: "0" }, argv: [],
+    platform: "linux", env: { SNIFF4HOUND_DESKTOP_ELEVATE: "0", SNIFF4HOUND_DESKTOP_HTTP3: "1" }, argv: [],
     getuid: () => uid, geteuid: () => uid, getgid: () => uid,
     kill: () => assert.fail("must never signal another process by pid"),
   });

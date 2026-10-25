@@ -62,8 +62,9 @@ test("it asks the runtime's own module, with no terminal and a time limit", () =
   assert.equal(seen.options.stdio[0], "ignore");
 });
 
-test("HTTP/3 to the local runtime is two switches: trust that key, force QUIC for that origin", () => {
-  assert.deepEqual(quic.quicSwitches({ prepared, env: {} }), [
+test("HTTP/3 is opt-in because the pinned wsbuilder QUIC retransmit path has no TCP fallback", () => {
+  assert.deepEqual(quic.quicSwitches({ prepared, env: {} }), []);
+  assert.deepEqual(quic.quicSwitches({ prepared, env: { SNIFF4HOUND_DESKTOP_HTTP3: "1" } }), [
     ["ignore-certificate-errors-spki-list", PIN],
     ["origin-to-force-quic-on", "127.0.0.1:45678"],
   ]);
@@ -74,12 +75,15 @@ test("no pin, no switches: without a trusted key QUIC would only fail", () => {
   assert.deepEqual(quic.quicSwitches({ prepared: null, env: {} }), []);
 });
 
-test("it can be turned off, and is off without TLS", () => {
+test("it stays off for every non-explicit opt-in value, and is off without TLS", () => {
+  assert.deepEqual(quic.quicSwitches({ prepared, env: {} }), []);
   for (const off of ["0", "false", "off", "no", " OFF "]) {
     assert.deepEqual(quic.quicSwitches({ prepared, env: { SNIFF4HOUND_DESKTOP_HTTP3: off } }), [], off);
   }
   assert.deepEqual(quic.quicSwitches({ prepared, env: { SNIFF4HOUND_TLS: "0" } }), []);
-  assert.equal(quic.quicSwitches({ prepared, env: { SNIFF4HOUND_DESKTOP_HTTP3: "1" } }).length, 2);
+  for (const on of ["1", "true", "on", "yes"]) {
+    assert.equal(quic.quicSwitches({ prepared, env: { SNIFF4HOUND_DESKTOP_HTTP3: on } }).length, 2, on);
+  }
 });
 
 test("a runtime that is not on loopback keeps going over TCP", () => {
@@ -88,7 +92,7 @@ test("a runtime that is not on loopback keeps going over TCP", () => {
 });
 
 test("localhost is forced as the address it resolves to, and IPv6 is bracketed", () => {
-  assert.equal(quic.quicSwitches({ prepared: { ...prepared, host: "localhost" }, env: {} })[1][1], "127.0.0.1:45678");
+  assert.equal(quic.quicSwitches({ prepared: { ...prepared, host: "localhost" }, env: { SNIFF4HOUND_DESKTOP_HTTP3: "1" } })[1][1], "127.0.0.1:45678");
   assert.equal(quic.originForQuic("::1", 45678), "[::1]:45678");
   assert.equal(quic.originForQuic("127.0.0.1", 1), "127.0.0.1:1");
 });

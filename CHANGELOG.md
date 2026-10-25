@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Mitigado el bloqueo del escritorio por retransmisiones QUIC sobredimensionadas en `wsbuilder` 1.3.0: Electron usa HTTPS/TCP por defecto y HTTP/3 solo se activa explícitamente con `SNIFF4HOUND_DESKTOP_HTTP3=1`, hasta que upstream publique una corrección con fragmentación segura y fallback.
 - Fixed dashboard capture feedback over QUIC: TCP and UDP traffic on the actual runtime port is excluded before parsing or queueing, including fallback ports. TCP payload sizes and observed port states now use L4 bytes and flags, empty SYNs no longer invent session banners, and DNS/service attribution no longer creates ephemeral client services.
 - Fixed authenticated desktop control of normal remote sensors, including WebSocket tickets. A valid credential remains usable after an IP failure lockout; invalid domain queries and unknown monitor IDs return 400.
 - Added bounded, searchable monitor/listener catalog pages and on-demand monitor details. Settings no longer downloads the full built-in rule match catalog. Pipeline loading, failures and stale values are explicit; disconnected consoles expose a connection chooser and bridge errors provide Spanish recovery guidance.
