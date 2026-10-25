@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from sniff4hound.store import SniffStore
@@ -36,6 +37,7 @@ class AiConfigApiTests(unittest.TestCase):
     class Request:
         def __init__(self, method, payload=None):
             self.method = method
+            self.query = {}
             self._payload = "" if payload is None else json.dumps(payload)
 
         def text(self):
@@ -56,12 +58,37 @@ class AiConfigApiTests(unittest.TestCase):
             self.app.store.set_runtime_config("ai_enabled", self.previous)
 
     def test_get_post_and_get_round_trip(self):
-        self.assertEqual(self.app.ai_config(self.Request("GET")), {"enabled": False, "model_status": "not_configured"})
-        self.assertEqual(self.app.ai_config(self.Request("POST", {"enabled": True})), {"enabled": True, "model_status": "not_configured"})
-        self.assertEqual(self.app.ai_config(self.Request("GET")), {"enabled": True, "model_status": "not_configured"})
+        initial = self.app.ai_config(self.Request("GET"))
+        self.assertFalse(initial["enabled"])
+        self.assertEqual(initial["model_status"], "ready")
+        self.assertEqual(initial["provider"], "Local aggregate engine")
+        saved = self.app.ai_config(self.Request("POST", {"enabled": True}))
+        self.assertTrue(saved["enabled"])
+        self.assertEqual(saved["model"], "sniff4hound-aggregate-risk-v1")
+        self.assertEqual(self.app.ai_config(self.Request("GET"))["enabled"], True)
 
     def test_invalid_payload_is_rejected_and_does_not_change_state(self):
         for payload in ({}, {"enabled": "true"}, {"enabled": True, "extra": 1}):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 self.app.ai_config(self.Request("POST", payload))
-        self.assertEqual(self.app.ai_config(self.Request("GET")), {"enabled": False, "model_status": "not_configured"})
+        self.assertFalse(self.app.ai_config(self.Request("GET"))["enabled"])
+
+    def test_analysis_runs_only_when_enabled_and_returns_explainable_metrics(self):
+        disabled = self.app.ai_analysis(self.Request("POST", {}))
+        self.assertEqual(disabled["status"], "disabled")
+        self.app.store.set_runtime_config("ai_enabled", "1")
+        with patch.object(
+            self.app.store,
+            "analytics_snapshot",
+            return_value={
+                "summary": {"targets": 2, "ports": 40, "open_ports": 6, "banners": 3, "tags": 1, "unique_hosts": 4},
+                "ports_by_proto": [{"label": "TCP", "value": 2}] * 4,
+                "risk_ports": [{"port": 22}] * 2,
+            },
+        ):
+            result = self.app.ai_analysis(self.Request("POST", {}))
+        self.assertEqual(result["status"], "completed")
+        self.assertIn(result["result"]["label"], {"bajo", "medio", "alto"})
+        self.assertEqual(result["result"]["source"], "aggregate_metrics")
+        self.assertEqual(result["result"]["features"]["open_ports"], 6)
+        self.assertGreaterEqual(result["total_runs"], 1)

@@ -97,8 +97,9 @@ un limitador por IP; superado el umbral la API responde `429` con `Retry-After`
 
 - `GET /api/hello` devuelve version y modo activo.
 - `GET /api/soc/analysis/` resume la triage SOC sobre datos recientes.
-- `GET /api/settings/ai` devuelve la activación persistente de IA y el estado operativo del modelo (`{"enabled": false, "model_status": "not_configured"}` por defecto). `model_status` es `not_configured` mientras ningún proveedor esté conectado.
-- `POST /api/settings/ai` guarda `{"enabled": true|false}` con un booleano JSON estricto; solo persiste la intención y todavía no conecta un modelo al camino de captura.
+- `GET /api/settings/ai` devuelve la activación persistente, el motor local (`sniff4hound-aggregate-risk-v1`) y sus contadores.
+- `POST /api/settings/ai` guarda `{"enabled": true|false}` con un booleano JSON estricto.
+- `GET|POST /api/settings/ai/analysis` consulta estadísticas o ejecuta un análisis local sobre métricas agregadas; no lee payloads ni realiza llamadas externas.
 - Las respuestas de ambas operaciones tienen exactamente la forma `{"enabled": boolean}`. Un cuerpo POST con campos extra, un valor no booleano o JSON no válido responde `400` y no cambia el valor guardado.
-- La integración opcional de `wsbuilder.ia` consume únicamente métricas agregadas precomputadas mediante un modelo explícitamente inyectado; permanece desactivada por defecto, no hace llamadas de red y descarta claves/filas que puedan contener identidad, texto o payload. Consulta [la nota de arquitectura de IA](ai.md) antes de conectar un proveedor.
+- La integración de IA consume únicamente métricas agregadas; el motor local está desactivado por defecto hasta que el operador lo habilita, no hace llamadas de red y descarta claves/filas que puedan contener identidad, texto o payload. Consulta [la nota de arquitectura de IA](ai.md) antes de conectar un proveedor externo.
 - el runtime emite eventos `packet`, `stats_update`, `runtime_mode` y mensajes de chat por WebSocket.

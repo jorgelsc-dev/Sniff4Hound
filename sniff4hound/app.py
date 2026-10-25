@@ -26,6 +26,7 @@ from . import access_log
 from . import http3_listener
 from . import log_setup
 from .auth import authenticate_request, extract_token_from_header, RATE_LIMITER, REQUIRE_AUTH
+from .ai_runtime import AggregateAiRuntime
 from .export import (
     EXPORT_DATASETS,
     EXPORT_FIELDS,
@@ -677,8 +678,10 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/ip/intel/", "desc": "Combined host intel."},
     {"method": "GET", "path": "/api/domain/intel/", "desc": "Structured domain investigation: packets/payloads/tags matched by DNS query name or HTTP Host (never free-text substring). ?mode=exact|subdomain, ?since= applies the shared time window."},
     {"method": "GET", "path": "/api/soc/analysis/", "desc": "Iterative SOC triage analysis."},
-    {"method": "GET", "path": "/api/settings/ai", "desc": "Read the persisted IA activation flag (default OFF) and model_status; no model is configured yet."},
-    {"method": "POST", "path": "/api/settings/ai", "desc": "Persist the IA activation flag: {\"enabled\": true|false}; this does not start a model or alter capture yet."},
+    {"method": "GET", "path": "/api/settings/ai", "desc": "Read IA permission, local aggregate engine and execution counters."},
+    {"method": "POST", "path": "/api/settings/ai", "desc": "Persist the IA activation flag: {\"enabled\": true|false}."},
+    {"method": "GET", "path": "/api/settings/ai/analysis", "desc": "Read local IA execution statistics and recent aggregate analyses."},
+    {"method": "POST", "path": "/api/settings/ai/analysis", "desc": "Run one local IA analysis over bounded aggregate metrics."},
     {"method": "POST", "path": "/api/packets/review", "desc": "Label any captured packet benign, malicious or unreviewed."},
     {"method": "GET", "path": "/api/detection/exclusions", "desc": "Shared exclusion filter (IP type, CIDR, port, protocol)."},
     {"method": "POST", "path": "/api/detection/exclusions", "desc": "Set the shared exclusion filter - matching traffic is silenced from Sniffer detection and Monitors (raw capture/storage is unaffected)."},
@@ -2602,24 +2605,34 @@ def soc_analysis(request):
     return store.soc_analysis_snapshot(cycles=cycles, limit=limit, since=_normalize_since(request))
 
 
-# No model provider is wired into the runtime; see docs/reference/ai.md.
-AI_MODEL_STATUS = "not_configured"
+# The default engine is local and deterministic. It consumes only the
+# aggregate analytics snapshot, never packet rows or payloads.
+AI_RUNTIME = AggregateAiRuntime()
 
 
 @app.api("/api/settings/ai", methods=("GET", "POST"))
 def ai_config(request):
-    """Read or persist IA activation intent without starting an IA engine.
-
-    ``model_status`` reports the operational side separately from the
-    preference: no runtime consumer loads a model yet, so a saved ``enabled``
-    is permission only and never an announcement of active inference.
-    """
+    """Read or persist IA permission and local engine metadata."""
     if request.method.upper() == "GET":
-        return {"enabled": store.get_ai_enabled(), "model_status": AI_MODEL_STATUS}
+        return AI_RUNTIME.status(enabled=store.get_ai_enabled())
     payload = _read_json_body(request)
     if set(payload) != {"enabled"}:
         raise ValueError("enabled is required and must be the only field")
-    return {"enabled": store.set_ai_enabled(payload["enabled"]), "model_status": AI_MODEL_STATUS}
+    enabled = store.set_ai_enabled(payload["enabled"])
+    return AI_RUNTIME.status(enabled=enabled)
+
+
+@app.api("/api/settings/ai/analysis", methods=("GET", "POST"))
+def ai_analysis(request):
+    """Expose execution history or run the local aggregate analysis."""
+    enabled = store.get_ai_enabled()
+    if request.method.upper() == "GET":
+        return AI_RUNTIME.status(enabled=enabled)
+    if not enabled:
+        return {**AI_RUNTIME.status(enabled=False), "status": "disabled", "message": "Activa la IA antes de ejecutar un análisis."}
+    snapshot = store.analytics_snapshot(since=_normalize_since(request))
+    result = AI_RUNTIME.analyze(snapshot)
+    return {**AI_RUNTIME.status(enabled=True), "result": result, "status": "completed"}
 
 
 @app.api("/api/packets/review", methods=("POST",))

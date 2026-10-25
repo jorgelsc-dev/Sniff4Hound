@@ -2143,8 +2143,8 @@ export default {
           ],
         ),
         ai: (() => {
-          // The saved preference is permission only; the node lights up only
-          // when the backend reports a model that can actually run.
+          // The local aggregate engine is available; the node lights up only
+          // when the operator has explicitly enabled IA.
           const config = extras.ai && typeof extras.ai.enabled === "boolean" ? extras.ai : null;
           const enabled = Boolean(config && config.enabled);
           const ready = enabled && config.model_status === "ready";
@@ -2153,9 +2153,10 @@ export default {
             online && ready,
             [
               metric("Preferencia", config ? (enabled ? "Permitida" : "Desactivada") : "—", enabled ? "ok" : "warn"),
-              metric("Modelo", !config ? "—" : ready ? "Listo" : "No configurado", ready ? "ok" : "warn"),
+              metric("Modelo", !config ? "—" : config.model_status === "ready" ? "Local" : "No configurado", config?.model_status === "ready" ? "ok" : "warn"),
               metric("Datos", "Agregados", "ok"),
-              metric("Captura", "No bloquea"),
+              metric("Ejecuciones", config ? Number(config.total_runs || 0).toLocaleString("es-ES") : "—"),
+              metric("Señales", config ? Number(config.total_findings || 0).toLocaleString("es-ES") : "—"),
             ],
           );
         })(),
