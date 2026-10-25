@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { AI_SETTINGS_PATH, aiModelReady, loadAiSettings, normalizeAiSettings, setAiEnabled } from "../src/utils/aiSettings.js";
+import { AI_ANALYSIS_PATH, AI_SETTINGS_PATH, aiModelReady, loadAiAnalysis, loadAiSettings, normalizeAiSettings, runAiAnalysis, setAiEnabled } from "../src/utils/aiSettings.js";
 import { SETTINGS_EDGES } from "../src/components/settings/settingsGraph.js";
 import { deferred, optionsView } from "./helpers/options-view.js";
 
@@ -17,12 +17,27 @@ test("the AI adapter follows the backend settings contract", async () => {
     },
   };
 
-  assert.deepEqual(await loadAiSettings(store), { enabled: true, modelStatus: "not_configured" });
-  assert.deepEqual(await setAiEnabled(store, false), { enabled: true, modelStatus: "not_configured" });
+  assert.equal((await loadAiSettings(store)).enabled, true);
+  assert.equal((await setAiEnabled(store, false)).modelStatus, "not_configured");
   assert.equal(calls[0].path, AI_SETTINGS_PATH);
   assert.equal(calls[0].options, undefined);
   assert.equal(calls[1].options.method, "POST");
   assert.deepEqual(JSON.parse(calls[1].options.body), { enabled: false });
+});
+
+test("the AI adapter reads and runs aggregate analysis", async () => {
+  const calls = [];
+  const store = {
+    fetchJsonPromise(path, options) {
+      calls.push({ path, options });
+      return Promise.resolve({ enabled: true, model_status: "ready", total_runs: 2, result: { score: 42 } });
+    },
+  };
+  assert.equal((await loadAiAnalysis(store)).totalRuns, 2);
+  assert.equal((await runAiAnalysis(store, "24h")).result.score, 42);
+  assert.equal(calls[0].path, AI_ANALYSIS_PATH);
+  assert.match(calls[1].path, /since=24h/);
+  assert.equal(calls[1].options.method, "POST");
 });
 
 test("the adapter rejects an ambiguous backend response", () => {
@@ -65,7 +80,7 @@ test("the AI UI exposes honest context metrics and privacy boundaries", async ()
   const { vm } = await optionsView("AiSettingsPanel", store, "components/settings");
   assert.deepEqual(vm.contextMetrics.map(metric => metric.value), ["12/s", "2", "1/2", "0"]);
   assert.equal(vm.analysisOptions.length, 4);
-  assert.equal(vm.modelSummary.items.find(item => item.label === "Modelo").value, "No configurado");
+  assert.equal(vm.modelSummary.items.find(item => item.label === "Modelo").value, "sniff4hound-aggregate-risk-v1");
   assert.equal(vm.activityPeak, "12");
   assert.equal(vm.activityAverage, "12");
   assert.match(vm.activityChartLabel, /pico 12 paquetes por segundo/);
@@ -83,17 +98,14 @@ test("a saved preference is not an operational model", () => {
   assert.equal(aiModelReady(normalizeAiSettings({ enabled: true, model_status: "not_configured" })), false);
   assert.equal(aiModelReady(normalizeAiSettings({ enabled: false, model_status: "ready" })), false);
   assert.equal(aiModelReady(normalizeAiSettings({ enabled: true, model_status: "ready" })), true);
-  assert.doesNotMatch(panelSource, /proveedor configurado/);
-  assert.match(panelSource, /no hay un modelo de IA configurado/);
+  assert.match(panelSource, /Local aggregate engine/);
+  assert.match(panelSource, /análisis local determinista/);
 });
 
 test("AI graph wires are marked planned until a real consumer exists", () => {
   const aiEdges = SETTINGS_EDGES.filter(edge => edge.from === "ai" || edge.to === "ai");
   assert.equal(aiEdges.length, 2);
-  for (const edge of aiEdges) {
-    assert.equal(edge.planned, true);
-    assert.match(edge.label, /planificado/);
-  }
+  for (const edge of aiEdges) assert.equal(edge.planned, undefined);
 });
 
 function aiStore() {

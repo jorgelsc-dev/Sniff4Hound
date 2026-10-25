@@ -44,11 +44,42 @@
       {{ description }}
     </div>
     <div class="ai-settings-panel__section mt-5">
+      <div class="ai-settings-panel__runbar">
+        <div>
+          <div class="text-body-2 font-weight-medium">Análisis bajo demanda</div>
+          <div class="text-caption text-medium-emphasis mt-1">Calcula un nivel de riesgo agregado y sus señales explicables.</div>
+        </div>
+        <div class="ai-settings-panel__run-actions">
+          <v-select v-model="analysisWindow" :items="analysisWindows" label="Ventana" density="compact" hide-details variant="outlined" :disabled="!ready || analyzing" />
+          <v-btn color="primary" prepend-icon="mdi-play-circle-outline" :loading="analyzing" :disabled="!ready || analyzing" @click="runAnalysis">Analizar ahora</v-btn>
+        </div>
+      </div>
+      <div v-if="currentResult" class="ai-settings-panel__result mt-3">
+        <div class="ai-settings-panel__score">
+          <span class="text-caption text-medium-emphasis">Riesgo agregado</span>
+          <strong>{{ resultScore }}/100</strong>
+          <v-chip size="x-small" variant="tonal" color="warning">{{ currentResult.label }}</v-chip>
+          <span class="text-caption text-medium-emphasis">Confianza {{ Math.round((currentResult.confidence || 0) * 100) }}%</span>
+        </div>
+        <div class="ai-settings-panel__findings">
+          <div v-for="finding in resultFindings" :key="finding.title" class="ai-settings-panel__finding">
+            <v-icon :icon="finding.severity === 'high' ? 'mdi-alert' : finding.severity === 'medium' ? 'mdi-alert-outline' : 'mdi-information-outline'" size="17" color="primary" />
+            <div><strong>{{ finding.title }}</strong><span>{{ finding.detail }}</span></div>
+          </div>
+        </div>
+        <div class="ai-settings-panel__features" aria-label="Variables usadas por el análisis">
+          <div v-for="feature in featureBars" :key="feature.label" class="ai-settings-panel__feature">
+            <span>{{ feature.label }}</span><b>{{ feature.value }}</b><i><em :style="{ width: feature.width }" /></i>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="ai-settings-panel__section mt-5">
       <div class="ai-settings-panel__section-heading">
         <div>
           <div class="text-body-2 font-weight-medium">Modelo y ejecución</div>
           <div class="text-caption text-medium-emphasis mt-1">
-            Esta ficha separa el permiso guardado del modelo que realmente podría ejecutar inferencias.
+            Motor local sobre métricas agregadas, con ejecuciones medibles y sin datos sensibles.
           </div>
         </div>
         <v-chip size="x-small" variant="tonal" :color="ready ? 'success' : 'warning'" prepend-icon="mdi-robot-outline">
@@ -63,8 +94,8 @@
         </div>
       </div>
       <v-alert type="info" variant="tonal" density="compact" class="mt-3" prepend-icon="mdi-information-outline">
-        <strong>Qué hace hoy:</strong> guarda tu preferencia y prepara métricas agregadas. No carga un modelo, no ejecuta
-        inferencias y no envía datos fuera del sensor. El adaptador de IA permanece aislado del camino de captura.
+        <strong>Qué hace hoy:</strong> ejecuta un análisis local determinista sobre métricas agregadas. No lee payloads,
+        no envía datos fuera del sensor y no bloquea la captura.
       </v-alert>
     </div>
     <div class="ai-settings-panel__section mt-5">
@@ -90,7 +121,7 @@
     <div class="ai-settings-panel__section mt-5">
       <div class="text-body-2 font-weight-medium">Opciones de análisis</div>
       <div class="text-caption text-medium-emphasis mt-1">
-        Define el alcance esperado antes de conectar un modelo. Estas opciones no activan inferencias ni cambian la captura.
+        Define el alcance del motor local. Estas opciones no cambian la captura.
       </div>
       <div class="ai-settings-panel__options mt-3">
         <div v-for="option in analysisOptions" :key="option.title" class="ai-settings-panel__option">
@@ -108,7 +139,7 @@
         <div>
           <div class="text-body-2 font-weight-medium">Gráfico de actividad agregada</div>
           <div class="text-caption text-medium-emphasis mt-1">
-            Muestra el contexto disponible para una futura IA; no representa predicciones ni puntuaciones del modelo.
+            Muestra la actividad agregada que acompaña al análisis; no representa predicciones ni puntuaciones del modelo.
           </div>
         </div>
         <v-chip size="x-small" variant="outlined" color="secondary">{{ activityPeak }} paq/s pico</v-chip>
@@ -139,8 +170,8 @@
       </v-btn>
     </div>
     <v-alert type="info" variant="tonal" density="comfortable" class="mt-4" prepend-icon="mdi-help-circle-outline">
-      <strong>Estado actual:</strong> todavía no hay un modelo de IA configurado. Activar el interruptor solo guarda la
-      preferencia; no se ejecuta ninguna inferencia ni se envían datos. La captura y las reglas siguen funcionando.
+      <strong>Privacidad:</strong> el motor usa solamente contadores y métricas agregadas. No procesa payloads ni envía
+      datos a proveedores externos; la captura y las reglas siguen funcionando independientemente.
     </v-alert>
   </DataPanel>
 </template>
@@ -148,7 +179,7 @@
 <script>
 import DataPanel from "../ui/DataPanel.vue";
 import store from "../../state/appStore";
-import { aiModelReady, loadAiSettings, setAiEnabled } from "../../utils/aiSettings.js";
+import { aiModelReady, loadAiAnalysis, loadAiSettings, runAiAnalysis, setAiEnabled } from "../../utils/aiSettings.js";
 
 export default {
   name: "AiSettingsPanel",
@@ -158,11 +189,19 @@ export default {
       store,
       enabled: false,
       modelStatus: "not_configured",
+      analysisState: { provider: "Local aggregate engine", model: "sniff4hound-aggregate-risk-v1", totalRuns: 0, totalFindings: 0, lastRun: null, history: [] },
       // False until the backend has confirmed the value: a failed load is
       // "unknown", never "AI is off".
       confirmed: false,
       loading: true,
       saving: false,
+      analyzing: false,
+      analysisWindow: "24h",
+      analysisWindows: [
+        { title: "Últimas 24 horas", value: "24h" },
+        { title: "Últimos 7 días", value: "7d" },
+        { title: "Todo", value: "" },
+      ],
       error: "",
       activitySamples: [Number(store.state.liveActivity?.total) || 0],
       lastActivitySample: null,
@@ -173,16 +212,30 @@ export default {
       return aiModelReady({ enabled: this.enabled, modelStatus: this.modelStatus });
     },
     modelSummary() {
-      const status = this.loading ? "Consultando" : this.ready ? "Modelo listo" : "Sin modelo";
+      const status = this.loading ? "Consultando" : this.modelStatus === "ready" ? (this.enabled ? "Modelo listo" : "Disponible · apagada") : "Sin modelo";
       return {
         status,
         items: [
-          { label: "Proveedor", value: this.ready ? "Configurado" : "Ninguno", detail: this.ready ? "conectado" : "sin conexión" },
-          { label: "Modelo", value: this.ready ? "Disponible" : "No configurado", detail: this.ready ? "operativo" : "0 inferencias" },
-          { label: "Ejecuciones", value: "0", detail: "nunca ejecutado" },
-          { label: "Última ejecución", value: "Nunca", detail: "sin historial" },
+          { label: "Proveedor", value: this.analysisState.provider, detail: "ejecución local" },
+          { label: "Modelo", value: this.analysisState.model, detail: this.ready ? "operativo" : "activa la IA" },
+          { label: "Ejecuciones", value: this.analysisState.totalRuns.toLocaleString("es-ES"), detail: `${this.analysisState.totalFindings.toLocaleString("es-ES")} señales` },
+          { label: "Última ejecución", value: this.lastRunLabel, detail: this.analysisState.lastRun ? "resultado disponible" : "sin historial" },
         ],
       };
+    },
+    lastRunLabel() {
+      if (!this.analysisState.lastRun?.generated_at) return "Nunca";
+      return new Date(this.analysisState.lastRun.generated_at).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+    },
+    currentResult() { return this.analysisState.lastRun; },
+    resultScore() {
+      return this.currentResult ? Number(this.currentResult.score || 0).toLocaleString("es-ES", { maximumFractionDigits: 1 }) : "—";
+    },
+    resultFindings() { return this.currentResult?.findings || []; },
+    featureBars() {
+      const features = this.currentResult?.features || {};
+      const max = Math.max(1, ...Object.values(features).map(value => Number(value) || 0));
+      return Object.entries(features).slice(0, 8).map(([label, value]) => ({ label, value, width: `${Math.max(3, (Number(value) / max) * 100)}%` }));
     },
     contextMetrics() {
       const activity = this.store.state.liveActivity || {};
@@ -221,7 +274,7 @@ export default {
         { icon: "mdi-chart-box-outline", title: "Resumen agregado", description: "Tendencias sin payloads", status: "Preparado", color: "success" },
         { icon: "mdi-shield-lock-outline", title: "Sin payloads", description: "No analiza contenido de paquetes", status: "Protegido", color: "success" },
         { icon: "mdi-cloud-off-outline", title: "Sin envío externo", description: "No se comparte información fuera del sensor", status: "Activo", color: "success" },
-        { icon: "mdi-lightbulb-outline", title: "Triage asistido", description: "Se habilitará al configurar un modelo", status: "Próximamente", color: "secondary" },
+        { icon: "mdi-lightbulb-outline", title: "Triage asistido", description: "Señales explicables del análisis agregado", status: "Disponible", color: "success" },
       ];
     },
     hasActivity() {
@@ -301,12 +354,32 @@ export default {
         const settings = await loadAiSettings(this.store);
         this.enabled = settings.enabled;
         this.modelStatus = settings.modelStatus;
+        this.analysisState = settings;
         this.confirmed = true;
       } catch (err) {
         this.confirmed = false;
         this.error = err?.message || "No se pudo cargar la configuración de IA.";
       } finally {
         this.loading = false;
+      }
+    },
+    async loadAnalysis() {
+      try {
+        this.analysisState = await loadAiAnalysis(this.store);
+      } catch (err) {
+        this.error = err?.message || "No se pudieron cargar las estadísticas de IA.";
+      }
+    },
+    async runAnalysis() {
+      if (this.analyzing || !this.ready) return;
+      this.analyzing = true;
+      this.error = "";
+      try {
+        this.analysisState = await runAiAnalysis(this.store, this.analysisWindow);
+      } catch (err) {
+        this.error = err?.message || "No se pudo ejecutar el análisis de IA.";
+      } finally {
+        this.analyzing = false;
       }
     },
     async toggle(value) {
@@ -320,6 +393,7 @@ export default {
         const settings = await setAiEnabled(this.store, next);
         this.enabled = settings.enabled;
         this.modelStatus = settings.modelStatus;
+        this.analysisState = { ...this.analysisState, ...settings };
       } catch (err) {
         // The last confirmed value stays valid, so the switch remains usable
         // for another attempt.
@@ -353,8 +427,25 @@ export default {
 .ai-settings-panel__chart-dot { fill: rgb(var(--v-theme-primary)); }
 .ai-settings-panel__chart-empty { position: absolute; inset: 0; display: grid; place-items: center; color: rgba(255, 255, 255, 0.48); font-size: 12px; }
 .ai-settings-panel__chart-footer { display: flex; justify-content: space-between; gap: 12px; margin-top: 7px; }
+.ai-settings-panel__runbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.ai-settings-panel__run-actions { display: flex; align-items: center; gap: 10px; min-width: 320px; }
+.ai-settings-panel__run-actions .v-select { max-width: 150px; }
+.ai-settings-panel__result { display: grid; grid-template-columns: 150px minmax(240px, 1fr) minmax(220px, 1fr); gap: 16px; padding: 14px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: rgba(255,255,255,.025); }
+.ai-settings-panel__score { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+.ai-settings-panel__score strong { font-size: 30px; line-height: 1; font-variant-numeric: tabular-nums; }
+.ai-settings-panel__findings { display: flex; flex-direction: column; gap: 9px; }
+.ai-settings-panel__finding { display: flex; gap: 8px; align-items: flex-start; }
+.ai-settings-panel__finding div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ai-settings-panel__finding span { font-size: 12px; color: rgba(255,255,255,.6); }
+.ai-settings-panel__features { display: flex; flex-direction: column; gap: 7px; }
+.ai-settings-panel__feature { display: grid; grid-template-columns: 105px 28px 1fr; align-items: center; gap: 7px; font-size: 12px; }
+.ai-settings-panel__feature b { text-align: right; font-variant-numeric: tabular-nums; }
+.ai-settings-panel__feature i { display: block; height: 6px; border-radius: 6px; background: rgba(255,255,255,.1); overflow: hidden; }
+.ai-settings-panel__feature em { display: block; height: 100%; border-radius: inherit; background: rgb(var(--v-theme-primary)); }
 @media (max-width: 700px) {
   .ai-settings-panel__metrics, .ai-settings-panel__model-grid, .ai-settings-panel__options { grid-template-columns: 1fr 1fr; }
+  .ai-settings-panel__runbar, .ai-settings-panel__result { display: flex; flex-direction: column; align-items: stretch; }
+  .ai-settings-panel__run-actions { min-width: 0; }
   .ai-settings-panel__section-heading { align-items: flex-start; }
 }
 </style>
