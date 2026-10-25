@@ -10,6 +10,7 @@
             :to="tool.to"
             :aria-label="tool.label"
             :title="tool.label"
+            @click="closeGroup"
           >
             <v-icon :icon="tool.icon" :color="isActive(tool.to) ? tool.color : undefined" size="22" />
           </router-link>

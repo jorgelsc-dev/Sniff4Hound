@@ -47,6 +47,23 @@ test("the Settings UI exposes an accessible optional AI toggle", () => {
   assert.match(panelSource, /this\.enabled = previous/);
 });
 
+test("the AI UI exposes honest context metrics and privacy boundaries", async () => {
+  assert.match(panelSource, /Resumen operativo/);
+  assert.match(panelSource, /Opciones de análisis/);
+  assert.match(panelSource, /Sin payloads/);
+  assert.match(panelSource, /Sin envío externo/);
+  assert.match(panelSource, /Inferencias/);
+  assert.match(settingsSource, /metric\("Datos", "Agregados", "ok"\)/);
+
+  const { store } = aiStore();
+  store.state.liveActivity = { total: 12 };
+  store.state.pendingJobs = 2;
+  store.state.runtime = { running_engines: ["sniffer"] };
+  const { vm } = await optionsView("AiSettingsPanel", store, "components/settings");
+  assert.deepEqual(vm.contextMetrics.map(metric => metric.value), ["12/s", "2", "1/2", "0"]);
+  assert.equal(vm.analysisOptions.length, 4);
+});
+
 test("the AI graph node makes its optional behavior clear", () => {
   assert.match(panelSource, /IA es opcional/);
   assert.match(settingsSource, /fetchJsonPromise\("\/api\/settings\/ai"\)/);
