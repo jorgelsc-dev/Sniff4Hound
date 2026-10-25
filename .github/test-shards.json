@@ -19,7 +19,8 @@
       "tests.test_wsbuilder_ia",
       "tests.test_configuration_security",
       "tests.test_history_api",
-      "tests.test_runtime_qa"
+      "tests.test_runtime_qa",
+      "tests.test_manage_port_probe"
     ],
     [
       "tests.test_monitors.TestLoadBuiltinMonitors",

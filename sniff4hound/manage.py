@@ -315,9 +315,21 @@ def _candidate_ports(preferred_port: int) -> tuple[int, ...]:
 
 
 def _port_is_available(host: str, port: int) -> bool:
-    """Return False when the target TCP address is already in use."""
+    """Return False when the target TCP address is already in use.
+
+    The probe binds the way the real server does (wsbuilder's HTTPServer sets
+    SO_REUSEADDR), so it answers the question that matters: would the server's
+    own bind() succeed? Without SO_REUSEADDR, the TIME-WAIT/FIN-WAIT-2 leftovers
+    of a just-restarted web process made the preferred port look busy and the
+    runtime silently moved to port+1, stranding remote consoles (#294). A
+    socket really listening on the port still makes this bind fail."""
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM) as sock:
+        # On Windows SO_REUSEADDR would let the probe share a port another
+        # process is actively listening on, so it is only set where it has the
+        # BSD/Linux meaning.
+        if os.name != "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, port))
         except OSError as exc:
