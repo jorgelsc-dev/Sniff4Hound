@@ -17,7 +17,7 @@ Sniff4Hound usa SQLite como unico almacenamiento local. La base por defecto es `
 
 - SQLite se abre con `WAL`.
 - Se activa `foreign_keys`.
-- El timeout de espera es de `5000 ms`.
+- El timeout de espera es de `15000 ms`.
 - El `text_factory` normaliza texto binario para que la API no rompa al serializar.
 - `raw_packet` y `payload_hex` se retienen por defecto (el analisis forense
   los necesita). `SNIFF4HOUND_STORE_RAW_PACKET` fija el valor inicial de la

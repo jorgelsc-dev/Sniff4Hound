@@ -58,9 +58,9 @@
       </v-btn>
     </div>
 
-    <v-dialog v-model="clearDialog" max-width="420">
+    <v-dialog v-model="clearDialog" max-width="420" aria-labelledby="clear-alerts-dialog-title">
       <v-card class="pa-4">
-        <div class="text-h6 mb-3">¿Limpiar alertas?</div>
+        <div id="clear-alerts-dialog-title" class="text-h6 mb-3">¿Limpiar alertas?</div>
         <div class="text-caption text-medium-emphasis mb-3">
           Deletes every stored packet/tag matched by a monitor (sniffer-side traffic only - inbound
           service hits are cleared separately from the Services view). Monitor definitions and their

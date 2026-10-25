@@ -2,7 +2,8 @@
   <teleport to="body">
     <transition name="palette">
       <div v-if="store.state.commandPaletteOpen" class="palette" @click.self="close">
-        <div class="palette__card" role="dialog" aria-modal="true" aria-label="Paleta de comandos">
+        <div ref="card" class="palette__card" role="dialog" aria-modal="true" aria-labelledby="command-palette-title" @keydown="trapFocus">
+          <h2 id="command-palette-title" class="sr-only">Paleta de comandos</h2>
           <div class="palette__search">
             <v-icon icon="mdi-magnify" size="19" />
             <input
@@ -71,7 +72,7 @@ import { SETTINGS_NODES, settingsRoute } from "../settings/settingsGraph";
 export default {
   name: "CommandPalette",
   data() {
-    return { store, query: "", activeId: "" };
+    return { store, query: "", activeId: "", returnFocus: null };
   },
   computed: {
     runtime() {
@@ -134,6 +135,7 @@ export default {
   watch: {
     "store.state.commandPaletteOpen"(open) {
       if (!open) return;
+      this.returnFocus = document.activeElement;
       this.query = "";
       this.activeId = this.results[0]?.id || "";
       this.$nextTick(() => this.$refs.input?.focus());
@@ -171,7 +173,16 @@ export default {
     },
     close() {
       this.store.state.commandPaletteOpen = false;
-      this.$nextTick(() => document.querySelector(".command-trigger")?.focus({ preventScroll: true }));
+      this.$nextTick(() => (this.returnFocus || document.querySelector(".command-trigger"))?.focus({ preventScroll: true }));
+    },
+    trapFocus(event) {
+      if (event.key !== "Tab") return;
+      const focusable = [...this.$refs.card.querySelectorAll("button, input, [tabindex]:not([tabindex='-1'])")].filter((el) => !el.disabled);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     },
     move(delta) {
       const list = this.results;

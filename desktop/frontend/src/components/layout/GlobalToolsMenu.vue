@@ -43,6 +43,8 @@
           role="menu"
           :aria-label="openTool.label"
           :style="{ top: `${flyoutAnchor.top}px`, left: `${flyoutAnchor.left}px` }"
+          tabindex="-1"
+          @keydown="handleFlyoutKeydown"
         >
           <div class="desktop-activity-flyout__title">{{ openTool.label }}</div>
           <router-link
@@ -192,6 +194,7 @@ export default {
       desktopMode: false,
       open: false,
       openGroup: null,
+      openGroupTrigger: null,
       flyoutAnchor: { top: 0, left: 0 },
       quickStatusTimer: null,
       engineBusy: {
@@ -388,10 +391,25 @@ export default {
       }
       const rect = event.currentTarget.getBoundingClientRect();
       this.flyoutAnchor = { top: rect.top, left: rect.right + 8 };
+      this.openGroupTrigger = event.currentTarget;
       this.openGroup = tool.to;
+      this.$nextTick(() => this.$el.querySelector(".desktop-activity-flyout-item")?.focus());
     },
     closeGroup() {
       this.openGroup = null;
+      const trigger = this.openGroupTrigger;
+      this.openGroupTrigger = null;
+      this.$nextTick(() => trigger?.focus({ preventScroll: true }));
+    },
+    handleFlyoutKeydown(event) {
+      const items = [...event.currentTarget.querySelectorAll('[role="menuitem"]')];
+      const index = items.indexOf(document.activeElement);
+      if (event.key === "Escape") { event.preventDefault(); this.closeGroup(); return; }
+      if (!items.length) return;
+      if (["ArrowDown", "ArrowRight"].includes(event.key)) { event.preventDefault(); items[(index + 1) % items.length].focus(); }
+      if (["ArrowUp", "ArrowLeft"].includes(event.key)) { event.preventDefault(); items[(index - 1 + items.length) % items.length].focus(); }
+      if (event.key === "Home") { event.preventDefault(); items[0].focus(); }
+      if (event.key === "End") { event.preventDefault(); items[items.length - 1].focus(); }
     },
   },
 };

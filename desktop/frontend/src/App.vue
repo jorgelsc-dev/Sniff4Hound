@@ -65,9 +65,9 @@
       </v-container>
     </v-main>
 
-    <v-dialog :model-value="shutdownPending" persistent max-width="420">
+    <v-dialog :model-value="shutdownPending" persistent max-width="420" aria-labelledby="shutdown-dialog-title">
       <v-card class="shutdown-card" rounded="lg">
-        <v-card-title class="text-h5">Cerrando Sniff4Hound</v-card-title>
+        <v-card-title id="shutdown-dialog-title" class="text-h5">Cerrando Sniff4Hound</v-card-title>
         <v-card-text>
           <div class="shutdown-countdown" role="status" aria-live="polite" aria-atomic="true">{{ shutdownLabel }}</div>
           <p>Deteniendo capturas, conexiones y tareas en segundo plano.</p>
@@ -75,10 +75,10 @@
       </v-card>
     </v-dialog>
 
-    <v-dialog :model-value="authPromptOpen && !shutdownPending" persistent max-width="520">
+    <v-dialog :model-value="authPromptOpen && !shutdownPending" persistent max-width="520" aria-labelledby="auth-dialog-title">
       <v-card class="auth-dialog-card" rounded="lg">
         <div class="auth-dialog-topline" />
-        <v-card-title class="text-h5 pt-6">Código de seguridad</v-card-title>
+        <v-card-title id="auth-dialog-title" class="text-h5 pt-6">Código de seguridad</v-card-title>
         <v-card-text class="pt-4">
           <p class="auth-dialog-copy">
             Abre el enlace de inicio desde la terminal de `sniff4hound` o introduce aquí

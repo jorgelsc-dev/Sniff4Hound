@@ -29,7 +29,7 @@ from .packet_pipeline import (
     PERSIST_MODES,
     coerce_pipeline_settings,
 )
-from .runtime_paths import resolve_data_file
+from .runtime_paths import BUNDLED_DATA_DIR, resolve_data_file
 from .honeypot_ports import listener_port_allowed, listener_port_policy_error
 from .monitors import builtin_monitor_seed_fields, describe_match, normalize_monitor
 from .protocol_facets import (
@@ -6575,20 +6575,33 @@ class SniffStore(HistoryStoreMixin):
 
 
     def read_catalog_file(self, filename: str) -> list[dict]:
-        path = resolve_data_file(filename)
-        if not path.exists():
-            return []
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-        if not isinstance(payload, list):
-            return []
-        return [item for item in payload if isinstance(item, dict)]
+        with self._lock:
+            path = resolve_data_file(filename)
+            if not path.exists():
+                path = BUNDLED_DATA_DIR / Path(filename).name
+                if not path.exists():
+                    return []
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                return []
+            if not isinstance(payload, list):
+                return []
+            return [item for item in payload if isinstance(item, dict)]
 
     def write_catalog_file(self, filename: str, rows: list[dict]):
-        path = resolve_data_file(filename)
-        path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self._lock:
+            path = resolve_data_file(filename)
+            temporary = path.with_name(f".{path.name}.tmp")
+            temporary.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(path)
+
+    def update_catalog_file(self, filename: str, updater):
+        with self._lock:
+            rows = self.read_catalog_file(filename)
+            updated = updater(rows)
+            self.write_catalog_file(filename, updated)
+            return updated
 
     def get_runtime_config(self, key: str, default: str = "") -> str:
         row = self._fetchone("SELECT value FROM runtime_config WHERE key = ?", (str(key),))
@@ -6623,12 +6636,15 @@ class SniffStore(HistoryStoreMixin):
         """
         result = job.get("result")
         result_json = "" if result is None else json_dumps(result)
+        status = str(job.get("status") or "queued")
+        error = str(job.get("error") or "")
+        error_type = str(job.get("error_type") or "")
         if len(result_json) > JOB_RESULT_PERSIST_MAX_BYTES:
-            # A large result (the full monitor catalog is ~37 MB) would sit in
-            # this table for the whole TTL, and every such job grew the file by
-            # that much. The in-memory copy still answers polls while the
-            # process runs; after a restart only the fact that it finished is kept.
             result_json = json_dumps({"omitted": True, "bytes": len(result_json)})
+            if status == "done":
+                status = "error"
+                error = "Job result exceeded the persistence limit; retry the request."
+                error_type = "ResultTooLarge"
         self._execute(
             """
             INSERT INTO jobs (id, kind, status, result_json, error, error_type, created_at, finished_at)
@@ -6643,10 +6659,10 @@ class SniffStore(HistoryStoreMixin):
             (
                 str(job.get("id") or ""),
                 str(job.get("kind") or ""),
-                str(job.get("status") or "queued"),
+                status,
                 result_json,
-                str(job.get("error") or ""),
-                str(job.get("error_type") or ""),
+                error,
+                error_type,
                 str(job.get("created_at") or utc_now()),
                 str(job.get("finished_at") or ""),
             ),

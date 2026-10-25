@@ -36,6 +36,8 @@ PAIRING_TTL_SECONDS = 60
 STREAM_QUEUE_SIZE = 200
 STREAM_KEEPALIVE_SECONDS = 25
 MAX_STREAM_EVENT_SECONDS = 24 * 60 * 60
+MOBILE_SESSION_IDLE_TTL_SECONDS = 24 * 60 * 60
+MOBILE_SESSION_ABSOLUTE_TTL_SECONDS = 30 * 24 * 60 * 60
 _SIOCGIFADDR = 0x8915
 
 # Log lines reach the phone only if the device asks for them (`level=` on the
@@ -626,6 +628,7 @@ class MobileStreamService:
 
     def session(self, token: str) -> MobileSession | None:
         with self._lock:
+            self._prune_sessions_locked()
             session = self._sessions.get(str(token or ""))
             if not session or session.revoked_at:
                 return None
@@ -825,6 +828,18 @@ class MobileStreamService:
         expired = [key for key, item in self._pairings.items() if item.expires_at <= now or item.failed_at]
         for key in expired:
             self._pairings.pop(key, None)
+        self._prune_sessions_locked()
+
+    def _prune_sessions_locked(self) -> None:
+        now = _now()
+        expired = [
+            token for token, session in self._sessions.items()
+            if session.revoked_at
+            or now - session.last_seen > MOBILE_SESSION_IDLE_TTL_SECONDS
+            or now - session.created_at > MOBILE_SESSION_ABSOLUTE_TTL_SECONDS
+        ]
+        for token in expired:
+            self._sessions.pop(token, None)
 
     def _pairing_view(self, pairing: Pairing) -> dict[str, Any]:
         now = _now()

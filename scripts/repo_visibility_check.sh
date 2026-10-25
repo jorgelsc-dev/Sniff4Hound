@@ -60,7 +60,7 @@ else
   ok "no tracked dist artifacts"
 fi
 
-check_file "docs/index.html"
+check_file "docs/index.md"
 check_file "docs/CNAME"
 check_file "docs/.nojekyll"
 
