@@ -15,9 +15,11 @@ updates:
     open-pull-requests-limit: 10
 
   # Daily, not weekly: `wsbuilder` is the runtime dependency this project is
-  # built on and it is pinned exactly (`==`), so the pin is only as current as
-  # Dependabot's cadence. On a weekly schedule a release published on a Tuesday
-  # sits unnoticed until the following Monday.
+  # built on and pyproject.toml pins it to an exact PyPI release (`==`), so the
+  # pin is only as current as Dependabot's cadence. On a weekly schedule a
+  # release published on a Tuesday sits unnoticed until the following Monday.
+  # Never pin it to a git commit: Dependabot cannot bump it and the commit can
+  # disappear upstream, breaking `pip install .` and the .deb build.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -29,6 +31,22 @@ updates:
     labels:
       - "dependencies"
       - "python"
+    open-pull-requests-limit: 10
+
+  # The Electron shell: Electron (and so the bundled Chromium) and
+  # electron-builder, which package the .deb's desktop app.
+  - package-ecosystem: "npm"
+    directory: "/desktop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:20"
+      timezone: "UTC"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "javascript"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "npm"

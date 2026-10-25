@@ -12,7 +12,6 @@
 | `SNIFF4HOUND_DB_PATH` | `Sniff4Hound.db` | Ruta de SQLite. |
 | `SNIFF4HOUND_RUNTIME_MODE` | `sniffer` | Motor inicial. |
 | `SNIFF4HOUND_MODE` | `sniffer` | Alias legado de `SNIFF4HOUND_RUNTIME_MODE`. |
-| `SNIFF4HOUND_DEBUG` | `1` | Activa el modo debug de la app. |
 | `SNIFF4HOUND_CAPTURE_AUTO_START` | `1` | Arranque automatico del motor. |
 | `SNIFF4HOUND_CAPTURE_INTERFACES` | vacio | Interfaces activas para `sniffer`. |
 | `SNIFF4HOUND_PROMISCUOUS` | `1` | Modo promiscuo en captura raw. |
@@ -32,6 +31,36 @@ Sniff4Hound siempre requiere root para arrancar (captura de paquetes raw). No
 existe ninguna variable de entorno para saltarse esto: si no corre como root,
 intenta relanzarse con `sudo` y, si no puede, termina sin arrancar el
 servidor e imprime el motivo por stderr.
+
+## TLS del runtime
+
+El runtime genera y gestiona su propia CA local; no acepta certificados
+externos ni mTLS de cliente, y no hay variables para indicar un certificado o
+una clave propios.
+
+| Variable | Default | Uso |
+| --- | --- | --- |
+| `SNIFF4HOUND_TLS` | `1` | Sirve la API y el WebSocket por HTTPS/WSS. `0` vuelve a HTTP plano. |
+| `SNIFF4HOUND_TLS_CERT_DAYS` | `1` | Validez del certificado de servidor, que se reemite en cada arranque. |
+| `SNIFF4HOUND_TLS_CA_DAYS` | `365` | Validez de la CA local. Se reutiliza entre arranques y se renueva cuando le quedan menos de 30 días. |
+
+Los ficheros viven en `<SNIFF4HOUND_DATA_DIR>/tls/`: `sniff4hound-ca.pem`/`.key`
+(CA del runtime), `sniff4hound-server.pem`/`.key` (certificado de servidor
+para el host de escucha y `SNIFF4HOUND_MDNS_HOST`) y la pareja
+`sniff4hound-mobile-*` para el stream móvil. El cliente confía en la CA
+pública (`sniff4hound-ca.pem`); las claves privadas nunca salen de ese
+directorio.
+
+## Variables con efecto en la seguridad
+
+Estas variables relajan o desplazan una protección. Déjalas sin definir salvo
+que entiendas y aceptes el riesgo descrito.
+
+| Variable | Default | Uso | Riesgo |
+| --- | --- | --- | --- |
+| `SNIFF4HOUND_TRUST_FORWARDED_HEADERS` | `0` | `1` hace que la comprobación de mismo origen use `X-Forwarded-Host` y `X-Forwarded-Proto` en lugar de la cabecera `Host` real. Solo para un proxy inverso propio que reescriba esas cabeceras. | Sin un proxy que las sobrescriba, quien hace la petición controla los dos lados de la comparación de origen y anula la protección CSRF de las peticiones que cambian estado. El limitador de autenticación sigue usando siempre la dirección de transporte. |
+| `SNIFF4HOUND_IPC_TOKEN_FILE` | vacío | Ruta a un fichero (modo `0600`) con el token del canal IPC entre el proceso web y el servicio de captura. Tiene prioridad sobre `SNIFF4HOUND_IPC_TOKEN`; el runtime lo usa para no pasar el secreto en la línea de comandos de `sudo`/`pkexec`, visible para cualquier usuario en `/proc/<pid>/cmdline`. | Quien pueda leer ese fichero puede hablar con el servicio de captura, que corre como root (arrancar/parar motores, cambiar interfaces). Debe pertenecer al operador, con permisos `0600`, y no estar en un directorio compartido. |
+| `SNIFF4HOUND_DESKTOP_NO_SANDBOX` | sin definir | `1` arranca la ventana Electron con `--no-sandbox` en Linux aunque no se ejecute como root (como root ya se desactiva siempre). Solo para entornos donde el sandbox de Chromium no puede iniciarse. | Sin sandbox, una vulnerabilidad en el renderer de Chromium (por ejemplo a través de contenido mostrado por la UI) se ejecuta con todos los permisos del usuario del escritorio, en una ventana conectada a un runtime privilegiado. |
 
 ## Modos de activacion (Sniffer / Honeypot / Monitors)
 

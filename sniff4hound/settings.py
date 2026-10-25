@@ -150,7 +150,6 @@ def resolve_data_path(value: str, default_name: str) -> str:
 
 
 DB_PATH = resolve_data_path(_env("SNIFF4HOUND_DB_PATH", ""), "Sniff4Hound.db")
-DEBUG = _as_bool(_env("SNIFF4HOUND_DEBUG", "1"), default=True)
 RUNTIME_MODE = str(_env("SNIFF4HOUND_RUNTIME_MODE", _env("SNIFF4HOUND_MODE", "sniffer"))).strip().lower() or "sniffer"
 
 CAPTURE_AUTO_START = _as_bool(_env("SNIFF4HOUND_CAPTURE_AUTO_START", "0"), default=False)
