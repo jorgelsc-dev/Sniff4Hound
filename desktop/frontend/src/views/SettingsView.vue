@@ -2154,6 +2154,7 @@ export default {
             [
               metric("Preferencia", config ? (enabled ? "Permitida" : "Desactivada") : "—", enabled ? "ok" : "warn"),
               metric("Modelo", !config ? "—" : ready ? "Listo" : "No configurado", ready ? "ok" : "warn"),
+              metric("Datos", "Agregados", "ok"),
               metric("Captura", "No bloquea"),
             ],
           );

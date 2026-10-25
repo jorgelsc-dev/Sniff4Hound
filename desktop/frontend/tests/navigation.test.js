@@ -44,3 +44,9 @@ test("keywords widen a match without changing the visible label", () => {
   assert.ok(matchesQuery(item, "encender"));
   assert.ok(matchesQuery(item, "runtime"));
 });
+
+test("desktop top-level navigation closes an open group backdrop", () => {
+  const source = readFileSync(new URL("../src/components/layout/GlobalToolsMenu.vue", import.meta.url), "utf8");
+  assert.match(source, /<router-link[\s\S]*:to="tool\.to"[\s\S]*@click="closeGroup"/);
+  assert.match(source, /desktop-activity-backdrop/);
+});
