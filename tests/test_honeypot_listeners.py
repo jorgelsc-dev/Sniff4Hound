@@ -20,16 +20,23 @@ from sniff4hound.honeypot import (
     _build_sip_response,
     _build_smb2_negotiate_response,
 )
-from sniff4hound.honeypot_ports import DEFAULT_ENABLED_PORTS
+from sniff4hound.honeypot_ports import DEFAULT_ENABLED_PORTS, listener_port_allowed
 from sniff4hound.store import SniffStore
 
 
 def _free_high_port() -> int:
     """Pick a free ephemeral port so listener tests don't need root and
-    don't collide with anything else on the box."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+    don't collide with anything else on the box.
+
+    The kernel's ephemeral range overlaps ports the custom-listener policy
+    refuses (e.g. tcp/50000, 50070), and `create_listener` then raises, so
+    keep drawing until the port is one a custom listener may use."""
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        if listener_port_allowed("tcp", port) and listener_port_allowed("udp", port):
+            return port
 
 
 def _port_is_bound(port: int) -> bool:
