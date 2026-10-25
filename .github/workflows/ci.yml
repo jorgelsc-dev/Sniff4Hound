@@ -1,7 +1,8 @@
 name: CI
 
-# Lint/build plus isolated Electron startup regressions (no app or root).
-# The full unit suites are not run here. The backend suite took 3-5 minutes on every
+# Lint/build plus isolated Electron startup regressions (no app or root), the
+# Python dependency install, the strict docs build and the lockfile registry
+# check. The full unit suites are not run here. The backend suite took 3-5 minutes on every
 # push and pull request, so it lives in tests.yml instead: start it by hand
 # from the Actions tab (Tests -> Run workflow), or run it locally (README,
 # "Checks").
@@ -80,3 +81,63 @@ jobs:
         run: npm run lint
       - name: Build
         run: npm run build
+
+  # Resolves and installs the Python package the way the .deb and tests.yml do,
+  # so a dependency that cannot be fetched (e.g. a git pin to a commit that no
+  # longer exists upstream) fails the pull request instead of the first
+  # release build after the merge. No tests run here; see tests.yml.
+  python-install:
+    name: Python install (3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+      - name: Install project
+        run: python -m pip install .
+      - name: Check installed requirements are consistent
+        run: python -m pip check
+      # Imports the wsbuilder modules the runtime builds on (HTTP/WS server,
+      # QUIC/HTTP3, mDNS, NDJSON logs) without importing sniff4hound.app,
+      # which opens the database at import time.
+      - name: Import wsbuilder runtime modules
+        working-directory: ${{ runner.temp }}
+        run: |
+          python - <<'PY'
+          import importlib.metadata as metadata
+          from wsbuilder import App, LocalMDNSServer, NeuralNetwork, Request, Response, evaluate_errors, parse_close_payload  # noqa: F401
+          from wsbuilder.http3_server import Http3Server, alt_svc_header  # noqa: F401
+          from wsbuilder.logs import NDJSONLog  # noqa: F401
+          from wsbuilder.server import HTTPServer  # noqa: F401
+          print("wsbuilder", metadata.version("wsbuilder"))
+          PY
+
+  # docs-pages.yml only runs on push to main, so a broken link or a page
+  # missing from the nav used to be found after the merge. Same build here.
+  docs-checks:
+    name: Docs strict build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install docs dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-docs.txt
+      - name: Build site (strict)
+        run: mkdocs build --strict
+
+  # Every npm lockfile must resolve from the official registry; a lockfile
+  # regenerated behind a mirror ties `npm ci` (and the .deb build) to it.
+  lockfile-registries:
+    name: Lockfile registries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject non-npmjs registry hosts
+        run: python3 scripts/check_lockfile_registries.py

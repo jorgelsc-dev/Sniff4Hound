@@ -32,11 +32,12 @@ is two reviews wearing one hat, and the bug fix is the one that gets rushed.
 
 ## Tests
 
-The unit tests do not run on pushes or pull requests. Run them locally before
-opening a PR (`README.md`, "Checks"), or start them in GitHub from
+The full unit suites do not run on pull requests or auxiliary-branch pushes.
+Every push to `main` runs them through the release gate in `package.yml`.
+Run them locally before opening a PR (`README.md`, "Checks"), or start them in GitHub from
 Actions → Tests → Run workflow on your branch (`tests.yml`: the backend shards
 plus `npm test` for the frontend; the `suite` input picks one or both). Register
-every new `tests/test_*.py` in `.github/test-shards.json`; the manual run
+every new `tests/test_*.py` in `.github/test-shards.json`; both the manual run and release gate
 fails if one is missing.
 
 ## Required checks
@@ -61,8 +62,13 @@ protection matches on — not by workflow name:
 ## Releases
 
 Releases are automatic: every push to `main` runs `package.yml`, which builds
-the Debian package and creates the `vMAJOR.MINOR.PATCH` tag and its GitHub
-release, marking it `--latest`. Nothing is tagged by hand.
+the Debian package and calls `tests.yml` for all backend shards and frontend
+tests. Publication requires both jobs to succeed. A failing or cancelled
+test/build leaves the previous release as `--latest`; it creates no new tag
+or release. After validation, the publication job creates the
+`vMAJOR.MINOR.PATCH` tag and GitHub release, marking it `--latest`. Nothing is
+tagged by hand. Build and test jobs have read-only repository access; only
+the separate publication job receives `contents: write`.
 
 The version is derived by `sniff4hound/versioning.py` from the Conventional
 Commit subjects since the newest `v*` tag, so write commit subjects
