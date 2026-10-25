@@ -640,6 +640,8 @@ class Sniffer:
         # applies them only once the batch has committed.
         self._pipeline_tls = threading.local()
         self._threads: list[threading.Thread] = []
+        self._capture_ready: set[str] = set()
+        self._capture_startup_errors: dict[str, str] = {}
         self._state_lock = threading.RLock()
         self.state = CaptureState()
         self._local_ips = local_ip_candidates()
@@ -808,6 +810,8 @@ class Sniffer:
                 "started_at": self.state.started_at,
                 "last_packet_at": self.state.last_packet_at,
                 "active_threads": active_threads,
+                "ready_interfaces": sorted(self._capture_ready),
+                "startup_errors": dict(self._capture_startup_errors),
                 "packet_pipeline": self._pipeline_snapshot(),
             }
 
@@ -819,6 +823,8 @@ class Sniffer:
             self.state.running = True
             self.state.interfaces = self.list_interfaces()
             self.state.errors = {}
+            self._capture_ready.clear()
+            self._capture_startup_errors.clear()
             self.state.started_at = utc_now()
             self.state.last_packet_at = ""
             self.state.packets_seen = 0
@@ -866,6 +872,7 @@ class Sniffer:
         self._stop_event.set()
         with self._state_lock:
             self.state.running = False
+            self._capture_ready.clear()
         for thread in list(self._threads):
             if thread.is_alive():
                 thread.join(timeout=0.8)
@@ -893,7 +900,14 @@ class Sniffer:
         with self._state_lock:
             self.state.errors[str(interface)] = str(message)
 
+    def _set_startup_error(self, interface: str, message: str):
+        with self._state_lock:
+            self._capture_startup_errors[str(interface)] = str(message)
+            self.state.errors[str(interface)] = str(message)
+
     def _mark_capture_worker_stopped(self, interface: str):
+        with self._state_lock:
+            self._capture_ready.discard(interface)
         if self._stop_event.is_set():
             return
         current = threading.current_thread()
@@ -1224,7 +1238,7 @@ class Sniffer:
             try:
                 sock.bind((interface, 0))
             except Exception as exc:
-                self._set_error(interface, f"bind failed: {exc}")
+                self._set_startup_error(interface, f"bind failed: {exc}")
                 try:
                     sock.close()
                 except Exception:
@@ -1234,7 +1248,7 @@ class Sniffer:
             if CAPTURE_PROMISCUOUS:
                 self._enable_promiscuous(sock, interface)
         except PermissionError as exc:
-            self._set_error(interface, f"permission denied: {exc}")
+            self._set_startup_error(interface, f"permission denied: {exc}")
             try:
                 if sock is not None:
                     sock.close()
@@ -1245,7 +1259,7 @@ class Sniffer:
             self._mark_capture_worker_stopped(interface)
             return
         except Exception as exc:
-            self._set_error(interface, f"socket unavailable: {exc}")
+            self._set_startup_error(interface, f"socket unavailable: {exc}")
             try:
                 if sock is not None:
                     sock.close()
@@ -1254,6 +1268,8 @@ class Sniffer:
             self._mark_capture_worker_stopped(interface)
             return
 
+        with self._state_lock:
+            self._capture_ready.add(interface)
         try:
             consecutive_socket_errors = 0
             reopens = 0

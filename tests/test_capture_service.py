@@ -3,8 +3,10 @@ from __future__ import annotations
 import importlib
 import io
 import os
+import socket
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -69,6 +71,22 @@ class RuntimeControllerTests(unittest.TestCase):
         # Keep the post-restart verification window short in tests.
         controller._interface_verify_seconds = 0.05
         return controller
+
+    def test_interface_verification_environment_is_finite_and_bounded(self):
+        from sniff4hound.runtime_controller import _configured_interface_verify_seconds
+
+        for raw, expected in (("0", 0.0), ("0.25", 0.25), ("-1", 0.0), ("99", 5.0),
+                              ("invalid", 0.5), ("", 0.5), ("nan", 0.5), ("inf", 0.5), ("-inf", 0.5)):
+            with self.subTest(raw=raw), patch.dict(os.environ, {"SNIFF4HOUND_INTERFACE_VERIFY_SECONDS": raw}):
+                self.assertEqual(_configured_interface_verify_seconds(), expected)
+
+    def test_zero_verification_window_checks_once_without_sleeping(self):
+        controller = self._controller()
+        controller._interface_verify_seconds = 0
+        with patch("sniff4hound.runtime_controller.time.sleep") as sleep:
+            controller._restart_sniffer_verified()
+            sleep.assert_not_called()
+        self.assertTrue(self.sniffer.running)
 
     def test_defaults_to_sniffer_mode_and_persists_it(self):
         previous = os.environ.pop("SNIFF4HOUND_RUNTIME_MODE", None)
@@ -281,6 +299,126 @@ class RuntimeControllerTests(unittest.TestCase):
         self.assertTrue(result["sniffer"]["running"])
         self.assertEqual(result["sniffer"]["selected_interfaces"], ["fixture-old"])
         self.assertEqual(self.store.get_runtime_config("sniffer_interfaces"), '["fixture-old"]')
+
+    def test_selection_restore_failure_is_broadcast_as_rollback_failed(self):
+        controller = self._controller()
+        controller.set_sniffer_interfaces(["fixture-old"])
+        controller.start("sniffer")
+        original_set = self.sniffer.set_interfaces
+
+        def select(interfaces):
+            if list(interfaces) == ["fixture-old"]:
+                raise ValueError("old interface disappeared")
+            original_set(interfaces)
+
+        with patch.object(self.sniffer, "set_interfaces", side_effect=select), \
+                patch.object(self.sniffer, "restart", side_effect=RuntimeError("restart failed")):
+            with self.assertRaisesRegex(RuntimeError, "restart failed"):
+                controller.set_sniffer_interfaces(["fixture-new"])
+        update = controller.snapshot()["sniffer"]["interface_update"]
+        self.assertEqual(update["status"], "rollback_failed")
+        self.assertEqual(update["rollback_error"], "old interface disappeared")
+        self.assertEqual(update["restored_interfaces"], [])
+        self.assertEqual(self.hub.broadcast.call_args.args[0]["runtime"], controller.snapshot())
+
+    def test_real_capture_worker_readiness_and_delayed_bind_failure(self):
+        from sniff4hound.sniffer import Sniffer
+
+        sniffer = Sniffer(self.store, self.hub, interfaces=("fixture-old", "fixture-new"))
+        controller = self._controller(sniffer=sniffer)
+        controller._interface_verify_seconds = 0.15
+
+        class CaptureSocket:
+            def setsockopt(self, *_args):
+                pass
+
+            def settimeout(self, _timeout):
+                pass
+
+            def bind(self, address):
+                if address[0] == "fixture-new":
+                    time.sleep(0.04)
+                    raise OSError("fixture bind failed")
+
+            def recvfrom(self, _size):
+                sniffer._stop_event.wait(0.01)
+                raise socket.timeout()
+
+            def close(self):
+                pass
+
+        def warning(_sock, interface):
+            sniffer._set_error(interface, "promiscuous mode unavailable: fixture warning")
+
+        with patch("sniff4hound.sniffer.socket.socket", side_effect=lambda *_a: CaptureSocket()), \
+                patch("sniff4hound.sniffer.CAPTURE_PROMISCUOUS", True), \
+                patch.object(sniffer, "_enable_promiscuous", side_effect=warning):
+            try:
+                controller.set_sniffer_interfaces(["fixture-old"])
+                controller.start("sniffer")
+                # A warning about optional promiscuous mode must not reject a
+                # bound, working capture, nor may a historical receive error.
+                controller._restart_sniffer_verified()
+                self.assertEqual(sniffer.snapshot()["ready_interfaces"], ["fixture-old"])
+                self.assertIn("fixture-old", sniffer.snapshot()["errors"])
+                with self.assertRaisesRegex(RuntimeError, "fixture bind failed"):
+                    controller.set_sniffer_interfaces(["fixture-new"])
+                snapshot = controller.snapshot()["sniffer"]
+                self.assertTrue(snapshot["running"])
+                self.assertEqual(snapshot["ready_interfaces"], ["fixture-old"])
+                self.assertEqual(snapshot["interface_update"]["status"], "rolled_back")
+                self.assertEqual(snapshot["startup_errors"], {})
+            finally:
+                sniffer.stop()
+
+    def test_live_worker_that_never_binds_is_not_reported_applied(self):
+        controller = self._controller()
+        controller.start("sniffer")
+        base_snapshot = self.sniffer.snapshot
+
+        def snapshot():
+            return {**base_snapshot(), "interfaces": ["fixture-new"],
+                    "active_threads": 1, "ready_interfaces": [], "startup_errors": {}}
+
+        with patch.object(self.sniffer, "snapshot", side_effect=snapshot):
+            with self.assertRaisesRegex(RuntimeError, "startup did not finish"):
+                controller.set_sniffer_interfaces(["fixture-new"])
+        self.assertEqual(controller.snapshot()["sniffer"]["interface_update"]["status"], "rollback_failed")
+
+    def test_late_ipc_mutation_uses_production_resync_hook(self):
+        from sniff4hound.capture_service import _resync_after_slow_mutation
+        from sniff4hound.ipc import IpcClient, IpcError, IpcEventSink, IpcServer
+
+        release = threading.Event()
+        path = str(Path(self._tmp_dir.name) / "late.sock")
+        server = IpcServer(path, "fixture-token")
+        controller = self._controller(hub=IpcEventSink(server))
+
+        def mutate():
+            release.wait(3)
+            self.sniffer.running = True
+            raise RuntimeError("fixture error after mutation")
+
+        server.methods["start"] = mutate
+        server.on_slow_dispatch = lambda method, elapsed: _resync_after_slow_mutation(controller, method, elapsed)
+        events = []
+        client = IpcClient(path, "fixture-token", on_event=events.append, call_timeout=0.05)
+        server.start()
+        try:
+            client.connect()
+            with self.assertRaisesRegex(IpcError, "timed out"):
+                client.call("start")
+            self.assertEqual(client._pending, {})
+            release.set()
+            deadline = time.monotonic() + 2
+            while not events and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(events[0]["type"], "runtime_mode")
+            self.assertTrue(events[0]["runtime"]["sniffer"]["running"])
+        finally:
+            release.set()
+            client.close()
+            server.stop()
 
 
 class CaptureServiceAdminPolicyTests(unittest.TestCase):

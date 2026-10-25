@@ -19,6 +19,7 @@ No third-party dependencies, consistent with project policy.
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 import socket
@@ -285,7 +286,7 @@ class IpcServer:
                 message = _recv_frame(conn)
                 if message.get("kind") == "request":
                     try:
-                        self._dispatch_pool.submit(self._dispatch, conn, message)
+                        self._dispatch_pool.submit(self._dispatch, conn, message, time.monotonic())
                     except RuntimeError:
                         # Pool already shut down (stop() raced this frame) -
                         # run it inline so the caller still gets an answer
@@ -296,11 +297,18 @@ class IpcServer:
                 if self._client_sock is conn:
                     self._client_sock = None
 
-    def _dispatch(self, conn: socket.socket, message: dict) -> None:
+    def _dispatch(self, conn: socket.socket, message: dict, received_at: float | None = None) -> None:
         request_id = message.get("id")
         method_name = str(message.get("method") or "")
         args = message.get("args") or {}
-        started = time.monotonic()
+        started = time.monotonic() if received_at is None else received_at
+        threshold = self.slow_dispatch_seconds
+        try:
+            call_timeout = float(message.get("timeout_seconds", threshold))
+            if math.isfinite(call_timeout) and call_timeout >= 0:
+                threshold = min(threshold, call_timeout)
+        except (TypeError, ValueError):
+            pass
         try:
             handler = self.methods.get(method_name)
             if handler is None:
@@ -314,10 +322,10 @@ class IpcServer:
                 self._write_lock,
             )
         finally:
-            self._note_slow_dispatch(method_name, time.monotonic() - started)
+            self._note_slow_dispatch(method_name, time.monotonic() - started, threshold)
 
-    def _note_slow_dispatch(self, method_name: str, elapsed: float) -> None:
-        if elapsed < self.slow_dispatch_seconds:
+    def _note_slow_dispatch(self, method_name: str, elapsed: float, threshold: float) -> None:
+        if elapsed < threshold:
             return
         LOGGER.warning(
             "slow IPC dispatch",
@@ -622,7 +630,8 @@ class IpcClient:
                 pending.generation = self._generation
                 with self._pending_lock:
                     self._pending[request_id] = pending
-            frame = {"kind": "request", "id": request_id, "method": method, "args": kwargs}
+            frame = {"kind": "request", "id": request_id, "method": method, "args": kwargs,
+                     "timeout_seconds": self._call_timeout}
             try:
                 _send_frame(sock, frame, self._write_lock)
                 break

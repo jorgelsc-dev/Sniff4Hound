@@ -215,6 +215,35 @@ class RealtimeSseTests(unittest.TestCase):
         self.assertEqual(hub.list_clients(), [])
         self.assertIsNotNone(ws.closed_with)
 
+    def test_ping_overflow_closes_and_unregisters_the_session(self):
+        hub = self.app.WebSocketHub()
+        session = self.app.RealtimeSession("203.0.113.10")
+        hub.register(session)
+        for _ in range(self.app.REALTIME_QUEUE_LIMIT + 1):
+            hub.ping()
+        self.assertTrue(session.closed)
+        self.assertEqual(hub.list_clients(), [])
+        events = [session.next_event(0) for _ in range(self.app.REALTIME_QUEUE_LIMIT + 1)]
+        self.assertEqual(events[-1][0], "close")
+        self.assertEqual(events[-1][1]["code"], 1013)
+
+    def test_hub_closes_a_websocket_it_drops_on_ping(self):
+        class BrokenSocket:
+            closed_with = None
+
+            def send_ping(self, _payload):
+                raise OSError("fixture socket gone")
+
+            def close(self, code=1000, reason=""):
+                self.closed_with = (code, reason)
+
+        hub = self.app.WebSocketHub()
+        ws = BrokenSocket()
+        hub.register(ws)
+        hub.ping()
+        self.assertEqual(hub.list_clients(), [])
+        self.assertEqual(ws.closed_with, (1013, "dropped"))
+
     def test_stream_generator_ends_after_its_session_overflows(self):
         response = self.app.app.dispatch(
             _request(

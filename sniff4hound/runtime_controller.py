@@ -10,6 +10,7 @@ process talks to this over IPC via `app.RuntimeControllerClient` instead.
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -25,9 +26,17 @@ ENGINE_NAMES = ("sniffer", "honeypot")
 # cannot open its interface fails a moment later on its own thread, so an
 # immediate snapshot would still read "running". Bounded and short: the
 # controller lock is held meanwhile.
-INTERFACE_VERIFY_SECONDS = max(
-    0.0, float(os.environ.get("SNIFF4HOUND_INTERFACE_VERIFY_SECONDS", "0.5") or 0.5)
-)
+def _configured_interface_verify_seconds() -> float:
+    try:
+        value = float(os.environ.get("SNIFF4HOUND_INTERFACE_VERIFY_SECONDS", "0.5"))
+    except (TypeError, ValueError):
+        return 0.5
+    # Never let a malformed override fail import or hold the controller lock
+    # indefinitely. Zero disables the observation window, not state checks.
+    return min(5.0, max(0.0, value)) if math.isfinite(value) else 0.5
+
+
+INTERFACE_VERIFY_SECONDS = _configured_interface_verify_seconds()
 INTERFACE_VERIFY_POLL_SECONDS = 0.05
 
 
@@ -249,11 +258,15 @@ class RuntimeController:
     @staticmethod
     def _sniffer_failure(snapshot: dict) -> str:
         """Why a sniffer snapshot does not count as capturing, or ""."""
-        errors = snapshot.get("errors") or {}
+        # Optional promiscuous-mode warnings and old receive errors do not
+        # mean bind failed. New sniffers report startup failures separately.
+        errors = snapshot.get("startup_errors", snapshot.get("errors")) or {}
         if errors:
             return "; ".join(f"{name}: {message}" for name, message in sorted(errors.items()))
         if not snapshot.get("running"):
             return "sniffer is not running"
+        if snapshot.get("active_threads", 1) < 1:
+            return "sniffer has no live capture worker"
         state = snapshot.get("capture_state")
         if state is not None and state != "running":
             return f"sniffer capture is {state}"
@@ -267,11 +280,17 @@ class RuntimeController:
         self._sniffer.restart()
         deadline = time.monotonic() + self._interface_verify_seconds
         while True:
-            failure = self._sniffer_failure(self._sniffer.snapshot())
+            snapshot = self._sniffer.snapshot()
+            failure = self._sniffer_failure(snapshot)
             if failure:
                 raise RuntimeError(f"sniffer interface restart failed: {failure}")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if "ready_interfaces" in snapshot and (
+                    not snapshot["ready_interfaces"]
+                    or set(snapshot.get("interfaces") or ()) != set(snapshot["ready_interfaces"])
+                ):
+                    raise RuntimeError("sniffer interface startup did not finish before the deadline")
                 return
             time.sleep(min(INTERFACE_VERIFY_POLL_SECONDS, remaining))
 
@@ -291,15 +310,17 @@ class RuntimeController:
                     # capture itself: a failed change must not leave the
                     # operator with a stopped sniffer and a selection that
                     # looks as if nothing happened.
-                    self._sniffer.set_interfaces(list(previous_interfaces))
                     update = {
                         "status": "rolled_back",
                         "requested_interfaces": selected,
-                        "restored_interfaces": list(previous_interfaces),
+                        "previous_interfaces": list(previous_interfaces),
+                        "restored_interfaces": [],
                         "error": str(exc),
                         "rollback_error": "",
                     }
                     try:
+                        self._sniffer.set_interfaces(list(previous_interfaces))
+                        update["restored_interfaces"] = list(previous_interfaces)
                         self._restart_sniffer_verified()
                     except Exception as rollback_exc:  # noqa: BLE001 - reported below
                         update["status"] = "rollback_failed"

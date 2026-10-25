@@ -376,8 +376,8 @@ class IpcReconnectTests(unittest.TestCase):
             state["running"] = True
             return dict(state)
 
-        server = IpcServer(self.socket_path, self.token, methods={"mutate": mutate},
-                           slow_dispatch_seconds=0.05)
+        # Default server threshold is 5s; the actual caller only waits 0.1s.
+        server = IpcServer(self.socket_path, self.token, methods={"mutate": mutate})
         sink = IpcEventSink(server)
 
         def resync(method, elapsed):
@@ -401,6 +401,34 @@ class IpcReconnectTests(unittest.TestCase):
         self.assertEqual(events[0], {"type": "runtime_mode", "runtime": {"running": True}})
         self.assertEqual(slow_calls[0][0], "mutate")
         self.assertTrue(any("slow IPC dispatch" in line for line in logs.output))
+
+    def test_time_waiting_for_a_dispatch_worker_counts_toward_the_deadline(self):
+        release = threading.Event()
+        entered = threading.Event()
+        self.addCleanup(release.set)
+        notifications = []
+
+        def block():
+            entered.set()
+            release.wait(timeout=3)
+
+        with patch.object(IpcServer, "MAX_DISPATCH_WORKERS", 1):
+            server = IpcServer(self.socket_path, self.token,
+                               methods={"block": block, "mutate": lambda: True},
+                               on_slow_dispatch=lambda method, elapsed: notifications.append(method))
+        server.start()
+        self.addCleanup(server.stop)
+        client = IpcClient(self.socket_path, self.token, connect_timeout=2, call_timeout=0.1)
+        self.addCleanup(client.close)
+        client.connect()
+        with self.assertRaisesRegex(IpcError, "timed out"):
+            client.call("block")
+        self.assertTrue(entered.is_set())
+        with self.assertRaisesRegex(IpcError, "timed out"):
+            client.call("mutate")
+        self.assertEqual(client._pending, {})
+        release.set()
+        self.assertTrue(_wait_until(lambda: "mutate" in notifications))
 
     def test_a_fast_dispatch_does_not_trigger_the_slow_hook(self):
         hook_calls = []

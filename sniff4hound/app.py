@@ -472,8 +472,10 @@ class WebSocketHub:
                     ws.send_ping(payload or b"sniff4hound")
                 except Exception:
                     dead.append(client_id)
-            for client_id in dead:
-                self._clients.pop(client_id, None)
+            dropped = [self._clients.pop(client_id, None) for client_id in dead]
+        for client in dropped:
+            if client is not None:
+                _close_dropped_client(client.get("ws"))
 
     def close(self, code=1000, reason=""):
         with self._lock:
@@ -4267,7 +4269,8 @@ class RealtimeSession:
             raise ConnectionError("realtime session is closed")
 
     def send_ping(self, payload: bytes = b"") -> None:
-        self._put(("ping", ""))
+        if not self._put(("ping", "")):
+            raise ConnectionError("realtime session is closed")
 
     def _close_locked(self, code: int, reason: str) -> None:
         if self.closed:
