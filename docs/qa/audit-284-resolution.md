@@ -61,3 +61,21 @@ Los tres avisos privados enlazados desde el índice se gestionan por separado.
 Este informe no publica sus detalles ni afirma que estén resueltos.
 Las comprobaciones con mocks o inspección de código se distinguen de las
 comprobaciones ejecutadas en Electron y del resultado real de GitHub Actions.
+
+## Estado del seguimiento al 2026-10-25
+
+Los 17 cards originales de esta auditoría están cerrados con PR, commit y
+validación registrados: #267–#283. También quedaron cerrados los seguimientos
+posteriores #288 y #292–#297. La actualización de Electron 45 se integró en
+`main` mediante la [PR #291](https://github.com/jorgelsc-dev/Sniff4Hound/pull/291).
+
+El único hallazgo técnico abierto de esta línea de auditoría es el [card
+#299](https://github.com/jorgelsc-dev/Sniff4Hound/issues/299): la
+retransmisión QUIC de `wsbuilder` 1.3.0 puede agrupar frames perdidos en un
+datagrama mayor que `MAX_DATAGRAM_SIZE` y bloquear el transporte HTTP/3. No se
+considera resuelto por el cambio del límite de streams de #274; requiere un
+arreglo en `wsbuilder`, un nuevo pin en Sniff4Hound y una prueba de estabilidad
+con pérdidas de paquetes.
+
+Por tanto, el índice #284 puede cerrarse como seguimiento de la auditoría
+original, manteniendo #299 abierto como riesgo residual independiente.
